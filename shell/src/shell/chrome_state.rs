@@ -82,6 +82,10 @@ impl std::fmt::Debug for PendingPrompt {
 
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent, non-exclusive overlay visibility toggle (any subset can be on screen at once), and the struct is read/written across ~170 call sites in 14 files under shell/src and shell/tests — a flags-enum refactor would ripple invasively for no behavioural gain"
+)]
 pub struct OverlayFlags {
     pub overview: bool,
     pub quick_settings: bool,
@@ -164,7 +168,7 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
-    /// Primary NetworkManager Ethernet interface. `None` means no adapter.
+    /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
     /// Read-only kernel battery snapshot for the quick status row.
     pub battery: os_actions::BatteryInfo,
@@ -248,7 +252,7 @@ pub struct ChromeState {
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
     pub quick_settings: QuickSettingsState,
-    /// `Some` while the workspace-settings modal's Name input is in
+    /// `Some` while the workspace lens's Name input is in
     /// text-entry mode — the edit buffer, which may diverge from the
     /// persisted name until Enter commits it.
     pub editing_workspace_name: Option<String>,
@@ -265,6 +269,10 @@ pub struct ChromeState {
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
     pub ws_settings_tab: WsTab,
+    /// Window-logical bounds of the top-bar workspace pill. Published by the
+    /// top bar without bumping revision so the workspace lens can animate
+    /// from the exact context that opened it.
+    pub workspace_settings_anchor: vello::kurbo::Rect,
     /// The Permissions tab's in-progress grant. Lives here (not the
     /// overlay host) so it survives a re-render, and holds picker
     /// indices rather than a resolved capability so a subject leaving
@@ -322,22 +330,6 @@ pub struct ChromeState {
     /// rewrites every frame — a value parked there by Expand would be
     /// wiped on the next tick. Both feed [`Self::is_fullscreen`].
     maximized_group: Option<u64>,
-    /// Shown on screen so anyone checking the command did anything
-    /// can see it even without a clipboard (headless sessions have
-    /// none).
-    pub peer_sync_invite_token: Option<String>,
-    /// `Some` means the `/connect` token prompt is open; an overlay
-    /// rather than a widget since it owns the keyboard outright.
-    pub peer_sync_connect_input: Option<String>,
-    /// "Who are you inviting?" — asked before minting, since the
-    /// answer is what the room will call them.
-    pub peer_sync_invite_name: Option<String>,
-    /// Who [`Self::peer_sync_invite_token`] was minted for, so the
-    /// card can show a name instead of a base64 token.
-    pub peer_sync_invite_for: Option<String>,
-    /// The room joined, or why the token was refused — rendered under
-    /// the prompt.
-    pub peer_sync_status: Option<String>,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -386,7 +378,8 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             osd: None,
             ws_settings_tab: WsTab::default(),
-            ws_grant_draft: Default::default(),
+            workspace_settings_anchor: vello::kurbo::Rect::ZERO,
+            ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
             revision: 0,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
@@ -404,11 +397,6 @@ impl ChromeState {
             session_locked: false,
             fullscreen_group: None,
             maximized_group: None,
-            peer_sync_invite_token: None,
-            peer_sync_connect_input: None,
-            peer_sync_invite_name: None,
-            peer_sync_invite_for: None,
-            peer_sync_status: None,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -495,6 +483,23 @@ impl ChromeState {
         self.tree_handle.read()
     }
 
+    /// Person principal this session presents inside `room`.
+    pub fn local_user_for_room(
+        &self,
+        room: &crate::shell::state::RoomId,
+    ) -> crate::shell::state::UserId {
+        crate::shell::state::local_user_id_for_room(room)
+    }
+
+    /// Person principal selected for the active workspace, or the session
+    /// fallback when no workspace is active.
+    pub fn active_local_user(&self) -> crate::shell::state::UserId {
+        self.tree().active_workspace().map_or_else(
+            || self.local_user_id.clone(),
+            |workspace| self.local_user_for_room(&workspace.room),
+        )
+    }
+
     pub fn records(&self) -> &RecordStore {
         &self.records
     }
@@ -533,6 +538,23 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Reveal one authoritative workspace-settings destination. All shell
+    /// entry points use this instead of independently coordinating a tab and
+    /// overlay. The caller owns the ordinary action-level repaint boundary.
+    pub fn open_workspace_settings(&mut self, tab: WsTab) {
+        self.ws_settings_tab = tab;
+        self.overlays.ws_settings = true;
+    }
+
+    /// The top-bar workspace capsule is both the context indicator and the
+    /// close affordance, so it alone needs toggle semantics. Contextual links
+    /// always call [`Self::open_workspace_settings`] and can never close an
+    /// already-open destination by accident.
+    pub fn toggle_workspace_settings(&mut self) {
+        self.overlays.ws_settings = !self.overlays.ws_settings;
+        self.bump();
     }
 
     /// Focus is four coordinates, not one; setting all four in one place
@@ -623,7 +645,7 @@ impl ChromeState {
             mode: FsMode::Read,
             scope: Expiry::EndOfSession,
         };
-        store.insert(&caller, cap);
+        store.insert(&caller, &cap);
     }
 
     /// Real Wayland app-id for `Foreign`, or the built-in
@@ -640,7 +662,7 @@ impl ChromeState {
         let strip = ws.strips.iter().find(|s| s.id == strip_id)?;
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
-        Some(match &tab.tile {
+        let app_id = match &tab.tile {
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
             TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
@@ -649,7 +671,9 @@ impl ChromeState {
             TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
                 kind.app_id()
             }
-        })
+        };
+        drop(tree);
+        Some(app_id)
     }
 
     /// Called directly by the wheel-disc's "+" slot to create and
@@ -661,7 +685,7 @@ impl ChromeState {
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
-            tree.adopt_ownerless_workspaces(&self.local_user_id);
+            tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
             id
         };
         self.bump();
@@ -699,10 +723,12 @@ impl ChromeState {
         let tab = group.tabs.iter().find(|t| t.id == group.active_tab)?;
         // Opaque return type so callers can't stash a borrow into
         // `tree` past this scope — clone the fields they need instead.
-        Some(crate::shell::state::TabRef {
+        let tab_ref = crate::shell::state::TabRef {
             id: tab.id,
             title: tab.title.clone(),
-        })
+        };
+        drop(tree);
+        Some(tab_ref)
     }
 
     /// Strips of the active workspace, and which one has focus.
@@ -722,6 +748,7 @@ impl ChromeState {
             .get(&ws.id)
             .and_then(|sid| ws.strips.iter().position(|s| s.id == *sid))
             .unwrap_or(0);
+        drop(tree);
         (count, focused)
     }
 
@@ -742,6 +769,7 @@ impl ChromeState {
                 return false;
             }
             tree.active_strip.insert(ws_id, sid);
+            drop(tree);
             (true, name)
         };
         let _ = name;
@@ -758,7 +786,13 @@ impl ChromeState {
         if count == 0 {
             return false;
         }
-        let next = (focused as i64 + i64::from(dir.signum())).clamp(0, count as i64 - 1) as usize;
+        // Step by one strip in `dir`'s direction, saturating at both
+        // ends rather than round-tripping through a signed cast.
+        let next = match dir.signum() {
+            -1 => focused.saturating_sub(1),
+            1 => focused.saturating_add(1).min(count.saturating_sub(1)),
+            _ => focused,
+        };
         self.focus_strip_index(next)
     }
 
@@ -814,7 +848,7 @@ impl ChromeState {
         }
         if visual_notification_alerts_enabled() {
             self.visual_alert_until =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(450));
+                std::time::Instant::now().checked_add(std::time::Duration::from_millis(450));
         }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
@@ -1108,8 +1142,9 @@ impl ChromeState {
                 verified_app_id.as_deref(),
                 verified_priority_contact,
                 now.timestamp(),
-                (now.hour() * 60 + now.minute()) as u16,
-                now.weekday().num_days_from_monday() as u8,
+                u16::try_from(now.hour().saturating_mul(60).saturating_add(now.minute()))
+                    .unwrap_or(u16::MAX),
+                u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
             );
             let mut notification = Notification::from_incoming(inc);
             notification.show_preview = effective.previews;
@@ -1126,7 +1161,10 @@ impl ChromeState {
                 }
             }
             if effective.sounds {
-                let _ = self.notification_sound.as_ref().map(|sound| sound.play());
+                let _ = self
+                    .notification_sound
+                    .as_ref()
+                    .map(media::notification_sound::NotificationSoundPlayer::play);
             }
             if effective.banners {
                 self.push_notification_full(notification);
@@ -1321,6 +1359,7 @@ mod active_tab_tests {
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
         let grants = ws.app_grants_snapshot();
+        drop(guard);
         let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
             panic!(
                 "grant must be keyed by the foreign client's real app-id; \
@@ -1360,6 +1399,7 @@ mod active_tab_tests {
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
         let grants = ws.app_grants_snapshot();
+        drop(guard);
         assert!(
             grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
@@ -1379,10 +1419,11 @@ mod active_tab_tests {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().expect("a workspace");
             let base = ws.strips.len();
-            for n in 0..3 {
-                let id = StripId(9000 + n as u64);
+            for n in 0..3u64 {
+                let id = StripId(9000 + n);
                 ws.strips.push(Strip::new(id, format!("Extra {n}")));
             }
+            drop(tree);
             assert!(base + 3 >= 4, "fixture needs at least four strips");
         }
         st.bump();
@@ -1423,10 +1464,11 @@ mod active_tab_tests {
         {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().expect("a workspace");
-            for n in 0..3 {
+            for n in 0..3u64 {
                 ws.strips
-                    .push(Strip::new(StripId(9100 + n as u64), format!("S{n}")));
+                    .push(Strip::new(StripId(9100 + n), format!("S{n}")));
             }
+            drop(tree);
         }
         let (count, _) = st.strip_focus();
         for i in 0..count {

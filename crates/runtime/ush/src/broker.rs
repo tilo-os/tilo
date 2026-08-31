@@ -85,8 +85,11 @@ pub enum Response {
         entries: Vec<DiffEntry>,
         truncated: usize,
     },
+    /// Boxed: `SessionStatus` is several strings and vecs wide, dwarfing
+    /// every other variant here — every `Response` would otherwise pay for
+    /// its size even when it's an `Ok` or a `Check`.
     Status {
-        status: SessionStatus,
+        status: Box<SessionStatus>,
     },
 }
 
@@ -182,7 +185,7 @@ impl BrokerState {
                 }
             }
             Request::Status => Response::Status {
-                status: self.status(),
+                status: Box::new(self.status()),
             },
             Request::Restart => {
                 self.restart_requested = true;
@@ -415,6 +418,12 @@ pub struct Broker {
 
 impl Broker {
     /// Bind `socket` and start serving.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `socket`'s parent directory can't be created,
+    /// the socket can't be bound, or its permissions can't be restricted
+    /// to owner-only.
     pub fn start(socket: PathBuf, state: BrokerState) -> std::io::Result<Self> {
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
@@ -516,6 +525,11 @@ fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>) {
 }
 
 /// Ask the broker one question, from inside a guest.
+///
+/// # Errors
+///
+/// Returns an error if the socket can't be reached, the request can't be
+/// serialized, the write/read fails, or the reply isn't valid JSON.
 pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = stream.try_clone()?;

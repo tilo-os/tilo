@@ -2,6 +2,8 @@
 name = "app-registry"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "qOS app registry protocol — signed registry index (app-id → versions), iroh-blobs content transport, target selection, and the fail-closed resolve/verify/fetch path the app-host and pkg-cli share."
 
 [lib]

@@ -122,6 +122,12 @@ pub enum Update {
     Note(String),
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "only a static user-agent + timeout are set (no proxy/TLS config that could \
+              fail to parse), so build() cannot return Err here; both call sites are a \
+              detached thread body and a #[test] fn, neither of which can propagate a Result"
+)]
 fn client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .user_agent("tube/0.1 (+qos)")
@@ -136,6 +142,10 @@ fn client() -> reqwest::blocking::Client {
 /// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
 /// API's "no segments for this video" response) is treated as an empty list
 /// rather than an error.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub fn fetch_sponsor(
     client: &reqwest::blocking::Client,
     video_id: &str,
@@ -199,6 +209,10 @@ fn category_json() -> String {
 /// Fetch `DeArrow` branding for a video: the top-voted crowdsourced title (when it
 /// outranks the original) and a community thumbnail URL (a frame rendered at the
 /// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub fn fetch_dearrow(
     client: &reqwest::blocking::Client,
     video_id: &str,
@@ -275,6 +289,11 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
 
 /// Fetch the crowdsourced dislike count for a video via Return `YouTube` Dislike
 /// (`GET /votes?videoId=<id>`).
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails, the response isn't valid JSON, or it
+/// carries no dislike count.
 pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<u64> {
     let resp: serde_json::Value = client
         .get("https://returnyoutubedislikeapi.com/votes")
@@ -293,6 +312,10 @@ pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
 
 /// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
 /// fields fall back to sensible defaults.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub fn search(
     client: &reqwest::blocking::Client,
     instance: &str,
@@ -399,6 +422,12 @@ pub struct Worker {
 }
 
 impl Worker {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Request variant in the worker's dispatch loop; the \
+                  length is the number of request kinds, not accidental complexity in any \
+                  one arm"
+    )]
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<Update>();
@@ -478,7 +507,7 @@ impl Worker {
                             // drop its loading skeleton and show either real hits
                             // or an honest "no results".
                             let mut videos = match fetch(
-                                &live,
+                                live.as_deref(),
                                 offline.as_ref(),
                                 Query::Search(query.clone()),
                                 false,
@@ -549,7 +578,12 @@ impl Worker {
                             };
                             #[cfg(not(feature = "live"))]
                             let enrich_ref: Option<&dyn YtBackend> = None;
-                            match feed_trending(&live, enrich_ref, offline.as_ref(), &up_tx) {
+                            match feed_trending(
+                                live.as_deref(),
+                                enrich_ref,
+                                offline.as_ref(),
+                                &up_tx,
+                            ) {
                                 Some((vs, label)) if !vs.is_empty() => {
                                     let _ = up_tx.send(Update::Feed(vs));
                                     let _ = up_tx.send(Update::Status { live: true, label });
@@ -587,7 +621,7 @@ impl Worker {
                             // it alongside the metadata (live only — the sample
                             // already carries full detail for its own ids).
                             let related = match fetch(
-                                &live,
+                                live.as_deref(),
                                 offline.as_ref(),
                                 Query::Related(id.clone()),
                                 false,
@@ -597,7 +631,7 @@ impl Worker {
                                 _ => Vec::new(),
                             };
                             if let Some((BackendResult::Video(v), used_live)) = fetch(
-                                &live,
+                                live.as_deref(),
                                 offline.as_ref(),
                                 Query::Video(id.clone()),
                                 false,
@@ -630,7 +664,13 @@ impl Worker {
                         }
                         Request::Channel(id) => {
                             if let Some((BackendResult::Channel { channel, uploads }, used_live)) =
-                                fetch(&live, offline.as_ref(), Query::Channel(id), false, &up_tx)
+                                fetch(
+                                    live.as_deref(),
+                                    offline.as_ref(),
+                                    Query::Channel(id),
+                                    false,
+                                    &up_tx,
+                                )
                             {
                                 send_status(&up_tx, used_live);
                                 let _ = up_tx.send(Update::ChannelPage { channel, uploads });
@@ -641,7 +681,7 @@ impl Worker {
                             // watch page's media engine. Proxy-first (Invidious
                             // `local=true`, which serves whole-file byte ranges),
                             // falling back to the live backend's direct URL.
-                            match resolve_stream_url(&live, &id) {
+                            match resolve_stream_url(live.as_deref(), &id) {
                                 Some((url, has_audio, quality)) => {
                                     let _ = up_tx.send(Update::Note(format!(
                                         "stream: {quality} {} [{}]",
@@ -706,16 +746,13 @@ fn short_host(url: &str) -> String {
 /// for streaming past the first minute), then falls back to the live backend's
 /// direct playback source (yt-dlp / rustypipe). Returns `(url, has_audio,
 /// quality)`, or `None` when nothing is playable.
-fn resolve_stream_url(
-    live: &Option<Box<dyn YtBackend>>,
-    id: &str,
-) -> Option<(String, bool, String)> {
+fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String, bool, String)> {
     // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
     // `android_vr` client) that streams the WHOLE video+audio without the
     // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
     // play the full length and seek. (Proven with `--probe-engine`: full
     // duration, buffered to 100%.)
-    if let Some(b) = live.as_ref()
+    if let Some(b) = live
         && let Ok(src) = b.resolve_playback_source(id)
         && !src.url.is_empty()
     {
@@ -838,7 +875,7 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
 /// whether the *live* backend produced it — that boolean drives the on-screen
 /// "Live" vs "Sample" status. Live errors are surfaced as a status note.
 fn fetch(
-    live: &Option<Box<dyn YtBackend>>,
+    live: Option<&dyn YtBackend>,
     offline: &dyn YtBackend,
     query: Query,
     fallback: bool,
@@ -864,7 +901,7 @@ fn fetch(
 /// right now" feed. Returns `None` only when there is no live data at all
 /// (offline / default build) so the caller keeps the bundled sample.
 fn feed_trending(
-    live: &Option<Box<dyn YtBackend>>,
+    live: Option<&dyn YtBackend>,
     enrich: Option<&dyn YtBackend>,
     offline: &dyn YtBackend,
     up_tx: &Sender<Update>,
@@ -880,8 +917,7 @@ fn feed_trending(
     }
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
-    let search_backend: Option<&dyn YtBackend> =
-        enrich.or_else(|| live.as_ref().map(std::convert::AsRef::as_ref));
+    let search_backend: Option<&dyn YtBackend> = enrich.or(live);
     live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
 }
 
@@ -894,10 +930,10 @@ fn live_popular_feed(
     backend: Option<&dyn YtBackend>,
     up_tx: &Sender<Update>,
 ) -> Option<Vec<Video>> {
-    let backend = backend?;
     // Broad, evergreen topics so the union approximates a general popular feed
     // rather than one niche.
     const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
+    let backend = backend?;
     let mut lists: Vec<Vec<Video>> = Vec::new();
     for seed in SEEDS {
         match backend.popular_search(seed) {

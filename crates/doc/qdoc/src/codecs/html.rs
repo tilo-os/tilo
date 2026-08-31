@@ -30,7 +30,7 @@ impl FormatProvider for HtmlCodec {
     fn detect(&self, head: &[u8]) -> Confidence {
         // A leading doctype/html/head tag, or a `<` before a known block tag, is a strong HTML signal.
         let n = head.len().min(512);
-        let s = String::from_utf8_lossy(&head[..n]).to_ascii_lowercase();
+        let s = String::from_utf8_lossy(head.get(..n).unwrap_or(head)).to_ascii_lowercase();
         let t = s.trim_start();
         if t.starts_with("<!doctype html") || t.starts_with("<html") || t.starts_with("<head") {
             Confidence::High
@@ -78,7 +78,7 @@ enum Token {
 /// literal text; `<script>`/`<style>` bodies are consumed raw and dropped).
 fn tokenize(src: &str) -> Vec<Token> {
     let chars: Vec<char> = src.chars().collect();
-    let n = chars.len();
+    let len = chars.len();
     let mut i = 0;
     let mut out = Vec::new();
     let mut text = String::new();
@@ -91,121 +91,154 @@ fn tokenize(src: &str) -> Vec<Token> {
         };
     }
 
-    while i < n {
-        let c = chars[i];
-        if c == '<' {
-            if starts_with_at(&chars, i, "<!--") {
-                flush_text!();
-                i += 4;
-                while i < n && !starts_with_at(&chars, i, "-->") {
-                    i += 1;
-                }
-                i = (i + 3).min(n);
-                continue;
-            }
-            if i + 1 < n && (chars[i + 1] == '!' || chars[i + 1] == '?') {
-                flush_text!();
-                while i < n && chars[i] != '>' {
-                    i += 1;
-                }
-                i = (i + 1).min(n);
-                continue;
-            }
-            let is_tag = i + 1 < n && (chars[i + 1] == '/' || chars[i + 1].is_ascii_alphabetic());
-            if !is_tag {
-                text.push(c);
-                i += 1;
-                continue;
-            }
-            // Find the matching `>`; track the active quote so a quoted `>` doesn't end the tag early.
-            let mut j = i + 1;
-            let mut quote: Option<char> = None;
-            while j < n {
-                let cj = chars[j];
-                match quote {
-                    Some(q) => {
-                        if cj == q {
-                            quote = None;
-                        }
-                    }
-                    None => {
-                        if cj == '"' || cj == '\'' {
-                            quote = Some(cj);
-                        } else if cj == '>' {
-                            break;
-                        }
-                    }
-                }
-                j += 1;
-            }
-            if j >= n {
-                text.push(c);
-                i += 1;
-                continue;
-            }
-            let raw: String = chars[i + 1..j].iter().collect();
-            flush_text!();
-            if let Some(close) = raw.strip_prefix('/') {
-                let name = close
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if !name.is_empty() {
-                    out.push(Token::Close { name });
-                }
-            } else {
-                let self_closing = raw.trim_end().ends_with('/');
-                let body = raw.trim_end().trim_end_matches('/');
-                let name_end = body.find(|c: char| c.is_whitespace()).unwrap_or(body.len());
-                let name = body[..name_end].to_ascii_lowercase();
-                let attrs = body[name_end..].trim().to_string();
-                // `<script>`/`<style>` bodies are raw text (CDATA-like); consume to the matching close tag and drop both.
-                if (name == "script" || name == "style") && !self_closing {
-                    i = j + 1;
-                    let close_tag = format!("</{name}");
-                    while i < n && !starts_with_ci(&chars, i, &close_tag) {
-                        i += 1;
-                    }
-                    while i < n && chars[i] != '>' {
-                        i += 1;
-                    }
-                    i = (i + 1).min(n);
-                    continue;
-                }
-                out.push(Token::Open {
-                    name,
-                    attrs,
-                    self_closing,
-                });
-            }
-            i = j + 1;
-        } else {
-            text.push(c);
-            i += 1;
+    while i < len {
+        let ch = char_at(&chars, i);
+        if ch != '<' {
+            text.push(ch);
+            i = i.saturating_add(1);
+            continue;
         }
+        if starts_with_at(&chars, i, "<!--") {
+            flush_text!();
+            i = skip_comment(&chars, i);
+            continue;
+        }
+        if matches!(char_at(&chars, i.saturating_add(1)), '!' | '?') {
+            flush_text!();
+            i = skip_declaration(&chars, i);
+            continue;
+        }
+        let next = char_at(&chars, i.saturating_add(1));
+        let is_tag = i.saturating_add(1) < len && (next == '/' || next.is_ascii_alphabetic());
+        if !is_tag {
+            text.push(ch);
+            i = i.saturating_add(1);
+            continue;
+        }
+        let Some((raw, end)) = scan_tag(&chars, i) else {
+            text.push(ch);
+            i = i.saturating_add(1);
+            continue;
+        };
+        flush_text!();
+        if let Some(close) = raw.strip_prefix('/') {
+            let name = close
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !name.is_empty() {
+                out.push(Token::Close { name });
+            }
+            i = end.saturating_add(1);
+            continue;
+        }
+        let self_closing = raw.trim_end().ends_with('/');
+        let body = raw.trim_end().trim_end_matches('/');
+        let name_end = body.find(char::is_whitespace).unwrap_or(body.len());
+        let name = body.get(..name_end).unwrap_or("").to_ascii_lowercase();
+        let attrs = body.get(name_end..).unwrap_or("").trim().to_string();
+        // `<script>`/`<style>` bodies are raw text (CDATA-like); consume to the matching close tag and drop both.
+        if (name == "script" || name == "style") && !self_closing {
+            i = skip_raw_body(&chars, end.saturating_add(1), &name);
+            continue;
+        }
+        out.push(Token::Open {
+            name,
+            attrs,
+            self_closing,
+        });
+        i = end.saturating_add(1);
     }
     flush_text!();
     out
 }
 
+/// A safe, panic-free stand-in for `chars[i]`: out-of-bounds reads as NUL, which
+/// never matches any tag/quote delimiter this tokenizer looks for.
+fn char_at(chars: &[char], i: usize) -> char {
+    chars.get(i).copied().unwrap_or('\0')
+}
+
+/// Advances past a `<!--...-->` comment; tolerant of an unterminated one (runs to EOF).
+fn skip_comment(chars: &[char], i: usize) -> usize {
+    let len = chars.len();
+    let mut j = i.saturating_add(4);
+    while j < len && !starts_with_at(chars, j, "-->") {
+        j = j.saturating_add(1);
+    }
+    j.saturating_add(3).min(len)
+}
+
+/// Advances past a `<!...>`/`<?...>` declaration or processing instruction.
+fn skip_declaration(chars: &[char], i: usize) -> usize {
+    let len = chars.len();
+    let mut j = i;
+    while j < len && char_at(chars, j) != '>' {
+        j = j.saturating_add(1);
+    }
+    j.saturating_add(1).min(len)
+}
+
+/// Scans the tag body opened at `i` (pointing at `<`) up to its matching `>`,
+/// honouring quoted attribute values so a quoted `>` doesn't end the tag early.
+/// Returns the raw text between `<` and `>` plus the index of `>`, or `None`
+/// if the tag is unterminated.
+fn scan_tag(chars: &[char], i: usize) -> Option<(String, usize)> {
+    let len = chars.len();
+    let mut j = i.saturating_add(1);
+    let mut quote: Option<char> = None;
+    let end = loop {
+        if j >= len {
+            return None;
+        }
+        let cj = char_at(chars, j);
+        match quote {
+            Some(q) if cj == q => quote = None,
+            None if cj == '"' || cj == '\'' => quote = Some(cj),
+            None if cj == '>' => break j,
+            _ => {}
+        }
+        j = j.saturating_add(1);
+    };
+    let raw = chars.get(i.saturating_add(1)..end)?.iter().collect();
+    Some((raw, end))
+}
+
+/// Consumes a `<script>`/`<style>` body up to and including its matching close tag.
+fn skip_raw_body(chars: &[char], start: usize, name: &str) -> usize {
+    let len = chars.len();
+    let close_tag = format!("</{name}");
+    let mut j = start;
+    while j < len && !starts_with_ci(chars, j, &close_tag) {
+        j = j.saturating_add(1);
+    }
+    while j < len && char_at(chars, j) != '>' {
+        j = j.saturating_add(1);
+    }
+    j.saturating_add(1).min(len)
+}
+
 fn starts_with_at(chars: &[char], i: usize, pat: &str) -> bool {
     let pc: Vec<char> = pat.chars().collect();
-    if i + pc.len() > chars.len() {
+    let Some(end) = i.checked_add(pc.len()) else {
         return false;
-    }
-    chars[i..i + pc.len()] == pc[..]
+    };
+    chars.get(i..end) == Some(pc.as_slice())
 }
 
 fn starts_with_ci(chars: &[char], i: usize, pat: &str) -> bool {
     let pc: Vec<char> = pat.chars().collect();
-    if i + pc.len() > chars.len() {
+    let Some(end) = i.checked_add(pc.len()) else {
         return false;
+    };
+    match chars.get(i..end) {
+        Some(slice) => slice
+            .iter()
+            .zip(pc.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b)),
+        None => false,
     }
-    chars[i..i + pc.len()]
-        .iter()
-        .zip(pc.iter())
-        .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 /// Unescapes HTML entities: numeric (`&#NN;`, `&#xHH;`) and common named ones;
@@ -215,34 +248,37 @@ fn unescape_entities(s: &str) -> String {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
-    let n = chars.len();
+    let len = chars.len();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
-    while i < n {
-        if chars[i] != '&' {
-            out.push(chars[i]);
-            i += 1;
+    while i < len {
+        let ch = char_at(&chars, i);
+        if ch != '&' {
+            out.push(ch);
+            i = i.saturating_add(1);
             continue;
         }
-        let mut j = i + 1;
-        while j < n
-            && j - i <= 12
-            && chars[j] != ';'
-            && chars[j] != '&'
-            && !chars[j].is_whitespace()
+        let mut j = i.saturating_add(1);
+        while j < len
+            && j.saturating_sub(i) <= 12
+            && !matches!(char_at(&chars, j), ';' | '&')
+            && !char_at(&chars, j).is_whitespace()
         {
-            j += 1;
+            j = j.saturating_add(1);
         }
-        if j < n && chars[j] == ';' {
-            let ent: String = chars[i + 1..j].iter().collect();
-            if let Some(ch) = decode_entity(&ent) {
-                out.push_str(&ch);
-                i = j + 1;
+        if j < len
+            && char_at(&chars, j) == ';'
+            && let Some(ent_chars) = chars.get(i.saturating_add(1)..j)
+        {
+            let ent: String = ent_chars.iter().collect();
+            if let Some(decoded) = decode_entity(&ent) {
+                out.push_str(&decoded);
+                i = j.saturating_add(1);
                 continue;
             }
         }
         out.push('&');
-        i += 1;
+        i = i.saturating_add(1);
     }
     out
 }
@@ -296,52 +332,58 @@ fn decode_entity(ent: &str) -> Option<String> {
 /// Parses a raw attribute string (`a="1" b='2' c=3 d`) into `(name_lower, value)` pairs; valueless attrs get an empty value.
 fn parse_attrs(raw: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = raw.chars().collect();
-    let n = chars.len();
+    let len = chars.len();
     let mut i = 0;
     let mut out = Vec::new();
-    while i < n {
-        while i < n && (chars[i].is_whitespace() || chars[i] == '/') {
-            i += 1;
+    while i < len {
+        while i < len && (char_at(&chars, i).is_whitespace() || char_at(&chars, i) == '/') {
+            i = i.saturating_add(1);
         }
-        if i >= n {
+        if i >= len {
             break;
         }
         let start = i;
-        while i < n && !chars[i].is_whitespace() && chars[i] != '=' && chars[i] != '/' {
-            i += 1;
+        while i < len
+            && !char_at(&chars, i).is_whitespace()
+            && char_at(&chars, i) != '='
+            && char_at(&chars, i) != '/'
+        {
+            i = i.saturating_add(1);
         }
-        let name: String = chars[start..i]
+        let name: String = chars
+            .get(start..i)
+            .unwrap_or(&[])
             .iter()
             .collect::<String>()
             .to_ascii_lowercase();
         if name.is_empty() {
-            i += 1;
+            i = i.saturating_add(1);
             continue;
         }
-        while i < n && chars[i].is_whitespace() {
-            i += 1;
+        while i < len && char_at(&chars, i).is_whitespace() {
+            i = i.saturating_add(1);
         }
         let mut value = String::new();
-        if i < n && chars[i] == '=' {
-            i += 1;
-            while i < n && chars[i].is_whitespace() {
-                i += 1;
+        if i < len && char_at(&chars, i) == '=' {
+            i = i.saturating_add(1);
+            while i < len && char_at(&chars, i).is_whitespace() {
+                i = i.saturating_add(1);
             }
-            if i < n && (chars[i] == '"' || chars[i] == '\'') {
-                let q = chars[i];
-                i += 1;
+            if i < len && matches!(char_at(&chars, i), '"' | '\'') {
+                let quote = char_at(&chars, i);
+                i = i.saturating_add(1);
                 let vs = i;
-                while i < n && chars[i] != q {
-                    i += 1;
+                while i < len && char_at(&chars, i) != quote {
+                    i = i.saturating_add(1);
                 }
-                value = chars[vs..i].iter().collect();
-                i = (i + 1).min(n);
+                value = chars.get(vs..i).unwrap_or(&[]).iter().collect();
+                i = i.saturating_add(1).min(len);
             } else {
                 let vs = i;
-                while i < n && !chars[i].is_whitespace() {
-                    i += 1;
+                while i < len && !char_at(&chars, i).is_whitespace() {
+                    i = i.saturating_add(1);
                 }
-                value = chars[vs..i].iter().collect();
+                value = chars.get(vs..i).unwrap_or(&[]).iter().collect();
             }
         }
         out.push((name, unescape_entities(&value)));
@@ -376,7 +418,13 @@ fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
                     .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%')
                     .trim();
                 if let Ok(f) = num.parse::<f64>() {
-                    out.push(("fontSize", MarkVal::Int(f.round() as i64)));
+                    let clamped = f.round().clamp(0.0, 10_000.0);
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "clamped to [0, 10_000] above; no CSS font-size is meaningfully larger"
+                    )]
+                    let px = clamped as i64;
+                    out.push(("fontSize", MarkVal::Int(px)));
                 }
             }
             "font-family" => out.push((
@@ -438,9 +486,11 @@ fn generic_font_family(val: &str) -> &'static str {
     let v = val.to_ascii_lowercase();
     if v.contains("mono") || v.contains("courier") || v.contains("consol") {
         "mono"
-    } else if v.contains("times") || v.contains("georgia") || v.contains("garamond") {
-        "serif"
-    } else if v.contains("serif") && !v.contains("sans") {
+    } else if v.contains("times")
+        || v.contains("georgia")
+        || v.contains("garamond")
+        || (v.contains("serif") && !v.contains("sans"))
+    {
         "serif"
     } else {
         "sans"
@@ -478,39 +528,39 @@ struct ListCtx {
     ordered: bool,
 }
 
+/// All of `import_html`'s parse state, threaded through the per-token handlers.
+#[derive(Default)]
+struct ImportState {
+    prev_block: Option<String>,
+    cur_block: Option<String>,
+    cur_len: usize,
+    inline: Vec<OpenInline>,
+    pending: Vec<PendingMark>,
+    lists: Vec<ListCtx>,
+    table_id: Option<String>,
+    trow: usize,
+    tcol: usize,
+    table_seq: usize,
+    // Whether we've seen a `<tr>` yet — a leading `<td>` with no `<tr>` still gets row 0.
+    in_row: bool,
+    // Skip-content: inside `<head>`/`<title>` etc., drop all text until this tag's close.
+    skip_until: Option<String>,
+    // Quote depth: while > 0 (inside a `<blockquote>`), a bare `<p>` flows into the quote block instead of opening a fresh paragraph.
+    quote_depth: usize,
+    // Pre depth: while > 0 (inside `<pre>`), text is verbatim and `<code>` adds no mono mark.
+    pre_depth: usize,
+}
+
 fn import_html(src: &str, doc: &mut DocMut) {
     let tokens = tokenize(src);
-
-    let mut prev_block: Option<String> = None;
-    let mut cur_block: Option<String> = None;
-    let mut cur_len: usize = 0;
-
-    let mut inline: Vec<OpenInline> = Vec::new();
-    let mut pending: Vec<PendingMark> = Vec::new();
-
-    let mut lists: Vec<ListCtx> = Vec::new();
-
-    let mut table_id: Option<String> = None;
-    let mut trow: usize = 0;
-    let mut tcol: usize = 0;
-    let mut table_seq: usize = 0;
-    // Whether we've seen a `<tr>` yet — a leading `<td>` with no `<tr>` still gets row 0.
-    let mut in_row = false;
-
-    // Skip-content: inside `<head>`/`<title>` etc., drop all text until this tag's close.
-    let mut skip_until: Option<String> = None;
-
-    // Quote depth: while > 0 (inside a `<blockquote>`), a bare `<p>` flows into the quote block instead of opening a fresh paragraph.
-    let mut quote_depth: usize = 0;
-    // Pre depth: while > 0 (inside `<pre>`), text is verbatim and `<code>` adds no mono mark.
-    let mut pre_depth: usize = 0;
+    let mut st = ImportState::default();
 
     for tok in tokens {
-        if let Some(skip) = &skip_until {
+        if let Some(skip) = &st.skip_until {
             if let Token::Close { name } = &tok
                 && name == skip
             {
-                skip_until = None;
+                st.skip_until = None;
             }
             continue;
         }
@@ -520,285 +570,18 @@ fn import_html(src: &str, doc: &mut DocMut) {
                 name,
                 attrs,
                 self_closing,
-            } => {
-                match name.as_str() {
-                    "head" | "title" => {
-                        if !self_closing {
-                            skip_until = Some(name.clone());
-                        }
-                    }
-                    "html" | "body" | "div" | "section" | "article" | "main" | "header"
-                    | "footer" | "nav" | "figure" | "figcaption" | "tbody" | "thead" | "tfoot"
-                    | "colgroup" | "col" => {}
-                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                        finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        let level = name[1..].parse::<i64>().unwrap_or(1).clamp(1, 6);
-                        let id = open_block(
-                            doc,
-                            &mut prev_block,
-                            &mut cur_block,
-                            &mut cur_len,
-                            "heading",
-                        );
-                        doc.set_attr(&id, "level", level);
-                    }
-                    "p" => {
-                        if quote_depth > 0 {
-                            // Inside a blockquote, `<p>` text flows into the quote block, opened lazily if needed.
-                            if cur_block.is_none() {
-                                let id = open_block(
-                                    doc,
-                                    &mut prev_block,
-                                    &mut cur_block,
-                                    &mut cur_len,
-                                    "quote",
-                                );
-                                let _ = id;
-                            }
-                        } else {
-                            finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                            open_block(
-                                doc,
-                                &mut prev_block,
-                                &mut cur_block,
-                                &mut cur_len,
-                                "paragraph",
-                            );
-                        }
-                    }
-                    "blockquote" => {
-                        finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        // Open the quote block now; nested `<p>`s flow into it.
-                        open_block(doc, &mut prev_block, &mut cur_block, &mut cur_len, "quote");
-                        quote_depth += 1;
-                    }
-                    "br" => {
-                        if let Some(b) = cur_block.as_ref() {
-                            doc.splice_text(b, cur_len, 0, "\n");
-                            cur_len += 1;
-                        }
-                    }
-                    "hr" => { /* no modeled construct; ignore */ }
-                    "ul" => lists.push(ListCtx { ordered: false }),
-                    "ol" => lists.push(ListCtx { ordered: true }),
-                    "li" => {
-                        finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        let ordered = lists.last().is_some_and(|l| l.ordered);
-                        let level = lists.len().saturating_sub(1);
-                        let id = open_block(
-                            doc,
-                            &mut prev_block,
-                            &mut cur_block,
-                            &mut cur_len,
-                            "list_item",
-                        );
-                        doc.set_attr(&id, "ordered", ordered);
-                        if level > 0 {
-                            doc.set_attr(&id, "level", level as i64);
-                        }
-                    }
-                    "table" => {
-                        table_seq += 1;
-                        table_id = Some(format!("t{table_seq}"));
-                        trow = 0;
-                        in_row = false;
-                    }
-                    "tr" => {
-                        if in_row {
-                            trow += 1;
-                        }
-                        in_row = true;
-                        tcol = 0;
-                    }
-                    "td" | "th" => {
-                        if let Some(tid) = table_id.clone() {
-                            finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                            let id = open_block(
-                                doc,
-                                &mut prev_block,
-                                &mut cur_block,
-                                &mut cur_len,
-                                "cell",
-                            );
-                            doc.set_attr(&id, "table", tid.as_str());
-                            doc.set_attr(&id, "row", trow as i64);
-                            doc.set_attr(&id, "col", tcol as i64);
-                        }
-                    }
-                    "pre" => {
-                        finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        let id = open_block(
-                            doc,
-                            &mut prev_block,
-                            &mut cur_block,
-                            &mut cur_len,
-                            "paragraph",
-                        );
-                        doc.set_attr(&id, "code", true);
-                        pre_depth += 1;
-                    }
-                    "img" => {
-                        finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        insert_image(doc, &mut prev_block, &mut cur_block, &mut cur_len, &attrs);
-                    }
-                    "strong" | "b" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("strong", MarkVal::Bool(true))],
-                    ),
-                    "em" | "i" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("em", MarkVal::Bool(true))],
-                    ),
-                    "u" | "ins" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("underline", MarkVal::Bool(true))],
-                    ),
-                    "s" | "strike" | "del" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("strike", MarkVal::Bool(true))],
-                    ),
-                    "sup" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("super", MarkVal::Bool(true))],
-                    ),
-                    "sub" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("sub", MarkVal::Bool(true))],
-                    ),
-                    "mark" => push_inline(
-                        &mut inline,
-                        &name,
-                        cur_len,
-                        vec![("highlight", MarkVal::Str("#ffff00".to_string()))],
-                    ),
-                    "code" => {
-                        // Inline `<code>` → mono mark; inside `<pre>` it's structural.
-                        if pre_depth > 0 {
-                            push_inline(&mut inline, &name, cur_len, vec![]);
-                        } else {
-                            push_inline(
-                                &mut inline,
-                                &name,
-                                cur_len,
-                                vec![("fontFamily", MarkVal::Str("mono".to_string()))],
-                            );
-                        }
-                    }
-                    "a" => {
-                        let href = attr_value(&attrs, "href").unwrap_or_default();
-                        let marks = if href.is_empty() {
-                            vec![]
-                        } else {
-                            vec![("link", MarkVal::Str(href))]
-                        };
-                        push_inline(&mut inline, &name, cur_len, marks);
-                    }
-                    "span" | "font" => {
-                        let marks = attr_value(&attrs, "style")
-                            .map(|s| marks_from_style(&s))
-                            .unwrap_or_default();
-                        push_inline(&mut inline, &name, cur_len, marks);
-                    }
-                    // Unknown inline/other tags: pass through (their text survives).
-                    _ => {}
-                }
-            }
-            Token::Close { name } => match name.as_str() {
-                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "td" | "th" => {
-                    finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                    cur_block = None;
-                    cur_len = 0;
-                    if matches!(name.as_str(), "td" | "th") {
-                        tcol += 1;
-                    }
-                }
-                "p" => {
-                    if quote_depth == 0 {
-                        finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                        cur_block = None;
-                        cur_len = 0;
-                    }
-                    // Inside a quote, keep the quote block current across `</p>`.
-                }
-                "blockquote" => {
-                    finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                    quote_depth = quote_depth.saturating_sub(1);
-                    cur_block = None;
-                    cur_len = 0;
-                }
-                "pre" => {
-                    finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
-                    pre_depth = pre_depth.saturating_sub(1);
-                    cur_block = None;
-                    cur_len = 0;
-                }
-                "ul" | "ol" => {
-                    lists.pop();
-                }
-                "tr" => {
-                    in_row = true; // stay in row; next <tr> bumps trow
-                }
-                "table" => {
-                    table_id = None;
-                    in_row = false;
-                }
-                // Close the nearest matching open inline wrapper (robust to mis-nesting).
-                "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "sup"
-                | "sub" | "mark" | "code" | "a" | "span" | "font" => {
-                    close_inline(&mut inline, &mut pending, &name, &cur_block, cur_len);
-                }
-                _ => {}
-            },
-            Token::Text(t) => {
-                if t.is_empty() {
-                    continue;
-                }
-                if pre_depth > 0 {
-                    if let Some(b) = cur_block.as_ref() {
-                        doc.splice_text(b, cur_len, 0, &t);
-                        cur_len += t.chars().count();
-                    }
-                    continue;
-                }
-                // Collapse runs of HTML whitespace to single spaces (HTML rules).
-                let collapsed = collapse_ws(&t);
-                if collapsed.is_empty() {
-                    continue;
-                }
-                if cur_block.is_none() {
-                    if collapsed.trim().is_empty() {
-                        continue;
-                    }
-                    open_block(
-                        doc,
-                        &mut prev_block,
-                        &mut cur_block,
-                        &mut cur_len,
-                        "paragraph",
-                    );
-                }
-                if let Some(b) = cur_block.as_ref() {
-                    doc.splice_text(b, cur_len, 0, &collapsed);
-                    cur_len += collapsed.chars().count();
-                }
-            }
+            } => handle_open_tag(doc, &mut st, &name, &attrs, self_closing),
+            Token::Close { name } => handle_close_tag(&mut st, &name),
+            Token::Text(t) => handle_text(doc, &mut st, &t),
         }
     }
 
     // Close any inline wrappers still open at EOF, then apply gathered marks.
-    finish_inline(&mut inline, &mut pending, &cur_block, cur_len);
+    finish_inline_now(&mut st);
+    apply_pending_marks(doc, st.pending);
+}
+
+fn apply_pending_marks(doc: &mut DocMut, pending: Vec<PendingMark>) {
     for pm in pending {
         if pm.end <= pm.start {
             continue;
@@ -811,36 +594,289 @@ fn import_html(src: &str, doc: &mut DocMut) {
     }
 }
 
-/// Opens a fresh top-level block anchored after the previous one, and makes it the current text target; returns its id.
-fn open_block(
+fn handle_open_tag(
     doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    kind: &str,
-) -> String {
-    let id = doc.insert_block(prev.as_deref(), kind);
-    *prev = Some(id.clone());
-    *cur = Some(id.clone());
-    *cur_len = 0;
+    st: &mut ImportState,
+    name: &str,
+    attrs: &str,
+    self_closing: bool,
+) {
+    match name {
+        "head" | "title" => {
+            if !self_closing {
+                st.skip_until = Some(name.to_string());
+            }
+        }
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            finish_inline_now(st);
+            let level = name
+                .get(1..)
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(1)
+                .clamp(1, 6);
+            let id = open_block(doc, st, "heading");
+            doc.set_attr(&id, "level", level);
+        }
+        "p" => {
+            if st.quote_depth > 0 {
+                // Inside a blockquote, `<p>` text flows into the quote block, opened lazily if needed.
+                if st.cur_block.is_none() {
+                    open_block(doc, st, "quote");
+                }
+            } else {
+                finish_inline_now(st);
+                open_block(doc, st, "paragraph");
+            }
+        }
+        "blockquote" => {
+            finish_inline_now(st);
+            // Open the quote block now; nested `<p>`s flow into it.
+            open_block(doc, st, "quote");
+            st.quote_depth = st.quote_depth.saturating_add(1);
+        }
+        "br" => {
+            if let Some(b) = st.cur_block.clone() {
+                doc.splice_text(&b, st.cur_len, 0, "\n");
+                st.cur_len = st.cur_len.saturating_add(1);
+            }
+        }
+        "ul" => st.lists.push(ListCtx { ordered: false }),
+        "ol" => st.lists.push(ListCtx { ordered: true }),
+        "li" => {
+            finish_inline_now(st);
+            let ordered = st.lists.last().is_some_and(|l| l.ordered);
+            let level = st.lists.len().saturating_sub(1);
+            let id = open_block(doc, st, "list_item");
+            doc.set_attr(&id, "ordered", ordered);
+            if level > 0 {
+                doc.set_attr(&id, "level", i64::try_from(level).unwrap_or(i64::MAX));
+            }
+        }
+        "table" | "tr" | "td" | "th" => open_table_tag(doc, st, name),
+        "pre" => {
+            finish_inline_now(st);
+            let id = open_block(doc, st, "paragraph");
+            doc.set_attr(&id, "code", true);
+            st.pre_depth = st.pre_depth.saturating_add(1);
+        }
+        "img" => {
+            finish_inline_now(st);
+            insert_image(doc, st, attrs);
+        }
+        "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "sup" | "sub"
+        | "mark" | "code" | "a" | "span" | "font" => open_inline_tag(st, name, attrs),
+        // Structural containers (html/body/div/section/…), `hr`, and
+        // unknown/other tags: no modeled construct, so their text just
+        // flows through.
+        _ => {}
+    }
+}
+
+fn open_table_tag(doc: &mut DocMut, st: &mut ImportState, name: &str) {
+    match name {
+        "table" => {
+            st.table_seq = st.table_seq.saturating_add(1);
+            st.table_id = Some(format!("t{}", st.table_seq));
+            st.trow = 0;
+            st.in_row = false;
+        }
+        "tr" => {
+            if st.in_row {
+                st.trow = st.trow.saturating_add(1);
+            }
+            st.in_row = true;
+            st.tcol = 0;
+        }
+        "td" | "th" => {
+            if let Some(tid) = st.table_id.clone() {
+                finish_inline_now(st);
+                let id = open_block(doc, st, "cell");
+                doc.set_attr(&id, "table", tid.as_str());
+                doc.set_attr(&id, "row", i64::try_from(st.trow).unwrap_or(i64::MAX));
+                doc.set_attr(&id, "col", i64::try_from(st.tcol).unwrap_or(i64::MAX));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn open_inline_tag(st: &mut ImportState, name: &str, attrs: &str) {
+    match name {
+        "strong" | "b" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("strong", MarkVal::Bool(true))],
+        ),
+        "em" | "i" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("em", MarkVal::Bool(true))],
+        ),
+        "u" | "ins" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("underline", MarkVal::Bool(true))],
+        ),
+        "s" | "strike" | "del" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("strike", MarkVal::Bool(true))],
+        ),
+        "sup" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("super", MarkVal::Bool(true))],
+        ),
+        "sub" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("sub", MarkVal::Bool(true))],
+        ),
+        "mark" => push_inline(
+            &mut st.inline,
+            name,
+            st.cur_len,
+            vec![("highlight", MarkVal::Str("#ffff00".to_string()))],
+        ),
+        "code" => {
+            // Inline `<code>` → mono mark; inside `<pre>` it's structural.
+            if st.pre_depth > 0 {
+                push_inline(&mut st.inline, name, st.cur_len, vec![]);
+            } else {
+                push_inline(
+                    &mut st.inline,
+                    name,
+                    st.cur_len,
+                    vec![("fontFamily", MarkVal::Str("mono".to_string()))],
+                );
+            }
+        }
+        "a" => {
+            let href = attr_value(attrs, "href").unwrap_or_default();
+            let marks = if href.is_empty() {
+                vec![]
+            } else {
+                vec![("link", MarkVal::Str(href))]
+            };
+            push_inline(&mut st.inline, name, st.cur_len, marks);
+        }
+        "span" | "font" => {
+            let marks = attr_value(attrs, "style")
+                .map(|s| marks_from_style(&s))
+                .unwrap_or_default();
+            push_inline(&mut st.inline, name, st.cur_len, marks);
+        }
+        _ => {}
+    }
+}
+
+fn handle_close_tag(st: &mut ImportState, name: &str) {
+    match name {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "td" | "th" => {
+            finish_inline_now(st);
+            st.cur_block = None;
+            st.cur_len = 0;
+            if matches!(name, "td" | "th") {
+                st.tcol = st.tcol.saturating_add(1);
+            }
+        }
+        "p" => {
+            if st.quote_depth == 0 {
+                finish_inline_now(st);
+                st.cur_block = None;
+                st.cur_len = 0;
+            }
+            // Inside a quote, keep the quote block current across `</p>`.
+        }
+        "blockquote" => {
+            finish_inline_now(st);
+            st.quote_depth = st.quote_depth.saturating_sub(1);
+            st.cur_block = None;
+            st.cur_len = 0;
+        }
+        "pre" => {
+            finish_inline_now(st);
+            st.pre_depth = st.pre_depth.saturating_sub(1);
+            st.cur_block = None;
+            st.cur_len = 0;
+        }
+        "ul" | "ol" => {
+            st.lists.pop();
+        }
+        "tr" => {
+            st.in_row = true; // stay in row; next <tr> bumps trow
+        }
+        "table" => {
+            st.table_id = None;
+            st.in_row = false;
+        }
+        // Close the nearest matching open inline wrapper (robust to mis-nesting).
+        "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "sup" | "sub"
+        | "mark" | "code" | "a" | "span" | "font" => {
+            close_inline(
+                &mut st.inline,
+                &mut st.pending,
+                name,
+                st.cur_block.as_deref(),
+                st.cur_len,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn handle_text(doc: &mut DocMut, st: &mut ImportState, t: &str) {
+    if t.is_empty() {
+        return;
+    }
+    if st.pre_depth > 0 {
+        if let Some(b) = st.cur_block.clone() {
+            doc.splice_text(&b, st.cur_len, 0, t);
+            st.cur_len = st.cur_len.saturating_add(t.chars().count());
+        }
+        return;
+    }
+    // Collapse runs of HTML whitespace to single spaces (HTML rules).
+    let collapsed = collapse_ws(t);
+    if collapsed.is_empty() {
+        return;
+    }
+    if st.cur_block.is_none() {
+        if collapsed.trim().is_empty() {
+            return;
+        }
+        open_block(doc, st, "paragraph");
+    }
+    if let Some(b) = st.cur_block.clone() {
+        doc.splice_text(&b, st.cur_len, 0, &collapsed);
+        st.cur_len = st.cur_len.saturating_add(collapsed.chars().count());
+    }
+}
+
+/// Opens a fresh top-level block anchored after the previous one, and makes it the current text target; returns its id.
+fn open_block(doc: &mut DocMut, st: &mut ImportState, kind: &str) -> String {
+    let id = doc.insert_block(st.prev_block.as_deref(), kind);
+    st.prev_block = Some(id.clone());
+    st.cur_block = Some(id.clone());
+    st.cur_len = 0;
     id
 }
 
 /// Inserts an `<img>` as an `image` block: a `data:…;base64,…` src decodes into a content-addressed blob (`blob` attr), else kept as `src`.
-fn insert_image(
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    attrs: &str,
-) {
+fn insert_image(doc: &mut DocMut, st: &mut ImportState, attrs: &str) {
     let src = attr_value(attrs, "src").unwrap_or_default();
     let alt = attr_value(attrs, "alt").unwrap_or_default();
-    let id = doc.insert_block(prev.as_deref(), "image");
-    *prev = Some(id.clone());
+    let id = doc.insert_block(st.prev_block.as_deref(), "image");
+    st.prev_block = Some(id.clone());
     // An image block does not become the inline text cursor.
-    *cur = None;
-    *cur_len = 0;
+    st.cur_block = None;
+    st.cur_len = 0;
 
     if !alt.is_empty() {
         doc.splice_text(&id, 0, 0, &alt);
@@ -861,8 +897,8 @@ fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
         .strip_prefix("data:")
         .or_else(|| src.strip_prefix("DATA:"))?;
     let comma = rest.find(',')?;
-    let meta = &rest[..comma];
-    let payload = &rest[comma + 1..];
+    let meta = rest.get(..comma)?;
+    let payload = rest.get(comma.checked_add(1)?..)?;
     if !meta.to_ascii_lowercase().contains("base64") {
         return None;
     }
@@ -873,9 +909,9 @@ fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
     fn val(c: u8) -> Option<u32> {
         match c {
-            b'A'..=b'Z' => Some(u32::from(c - b'A')),
-            b'a'..=b'z' => Some(u32::from(c - b'a' + 26)),
-            b'0'..=b'9' => Some(u32::from(c - b'0' + 52)),
+            b'A'..=b'Z' => Some(u32::from(c.saturating_sub(b'A'))),
+            b'a'..=b'z' => Some(u32::from(c.saturating_sub(b'a')).saturating_add(26)),
+            b'0'..=b'9' => Some(u32::from(c.saturating_sub(b'0')).saturating_add(52)),
             b'+' => Some(62),
             b'/' => Some(63),
             _ => None,
@@ -893,10 +929,11 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
         let v = val(b)?;
         acc = (acc << 6) | v;
-        bits += 6;
+        bits = bits.saturating_add(6);
         if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
+            bits = bits.saturating_sub(8);
+            let byte = (acc >> bits) & 0xFF;
+            out.push(u8::try_from(byte).unwrap_or(0));
         }
     }
     Some(out)
@@ -938,7 +975,7 @@ fn close_inline(
     inline: &mut Vec<OpenInline>,
     pending: &mut Vec<PendingMark>,
     tag: &str,
-    cur_block: &Option<String>,
+    cur_block: Option<&str>,
     cur_len: usize,
 ) {
     // Treat `<b>` and `<strong>` (and `<i>`/`<em>`) as interchangeable on close.
@@ -953,7 +990,7 @@ fn close_inline(
         if let Some(block) = cur_block {
             for (name, value) in w.marks {
                 pending.push(PendingMark {
-                    block: block.clone(),
+                    block: block.to_string(),
                     start: w.start,
                     end: cur_len,
                     name,
@@ -964,18 +1001,28 @@ fn close_inline(
     }
 }
 
+/// Shorthand for `finish_inline` over the current parse state; used at every block boundary.
+fn finish_inline_now(st: &mut ImportState) {
+    finish_inline(
+        &mut st.inline,
+        &mut st.pending,
+        st.cur_block.as_deref(),
+        st.cur_len,
+    );
+}
+
 /// Closes every still-open inline wrapper, emitting marks up to `cur_len`; called at block boundaries so an unclosed `<b>` doesn't bleed forward.
 fn finish_inline(
     inline: &mut Vec<OpenInline>,
     pending: &mut Vec<PendingMark>,
-    cur_block: &Option<String>,
+    cur_block: Option<&str>,
     cur_len: usize,
 ) {
     while let Some(w) = inline.pop() {
         if let Some(block) = cur_block {
             for (name, value) in w.marks {
                 pending.push(PendingMark {
-                    block: block.clone(),
+                    block: block.to_string(),
                     start: w.start,
                     end: cur_len,
                     name,
@@ -1089,7 +1136,7 @@ mod tests {
             link.value,
             crate::document::MarkValue::Str("https://qos.dev/".into())
         );
-        assert_eq!(&p.text[link.start..link.end], "the docs");
+        assert_eq!(p.text.get(link.start..link.end), Some("the docs"));
     }
 
     #[test]
@@ -1176,6 +1223,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "the embedded CSS `p{color:red}` is opaque test fixture text, not a format string"
+    )]
     fn script_and_style_are_skipped() {
         let snap = import(
             "<p>before</p><script>alert('x'); 1 < 2;</script><style>p{color:red}</style><p>after</p>",

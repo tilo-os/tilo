@@ -244,9 +244,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`PdfViewerAction`] into the wire form the palette and the on-page
 /// affordances both dispatch — the single point that turns the reader's actions
 /// into replayable envelopes.
+///
+/// `PdfViewerAction`'s fields are all plain, finite-checked primitives, so
+/// encoding does not fail in practice. If a caller ever manages to pass a
+/// non-finite float through, this falls back to an empty payload — the same
+/// shape the registry already treats as a malformed, inert action — rather
+/// than panicking the palette or an on-page affordance.
 pub fn encode(action: &PdfViewerAction) -> EncodedAction {
-    EncodedAction::encode(PDF_VIEWER_ACTION_TYPE, action)
-        .expect("PdfViewerAction is always serializable")
+    EncodedAction::encode(PDF_VIEWER_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: PDF_VIEWER_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -355,8 +363,12 @@ pub struct PdfResourceCtx {
     pub created_seed: i64,
 }
 
-fn encode_spec(id: &str, label: &str, action: &PdfViewerAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, PDF_VIEWER_ACTION_TYPE, action).expect("encode pdf action")
+/// Build an immediate action spec, or `None` if `action` cannot be
+/// represented as JSON (only reachable via a non-finite float slipping into
+/// the geometry) — such an action is silently omitted from the palette
+/// rather than panicking the whole resource tree.
+fn encode_spec(id: &str, label: &str, action: &PdfViewerAction) -> Option<ActionSpec> {
+    ActionSpec::immediate(id, label, PDF_VIEWER_ACTION_TYPE, action).ok()
 }
 
 fn anno_label(a: &Annotation) -> String {
@@ -414,17 +426,17 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
     // Resolve toggles against the comment's current state; the target value is
     // baked into the pre-encoded action, so the row reads "Resolve" or "Reopen".
     let toggle_label = if c.resolved { "Reopen" } else { "Resolve" };
-    res = res.with_action(encode_spec(
+    if let Some(spec) = encode_spec(
         "toggle-resolved",
         toggle_label,
         &set_comment_resolved_action(&c.id, !c.resolved),
-    ));
+    ) {
+        res = res.with_action(spec);
+    }
 
-    res = res.with_action(encode_spec(
-        "delete",
-        "Delete comment",
-        &delete_comment_action(&c.id),
-    ));
+    if let Some(spec) = encode_spec("delete", "Delete comment", &delete_comment_action(&c.id)) {
+        res = res.with_action(spec);
+    }
     res
 }
 
@@ -490,11 +502,13 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
                 ))
             },
         ));
-        res = res.with_action(encode_spec(
+        if let Some(spec) = encode_spec(
             "delete",
             "Delete annotation",
             &delete_annotation_action(&a.id),
-        ));
+        ) {
+            res = res.with_action(spec);
+        }
 
         for c in comments
             .iter()
@@ -538,14 +552,14 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
@@ -677,7 +691,7 @@ mod tests {
             color: Swatch::Green,
             author: "You".into(),
         };
-        app.perform_action(&mut state.doc, add_annotation_action(&a));
+        app.perform_action(&mut state.doc, &add_annotation_action(&a));
 
         // The host's own recorder drains the stashed heads and records the
         // boundary. Going through it rather than pushing an entry by hand is

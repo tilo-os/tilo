@@ -57,7 +57,7 @@ hand-rolled everywhere, badly and inconsistently:
 **Where.** Card surface hand-rolled in: settings, backups, browser, calculator,
 disks, ebook, store, tube, git_client, maps, weather (~15 apps). Reflow grids
 hand-rolled in: camera (two divergent grids, 30 literal radii / 0 theme),
-chat (3 grids), ebook, software_store, weather. `StatTile`/`IconGrid` exist but
+chat (3 grids), ebook, store, weather. `StatTile`/`IconGrid` exist but
 **no app imports them**.
 
 **API (`ui::widget::card`, re-exported at crate root):**
@@ -81,7 +81,7 @@ chat (3 grids), ebook, software_store, weather. `StatTile`/`IconGrid` exist but
 - **camera**: the two divergent inline reflow formulas in the gallery /
   offline-scanner grids collapse onto `card_columns` / `card_column_width`.
 
-**Remaining sweep:** more bespoke-card offenders (software_store featured/app
+**Remaining sweep:** more bespoke-card offenders (store featured/app
 cards, backups, store, weather) can adopt `Card` / `CardGrid` — see the offender
 list above.
 
@@ -103,11 +103,13 @@ word-processor, music, video-player.
 `map_uris`, and `inject_for_test` compile without the feature so headless tests
 drive the exact per-frame drain path.
 
-**Proof migration.** **feeds** deleted its 158-line `portal.rs` and its `ashpd`
-+ `url` deps; its portal-drain tests pass against `ui::portal::inject_for_test`.
-**Remaining sweep:** migrate the other 8 apps onto `ui::portal` and delete their
-copies (~1600 LOC). (video-player still carries its own `portal.rs` — a candidate
-for this sweep.)
+**Completed migration.** Every app-local `portal.rs` has been removed. Dialog
+configuration now lives beside the action that consumes it while worker
+threading, URI validation, single/multi channels, save-name seeding, and test
+injection all come from `ui::portal`. The sweep includes the original nine
+apps plus the later adopters (ebook, hex_editor, sheets, typst_editor,
+video_editor, and vpn); vpn's older direct `ashpd` client and its private
+`ashpd`/`tokio`/`url` dependencies were removed as part of the convergence.
 
 ### 3. Chrome consistency — the OS owns window chrome (HIG §"OS owns window chrome" + §1e)  ✅ DONE
 **Problem.** The compositor draws the window title / app-name / logo, yet many
@@ -118,7 +120,7 @@ screen even in fullscreen, breaking immersive playback (§1e).
 
 **Executed.**
 - Stripped the app-drawn name/logo header from **10 apps** (calculator, monitor,
-  software_store, themes, video_editor, tube, disks, firewall, logs, totp),
+  store, themes, video_editor, tube, disks, firewall, logs, totp),
   keeping every functional toolbar (tabs, search, filters, actions, contextual
   status) and reflowing the remaining controls into the reclaimed space. Where a
   header carried real status (drive summary, firewall state, account count) that
@@ -167,7 +169,7 @@ own. **Worst bespoke offenders (fix first):**
   rows, add-rule form stacks). Also an immediate-mode painter → `SidebarDrawer`.
 - Duplication tail (behave OK, just re-implement the flap): api_tester, chat,
   calendar, db_client, code_editor, snippets, containers, disks, feeds, remote,
-  contacts, git_client, monitor, software_store, themes.
+  contacts, git_client, monitor, store, themes.
 
 **Gain per app:** delete a 100–200 LOC hand-rolled flap kernel; get correct
 narrow behaviour (separate screens / overlay drawer, never an `X`) for free.
@@ -274,9 +276,9 @@ leverage items here.
 
 | # | Pattern (duplicated code) | Apps duplicating (count + names) | Suggested shared home | Effort | In dedupe-io sweep? |
 |---|---|---|---|---|---|
-| A | **Value formatting** — byte sizes, byte-rate, media timecode, "time ago", compact counts, month/weekday names. No shared home exists (`crates/format/*` is WIT *format-providers*, unrelated). | **byte-size: 13** (`api_tester model.rs:human_size`, `imager model.rs:fmt_size`, `maps app.rs:fmt_bytes`, `backups model.rs:human_bytes`, `camera app.rs:human_size`, `chat render_chat.rs:human_size`, `containers model.rs:human_bytes`, `disks model.rs:fmt_size`, `file-explorer model.rs:human_size`, `hex_editor view.rs:human_size`, `mail model.rs:human_bytes`, `monitor model.rs:fmt_bytes`, `vpn model.rs:human_bytes`+`human_rate`). **timecode: 6** (`music model.rs:fmt_duration`, `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`, `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`). **relative-time: 8** (`camera app.rs:ago`, `feeds model.rs:relative_time`, `git_client repo.rs:relative_time`, `vpn model.rs:human_ago`, `mail util.rs:format_relative`, `chat model.rs:day_label`, `calendar date.rs:relative_label`, `tube ytdlp.rs`). **compact-count: 5** (`music` ×3: `backend/live.rs:human_count`, `app/render.rs:human_count`, `search_type.rs:compact_count`; `tube util.rs:human_count`; inline in `monitor`/`software_store`). **month/weekday tables: 5** (`calendar`, `logs`, `mail`, `sheets` ×2 `month_abbrev`+`month_abbrev_local`, `tube`). | **New `ui::format`** module: `bytes()`, `rate()`, `duration()`/`timecode()`, `relative()`, `compact_count()`, `month_abbrev()`/`weekday()`. | **M** | **no** — pure formatting, outside dedupe-io's file/persist lane. **Highest leverage + a correctness win:** the copies *disagree* — `mail`/`backups` label base-1024 as `KB/MB/GB`, `containers` as `KiB/MiB/GiB` for the identical math, so the fleet renders the same size two ways today. A shared formatter makes it consistent, not just shorter. |
+| A | **Value formatting** — byte sizes, byte-rate, media timecode, "time ago", compact counts, month/weekday names. No shared home exists (`crates/format/*` is WIT *format-providers*, unrelated). | **byte-size: 13** (`api_tester model.rs:human_size`, `imager model.rs:fmt_size`, `maps app.rs:fmt_bytes`, `backups model.rs:human_bytes`, `camera app.rs:human_size`, `chat render_chat.rs:human_size`, `containers model.rs:human_bytes`, `disks model.rs:fmt_size`, `file-explorer model.rs:human_size`, `hex_editor view.rs:human_size`, `mail model.rs:human_bytes`, `monitor model.rs:fmt_bytes`, `vpn model.rs:human_bytes`+`human_rate`). **timecode: 6** (`music model.rs:fmt_duration`, `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`, `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`). **relative-time: 8** (`camera app.rs:ago`, `feeds model.rs:relative_time`, `git_client repo.rs:relative_time`, `vpn model.rs:human_ago`, `mail util.rs:format_relative`, `chat model.rs:day_label`, `calendar date.rs:relative_label`, `tube ytdlp.rs`). **compact-count: 5** (`music` ×3: `backend/live.rs:human_count`, `app/render.rs:human_count`, `search_type.rs:compact_count`; `tube util.rs:human_count`; inline in `monitor`/`store`). **month/weekday tables: 5** (`calendar`, `logs`, `mail`, `sheets` ×2 `month_abbrev`+`month_abbrev_local`, `tube`). | **New `ui::format`** module: `bytes()`, `rate()`, `duration()`/`timecode()`, `relative()`, `compact_count()`, `month_abbrev()`/`weekday()`. | **M** | **no** — pure formatting, outside dedupe-io's file/persist lane. **Highest leverage + a correctness win:** the copies *disagree* — `mail`/`backups` label base-1024 as `KB/MB/GB`, `containers` as `KiB/MiB/GiB` for the identical math, so the fleet renders the same size two ways today. A shared formatter makes it consistent, not just shorter. |
 | B | **Avatar circle + initials + deterministic color** — hand-drawn, even though `ui::widget::Avatar` already ships `from_initials`, `color_for_initials`, `paint_initials`, `display_initials`. **[RESOLVED 2026-07-29 — see note below.]** | **8** hand-roll it (only `tube` uses `ui::Avatar`): `chat render_chat.rs:draw_avatar`+`identity.rs:{initials_of,color_from_bytes}`, `contacts app.rs:draw_avatar`+`model.rs:initials`, `git_client draw.rs:avatar`, `mail draw.rs:{draw_avatar,avatar_color}`+`model.rs:initials`, `music app/render.rs:draw_avatar`+`art.rs:initials`, `pdf_viewer app_draw.rs:draw_avatar`, `totp list.rs:draw_avatar`+`model.rs:initials`, `calendar ics.rs:color_from_name`. | **Adopt existing `ui::widget::Avatar`** (extend it with an image-backed variant where needed — `mail`/`music`/`tube` want a photo fallback). | **M** (adoption) | **no** — widget adoption, not persistence. Same "primitive exists, apps re-roll it" shape as the Card sweep. |
-| C | **Confirmation / modal dialogs** hand-painted, though `ui::widget::ModalDialog` exists (6 adopters: db_client, mail, notes, pdf_viewer, terminal, totp). | **~16** hand-draw a confirm/dialog/overlay sheet: browser, code_editor, contacts, disks, file-explorer, git_client, hex_editor, imager, logs, monitor, slides, software_store, themes, vpn, weather, word-processor. | **Adopt `ui::widget::ModalDialog`** (add a `confirm(title, body, destructive)` convenience for the delete/format/discard case that recurs most). | **M** | **no** — not mentioned in this file yet; widget adoption. |
+| C | **Confirmation / modal dialogs** hand-painted, though `ui::widget::ModalDialog` exists (6 adopters: db_client, mail, notes, pdf_viewer, terminal, totp). | **~16** hand-draw a confirm/dialog/overlay sheet: browser, code_editor, contacts, disks, file-explorer, git_client, hex_editor, imager, logs, monitor, slides, store, themes, vpn, weather, word-processor. | **Adopt `ui::widget::ModalDialog`** (add a `confirm(title, body, destructive)` convenience for the delete/format/discard case that recurs most). | **M** | **no** — not mentioned in this file yet; widget adoption. |
 | D | **Per-app config/state dir + JSON read/write** — each app re-resolves its own `dirs::config_dir()/qos/<app>/…` and hand-writes serde JSON. | **~12**: `file-explorer config.rs`/`favorites.rs`, `db_client session.rs`, `store config.rs`, `settings prefs.rs`/`region.rs`, `totp storage.rs`, `browser settings.rs`/`history.rs`, `vpn config.rs`, `themes app.rs`, `music storage.rs`, `mail account.rs`, `contacts storage.rs`, `chat storage.rs`. | **Extend `crates/system/app-state`** (already the canonical *Automerge-doc* home) with a sibling `app_config::<T: Serialize>` path-resolver + atomic JSON store (built on the new `atomic-file`). | **M** | **maybe** — directly adjacent to dedupe-io's `app-state`/`settings-store`/`atomic-file` work; they may fold this in. Confirm with that session before building. |
 | E | **Icon set fragmentation** — `ui::Icon` (66 named icons) + `IconWidget` exist and 14 apps use them, but two apps declare a *private* `Icon` enum and ~8 hand-draw vector glyphs into the scene. | Private enums: `containers draw.rs:enum Icon`, `music icon.rs:enum Icon`. Hand-drawn vector icons: `camera paint.rs:icon`, `containers draw.rs:icon`, `backups app.rs:draw_{source,dest}_icon`, `code_editor file_tree.rs:draw_{folder,file}_icon`, `contacts app.rs:draw_calendar_glyph`, `maps canvas.rs:draw_category_icon`, `pdf_viewer app_draw.rs`. Emoji/`&'static str` glyph maps: `chat model.rs:glyph`, `db_client model.rs:glyph`+`icon`, `maps model.rs:glyph` (×4), `mail model.rs:icon`, `file-explorer icons.rs:icon_for`. | **Grow `ui::icons`** to cover the missing glyphs (folder/file kinds, category pins, source/dest kinds) so apps drop private enums + bespoke painters. | **M–L** (nuanced; some are genuinely app-specific pictograms) | **no** — but note an *active* thread elsewhere is already replacing emoji glyphs with vector icons (`osk` ⇧/⌫/⏎ landed), so coordinate. Partially overlaps item 5 (StatTile/IconGrid). |
 | F | **Clipboard** — `ui::text_selection::{clipboard_copy,clipboard_paste,clipboard_copy_image,clipboard_copy_primary}` exist and 14 apps use them; `word-processor widget.rs` (4 sites) still instantiates `arboard::Clipboard` directly. | 1 real offender (`word-processor`); `terminal` only in tests. | Route `word-processor` through the shared helpers; consider promoting them out of `text_selection` into a `ui::clipboard` module for discoverability. | **S** | **no** |
@@ -350,7 +352,7 @@ new `Avatar::initials_for_name` unit test in `-p ui --lib`.
   file-explorer, firewall, mail, music, pdf_viewer, settings, slides, tube,
   weather), and **13 still hand-roll** a rail/flap: **calendar, camera, chat,
   code_editor, db_client, ebook, git_client, monitor, notes, snippets,
-  software_store, themes, video_editor**. `file-explorer` and `firewall`/`backups`
+  store, themes, video_editor**. `file-explorer` and `firewall`/`backups`
   called out earlier have since adopted; `camera` remains a bespoke floating rail.
 - **Item 7 (caret core adoption)** — no new *clean* offenders beyond the noted
   calculator/sheets structured fields; `word-processor`/`typst_editor` carry
@@ -409,7 +411,7 @@ expectations to the IEC/canonical output):
 - timecode (5): `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`,
   `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`.
 - compact-count (3): `tube util.rs:human_count`, inline in `monitor`,
-  inline in `software_store`.
+  inline in `store`.
 - relative-time (8): `camera app.rs:ago`, `feeds model.rs:relative_time`,
   `git_client repo.rs:relative_time`, `chat model.rs:day_label`,
   `calendar date.rs:relative_label`, `tube ytdlp.rs`, plus `vpn model.rs:human_ago`

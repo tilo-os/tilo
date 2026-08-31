@@ -120,6 +120,12 @@ impl PowerService {
     /// Connect to logind + `UPower` on a shared system-bus connection and take the delegate lock.
     /// Errors if the system bus / daemons are unreachable — the caller (the compositor)
     /// downgrades that to a warning and keeps running with the pure policy only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system bus is unreachable, or if either the `logind` or
+    /// `UPower` proxy cannot be built. Failing to take the delegate lock is not an error — it
+    /// is logged and the service still starts.
     pub async fn connect(
         bridge: PowerBridge,
         registry: InhibitRegistry,
@@ -164,8 +170,8 @@ impl PowerService {
 
         // Prompt cadence for commands + registry mirroring + lid polling; battery is polled less
         // often (every `BATTERY_POLL_EVERY` ticks).
-        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         const BATTERY_POLL_EVERY: u32 = 80; // 250ms * 80 = 20s
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         let mut ticks: u32 = 0;
 
         // Resume stream (best-effort; a failed subscribe just disables the resume timer reset).
@@ -369,8 +375,10 @@ mod tests {
 
     #[test]
     fn lid_edge_only_acts_on_close_transition() {
-        let mut p = PowerPolicy::default();
-        p.lid_close_action = PowerAction::Suspend;
+        let mut p = PowerPolicy {
+            lid_close_action: PowerAction::Suspend,
+            ..Default::default()
+        };
         // First observation never acts (records only).
         assert_eq!(lid_edge_effect(None, true, &p), Effect::None);
         assert_eq!(lid_edge_effect(None, false, &p), Effect::None);
@@ -412,8 +420,10 @@ mod tests {
 
     #[test]
     fn critical_event_toasts_and_suspends_when_policy_says_suspend() {
-        let mut p = PowerPolicy::default();
-        p.critical_action = PowerAction::Suspend;
+        let p = PowerPolicy {
+            critical_action: PowerAction::Suspend,
+            ..Default::default()
+        };
         let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(4)], &p);
         assert!(suspend, "critical + suspend policy ⇒ auto-suspend");
         assert!(matches!(signals[0], PowerSignal::Notify(ref n) if n.critical));
@@ -421,8 +431,10 @@ mod tests {
 
     #[test]
     fn critical_event_does_not_suspend_when_policy_ignores() {
-        let mut p = PowerPolicy::default();
-        p.critical_action = PowerAction::Ignore;
+        let p = PowerPolicy {
+            critical_action: PowerAction::Ignore,
+            ..Default::default()
+        };
         let (signals, suspend) = battery_reaction(&[BatteryEvent::Critical(3)], &p);
         assert!(!suspend, "ignore policy ⇒ warn only, no suspend");
         // Still warns (critical toast), just doesn't act.

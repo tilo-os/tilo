@@ -241,6 +241,10 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry
     });
 }
 
+/// # Errors
+///
+/// Returns an error if `path` cannot be read as a directory (it does not
+/// exist, is not a directory, or is not readable).
 pub fn read_dir_sync(path: &Path) -> Result<Vec<Entry>, String> {
     // Only query the sync xattr when listing a workspace mount — an ordinary
     // directory has no such attribute, so skipping the per-entry `getxattr`
@@ -298,12 +302,19 @@ pub fn format_path(path: &Path, home: Option<&Path>) -> String {
 }
 
 pub fn initial_path() -> PathBuf {
-    // Prefer the collaborative workspace mount; fall back to the legacy
-    // path, then the user's home, then the cwd, then root.
-    for candidate in [WORKSPACE_ROOT, "/workspace"] {
-        let p = PathBuf::from(candidate);
-        if p.exists() {
-            return p;
+    // Prefer a configured collaborative workspace mount. An explicit empty
+    // override means there is no workspace: test/alternate environments often
+    // have an unrelated `/workspace` (for example, the CI checkout mount), and
+    // must be able to keep Files from mistaking it for user content.
+    if let Some(root) = workspace_roots().into_iter().next() {
+        return root;
+    }
+    // `/workspace` predates `QOS_WORKSPACE_ROOTS`; retain it only when no
+    // override was supplied, so old installations keep their start location.
+    if std::env::var_os("QOS_WORKSPACE_ROOTS").is_none() {
+        let legacy = PathBuf::from("/workspace");
+        if legacy.exists() {
+            return legacy;
         }
     }
     if let Some(home) = user_home() {

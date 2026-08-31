@@ -15,6 +15,16 @@
 //! attribution that rides inside the co-edit payload because the host's
 //! presence envelope carries no author of its own.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
@@ -167,8 +177,8 @@ async fn two_managers_coedit_and_attribute_presence_through_host() {
     let b_session = join_session(&user, &b, addr, WS).await;
 
     let handle = tokio::runtime::Handle::current();
-    let mut mgr_a = CollaborationManager::from_relay_session(a_session, handle.clone());
-    let mut mgr_b = CollaborationManager::from_relay_session(b_session, handle);
+    let mut mgr_a = CollaborationManager::from_relay_session(a_session, &handle);
+    let mut mgr_b = CollaborationManager::from_relay_session(b_session, &handle);
 
     assert!(
         mgr_a.is_connected(),

@@ -67,12 +67,16 @@ fn assert_balanced(rtf: &str) {
                 // Skip the escaped next byte (covers \{ \} \\ and control words'
                 // leading char — we only care that braces after a backslash are
                 // not counted).
-                i += 2;
+                i = i.saturating_add(2);
                 continue;
             }
-            b'{' => depth += 1,
+            b'{' => depth = depth.saturating_add(1),
             b'}' => {
-                depth -= 1;
+                // `depth` is signed, so `saturating_sub` only clamps at
+                // `i32::MIN` — light-years past any real brace count — and
+                // the assert right below still sees the negative depth a
+                // stray closing brace produces.
+                depth = depth.saturating_sub(1);
                 assert!(
                     depth >= 0,
                     "unbalanced: closing brace with no open at byte {i}\n{rtf}"
@@ -80,7 +84,7 @@ fn assert_balanced(rtf: &str) {
             }
             _ => {}
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     assert_eq!(depth, 0, "unbalanced braces (depth {depth} at end):\n{rtf}");
 }

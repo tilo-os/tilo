@@ -27,11 +27,20 @@ use crate::validate::{ManifestError, validate_manifest_with_payload};
 /// needs the multi-device ceremony, which belongs to the publisher
 /// pipeline, not this crate — use `from_threshold_aggregated` for an
 /// already-aggregated signature from such a ceremony.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "ThresholdIdentity is already boxed (see its own doc below); the remaining gap to \
+              Ed25519's plain SigningKey is inherent to ed25519_dalek's expanded-key caching, \
+              not something a second box would meaningfully shrink for a type constructed once \
+              per pack/sign call, never per-item in a hot loop"
+)]
 pub enum SigningIdentity {
     /// Plain Ed25519 — simplest case; used by tests, CI signing, and `qos-pkg sign --identity`.
     Ed25519(ed25519_dalek::SigningKey),
     /// A 1-of-1 threshold identity; goes through the same `sign_raw` path and produces a regular Ed25519 sig.
-    ThresholdSingleDevice(ThresholdIdentity),
+    /// Boxed: `ThresholdIdentity` carries frost-core key-package material far
+    /// larger than the 32-byte `SigningKey` in the other variant.
+    ThresholdSingleDevice(Box<ThresholdIdentity>),
 }
 
 impl SigningIdentity {
@@ -62,6 +71,12 @@ impl SigningIdentity {
 
     /// Sign the signing-bytes prefix of a [`SignedRoot`]; errors only in
     /// the (unsupported) true-threshold mode — Ed25519/1-of-1 paths are infallible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackError::ThresholdSigningUnsupported`] if this identity is
+    /// a true `t`-of-`n` threshold identity (`t >= 2`); single-device and
+    /// plain Ed25519 identities never fail.
     pub fn sign_signed_root(&self, root: &SignedRoot) -> Result<[u8; 64], PackError> {
         let preimage = root.signing_bytes();
         self.sign_message(&preimage)
@@ -77,6 +92,12 @@ impl SigningIdentity {
     /// key, not threshold machinery.
     ///
     /// Errors only in the (unsupported) true-threshold mode; Ed25519/1-of-1 paths are infallible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackError::ThresholdSigningUnsupported`] if this identity is
+    /// a true `t`-of-`n` threshold identity, or [`PackError::ThresholdInternal`]
+    /// if the underlying single-device threshold signing call fails.
     pub fn sign_message(&self, msg: &[u8]) -> Result<[u8; 64], PackError> {
         match self {
             Self::Ed25519(sk) => Ok(sk.sign(msg).to_bytes()),
@@ -136,7 +157,13 @@ pub(crate) fn walk_payload<S: BlobStore>(
         let abs = entry.path();
         let rel = abs
             .strip_prefix(payload_dir)
-            .expect("walkdir entry under payload_dir")
+            .map_err(|_| {
+                PackError::Io(std::io::Error::other(format!(
+                    "walkdir entry {} is not under payload_dir {}",
+                    abs.display(),
+                    payload_dir.display()
+                )))
+            })?
             .to_path_buf();
         let rel_str = rel
             .to_str()
@@ -162,6 +189,16 @@ pub(crate) fn walk_payload<S: BlobStore>(
 /// 4. Build the unsigned [`SignedRoot`], call
 ///    [`SigningIdentity::sign_signed_root`], reattach the signature,
 ///    ingest the signed-root blob, return its `PackageId`.
+///
+/// # Errors
+///
+/// Returns [`PackError::IdentityMismatch`] if the manifest's declared
+/// publisher identity does not match `identity`'s public key,
+/// [`PackError::Manifest`] if manifest validation (standalone or against the
+/// payload) fails, [`PackError::Walk`] or [`PackError::Io`] if walking or
+/// reading `payload_dir` fails, [`PackError::Store`] if writing a blob
+/// fails, [`PackError::ManifestEncode`] if re-encoding the manifest fails,
+/// or whatever [`SigningIdentity::sign_signed_root`] returns.
 pub fn pack<S: BlobStore>(
     payload_dir: &Path,
     manifest: &Manifest,
@@ -213,6 +250,13 @@ pub fn pack<S: BlobStore>(
 /// Pack with a pre-computed aggregated threshold signature — used by
 /// the multi-device publisher pipeline where round-2 partials are
 /// collected and aggregated *outside* this crate.
+///
+/// # Errors
+///
+/// Returns [`PackError::IdentityMismatch`] if the manifest's declared
+/// publisher identity does not match `publisher_identity`, or any of the
+/// walk/validate/store/encode errors [`pack`] can return — this variant
+/// skips only the signing step, substituting the pre-computed `signature`.
 pub fn pack_with_signature<S: BlobStore>(
     payload_dir: &Path,
     manifest: &Manifest,

@@ -15,18 +15,34 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
+)]
 fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(hex_editor::app_root())
 }
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.hex-editor", hex_editor::app_root)
+        &LaunchSpec::new("dev.qos.hex-editor", hex_editor::app_root)
             .shot_root(shot_root)
             .configure_app(|app| hex_editor::actions::register(app.action_registry_mut())),
-    )
+    );
 }

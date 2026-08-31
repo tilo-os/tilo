@@ -10,6 +10,16 @@
 //!   whose `detect` spins forever; assert it gets killed at the wallclock
 //!   deadline and the host stays up.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -46,7 +56,7 @@ struct HostHarness {
 }
 
 impl HostHarness {
-    async fn new(registry_text: &str) -> anyhow::Result<Self> {
+    fn new(registry_text: &str) -> anyhow::Result<Self> {
         let tmp = tempfile::tempdir()?;
         let registry_path = tmp.path().join("format-providers.toml");
         std::fs::write(&registry_path, registry_text)?;
@@ -60,7 +70,7 @@ impl HostHarness {
         let listener = transport::bind(&socket)?;
         // Spin the accept loop on the runtime — we'll let it die when the
         // tempdir is dropped + the socket file is removed.
-        let _ = tokio::task::spawn_local(transport::serve(listener, router));
+        let _server = tokio::task::spawn_local(transport::serve(listener, router));
 
         Ok(Self {
             socket,
@@ -94,7 +104,7 @@ fn client_for(stream: tokio::net::UnixStream) -> format_router::Client {
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Client,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let mut rpc_system = RpcSystem::new(network, None);
     let client: format_router::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
@@ -125,7 +135,7 @@ priority = "builtin"
 "#,
             wasm.display()
         );
-        let h = HostHarness::new(&reg_text).await.unwrap();
+        let h = HostHarness::new(&reg_text).unwrap();
         let client = h.connect().await.unwrap();
 
         // list() — the provider shows up.
@@ -223,7 +233,7 @@ fn unknown_mime_returns_clear_error() {
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         // Empty registry → importAs for any provider id fails clearly.
-        let h = HostHarness::new("").await.unwrap();
+        let h = HostHarness::new("").unwrap();
         let client = h.connect().await.unwrap();
         let mut imp = client.import_as_request();
         {
@@ -232,9 +242,8 @@ fn unknown_mime_returns_clear_error() {
             p.set_provider_id("dev.qos.no-such");
         }
         let res = imp.send().promise.await;
-        let err = match res {
-            Ok(_) => panic!("expected error for unknown provider"),
-            Err(e) => e,
+        let Err(err) = res else {
+            panic!("expected error for unknown provider");
         };
         let msg = format!("{err}");
         assert!(
@@ -257,7 +266,7 @@ fn registry_hot_reload() {
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         // Start empty.
-        let h = HostHarness::new("").await.unwrap();
+        let h = HostHarness::new("").unwrap();
         let client = h.connect().await.unwrap();
         let mut list = client.list_request();
         let _ = list.get();

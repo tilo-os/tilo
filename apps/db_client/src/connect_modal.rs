@@ -137,15 +137,15 @@ impl ConnectModal {
             },
             self.engine,
         );
-        p.host = self.host.clone();
+        p.host.clone_from(&self.host);
         p.port = self
             .port
             .parse()
             .unwrap_or_else(|_| self.engine.default_port());
-        p.database = self.database.clone();
-        p.user = self.user.clone();
-        p.password = self.password.clone();
-        p.file_path = self.file_path.clone();
+        p.database.clone_from(&self.database);
+        p.user.clone_from(&self.user);
+        p.password.clone_from(&self.password);
+        p.file_path.clone_from(&self.file_path);
         p
     }
 
@@ -254,11 +254,15 @@ impl ConnectModal {
                 Field::Password,
             ]
         };
+        // `order` always has at least one entry (the SQLite and network
+        // field sets both start with `Field::Name`), so this only ever
+        // falls back on an impossible empty list.
         match self.focus {
-            None => order[0],
+            None => order.first().copied().unwrap_or(Field::Name),
             Some(cur) => {
                 let i = order.iter().position(|f| *f == cur).unwrap_or(0);
-                order[(i + 1) % order.len()]
+                let next = (i + 1) % order.len().max(1);
+                order.get(next).copied().unwrap_or(Field::Name)
             }
         }
     }
@@ -271,7 +275,6 @@ impl ConnectModal {
         theme: &Theme,
         root: Rect,
     ) {
-        let p = theme.db();
         // Scrim.
         scene.fill(
             Fill::NonZero,
@@ -317,7 +320,37 @@ impl ConnectModal {
         );
         y += 36.0;
 
-        // Engine selector segmented control.
+        y = self.draw_engine_selector(scene, t, tr, theme, px, pw, y);
+        y = self.draw_fields(scene, t, tr, theme, px, pw, y);
+
+        // Password-handling note for the network engines.
+        if self.engine != Engine::Sqlite {
+            tr.draw_text(
+                scene,
+                "The password is kept in memory for this session only and is never written to disk.",
+                10.5,
+                theme.text_dim,
+                t * Affine::translate((px + 24.0, y + 2.0)),
+                Some((pw - 48.0) as f32),
+            );
+        }
+
+        self.draw_buttons(scene, t, tr, theme);
+    }
+
+    /// Engine selector segmented control. Returns the Y position beneath it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_engine_selector(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        px: f64,
+        pw: f64,
+        y: f64,
+    ) -> f64 {
+        let p = theme.db();
         self.engine_btns.clear();
         let seg_w = (pw - 48.0) / 3.0;
         let mut sx = px + 24.0;
@@ -358,10 +391,24 @@ impl ConnectModal {
             );
             sx += seg_w;
         }
-        y += 48.0;
+        y + 48.0
+    }
 
-        // Fields.
+    /// The engine-dependent field set (`SQLite` file path, or the network
+    /// host/port/db/user/password rows). Returns the Y position beneath it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_fields(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        px: f64,
+        pw: f64,
+        y: f64,
+    ) -> f64 {
         self.field_rects.clear();
+        let mut y = y;
         if self.engine == Engine::Sqlite {
             y = self.field(scene, t, tr, theme, px, pw, y, "Name", Field::Name);
             y = self.field(
@@ -408,31 +455,24 @@ impl ConnectModal {
             );
             y = ux;
         }
+        y
+    }
 
-        // Password-handling note for the network engines.
-        if self.engine != Engine::Sqlite {
-            tr.draw_text(
-                scene,
-                "The password is kept in memory for this session only and is never written to disk.",
-                10.5,
-                theme.text_dim,
-                t * Affine::translate((px + 24.0, y + 2.0)),
-                Some((pw - 48.0) as f32),
-            );
-        }
-
-        // Buttons.
+    /// Cancel/Save buttons anchored to the bottom-right of `self.panel`
+    /// (already positioned earlier in `draw`).
+    fn draw_buttons(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let panel = self.panel;
         let cancel = Rect::new(
-            px + pw - 200.0,
-            py + ph - 48.0,
-            px + pw - 110.0,
-            py + ph - 16.0,
+            panel.x1 - 200.0,
+            panel.y1 - 48.0,
+            panel.x1 - 110.0,
+            panel.y1 - 16.0,
         );
         let save = Rect::new(
-            px + pw - 100.0,
-            py + ph - 48.0,
-            px + pw - 24.0,
-            py + ph - 16.0,
+            panel.x1 - 100.0,
+            panel.y1 - 48.0,
+            panel.x1 - 24.0,
+            panel.y1 - 16.0,
         );
         self.cancel_btn = cancel;
         self.save_btn = save;
@@ -462,7 +502,10 @@ impl ConnectModal {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shared draw context (canvas/theme/panel geometry) plus this field's label and slot"
+    )]
     fn field(
         &mut self,
         scene: &mut Scene,
@@ -489,7 +532,10 @@ impl ConnectModal {
         y + 56.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shared draw context (canvas/theme/panel geometry) plus a pair of fields' labels and slots"
+    )]
     fn field_pair(
         &mut self,
         scene: &mut Scene,

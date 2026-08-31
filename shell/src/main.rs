@@ -10,6 +10,19 @@
 //! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
 //! for `wayland-N`); `--firstboot` runs first-boot setup, then continues into the normal compositor boot.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use shell::compositor::hosted::HostedOptions;
 use shell::compositor::{self, Mode};
 use shell::shell::identity_provisioning;
@@ -60,7 +73,93 @@ fn install_crash_log_hook() {
     }));
 }
 
-fn main() {
+/// Landlock launcher shim short-circuit: `shell __sandbox-exec --ro PATH... --rw
+/// PATH... [--net-restricted] -- APP-ARGV`, execed by bwrap from inside the
+/// sandbox. Applies the in-kernel Landlock ruleset and `execvp`s the real
+/// app when `raw_args` is that invocation; otherwise a no-op. Split out of
+/// `main` to keep it short.
+fn maybe_run_sandbox_exec(raw_args: &[String]) {
+    if raw_args
+        .get(1)
+        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
+    {
+        tracing_subscriber::fmt::init();
+        shell::sandbox::run_sandbox_exec(raw_args.get(2..).unwrap_or(&[]));
+    }
+}
+
+/// Log the GPU-pin decision taken before the tracing subscriber existed.
+/// Split out of `main` to keep it short.
+fn log_gpu_pin(gpu_pin: Option<&compositor::render_node::ProcessPin>) {
+    let Some(pin) = gpu_pin else {
+        return;
+    };
+    tracing::info!(
+        target: "shell::compositor::gpu",
+        node = %pin.node.display(),
+        driver = pin.driver.as_deref().unwrap_or("<unknown>"),
+        "session pinned to render node: {}",
+        if pin.applied.is_empty() {
+            "no loader variables derived".to_string()
+        } else {
+            pin.applied
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    );
+    for note in &pin.notes {
+        tracing::warn!(target: "shell::compositor::gpu", "{note}");
+    }
+}
+
+/// Resolve/create the qOS signing identity for this session, matching
+/// `--provision-identity`'s "run the ceremony and exit" contract. Returns
+/// `Some(code)` if `main` should return immediately with that exit code (the
+/// ceremony ran, or a migration path exited); `None` to keep booting. Split
+/// out of `main` to keep it short.
+fn resolve_identity(provision_identity_requested: bool) -> Option<std::process::ExitCode> {
+    match identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
+            if provision_identity_requested {
+                return Some(run_identity_onboarding(
+                    store.path().parent().map(std::path::Path::to_path_buf),
+                ));
+            }
+            tracing::warn!(
+                "no qOS identity found at {}; the desktop will boot without a signing \
+                 identity. Nothing you do will be attributable to you until \
+                 qos-identity.service has run in this session.",
+                store.path().display()
+            );
+        }
+        Ok(store) if provision_identity_requested => {
+            // Migrate older installs which have the personal signing record
+            // but not yet the certified device/Iroh identity chain.
+            let Some(identity_dir) = store.path().parent() else {
+                tracing::error!("identity record has no parent directory");
+                return Some(std::process::ExitCode::FAILURE);
+            };
+            let paths = firstboot::collaboration_identity_paths();
+            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
+                tracing::error!("could not provision collaboration identity: {e}");
+                return Some(std::process::ExitCode::FAILURE);
+            }
+            tracing::info!("qOS collaboration identity is provisioned");
+            return Some(std::process::ExitCode::SUCCESS);
+        }
+        Ok(store) => {
+            tracing::info!("loaded qOS identity from {}", store.path().display());
+        }
+        Err(e) => {
+            tracing::warn!("could not initialise identity store: {e}");
+        }
+    }
+    None
+}
+
+fn main() -> std::process::ExitCode {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     qos_startup_metrics::init();
@@ -95,42 +194,13 @@ fn main() {
         });
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
-    // Landlock launcher shim: bwrap execs us as `shell __sandbox-exec --ro
-    // <p>… --rw <p>… [--net-restricted] -- <app argv>` from inside the
-    // sandbox; we apply an in-kernel Landlock ruleset and `execvp` the real app. Must short-circuit before any compositor setup.
+    // Landlock launcher shim: must short-circuit before any compositor setup.
     let raw_args: Vec<String> = std::env::args().collect();
-    if raw_args
-        .get(1)
-        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
-    {
-        tracing_subscriber::fmt::init();
-        shell::sandbox::run_sandbox_exec(&raw_args[2..]);
-    }
+    maybe_run_sandbox_exec(&raw_args);
 
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
-
-    // Replay the GPU decision taken before the subscriber existed.
-    if let Some(pin) = &gpu_pin {
-        tracing::info!(
-            target: "shell::compositor::gpu",
-            node = %pin.node.display(),
-            driver = pin.driver.as_deref().unwrap_or("<unknown>"),
-            "session pinned to render node: {}",
-            if pin.applied.is_empty() {
-                "no loader variables derived".to_string()
-            } else {
-                pin.applied
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        );
-        for note in &pin.notes {
-            tracing::warn!(target: "shell::compositor::gpu", "{note}");
-        }
-    }
+    log_gpu_pin(gpu_pin.as_ref());
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
@@ -141,12 +211,11 @@ fn main() {
             "error: --portal-server-only and --firstboot are mutually exclusive; \
              pick one (the systemd units never combine them)."
         );
-        std::process::exit(2);
+        return std::process::ExitCode::from(2);
     }
 
     if portal_only {
-        run_portal_server_only();
-        return;
+        return run_portal_server_only();
     }
 
     if firstboot_requested && let Err(e) = firstboot::run() {
@@ -162,40 +231,8 @@ fn main() {
     // has logged in. `--provision-identity` is `qos-identity.service`'s
     // **user**-unit entry point: it runs the ceremony and exits. Reaching
     // this point without an identity and without that flag means something started the desktop directly.
-    match identity_provisioning::DiskIdentityStore::from_env() {
-        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
-            if provision_identity_requested {
-                run_identity_onboarding(store.path().parent().map(std::path::Path::to_path_buf));
-                return;
-            }
-            tracing::warn!(
-                "no qOS identity found at {}; the desktop will boot without a signing \
-                 identity. Nothing you do will be attributable to you until \
-                 qos-identity.service has run in this session.",
-                store.path().display()
-            );
-        }
-        Ok(store) if provision_identity_requested => {
-            // Migrate older installs which have the personal signing record
-            // but not yet the certified device/Iroh identity chain.
-            let Some(identity_dir) = store.path().parent() else {
-                tracing::error!("identity record has no parent directory");
-                std::process::exit(1);
-            };
-            let paths = firstboot::collaboration_identity_paths();
-            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                tracing::error!("could not provision collaboration identity: {e}");
-                std::process::exit(1);
-            }
-            tracing::info!("qOS collaboration identity is provisioned");
-            return;
-        }
-        Ok(store) => {
-            tracing::info!("loaded qOS identity from {}", store.path().display());
-        }
-        Err(e) => {
-            tracing::warn!("could not initialise identity store: {e}");
-        }
+    if let Some(code) = resolve_identity(provision_identity_requested) {
+        return code;
     }
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
@@ -214,18 +251,19 @@ fn main() {
             compositor::native::run();
         }
     }
+    std::process::ExitCode::SUCCESS
 }
 
 /// Host the first-login identity ceremony and block until finished. Runs
 /// as its own `ui::App` rather than inside the compositor, since this happens *before* a desktop exists.
-fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
+fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) -> std::process::ExitCode {
     let Some(dir) = identity_dir else {
         // No resolvable home means no right place for a signing key, and guessing one is how the key ended up in root's tree to begin with.
         tracing::error!(
             "cannot provision an identity: no user config directory resolved from \
              $XDG_CONFIG_HOME or $HOME"
         );
-        std::process::exit(1);
+        return std::process::ExitCode::FAILURE;
     };
     tracing::info!(
         "running first-login identity onboarding into {}",
@@ -235,6 +273,7 @@ fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
     let view = shell::onboarding_view::OnboardingView::new(dir);
     let app = ui::App::new(state, Box::new(view));
     app.run();
+    std::process::ExitCode::SUCCESS
 }
 
 /// Run only the `xdg-desktop-portal` D-Bus backend — no compositor, no
@@ -242,7 +281,7 @@ fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
 /// connection the `org.freedesktop.impl.portal.desktop.nirios` name
 /// resolves to, and blocks until torn down (SIGTERM from systemd). Used
 /// by `quick-desktop-portal.service` so the portal backend doesn't compete with the compositor for `wayland-N`.
-fn run_portal_server_only() {
+fn run_portal_server_only() -> std::process::ExitCode {
     tracing::info!("nirios portal server starting (--portal-server-only)");
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -253,7 +292,7 @@ fn run_portal_server_only() {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("error: failed to build tokio runtime for portal-only mode: {e}");
-            std::process::exit(1);
+            return std::process::ExitCode::FAILURE;
         }
     };
 
@@ -275,12 +314,12 @@ fn run_portal_server_only() {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("error: portal-only mode could not open the session bus: {e}");
-                    std::process::exit(1);
+                    return std::process::ExitCode::FAILURE;
                 }
             },
             Err(e) => {
                 eprintln!("error: portal-only mode could not build session connection: {e}");
-                std::process::exit(1);
+                return std::process::ExitCode::FAILURE;
             }
         };
 
@@ -288,7 +327,7 @@ fn run_portal_server_only() {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("error: portal::serve failed: {e}");
-                std::process::exit(1);
+                return std::process::ExitCode::FAILURE;
             }
         };
 
@@ -298,6 +337,6 @@ fn run_portal_server_only() {
         );
 
         // Block forever — systemd sends SIGTERM to tear us down; the ServerHandle keeps the connection alive in the meantime.
-        std::future::pending::<()>().await;
-    });
+        std::future::pending::<std::process::ExitCode>().await
+    })
 }

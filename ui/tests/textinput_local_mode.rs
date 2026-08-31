@@ -3,6 +3,16 @@
 //! `self.text`, the dirty flag flips, and `take_dirty` returns the
 //! new value exactly once.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;

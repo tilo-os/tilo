@@ -8,6 +8,7 @@
 //! from the chrome and has to be supplied and declared, so enumeration
 //! tells a caller what to pass rather than leaving it to be inferred.
 
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -43,6 +44,147 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[ActionParam::optional(
 /// being the same string, not by being imported — the shell does not
 /// depend on the agent binary.
 const DEFAULT_AGENT_NAME: &str = "Claude";
+
+const IDENTITY_CONNECT_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "path",
+    ParamType::Text,
+    "Absolute path to an exported qOS identity JSON record.",
+)];
+
+const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "id",
+    ParamType::Text,
+    "The identity's 64-character public-key fingerprint.",
+)];
+
+const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "device",
+        ParamType::Text,
+        "The enrolled device's 64-character public-key fingerprint.",
+    ),
+    ActionParam::optional(
+        "reason",
+        ParamType::Text,
+        "lost, stolen, retired, or compromised (defaults to retired).",
+    ),
+];
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
+              there is nothing after it to hoist the drop past without cloning the \
+              workspace out for no real gain"
+)]
+fn active_identity(
+    state: &ChromeState,
+) -> Result<
+    (
+        crate::shell::state::RoomId,
+        crate::identity_registry::IdentityProfile,
+    ),
+    ActionError,
+> {
+    let (room, actor, may_administer) = {
+        let tree = state.tree();
+        let workspace = tree
+            .active_workspace()
+            .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
+        let actor = state.local_user_for_room(&workspace.room);
+        (
+            workspace.room,
+            actor.clone(),
+            workspace.may_administer(&actor),
+        )
+    };
+    if !may_administer {
+        return Err(ActionError::Refused(format!(
+            "{actor} may not administer devices for this workspace's identity"
+        )));
+    }
+    let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
+        .map_err(|error| ActionError::Refused(error.to_string()))?
+        .ok_or_else(|| ActionError::Refused("no identity selected".into()))?;
+    Ok((room, profile))
+}
+
+/// The active workspace's id, room and the caller's own actor id, refusing
+/// up front if the caller may not administer it — shared by `identity.connect`
+/// and `identity.select`, which otherwise change identity via identical
+/// pre-checks. One lock scope reads and destructures the workspace
+/// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
+/// tree's read guard is already gone before the caller does anything else.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
+              there is nothing after it to hoist the drop past without cloning the \
+              workspace out for no real gain"
+)]
+fn active_admin_workspace(
+    state: &ChromeState,
+) -> Result<
+    (
+        crate::shell::state::WorkspaceId,
+        crate::shell::state::RoomId,
+        String,
+    ),
+    ActionError,
+> {
+    let (workspace_id, room, actor, may_administer) = {
+        let tree = state.tree();
+        let Some(workspace) = tree.active_workspace() else {
+            return Err(ActionError::Refused("no active workspace".into()));
+        };
+        let actor = state.local_user_for_room(&workspace.room);
+        (
+            workspace.id,
+            workspace.room,
+            actor.clone(),
+            workspace.may_administer(&actor),
+        )
+    };
+    if !may_administer {
+        return Err(ActionError::Refused(format!(
+            "{actor} may not change this workspace's identity"
+        )));
+    }
+    Ok((workspace_id, room, actor))
+}
+
+/// Current wall-clock time as nanoseconds since the epoch, clamped to
+/// `u64::MAX` rather than truncated — a value that large is centuries past
+/// any real expiry/enrollment window this crate computes against.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
+)]
+fn now_ns_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
+    let value = value.trim();
+    if value.len() != 64 {
+        return Err(ActionError::Refused(
+            "device fingerprint must be 64 hex characters".into(),
+        ));
+    }
+    let mut key = [0_u8; 32];
+    for (index, slot) in key.iter_mut().enumerate() {
+        let start = index.saturating_mul(2);
+        let end = start.saturating_add(2);
+        let chunk = value
+            .get(start..end)
+            .ok_or_else(|| ActionError::Refused("device fingerprint is not hex".into()))?;
+        *slot = u8::from_str_radix(chunk, 16)
+            .map_err(|_| ActionError::Refused("device fingerprint is not hex".into()))?;
+    }
+    Ok(key)
+}
 
 /// What `peer.invite.named` must be told. Both required — an invite to
 /// nobody in particular is [`peer.invite`].
@@ -103,12 +245,238 @@ impl Action {
         chrome(
             "settings.open",
             "Open workspace settings",
-            "Identity, members, permissions",
+            "Identity, people, privacy, apps and files for this workspace",
             |st, _| {
-                st.overlays.ws_settings = true;
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::General);
                 Ok(())
             },
         ),
+        chrome(
+            "settings.members.open",
+            "Open workspace members",
+            "People, roles and invitations in this workspace",
+            |st, _| {
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
+                Ok(())
+            },
+        ),
+        chrome(
+            "settings.privacy.open",
+            "Open workspace privacy & security",
+            "App grants and enforced access for this workspace",
+            |st, _| {
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                Ok(())
+            },
+        ),
+        chrome(
+            "settings.apps.open",
+            "Open workspace apps & files",
+            "Shared app defaults and your workspace overrides",
+            |st, _| {
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Apps);
+                Ok(())
+            },
+        ),
+        Action {
+            id: "identity.connect",
+            label: "Add an existing identity",
+            subtitle: "Import identity credentials and use them in this workspace",
+            params: IDENTITY_CONNECT_PARAMS,
+            apply: |st, args| {
+                let path = args.text("path").unwrap_or_default().trim();
+                if path.is_empty() {
+                    return Err(ActionError::Refused("identity path is required".into()));
+                }
+                let (workspace_id, room, actor) = active_admin_workspace(st)?;
+                let store = crate::identity_registry::IdentityRegistryStore::from_env()
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let profile = store
+                    .import(std::path::Path::new(path))
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let identity_paths = crate::firstboot::collaboration_identity_paths();
+                crate::firstboot::ensure_device_certificate_for_record(
+                    &profile.record_path,
+                    &identity_paths,
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))?;
+                crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
+                    .register_current_device(&profile.id)
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let delegated = {
+                    let mut tree = st.tree_mut();
+                    tree.grant_in_workspace(
+                        workspace_id,
+                        &actor,
+                        crate::shell::state::CapOverride::grant(
+                            crate::shell::state::Subject::person(profile.principal_id()),
+                            crate::shell::state::Scope::Workspace,
+                            crate::shell::state::Verb::Admin,
+                        ),
+                    )
+                };
+                if delegated.is_none() {
+                    return Err(ActionError::Refused(
+                        "could not delegate workspace administration to the imported identity"
+                            .into(),
+                    ));
+                }
+                store
+                    .bind_workspace(&room.to_string(), &profile.id)
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                st.tree().export_fs_capabilities();
+                st.bump();
+                Ok(())
+            },
+        },
+        Action {
+            id: "identity.select",
+            label: "Use identity in this workspace",
+            subtitle: "Select one of the identities already connected to this device",
+            params: IDENTITY_SELECT_PARAMS,
+            apply: |st, args| {
+                let identity_id = args.text("id").unwrap_or_default().trim();
+                let (workspace_id, room, actor) = active_admin_workspace(st)?;
+                let store = crate::identity_registry::IdentityRegistryStore::from_env()
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let registry = store
+                    .migrate_legacy_primary()
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let profile = registry.identities.get(identity_id).ok_or_else(|| {
+                    ActionError::Refused("that identity is not connected to this device".into())
+                })?;
+                {
+                    let mut tree = st.tree_mut();
+                    if tree
+                        .grant_in_workspace(
+                            workspace_id,
+                            &actor,
+                            crate::shell::state::CapOverride::grant(
+                                crate::shell::state::Subject::person(profile.principal_id()),
+                                crate::shell::state::Scope::Workspace,
+                                crate::shell::state::Verb::Admin,
+                            ),
+                        )
+                        .is_none()
+                    {
+                        return Err(ActionError::Refused(
+                            "could not delegate workspace administration to that identity".into(),
+                        ));
+                    }
+                }
+                store
+                    .bind_workspace(&room.to_string(), identity_id)
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                st.tree().export_fs_capabilities();
+                st.bump();
+                Ok(())
+            },
+        },
+        chrome(
+            "identity.devices.copy",
+            "Copy connected device list",
+            "Copy device names, fingerprints, capabilities, and revocation state",
+            |st, _| {
+                let (_, profile) = active_identity(st)?;
+                let fleet = crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| store.load(&profile.id))
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let lines = fleet
+                    .certificates
+                    .iter()
+                    .map(|cert| {
+                        let fingerprint = cert.device_public_key.iter().fold(
+                            String::new(),
+                            |mut fingerprint, byte| {
+                                let _ = write!(fingerprint, "{byte:02x}");
+                                fingerprint
+                            },
+                        );
+                        format!(
+                            "{}  {}  {}",
+                            cert.device_label,
+                            fingerprint,
+                            if fleet.is_revoked(&cert.device_public_key) {
+                                "revoked"
+                            } else {
+                                "active"
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui::text_selection::clipboard_copy(&lines);
+                st.push_notification(
+                    "Device list copied",
+                    format!("{} device(s)", fleet.certificates.len()),
+                );
+                Ok(())
+            },
+        ),
+        chrome(
+            "identity.device.enroll",
+            "Enroll another device",
+            "Copy a five-minute enrollment token for a member device",
+            |st, _| {
+                let (_, profile) = active_identity(st)?;
+                let now = now_ns_u64();
+                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
+                let token = crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| {
+                        store.mint_enrollment(
+                            &profile.id,
+                            qos_user_identity::DeviceCapabilities::member(),
+                            expires,
+                        )
+                    })
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                ui::text_selection::clipboard_copy(&token);
+                st.push_notification(
+                    "Enrollment token copied",
+                    "It expires in five minutes and cannot admit further devices.",
+                );
+                Ok(())
+            },
+        ),
+        Action {
+            id: "identity.device.revoke",
+            label: "Revoke an identity device",
+            subtitle: "Permanently stop trusting a lost, retired, or compromised device",
+            params: DEVICE_REVOKE_PARAMS,
+            apply: |st, args| {
+                let (_, profile) = active_identity(st)?;
+                let key = parse_device_key(args.text("device").unwrap_or_default())?;
+                let reason = match args
+                    .text("reason")
+                    .unwrap_or("retired")
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "lost" => qos_user_identity::RevocationReason::Lost,
+                    "stolen" => qos_user_identity::RevocationReason::Stolen,
+                    "retired" => qos_user_identity::RevocationReason::Retired,
+                    "compromised" => qos_user_identity::RevocationReason::Compromised,
+                    _ => {
+                        return Err(ActionError::Refused(
+                            "reason must be lost, stolen, retired, or compromised".into(),
+                        ));
+                    }
+                };
+                let now = now_ns_u64();
+                crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| store.revoke(&profile.id, key, reason, now))
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                // Revoking this machine must immediately withdraw any
+                // device-key filesystem grants exported for it.
+                st.tree().export_fs_capabilities();
+                st.push_notification(
+                    "Device revoked",
+                    "The revocation was root-signed and recorded in this identity's device list.",
+                );
+                Ok(())
+            },
+        },
         chrome(
             "quick-settings.open",
             "Open quick settings",
@@ -243,12 +611,13 @@ impl Action {
                 let user = st.local_user_id.clone();
                 let granted = {
                     let mut tree = st.tree_mut();
-                    let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
+                    let Some((ws_id, room)) =
+                        tree.active_workspace().map(|w| (w.id, w.room.to_string()))
+                    else {
                         return Err(ActionError::Refused(
                             "there is no room here to admit an agent to".into(),
                         ));
                     };
-                    let room = ws_id.raw().to_string();
                     // An ordinary grant on the room, through the tree so it
                     // reaches the room document (and other members) and disk.
                     let cap =
@@ -507,6 +876,36 @@ mod tests {
     }
 
     #[test]
+    fn workspace_privacy_search_result_deep_links_to_exact_lens_tab() {
+        let p = ActionsProvider::new();
+        let c = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let out = {
+            let state = c.borrow();
+            p.query(SearchContext {
+                needle: "workspace privacy",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let result = out
+            .iter()
+            .find(|result| result.id == "settings.privacy.open")
+            .expect("privacy governance is directly searchable");
+
+        (result.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none()).unwrap();
+
+        let state = c.borrow();
+        assert!(state.overlays.ws_settings);
+        assert_eq!(
+            state.ws_settings_tab,
+            crate::shell::workspace_settings::WsTab::Permissions
+        );
+    }
+
+    #[test]
     fn empty_needle_returns_everything() {
         let p = ActionsProvider::new();
         // Peer-sync and agent rows included, so "everything" means the whole table.
@@ -585,6 +984,36 @@ mod tests {
             doc_root: &automerge::ROOT,
         });
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn non_admin_cannot_manage_identity_devices() {
+        use crate::shell::state::{Workspace, WorkspaceId};
+
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::test_default(id, "Someone else's workspace");
+        workspace.set_owner("a-different-person");
+        tree.workspaces.push(workspace);
+        tree.active = id;
+        let chrome = ChromeState::new_with_handle(Arc::new(RwLock::new(tree)));
+
+        for action_id in [
+            "identity.devices.copy",
+            "identity.device.enroll",
+            "identity.device.revoke",
+        ] {
+            let action = Action::ALL
+                .iter()
+                .find(|action| action.id == action_id)
+                .expect("device action is registered");
+            let error = (action.apply)(&mut chrome.borrow_mut(), &ActionArgs::none())
+                .expect_err("a non-admin must be refused before device state is touched");
+            assert!(
+                matches!(&error, ActionError::Refused(message) if message.contains("may not administer devices")),
+                "unexpected refusal for {action_id}: {error:?}",
+            );
+        }
     }
 
     #[test]

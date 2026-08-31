@@ -336,8 +336,13 @@ fn decode_key(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
     }
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     for (byte, pair) in key.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
-        let high = hex_nibble(pair[0])?;
-        let low = hex_nibble(pair[1])?;
+        // `chunks_exact(2)` guarantees `pair` is exactly two bytes; the pattern expresses
+        // that instead of indexing into it.
+        let &[hi, lo] = pair else {
+            return Err("Secret Service key is not hexadecimal".to_string());
+        };
+        let high = hex_nibble(hi)?;
+        let low = hex_nibble(lo)?;
         *byte = high
             .checked_mul(16)
             .and_then(|value| value.checked_add(low))
@@ -398,7 +403,13 @@ fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Option<Vec<u8>> {
         .encrypt(XNonce::from_slice(&nonce_bytes), plaintext)
         .ok()?;
 
-    let mut out = Vec::with_capacity(SEAL_MAGIC.len() + 1 + NONCE_LEN + ciphertext.len());
+    let mut out = Vec::with_capacity(
+        SEAL_MAGIC
+            .len()
+            .saturating_add(1)
+            .saturating_add(NONCE_LEN)
+            .saturating_add(ciphertext.len()),
+    );
     out.extend_from_slice(SEAL_MAGIC);
     out.push(SEAL_FORMAT);
     out.extend_from_slice(&nonce_bytes);

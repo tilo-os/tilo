@@ -30,6 +30,11 @@ pub struct CustomThemeSpec {
 }
 
 impl CustomThemeSpec {
+    /// # Errors
+    ///
+    /// Returns a static message describing which field is out of range —
+    /// unsupported schema version, an empty/oversize/control-char id, name or
+    /// font, or a radius/spacing outside its accepted range.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != CUSTOM_THEME_SCHEMA_VERSION {
             return Err("unsupported custom theme schema");
@@ -61,7 +66,16 @@ impl CustomThemeSpec {
 }
 
 fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    let channel = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
+    )]
+    let channel = |x: u8, y: u8| {
+        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     [
         channel(a[0], b[0]),
         channel(a[1], b[1]),
@@ -227,6 +241,7 @@ impl Theme {
     /// paints no background of its own, so `EmptyState`, `Button` and
     /// friends stay legible on the card without an on-card colour parameter
     /// on every widget.
+    #[must_use]
     pub fn on_window_card(&self) -> Self {
         let on = self.on_card();
         let mut card = self.clone();
@@ -238,7 +253,7 @@ impl Theme {
 
     /// Typography/spacing/motion tokens come from the matching (dark or
     /// light) base; the colour set is expanded by [`Colors::themed`].
-    fn from_palette(name: &str, spec: PaletteSpec) -> Self {
+    fn from_palette(name: &str, spec: &PaletteSpec) -> Self {
         let mut t = if spec.dark {
             Tokens::dark()
         } else {
@@ -258,7 +273,7 @@ impl Theme {
         let text_tertiary = mix_rgb(spec.text_dim, spec.surface_base, 0.40);
         let mut theme = Self::from_palette(
             &spec.name,
-            PaletteSpec {
+            &PaletteSpec {
                 dark: spec.dark_base,
                 base: rgb(spec.surface_base),
                 raised: rgb(spec.surface_raised),
@@ -284,7 +299,7 @@ impl Theme {
         theme.tokens.spacing.s2 = (spec.spacing_px * 0.66).max(2.0);
         theme.tokens.spacing.s3 = spec.spacing_px;
         theme.tokens.spacing.s4 = spec.spacing_px * 1.33;
-        theme.tokens.typography.sans_family = spec.font.clone();
+        theme.tokens.typography.sans_family.clone_from(&spec.font);
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
         Some(Self::from_tokens(&spec.name, theme.tokens))
@@ -300,7 +315,7 @@ impl Theme {
     pub fn dracula() -> Self {
         Self::from_palette(
             "Dracula",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x28, 0x2A, 0x36), // background
                 raised: Color::from_rgb8(0x34, 0x37, 0x46),
@@ -324,7 +339,7 @@ impl Theme {
     pub fn nord() -> Self {
         Self::from_palette(
             "Nord",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x2E, 0x34, 0x40), // nord0
                 raised: Color::from_rgb8(0x3B, 0x42, 0x52), // nord1
@@ -348,7 +363,7 @@ impl Theme {
     pub fn gruvbox() -> Self {
         let mut t = Self::from_palette(
             "Gruvbox",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x28, 0x28, 0x28), // bg0
                 raised: Color::from_rgb8(0x3C, 0x38, 0x36), // bg1
@@ -379,7 +394,7 @@ impl Theme {
     pub fn gruvbox_light() -> Self {
         let mut t = Self::from_palette(
             "Gruvbox Light",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: false,
                 base: Color::from_rgb8(0xFB, 0xF1, 0xC7), // bg0
                 raised: Color::from_rgb8(0xF9, 0xF5, 0xD7), // bg0_hard
@@ -409,7 +424,7 @@ impl Theme {
     pub fn catppuccin_mocha() -> Self {
         Self::from_palette(
             "Catppuccin Mocha",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x1E, 0x1E, 0x2E), // base
                 raised: Color::from_rgb8(0x31, 0x32, 0x44), // surface0
@@ -433,7 +448,7 @@ impl Theme {
     pub fn catppuccin_latte() -> Self {
         Self::from_palette(
             "Catppuccin Latte",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: false,
                 base: Color::from_rgb8(0xEF, 0xF1, 0xF5), // base
                 raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
@@ -457,7 +472,7 @@ impl Theme {
     pub fn solarized() -> Self {
         let mut t = Self::from_palette(
             "Solarized",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x00, 0x2B, 0x36), // base03
                 raised: Color::from_rgb8(0x07, 0x36, 0x42), // base02
@@ -487,7 +502,7 @@ impl Theme {
     pub fn oled() -> Self {
         Self::from_palette(
             "OLED",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x00, 0x00, 0x00), // true black
                 raised: Color::from_rgb8(0x0C, 0x0C, 0x0F),
@@ -513,7 +528,7 @@ impl Theme {
     pub fn warm_light() -> Self {
         Self::from_palette(
             "Beige",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: false,
                 base: Color::from_rgb8(0xF3, 0xEE, 0xE3), // warm paper
                 raised: Color::from_rgb8(0xFB, 0xF7, 0xEF),
@@ -537,7 +552,7 @@ impl Theme {
     pub fn rose_pine() -> Self {
         Self::from_palette(
             "Rosé Pine",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x19, 0x17, 0x24), // base
                 raised: Color::from_rgb8(0x1F, 0x1D, 0x2E), // surface
@@ -579,7 +594,7 @@ impl Theme {
 
     /// Pure parser shared by runtime loading and hermetic tests.
     pub fn from_settings_json(text: &str) -> Option<Self> {
-        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
         let appearance = v.get("appearance")?;
         let active = appearance.get("theme")?.as_str()?;
         if let Some(id) = active.strip_prefix("custom:") {
@@ -699,6 +714,7 @@ impl Theme {
         })
     }
 
+    #[must_use]
     pub fn with_reduce_motion(mut self, on: bool) -> Self {
         self.reduce_motion = on;
         self
@@ -708,6 +724,7 @@ impl Theme {
     /// size together, so layout (which measures the same scaled sizes)
     /// grows to fit and nothing clips. Not assumed idempotent — call once
     /// on a fresh theme.
+    #[must_use]
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 4.0);
         self.text_scale = factor;
@@ -730,6 +747,7 @@ impl Theme {
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
     /// distinct from [`Theme::with_text_scale`] which only resizes type.
     /// Not assumed idempotent — call once on a fresh theme.
+    #[must_use]
     pub fn with_ui_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 3.0);
         self.ui_scale = factor;
@@ -773,6 +791,7 @@ impl Theme {
 
     /// UI scale first so it grows the whole system, then text scale layers
     /// additional type growth on top.
+    #[must_use]
     pub fn with_a11y(
         self,
         settings: &crate::a11y::A11ySettings,
@@ -919,21 +938,7 @@ mod tests {
     #[test]
     fn preset_default_body_text_clears_aa_on_its_ground() {
         use crate::a11y::contrast_ratio;
-        for t in [
-            Theme::dark(),
-            Theme::light(),
-            Theme::qos_blue(),
-            Theme::dracula(),
-            Theme::nord(),
-            Theme::gruvbox(),
-            Theme::gruvbox_light(),
-            Theme::catppuccin_mocha(),
-            Theme::catppuccin_latte(),
-            Theme::solarized(),
-            Theme::oled(),
-            Theme::warm_light(),
-            Theme::rose_pine(),
-        ] {
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
             let r = contrast_ratio(t.text_primary, t.bg_app);
             assert!(
                 r >= 4.5,
@@ -1037,8 +1042,17 @@ mod tests {
             let ground = t.tokens.colors.surfaces.base;
             let edge = t.window_edge();
             // What the eye receives where the hairline meets the desktop.
-            let a = edge.a() as f32 / 255.0;
-            let ch = |o: u8, g: u8| ((o as f32) * a + (g as f32) * (1.0 - a)).round() as u8;
+            let a = f32::from(edge.a()) / 255.0;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
+            )]
+            let ch = |o: u8, g: u8| {
+                (f32::from(o) * a + f32::from(g) * (1.0 - a))
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            };
             let seen = Color::from_rgb8(
                 ch(edge.r(), ground.r()),
                 ch(edge.g(), ground.g()),
@@ -1271,7 +1285,7 @@ mod tests {
             "padding shortcut tracks spacing"
         );
         assert!(
-            (scaled.radius_standard - (br as f64) * 1.5).abs() < 1e-4,
+            (scaled.radius_standard - f64::from(br) * 1.5).abs() < 1e-4,
             "radius shortcut tracks radii"
         );
     }

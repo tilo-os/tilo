@@ -12,7 +12,9 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 /// spill-out days from the next. Six rows is the worst case (a 31-day
 /// month starting on a Sunday).
 pub fn month_grid(anchor: NaiveDate) -> Vec<NaiveDate> {
-    let first = anchor.with_day(1).unwrap();
+    // Day 1 is valid in every month, so `with_day(1)` never actually
+    // returns `None` for a valid `anchor`; the fallback is unreachable.
+    let first = anchor.with_day(1).unwrap_or(anchor);
     let offset = i64::from(first.weekday().num_days_from_monday());
     let start = first - Duration::days(offset);
     (0..42).map(|i| start + Duration::days(i)).collect()
@@ -31,9 +33,13 @@ pub fn week_days(date: NaiveDate) -> Vec<NaiveDate> {
 
 /// Number of days in month `m` of year `y`.
 pub fn days_in_month(y: i32, m: u32) -> u32 {
-    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    let first_next = NaiveDate::from_ymd_opt(ny, nm, 1).unwrap();
-    (first_next - Duration::days(1)).day()
+    // Every month has at least 28 days, so probing downward from 31
+    // always finds a valid date without needing to construct — and
+    // possibly overflow into — the next month.
+    (28..=31)
+        .rev()
+        .find(|&d| NaiveDate::from_ymd_opt(y, m, d).is_some())
+        .unwrap_or(28)
 }
 
 /// Shift `date` by `delta` whole months, clamping the day-of-month so
@@ -43,7 +49,10 @@ pub fn add_months(date: NaiveDate, delta: i32) -> NaiveDate {
     let y = total.div_euclid(12);
     let m = (total.rem_euclid(12) + 1) as u32;
     let day = date.day().min(days_in_month(y, m));
-    NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    // `y` can only fall outside chrono's representable range for an
+    // extreme `delta`; real callers only ever shift by a handful of
+    // months. Keep `date` unchanged rather than panic in that case.
+    NaiveDate::from_ymd_opt(y, m, day).unwrap_or(date)
 }
 
 /// "June 2026"
@@ -51,7 +60,8 @@ pub fn month_title(anchor: NaiveDate) -> String {
     format!("{} {}", month_name(anchor.month()), anchor.year())
 }
 
-/// Full English month name.
+/// Full English month name. `m` is expected to be `1..=12`; out-of-range
+/// values clamp to the nearest end rather than panicking.
 pub fn month_name(m: u32) -> &'static str {
     const NAMES: [&str; 12] = [
         "January",
@@ -67,12 +77,31 @@ pub fn month_name(m: u32) -> &'static str {
         "November",
         "December",
     ];
-    NAMES[(m as usize - 1).min(11)]
+    NAMES
+        .get(m.saturating_sub(1) as usize)
+        .copied()
+        .unwrap_or("January")
+}
+
+/// First three characters of a month name — every entry in [`month_name`]'s
+/// table is a static ASCII string of at least three characters, so this is
+/// really infallible, but `.get()` still keeps the compiler honest about it.
+fn month_abbr(m: u32) -> &'static str {
+    let name = month_name(m);
+    name.get(..3).unwrap_or(name)
 }
 
 /// Three-letter weekday, Monday-indexed columns.
 pub const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 pub const WEEKDAY_NARROW: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
+
+/// Three-letter weekday abbreviation for `date`'s day of week.
+fn weekday_short(date: NaiveDate) -> &'static str {
+    WEEKDAY_SHORT
+        .get(date.weekday().num_days_from_monday() as usize)
+        .copied()
+        .unwrap_or("")
+}
 
 /// "9:00", "14:30" — 24-hour, no leading zero on the hour.
 pub fn fmt_time(dt: &NaiveDateTime) -> String {
@@ -83,16 +112,16 @@ pub fn fmt_time(dt: &NaiveDateTime) -> String {
 pub fn fmt_day_long(date: NaiveDate) -> String {
     format!(
         "{} {} {}",
-        WEEKDAY_SHORT[date.weekday().num_days_from_monday() as usize],
+        weekday_short(date),
         date.day(),
-        &month_name(date.month())[..3],
+        month_abbr(date.month()),
     )
 }
 
 /// "15 Jun" — no weekday prefix (used for compact week ranges where the
 /// day-of-week is already visible in the column headers).
 pub fn fmt_day_short(date: NaiveDate) -> String {
-    format!("{} {}", date.day(), &month_name(date.month())[..3])
+    format!("{} {}", date.day(), month_abbr(date.month()))
 }
 
 /// A week range with weekday names, e.g. "Mon 29 Jun – Sun 5 Jul".
@@ -109,7 +138,7 @@ pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
             "{} – {} {}",
             start.day(),
             end.day(),
-            &month_name(end.month())[..3]
+            month_abbr(end.month())
         )
     } else {
         format!("{} – {}", fmt_day_short(start), fmt_day_short(end))
@@ -123,7 +152,7 @@ pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
         0 => "Today".into(),
         1 => "Tomorrow".into(),
         -1 => "Yesterday".into(),
-        2..=6 => WEEKDAY_SHORT[due.weekday().num_days_from_monday() as usize].into(),
+        2..=6 => weekday_short(due).into(),
         _ if d < 0 => format!("{} d overdue", -d),
         _ => fmt_day_long(due),
     }

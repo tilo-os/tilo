@@ -23,6 +23,10 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
 use crate::shell::network::ShellNetwork;
 
+/// A room's last-published cursor position and when it went out, keyed
+/// by room — what [`should_publish_cursor`] rate-limits against.
+type CursorPublishHistory = HashMap<String, ((f64, f64), Instant)>;
+
 /// Bridges the session's collaboration broker and its peers for
 /// pointer presence. Held by the compositor for the life of the session.
 pub struct PeerPresence {
@@ -38,7 +42,7 @@ pub struct PeerPresence {
     rooms: Mutex<Vec<String>>,
     /// What this session last put on the wire, per room: position and
     /// when. Read by [`should_publish_cursor`].
-    last_published: Mutex<HashMap<String, ((f64, f64), Instant)>>,
+    last_published: Mutex<CursorPublishHistory>,
     net: Arc<ShellNetwork>,
 }
 
@@ -149,7 +153,7 @@ impl PeerPresence {
             if let Ok(mut last) = self.last_published.lock() {
                 last.retain(|room, _| rooms.iter().any(|r| r == room));
             }
-            *g = rooms.clone();
+            g.clone_from(&rooms);
         }
         self.subscription.set_rooms(rooms);
     }
@@ -235,12 +239,16 @@ impl PeerPresence {
     /// Returns whether the list changed, a reason to repaint.
     pub fn refresh_roster(&self, presence: &PresenceCtx) -> bool {
         let local = self.net.local_peer_id_hash();
-        let Ok(replica) = self.net.replica.lock() else {
-            return false;
-        };
         // Written only on change — a lock every frame would contend
-        // with the network thread.
+        // with the network thread. `replica` is locked once to compute
+        // `rows` and dropped before re-locking to write it, rather than
+        // held across both — the network thread's own use of the lock
+        // is short, and holding it through an unrelated write extends
+        // every contending wait by however long that write takes.
         let rows = {
+            let Ok(replica) = self.net.replica.lock() else {
+                return false;
+            };
             let tree = replica.tree.read();
             let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
                 return false;
@@ -253,10 +261,17 @@ impl PeerPresence {
             let mut arrived = handles_seen_in(presence, &ws.room.to_string());
             arrived.extend(replica.participants_in(ws.room));
             let rows = room_roster(ws, &labels, &arrived, local);
-            if tree.collaborators == rows {
+            let unchanged = tree.collaborators == rows;
+            // Drop the read guard as soon as it's no longer needed, rather
+            // than holding it to the end of the block below.
+            drop(tree);
+            if unchanged {
                 return false;
             }
             rows
+        };
+        let Ok(replica) = self.net.replica.lock() else {
+            return false;
         };
         replica.tree.write().collaborators = rows;
         true
@@ -291,6 +306,17 @@ fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTre
 /// frames identify their sender by.
 pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 
+/// Narrows a peer's cursor coordinate (desktop pixel space) to the `f32`
+/// [`PresencePayload::Pointer`] takes. Screen coordinates never approach
+/// a magnitude where this loses meaningful precision.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "desktop pixel coordinates stay well within f32's precision"
+)]
+fn cursor_coord_to_f32(v: f64) -> f32 {
+    v as f32
+}
+
 /// Fold inbound presence into `presence`, returning whether anything
 /// landed. Split from [`PeerPresence::pump`] so it can be tested without
 /// a network; `labels` is a parameter for the same reason (production
@@ -318,12 +344,14 @@ pub fn fold_inbound(
         let user = format!("peer@{}", entry.peer);
 
         if let PresenceKey::Workspace { id: room } = &key {
-            let known = match &resolved {
-                Some((seen, map)) if seen == room => map,
-                _ => {
-                    resolved = Some((room.clone(), labels(room)));
-                    &resolved.as_ref().expect("just set").1
-                }
+            if !matches!(&resolved, Some((seen, _)) if seen == room) {
+                resolved = Some((room.clone(), labels(room)));
+            }
+            let Some((_, known)) = &resolved else {
+                // Unreachable — the branch above always sets `resolved`
+                // when it isn't already fresh for `room` — but skipping
+                // this one entry costs nothing next tick, unlike a panic.
+                continue;
             };
             if let Some(name) = known.get(&entry.peer) {
                 presence.set_display_name(ui::permissions::UserId(user.clone()), name.clone());
@@ -334,8 +362,8 @@ pub fn fold_inbound(
             user,
             key,
             PresencePayload::Pointer {
-                x: entry.point.0 as f32,
-                y: entry.point.1 as f32,
+                x: cursor_coord_to_f32(entry.point.0),
+                y: cursor_coord_to_f32(entry.point.1),
             },
         );
         any = true; // Not on loop entry: a `continue` above is a rejected frame.
@@ -696,7 +724,6 @@ mod tests {
 
     #[test]
     fn naming_a_peer_does_not_conjure_a_cursor() {
-        let _room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
         assert!(!fold_inbound(
             Vec::new(),
@@ -822,5 +849,629 @@ mod tests {
             .expect("a pointer");
         assert_eq!(peers[0].0, UserId("peer@42".into()));
         assert_eq!(presence.display_name(&peers[0].0), "peer@42", "never blank");
+    }
+}
+
+/// Two sessions, and a pointer that has to get from one to the other.
+///
+/// Everything above this point is asserted against one session's store,
+/// with room set and names handed in as closures — not enough on its
+/// own, since what a session publishes and what it accepts agree only
+/// by construction. This drives the whole path end to end.
+#[cfg(test)]
+mod two_sessions {
+    use super::*;
+    use crate::network::actor::NetCmd;
+    use crate::network::protocol::NeighbourMsg;
+    use crate::shell::network::shell_network_for_test;
+    use crate::shell::state::{PeerOrigin, RoomId, WorkspaceTree};
+
+    const OWNER: &str = "ada";
+
+    /// A real Iroh endpoint id, minted from a keypair, so the parse is
+    /// the production one.
+    fn peer_id(seed: u8) -> String {
+        iroh::SecretKey::from_bytes(&[seed; 32])
+            .public()
+            .to_string()
+    }
+
+    /// The handle presence frames identify `peer` by.
+    fn handle_of(peer: &str) -> u64 {
+        crate::network::behaviour::peer_liveness_handle(
+            &peer.parse::<iroh::EndpointId>().expect("an endpoint id"),
+        )
+    }
+
+    /// The rooms a session is in, read off its tree the way the frame
+    /// loop does before calling [`PeerPresence::set_rooms`].
+    fn rooms_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> Vec<String> {
+        tree.read()
+            .workspaces
+            .iter()
+            .map(|w| w.room.to_string())
+            .collect()
+    }
+
+    /// `spawn` is the removed legacy JSON-socket constructor; the typed
+    /// Cap'n Proto broker under test opens its own socket the same way
+    /// production does, just with no peer-sync bridge to Iroh.
+    fn broker(dir: &std::path::Path, name: &str) -> crate::shell::collab_broker::BrokerHandle {
+        crate::shell::collab_broker::spawn_native(dir.join(name), &None)
+            .expect("a broker on a temp socket")
+    }
+
+    /// A session standing in for the host: governs a room and has named
+    /// everybody in it.
+    fn host_naming(people: &[(&str, &str)]) -> (WorkspaceTree, RoomId) {
+        let mut tree = WorkspaceTree::default();
+        let ws = tree.append_empty_workspace("Design review");
+        let room = tree.room_of(ws).expect("a fresh workspace mints a room");
+        tree.adopt_ownerless_workspaces(&OWNER.to_string());
+        for (peer, called) in people {
+            assert!(
+                tree.name_peer(room, &OWNER.to_string(), peer, called),
+                "the room's administrator may name a peer in it",
+            );
+        }
+        (tree, room)
+    }
+
+    /// A session that has joined `room`, with names replicated out of
+    /// the room's document the way production does it.
+    fn guest_joining(host: &mut WorkspaceTree, room: RoomId) -> WorkspaceTree {
+        let mut tree = WorkspaceTree::default();
+        let ws = tree.append_empty_workspace("Mine");
+        assert!(
+            tree.set_room(ws, room),
+            "the guest has to end up in the room it joined",
+        );
+        let changes = host
+            .export_room_changes_since(room, &[])
+            .expect("the host is in the room it governs");
+        tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+            .expect("the host's governance merges into the guest");
+        tree
+    }
+
+    /// Hand `msg` to `to` the way the gossip reader does.
+    fn over_the_wire(msg: NeighbourMsg, to: &ShellNetwork) {
+        match msg {
+            NeighbourMsg::PresenceMoved {
+                peer,
+                user,
+                key,
+                point,
+                ts,
+            } => to.handle_presence_message(peer, user, key, point, ts),
+            other => panic!("expected PresenceMoved, got {other:?}"),
+        }
+    }
+
+    /// Take the one presence frame `cmds` is holding.
+    fn published(cmds: &mut tokio::sync::mpsc::Receiver<NetCmd>) -> NeighbourMsg {
+        match cmds
+            .try_recv()
+            .expect("the session must put its pointer on the wire")
+        {
+            NetCmd::Publish { msg, .. } => msg,
+            other => panic!("expected a publish, got {other:?}"),
+        }
+    }
+
+    /// Each session's pointer arrives on the other's screen under the
+    /// room's name for it. Asserted in both directions — host and guest
+    /// are not symmetric, and testing only the easy direction is how a
+    /// half-broken path stays green.
+    #[test]
+    fn a_pointer_crosses_between_two_sessions_both_ways() {
+        let guest_peer = peer_id(9);
+        let host_peer = peer_id(11);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
+
+        let guest_tree = guest_joining(&mut host_tree, room);
+
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let (host_net, mut host_cmds) =
+            shell_network_for_test(host_handle.clone(), handle_of(&host_peer));
+        let (guest_net, mut guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-two-sessions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "h.sock");
+        let guest_broker = broker(&dir, "g.sock");
+
+        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        guest.set_rooms(rooms_of(&guest_handle));
+
+        let room_key = PresenceKey::Workspace {
+            id: room.to_string(),
+        };
+
+        guest.set_cursor(420.0, 300.0);
+        assert!(
+            guest.publish_local_cursor(&room.to_string()),
+            "a session whose pointer has been somewhere must announce it",
+        );
+        over_the_wire(published(&mut guest_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        assert!(
+            host.pump(&mut on_host),
+            "the host's next frame must fold in what the guest published",
+        );
+        let seen = on_host
+            .pointers
+            .get(&room_key)
+            .expect("the host must hold the guest's pointer, filed under the room");
+        assert_eq!(seen.len(), 1, "one person is one pointer");
+        assert_eq!(
+            seen[0].1,
+            (420.0, 300.0),
+            "and it has to be where the guest actually put it",
+        );
+        assert_eq!(
+            on_host.display_name(&seen[0].0),
+            "bob",
+            "the pill over it reads the name the room gave the peer",
+        );
+
+        host.set_cursor(880.0, 520.0);
+        assert!(host.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut host_cmds), &guest_net);
+
+        let mut on_guest = PresenceCtx::default();
+        assert!(
+            guest.pump(&mut on_guest),
+            "and the crossing has to work the other way, which is a \
+             separate fact about a separate room set",
+        );
+        let seen = on_guest
+            .pointers
+            .get(&room_key)
+            .expect("the guest must hold the host's pointer");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1, (880.0, 520.0));
+        assert_eq!(on_guest.display_name(&seen[0].0), "ada");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that has not moved its pointer says nothing, and one
+    /// that then moves it says something, over the real wire.
+    #[test]
+    fn a_session_is_silent_until_its_pointer_has_been_somewhere() {
+        let guest_peer = peer_id(21);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+        let (host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 0xD00Du64);
+        let (guest_net, mut guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-silent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "h.sock");
+        let guest_broker = broker(&dir, "g.sock");
+        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        guest.set_rooms(rooms_of(&guest_handle));
+
+        assert!(
+            !guest.publish_local_cursor(&room.to_string()),
+            "a pointer that has never been anywhere is not a pointer at the origin",
+        );
+        assert!(
+            guest_cmds.try_recv().is_err(),
+            "and nothing may reach the wire for it",
+        );
+        let mut on_host = PresenceCtx::default();
+        assert!(!host.pump(&mut on_host), "so the host has nobody to paint");
+        assert!(on_host.pointers.is_empty());
+
+        guest.set_cursor(640.0, 610.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        assert!(host.pump(&mut on_host));
+        assert_eq!(
+            on_host
+                .pointers
+                .get(&PresenceKey::Workspace {
+                    id: room.to_string()
+                })
+                .map(|p| p[0].1),
+            Some((640.0, 610.0)),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where the previous test proves the gate, this proves it's
+    /// reachable — takes the position from `ClientInput` exactly as
+    /// `native.rs` does, rather than writing `None` by hand.
+    #[test]
+    fn the_frame_loop_publishes_nothing_for_a_pointer_that_has_never_moved() {
+        let guest_peer = peer_id(23);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Claude")]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+        let (host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 0xD0Cu64);
+        let (guest_net, mut guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-frameloop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "h.sock");
+        let guest_broker = broker(&dir, "g.sock");
+        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        guest.set_rooms(rooms_of(&guest_handle));
+
+        let input = crate::compositor::client_input::ClientInput::default();
+        assert!(
+            input.pointer_position().is_none(),
+            "the fixture has to be a session that has not been pointed at, \
+             or this proves nothing",
+        );
+
+        guest.set_cursor_position(input.pointer_position());
+        assert!(
+            !guest.publish_local_cursor(&room.to_string()),
+            "a session with no pointer has nothing to say about where one is",
+        );
+        assert!(
+            guest_cmds.try_recv().is_err(),
+            "and nothing may reach the wire for it",
+        );
+
+        let mut on_host = PresenceCtx::default();
+        assert!(!host.pump(&mut on_host), "so the host has nobody to paint");
+        assert!(
+            !on_host.pointers.contains_key(&PresenceKey::Workspace {
+                id: room.to_string()
+            }),
+            "and no pill is drawn for a participant who never pointed at anything",
+        );
+
+        guest.set_cursor_position(Some((640.0, 610.0)));
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        assert!(host.pump(&mut on_host));
+        assert_eq!(
+            on_host
+                .pointers
+                .get(&PresenceKey::Workspace {
+                    id: room.to_string()
+                })
+                .map(|p| p[0].1),
+            Some((640.0, 610.0)),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Asserted across two real sessions rather than against a closure.
+    #[test]
+    fn a_pointer_from_a_room_this_session_is_not_in_is_refused() {
+        let stranger_peer = peer_id(33);
+        let (host_tree, _room) = host_naming(&[(&stranger_peer, "Nobody")]);
+
+        let mut stranger_tree = WorkspaceTree::default();
+        let stranger_ws = stranger_tree.append_empty_workspace("Elsewhere");
+        let elsewhere = stranger_tree
+            .room_of(stranger_ws)
+            .expect("a fresh workspace mints a room");
+
+        let host_handle = host_tree.shared();
+        let stranger_handle = stranger_tree.shared();
+        let (host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 0xBEEFu64);
+        let (stranger_net, mut stranger_cmds) =
+            shell_network_for_test(stranger_handle.clone(), handle_of(&stranger_peer));
+        let host_net = Arc::new(host_net);
+        let stranger_net = Arc::new(stranger_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-stranger-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "h.sock");
+        let stranger_broker = broker(&dir, "s.sock");
+        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
+        let stranger =
+            PeerPresence::attach(&stranger_broker, Arc::clone(&stranger_net), Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        stranger.set_rooms(rooms_of(&stranger_handle));
+
+        stranger.set_cursor(10.0, 10.0);
+        assert!(stranger.publish_local_cursor(&elsewhere.to_string()));
+        over_the_wire(published(&mut stranger_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        assert!(
+            !host.pump(&mut on_host),
+            "a room this session is not in is not this session's to hold",
+        );
+        assert!(
+            on_host.pointers.is_empty(),
+            "and nothing may be filed under it",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Put the fixture's workspace on screen — `append_empty_workspace`
+    /// doesn't move `active`, but the roster reads whichever room that is.
+    fn looking_at_its_room(tree: &mut WorkspaceTree) {
+        tree.active = tree
+            .workspaces
+            .first()
+            .expect("the fixture makes a workspace")
+            .id;
+    }
+
+    /// A session's own view of who is in the room it is looking at.
+    fn roster_of(
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+    ) -> Vec<(String, Option<String>, bool)> {
+        tree.read()
+            .collaborators
+            .iter()
+            .map(|c| (c.name.clone(), c.role_id.clone(), c.invited))
+            .collect()
+    }
+
+    /// Stand a session up around `tree` with `peer` as its identity.
+    /// Returns the relay and the command channel, which has to be kept
+    /// alive or the actor's sends start failing.
+    fn session(
+        dir: &std::path::Path,
+        sock: &str,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        peer: &str,
+    ) -> (
+        PeerPresence,
+        Arc<ShellNetwork>,
+        tokio::sync::mpsc::Receiver<NetCmd>,
+    ) {
+        let (net, cmds) = shell_network_for_test(tree.clone(), handle_of(peer));
+        let net = Arc::new(net);
+        let relay = PeerPresence::attach(&broker(dir, sock), Arc::clone(&net), Vec::new());
+        relay.set_rooms(rooms_of(tree));
+        (relay, net, cmds)
+    }
+
+    /// `refresh_roster` must actually write `WorkspaceTree::collaborators`.
+    #[test]
+    fn a_peer_who_joined_is_in_the_roster() {
+        let guest_peer = peer_id(21);
+        let host_peer = peer_id(22);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-join-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        assert!(
+            roster_of(&host_handle).is_empty(),
+            "before anyone arrives the room has nobody in it",
+        );
+
+        guest.set_cursor(420.0, 300.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        assert!(host.pump(&mut on_host), "the frame folds the guest in");
+        assert!(
+            host.refresh_roster(&on_host),
+            "and the room's people changed, which is a reason to repaint",
+        );
+
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, false)],
+            "the host's roster must name the person who joined it, as \
+             somebody who is here rather than somebody who was asked",
+        );
+
+        assert!(
+            !host.refresh_roster(&on_host),
+            "restating the same room's people is not a change",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plain invite says nothing about who its token is for, so the peer
+    /// who redeems one has no name in the room and is listed as its id.
+    #[test]
+    fn a_peer_the_room_has_not_named_is_listed_as_its_id() {
+        let guest_peer = peer_id(31);
+        let host_peer = peer_id(32);
+        let (mut host_tree, room) = host_naming(&[]);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-unnamed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        guest.set_cursor(10.0, 20.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        host.pump(&mut on_host);
+        host.refresh_roster(&on_host);
+
+        let expected = format!("peer@{}", handle_of(&guest_peer));
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![(expected, None, false)],
+            "an unnamed peer keeps its id as its label",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host names itself when it mints an invite; the roster must not
+    /// read that back as a peer of its own.
+    #[test]
+    fn the_room_does_not_list_the_session_reading_it() {
+        let guest_peer = peer_id(41);
+        let host_peer = peer_id(42);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, OWNER)]);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-self-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        guest.set_cursor(1.0, 2.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        let mut on_host = PresenceCtx::default();
+        host.pump(&mut on_host);
+        host.refresh_roster(&on_host);
+
+        let listed: Vec<String> = roster_of(&host_handle)
+            .into_iter()
+            .map(|(n, ..)| n)
+            .collect();
+        assert_eq!(
+            listed,
+            vec!["bob".to_string()],
+            "the roster is who else is here, and the host is not else",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing crosses a wire here — only the room document's naming.
+    #[test]
+    fn a_named_peer_who_has_not_arrived_reads_as_invited() {
+        let host_peer = peer_id(51);
+        let guest_peer = peer_id(52);
+        let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut guest_tree);
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-guest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (guest, _guest_net, _guest_cmds) = session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        let empty = PresenceCtx::default();
+        assert!(
+            guest.refresh_roster(&empty),
+            "a room whose authority has named somebody has a row to show",
+        );
+        assert_eq!(
+            roster_of(&guest_handle),
+            vec![(OWNER.to_string(), Some("owner".to_string()), true)],
+            "the row carries the name and the role the room replicated, \
+             and says that peer has not arrived",
+        );
+
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&guest_handle.read()),
+            0,
+            "an invitation nobody has redeemed is not a peer in the room",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An invitation becomes a participant without a pointer — joining
+    /// isn't moving a mouse. The host observes the guest asking the
+    /// room's document for its changes, under its authenticated identity.
+    #[test]
+    fn arriving_turns_an_invitation_into_a_participant() {
+        let guest_peer = peer_id(61);
+        let host_peer = peer_id(62);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-beat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+
+        let quiet = PresenceCtx::default();
+        assert!(host.refresh_roster(&quiet));
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, true)],
+            "before he redeems anything, ada has invited him and no more",
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&host_handle.read()),
+            0,
+            "so the top bar still offers to invite the first person",
+        );
+
+        // Redeems it: the same request `accept_invite` sends.
+        {
+            let mut replica = host_net.replica.lock().expect("the replica lock");
+            replica.handle_from(
+                &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
+                &NeighbourMsg::SyncReq {
+                    since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
+                        .expect("empty heads serialise"),
+                    room: room.to_string(),
+                },
+            );
+        }
+
+        assert!(
+            host.refresh_roster(&quiet),
+            "the room's people changed, which is what makes the frame repaint",
+        );
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, false)],
+            "the same row, now a participant — this is the change a \
+             viewer sees at the moment somebody joins",
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&host_handle.read()),
+            1,
+            "and the bar shows him instead of offering to invite him",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

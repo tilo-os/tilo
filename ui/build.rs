@@ -1,11 +1,17 @@
-fn main() {
+/// # Errors
+///
+/// Returns an error if the `webview-wpe` feature is enabled and any of the
+/// WPE stack's `pkg-config` libraries can't be probed (not installed, or
+/// `PKG_CONFIG_PATH` doesn't point at the prefix built by
+/// `os/dev/build-wpe.sh`).
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The WPE WebKit backend (feature `webview-wpe`) links the WPE
     // stack. Fedora ships no WPE packages — build them with
     // os/dev/build-wpe.sh and point PKG_CONFIG_PATH at the prefix.
     // Without the feature this script is a no-op, so the workspace
     // builds on machines without the libraries.
     if std::env::var_os("CARGO_FEATURE_WEBVIEW_WPE").is_none() {
-        return;
+        return Ok(());
     }
     for lib in [
         "wpe-webkit-2.0",
@@ -19,15 +25,12 @@ fn main() {
         "egl",
         "gbm",
     ] {
-        if let Err(err) = pkg_config::probe_library(lib) {
-            // Cargo's own channel, not a panic. `cargo::error=` fails the
-            // build with this one line; panicking buries it under a
-            // build-script backtrace, which is how a missing library reads as
-            // a compiler crash rather than as the one-line instruction it is.
-            println!(
-                "cargo::error=feature `webview-wpe` needs {lib} (build the stack with \
+        pkg_config::probe_library(lib).map_err(|err| {
+            format!(
+                "feature `webview-wpe` needs {lib} (build the stack with \
                  os/dev/build-wpe.sh and set PKG_CONFIG_PATH to the prefix): {err}"
-            );
-        }
+            )
+        })?;
     }
+    Ok(())
 }

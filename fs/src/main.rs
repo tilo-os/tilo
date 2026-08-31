@@ -1,3 +1,16 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
@@ -174,10 +187,11 @@ fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<Cap
         .collect::<Result<Vec<_>>>()?;
 
     let file = CapabilityFile::load(path, identity, principals)
-        .with_context(|| format!("binding the capability list {path:?}"))?;
+        .with_context(|| format!("binding the capability list {}", path.display()))?;
     println!(
-        "Enforcing {} capabilities from {path:?} as identity {}",
+        "Enforcing {} capabilities from {} as identity {}",
         file.count(),
+        path.display(),
         hex::encode(identity)
     );
     Ok(Some(Arc::new(file)))
@@ -187,8 +201,8 @@ fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<Cap
 fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
     if every == 0 {
         println!(
-            "Capability list {:?} will NOT be re-read; a later grant needs a remount",
-            file.path()
+            "Capability list {} will NOT be re-read; a later grant needs a remount",
+            file.path().display()
         );
         return None;
     }
@@ -199,16 +213,19 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
             match file.refresh() {
                 Refresh::Unchanged => {}
                 Refresh::Reloaded(n) => {
-                    println!("Capability list {:?} reloaded: {n} in force", file.path());
+                    println!(
+                        "Capability list {} reloaded: {n} in force",
+                        file.path().display()
+                    );
                 }
                 Refresh::Revoked => eprintln!(
-                    "Capability list {:?} is gone; denying every access until it returns",
-                    file.path()
+                    "Capability list {} is gone; denying every access until it returns",
+                    file.path().display()
                 ),
                 Refresh::Failed(e) => eprintln!(
-                    "Capability list {:?} could not be re-read ({e}); the previously loaded list \
+                    "Capability list {} could not be re-read ({e}); the previously loaded list \
                      stays in force",
-                    file.path()
+                    file.path().display()
                 ),
             }
         }
@@ -217,18 +234,18 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
 
 /// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
-    sock: PathBuf,
+    sock: &Path,
     namespace: Arc<Mutex<Namespace>>,
     sync: Arc<SyncHandle>,
     enforcement: fs::control::Enforcement,
 ) -> tokio::task::JoinHandle<()> {
-    let _ = std::fs::remove_file(&sock); // clear a stale socket
-    match tokio::net::UnixListener::bind(&sock) {
+    let _ = std::fs::remove_file(sock); // clear a stale socket
+    match tokio::net::UnixListener::bind(sock) {
         Ok(listener) => {
             // The socket can read and edit every document — restrict to the owner.
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
-            println!("Document control socket at {sock:?}");
+            let _ = std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600));
+            println!("Document control socket at {}", sock.display());
             tokio::spawn(fs::control::serve(
                 listener,
                 namespace,
@@ -237,7 +254,7 @@ fn spawn_control(
             ))
         }
         Err(e) => {
-            eprintln!("could not bind control socket {sock:?}: {e}");
+            eprintln!("could not bind control socket {}: {e}", sock.display());
             tokio::spawn(async {})
         }
     }
@@ -258,8 +275,8 @@ async fn serve(
     storage_sock: Option<PathBuf>,
     acl_args: AclArgs,
 ) -> Result<()> {
-    let np = namespace_path(&cache_dir);
-    let thumb_dir = thumb_path(&cache_dir);
+    let np = namespace_path(cache_dir.as_deref());
+    let thumb_dir = thumb_path(cache_dir.as_deref());
     let device = load_mount_identity(&identity_paths())?;
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     // This device's own key is the mount's identity unless one is named.
@@ -275,7 +292,7 @@ async fn serve(
             Namespace::from_bytes(author.clone(), &std::fs::read(p)?)?,
             false,
         ),
-        None => (Namespace::new(author.clone()), true),
+        None => (Namespace::new(author.clone())?, true),
     };
     let namespace = Arc::new(Mutex::new(ns_value));
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
@@ -283,10 +300,10 @@ async fn serve(
     if fresh {
         if let Some(seed) = seed {
             seed_from_dir(&namespace, &store, &seed).await?;
-            println!("Seeded workspace from {seed:?}");
+            println!("Seeded workspace from {}", seed.display());
         }
-    } else {
-        println!("Restored workspace from {:?}", np.as_ref().unwrap());
+    } else if let Some(p) = &np {
+        println!("Restored workspace from {}", p.display());
     }
 
     let (workspace, ticket) = Workspace::host(
@@ -302,11 +319,11 @@ async fn serve(
     println!("Iroh NodeID: {}", endpoint.id());
     println!(
         "Hosting workspace — share this ticket to invite peers:\n{}",
-        ticket.encode()
+        ticket.encode()?
     );
 
     let _control = control_sock
-        .map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
+        .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -337,8 +354,8 @@ async fn mount(
     acl_args: AclArgs,
 ) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
-    let np = namespace_path(&cache_dir);
-    let thumb_dir = thumb_path(&cache_dir);
+    let np = namespace_path(cache_dir.as_deref());
+    let thumb_dir = thumb_path(cache_dir.as_deref());
     let device = load_mount_identity(&identity_paths())?;
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     let caps = resolve_acl(&acl_args, device.public)?;
@@ -348,7 +365,8 @@ async fn mount(
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let author = endpoint.id().to_string();
 
-    let ns_value = open_namespace_mount(author, &np, &endpoint, ticket.node.clone()).await?;
+    let ns_value =
+        open_namespace_mount(author, np.as_deref(), &endpoint, ticket.node.clone()).await?;
     let namespace = Arc::new(Mutex::new(ns_value));
 
     let workspace = Workspace::join(
@@ -366,7 +384,7 @@ async fn mount(
     println!("Joined workspace.");
 
     let _control = control_sock
-        .map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
+        .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -388,18 +406,23 @@ async fn mount(
     Ok(())
 }
 
-fn namespace_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
-    cache_dir.as_ref().map(|d| d.join("namespace.bin"))
+fn namespace_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
+    cache_dir.map(|d| d.join("namespace.bin"))
 }
 
 /// Where host-generated thumbnails are cached (`thumbs/` under the content cache); `None` for an in-memory mount.
-fn thumb_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
-    cache_dir.as_ref().map(|d| d.join("thumbs"))
+fn thumb_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
+    cache_dir.map(|d| d.join("thumbs"))
 }
 
 /// Atomically persist the namespace document to `path` (write-temp + rename).
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
-    let bytes = { namespace.lock().unwrap().save() };
+    let bytes = {
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .save()
+    };
     if let Err(e) = atomic_file::write(path, &bytes) {
         eprintln!("namespace persist to {} failed: {e}", path.display());
     }
@@ -418,12 +441,11 @@ fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task
 /// Open a joiner's namespace: load any persisted copy, then merge the host's doc if reachable.
 async fn open_namespace_mount(
     author: String,
-    np: &Option<PathBuf>,
+    np: Option<&Path>,
     endpoint: &iroh::endpoint::Endpoint,
     host: iroh_base::EndpointAddr,
 ) -> Result<Namespace> {
     let persisted = np
-        .as_ref()
         .filter(|p| p.exists())
         .and_then(|p| std::fs::read(p).ok());
 
@@ -481,7 +503,10 @@ async fn run_mount(
         Some(dir) => match fs::ThumbProvider::open(&dir) {
             Ok(provider) => fs.with_thumbs(provider),
             Err(e) => {
-                eprintln!("thumbnail cache unavailable at {dir:?} ({e}); previews disabled");
+                eprintln!(
+                    "thumbnail cache unavailable at {} ({e}); previews disabled",
+                    dir.display()
+                );
                 fs
             }
         },
@@ -496,11 +521,11 @@ async fn run_mount(
                 Ok(listener) => {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660));
-                    println!("Storage accounting socket at {sock:?}");
+                    println!("Storage accounting socket at {}", sock.display());
                     tokio::spawn(fs::storage::serve(listener, authority))
                 }
                 Err(error) => {
-                    eprintln!("could not bind storage socket {sock:?}: {error}");
+                    eprintln!("could not bind storage socket {}: {error}", sock.display());
                     tokio::spawn(async {})
                 }
             }
@@ -515,7 +540,7 @@ async fn run_mount(
 
     let mp = mount_point.clone();
     let mount_task = tokio::task::spawn_blocking(move || fuser::mount2(fs, &mp, &config));
-    println!("Mounted QuickFS at {mount_point:?}");
+    println!("Mounted QuickFS at {}", mount_point.display());
 
     // Exit cleanly on Ctrl-C or mount exit (don't hang a crash-looping service forever).
     tokio::select! {
@@ -532,7 +557,7 @@ async fn run_mount(
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Recursively ingest a directory's contents into the workspace.
@@ -552,9 +577,11 @@ async fn seed_from_dir(
             if ft.is_dir() {
                 let ino = namespace
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .create_dir(parent_ino, &name, now_ms())
-                    .expect("create_dir under known parent");
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("seeding {name:?}: parent inode {parent_ino} vanished")
+                    })?;
                 stack.push((ino, path));
             } else if ft.is_file() {
                 let data = std::fs::read(&path)?;
@@ -565,20 +592,19 @@ async fn seed_from_dir(
                     .and_then(|e| registry.provider_for_ext(e).map(|_| e.to_lowercase()));
                 if let Some(c) = codec {
                     // Recognized rich-text format → seed as a CRDT document.
-                    let mut ns = namespace.lock().unwrap();
+                    let mut ns = namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(ino) = ns.create_document(parent_ino, &name, &c, now_ms()) {
                         ns.import_document(ino, &registry, &data, now_ms());
                     }
                 } else {
                     let size = data.len() as u64;
                     let hash = store.write_content(&data).await?;
-                    namespace.lock().unwrap().create_file(
-                        parent_ino,
-                        &name,
-                        hash.as_ref(),
-                        size,
-                        now_ms(),
-                    );
+                    namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .create_file(parent_ino, &name, hash.as_ref(), size, now_ms());
                 }
             }
         }
@@ -639,7 +665,7 @@ mod tests {
                 assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));
                 assert!(seed.is_none());
             }
-            other => panic!("expected serve subcommand, got {other:?}"),
+            Command::Mount { .. } => panic!("expected serve subcommand, got Mount"),
         }
     }
 
@@ -651,7 +677,7 @@ mod tests {
             .expect("fs.service command line must parse");
         let acl = match cli.command {
             Command::Serve { acl, .. } => acl,
-            other => panic!("expected serve, got {other:?}"),
+            Command::Mount { .. } => panic!("expected serve, got Mount"),
         };
         assert_eq!(
             acl.acl.as_deref(),
@@ -756,7 +782,7 @@ mod tests {
         let cli = Cli::try_parse_from(full).expect("command line must parse");
         match cli.command {
             Command::Serve { acl, .. } => acl,
-            other => panic!("expected serve, got {other:?}"),
+            Command::Mount { .. } => panic!("expected serve, got Mount"),
         }
     }
 

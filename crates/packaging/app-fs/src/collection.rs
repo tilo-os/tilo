@@ -54,12 +54,19 @@ impl Collection {
 
     /// Encode in the wire format described in the module docs.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(MAGIC.len() + 4 + self.entries.len() * (4 + 32));
+        let mut out = Vec::with_capacity(
+            MAGIC
+                .len()
+                .saturating_add(4)
+                .saturating_add(self.entries.len().saturating_mul(4 + 32)),
+        );
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        let count = u32::try_from(self.entries.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&count.to_le_bytes());
         for (path, hash) in &self.entries {
             let pb = path.as_bytes();
-            out.extend_from_slice(&(pb.len() as u32).to_le_bytes());
+            let plen = u32::try_from(pb.len()).unwrap_or(u32::MAX);
+            out.extend_from_slice(&plen.to_le_bytes());
             out.extend_from_slice(pb);
             out.extend_from_slice(hash);
         }
@@ -69,33 +76,59 @@ impl Collection {
     /// Decode bytes produced by [`Self::encode`]. Strict — any
     /// trailing bytes, duplicate paths, or NUL bytes in a path
     /// are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CollectionDecodeError`] describing exactly what was
+    /// wrong: bad/missing magic, a length that runs past the end of
+    /// `bytes`, a non-UTF-8 or NUL-containing path, a duplicate path,
+    /// or unconsumed trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, CollectionDecodeError> {
-        if bytes.len() < 12 || &bytes[0..8] != MAGIC {
+        if bytes.len() < 12 {
             return Err(CollectionDecodeError::BadMagic);
         }
-        let count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let Some(magic) = bytes.get(0..8) else {
+            return Err(CollectionDecodeError::BadMagic);
+        };
+        if magic != MAGIC {
+            return Err(CollectionDecodeError::BadMagic);
+        }
+        let count_bytes = bytes
+            .get(8..12)
+            .and_then(|s| <[u8; 4]>::try_from(s).ok())
+            .ok_or(CollectionDecodeError::Truncated)?;
+        let count = u32::from_le_bytes(count_bytes) as usize;
         let mut cursor = 12usize;
         let mut out: BTreeMap<String, [u8; 32]> = BTreeMap::new();
         for _ in 0..count {
-            if cursor + 4 > bytes.len() {
-                return Err(CollectionDecodeError::Truncated);
-            }
-            let plen = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-            cursor += 4;
-            if cursor + plen + 32 > bytes.len() {
-                return Err(CollectionDecodeError::Truncated);
-            }
-            let raw = &bytes[cursor..cursor + plen];
+            let plen_end = cursor.saturating_add(4);
+            let plen_bytes = bytes
+                .get(cursor..plen_end)
+                .and_then(|s| <[u8; 4]>::try_from(s).ok())
+                .ok_or(CollectionDecodeError::Truncated)?;
+            let plen = u32::from_le_bytes(plen_bytes) as usize;
+            cursor = plen_end;
+
+            let path_end = cursor.saturating_add(plen);
+            let hash_end = path_end.saturating_add(32);
+            let raw = bytes
+                .get(cursor..path_end)
+                .ok_or(CollectionDecodeError::Truncated)?;
             if raw.contains(&0) {
                 return Err(CollectionDecodeError::BadPath);
             }
             let path = std::str::from_utf8(raw)
                 .map_err(|_| CollectionDecodeError::BadPath)?
                 .to_string();
-            cursor += plen;
+            cursor = path_end;
+
+            let hash_bytes = bytes
+                .get(cursor..hash_end)
+                .ok_or(CollectionDecodeError::Truncated)?;
             let mut h = [0u8; 32];
-            h.copy_from_slice(&bytes[cursor..cursor + 32]);
-            cursor += 32;
+            h.copy_from_slice(hash_bytes);
+            cursor = hash_end;
+
             if out.insert(path, h).is_some() {
                 return Err(CollectionDecodeError::DuplicatePath);
             }

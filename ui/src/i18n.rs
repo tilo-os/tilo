@@ -40,14 +40,38 @@ impl From<&String> for ArgValue {
     }
 }
 
-macro_rules! arg_from_number {
+/// Widening conversions into `f64` — exact for every value of `$t`.
+macro_rules! arg_from_number_lossless {
     ($($t:ty),*) => {$(
         impl From<$t> for ArgValue {
+            fn from(n: $t) -> Self { ArgValue::Number(f64::from(n)) }
+        }
+    )*};
+}
+arg_from_number_lossless!(i8, i16, i32, u8, u16, u32, f32);
+
+/// Narrowing conversions into `f64`, for display/interpolation only: a
+/// fluent message shows a *formatted* number, not an exact one, so losing
+/// precision above 2^52 — a magnitude no UI counter or index realistically
+/// reaches — is a deliberate, harmless approximation.
+macro_rules! arg_from_number_lossy {
+    ($($t:ty),*) => {$(
+        impl From<$t> for ArgValue {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "display-only formatting; precision above 2^52 is never meaningful in a UI string"
+            )]
             fn from(n: $t) -> Self { ArgValue::Number(n as f64) }
         }
     )*};
 }
-arg_from_number!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64);
+arg_from_number_lossy!(i64, isize, u64, usize);
+
+impl From<f64> for ArgValue {
+    fn from(n: f64) -> Self {
+        ArgValue::Number(n)
+    }
+}
 
 pub struct I18nManager {
     bundles: HashMap<LanguageIdentifier, FluentBundle<FluentResource>>,
@@ -60,12 +84,14 @@ thread_local! {
 
 /// Parse a BCP-47 locale tag, falling back to `en-US` on a malformed value
 /// (e.g. a garbled system locale) rather than panicking the whole app over
-/// a string it didn't choose. The fallback literal is a compile-time
-/// constant known to parse, so this can't recurse into failure.
+/// a string it didn't choose. `en-US` is a compile-time-known-valid literal,
+/// so the final `unwrap_or_default` (BCP-47 "und", undefined) is a belt and
+/// braces path that's never actually reached.
 fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
     locale
         .parse()
-        .unwrap_or_else(|_| "en-US".parse().expect("\"en-US\" is a valid BCP-47 tag"))
+        .or_else(|_| "en-US".parse())
+        .unwrap_or_default()
 }
 
 impl I18nManager {
@@ -92,7 +118,13 @@ impl I18nManager {
 
     pub fn add_resource(locale: &str, ftl_source: String) {
         let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
-        let res = FluentResource::try_new(ftl_source).expect("Failed to parse an FTL resource.");
+        // A malformed `.ftl` resource degrades to "not loaded" — `lookup`
+        // already falls back to the raw key when no message is found,
+        // which is a safer failure mode than panicking the whole app over
+        // a translator's typo.
+        let Ok(res) = FluentResource::try_new(ftl_source) else {
+            return;
+        };
 
         MANAGER.with(|m| {
             if let Some(mgr) = m.borrow_mut().as_mut() {
@@ -101,9 +133,9 @@ impl I18nManager {
                     b.set_use_isolating(false);
                     b
                 });
-                bundle
-                    .add_resource(res)
-                    .expect("Failed to add FTL resource to the bundle.");
+                // Same degrade: a message-id collision leaves the existing
+                // message in place rather than crashing the caller.
+                let _ = bundle.add_resource(res);
             }
         });
     }

@@ -9,12 +9,14 @@
 
 use std::collections::HashMap;
 
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace};
+use ui::widget::{Button, ButtonFace, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::app::ExpandOutcome;
@@ -25,7 +27,7 @@ use crate::model::{self, Snippet, SnippetId};
 /// One placeholder field: its name and the user's current value.
 struct Field {
     name: String,
-    value: String,
+    input: TextInput,
 }
 
 pub struct ExpandModal {
@@ -45,14 +47,21 @@ pub struct ExpandModal {
 
 impl ExpandModal {
     pub fn new(s: &Snippet) -> Self {
-        let fields = s
+        let mut fields: Vec<Field> = s
             .placeholders()
             .into_iter()
             .map(|name| Field {
+                input: TextInput::local()
+                    .with_id(&format!("snippets.expand.{name}"))
+                    .with_placeholder("type a value…")
+                    .with_font_size(13.0)
+                    .with_plain_chrome(),
                 name,
-                value: String::new(),
             })
             .collect();
+        if let Some(first) = fields.first_mut() {
+            first.input.set_focus(true);
+        }
         Self {
             snippet_id: s.id,
             title: s.title.clone(),
@@ -69,7 +78,7 @@ impl ExpandModal {
     fn values(&self) -> HashMap<String, String> {
         self.fields
             .iter()
-            .map(|f| (f.name.clone(), f.value.clone()))
+            .map(|f| (f.name.clone(), f.input.value().to_string()))
             .collect()
     }
 
@@ -80,7 +89,9 @@ impl ExpandModal {
 
     /// True once every field has a non-empty value.
     fn all_filled(&self) -> bool {
-        self.fields.iter().all(|f| !f.value.trim().is_empty())
+        self.fields
+            .iter()
+            .all(|f| !f.input.value().trim().is_empty())
     }
 
     /// Render the modal. The modal records its own button/field hit
@@ -93,6 +104,17 @@ impl ExpandModal {
         theme: &Theme,
         area: Rect,
     ) {
+        let panel = Self::draw_frame(scene, t, theme, area);
+        let pad = 24.0;
+        let y = self.draw_header(scene, t, tr, theme, panel, pad);
+        let y = self.draw_fields(scene, t, tr, theme, panel, pad, y);
+        self.draw_preview(scene, t, tr, theme, panel, pad, y);
+        self.draw_buttons(scene, t, tr, theme, panel, pad);
+    }
+
+    /// Scrim + the panel's background and border. Returns the panel rect
+    /// every other section draws relative to.
+    fn draw_frame(scene: &mut Scene, t: Affine, theme: &Theme, area: Rect) -> Rect {
         let c = &theme.tokens.colors;
         // Scrim.
         draw::fill_rect(scene, t, area, c.surfaces.overlay);
@@ -118,8 +140,21 @@ impl ExpandModal {
             1.0,
             c.border_standard,
         );
+        panel
+    }
 
-        let pad = 24.0;
+    /// The "Fill in variables" title and the snippet's own title beneath
+    /// it. Returns the y cursor for the next section.
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let mut y = panel.y0 + pad;
 
         draw::text(
@@ -145,12 +180,27 @@ impl ExpandModal {
             c.text_dim,
             TextWeight::Regular,
         );
-        y += 30.0;
+        y + 30.0
+    }
 
-        // Field inputs.
+    /// One labelled input row per placeholder, or a "no variables" note
+    /// when the snippet has none. Records `field_rects` for hit-testing
+    /// and returns the y cursor for the next section.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_fields(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+        mut y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         self.field_rects.clear();
         let label_w = 130.0;
-        for (i, f) in self.fields.iter().enumerate() {
+        for (i, f) in self.fields.iter_mut().enumerate() {
             let row_y = y;
             // Label as ${name}.
             let lbl = format!("${{{}}}", f.name);
@@ -192,41 +242,16 @@ impl ExpandModal {
                     c.border_standard
                 },
             );
-            let shown = if f.value.is_empty() {
-                "type a value…".to_string()
-            } else {
-                f.value.clone()
-            };
-            let vcolor = if f.value.is_empty() {
-                c.text_dim
-            } else {
-                c.text_primary
-            };
-            draw::text(
-                scene,
-                tr,
-                t,
-                &shown,
+            // The modal keeps its established label/box chrome; the shared
+            // editor owns only the inset content and interaction behaviour.
+            f.input.apply_layout_external(Rect::new(
                 input.x0 + 10.0,
-                input.y0 + 8.0,
-                13.0,
-                vcolor,
-                TextWeight::Regular,
-            );
-            if focused {
-                let tw = if f.value.is_empty() {
-                    0.0
-                } else {
-                    f64::from(tr.measure(&f.value, 13.0, None).0)
-                };
-                let cx = input.x0 + 10.0 + tw + 1.0;
-                draw::fill_rect(
-                    scene,
-                    t,
-                    Rect::new(cx, input.y0 + 7.0, cx + 1.5, input.y0 + 23.0),
-                    c.border_focus,
-                );
-            }
+                input.y0,
+                input.x1 - 10.0,
+                input.y1,
+            ));
+            f.input
+                .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
             self.field_rects.push(input);
             y += 40.0;
         }
@@ -245,7 +270,22 @@ impl ExpandModal {
             );
             y += 30.0;
         }
+        y
+    }
 
+    /// The live "PREVIEW" panel: the substituted body, syntax-highlighted.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_preview(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+        mut y: f64,
+    ) {
+        let c = &theme.tokens.colors;
         // Live preview header.
         y += 4.0;
         draw::text(
@@ -302,8 +342,19 @@ impl ExpandModal {
             }
             cy += 19.0;
         }
+    }
 
-        // Buttons.
+    /// The Copy / Cancel buttons, right-aligned along the panel's bottom
+    /// edge. Records `copy_rect` / `cancel_rect` for hit-testing.
+    fn draw_buttons(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+    ) {
         let by = panel.y1 - 52.0;
         let copy_label = if self.all_filled() {
             "Copy"
@@ -344,74 +395,120 @@ impl ExpandModal {
     }
 
     /// Route a window event. Returns the modal's lifecycle outcome.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
+        scale_factor: f64,
         mouse: Point,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) -> ExpandOutcome {
-        match event {
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::Escape) => return ExpandOutcome::Cancel,
+                Key::Named(NamedKey::Enter) => {
+                    return ExpandOutcome::Copy(self.preview(), self.snippet_id);
+                }
+                Key::Named(NamedKey::Tab) => {
+                    if !self.fields.is_empty() {
+                        let count = self.fields.len();
+                        self.focused = if modifiers.state().shift_key() {
+                            (self.focused + count - 1) % count
+                        } else {
+                            (self.focused + 1) % count
+                        };
+                        self.focus_field(self.focused);
+                    }
+                    return ExpandOutcome::Stay;
+                }
+                _ => {}
+            }
+        }
+
+        let left_press = matches!(
+            event,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.copy_rect.contains(mouse) {
-                    return ExpandOutcome::Copy(self.preview(), self.snippet_id);
-                }
-                if self.cancel_rect.contains(mouse) {
-                    return ExpandOutcome::Cancel;
-                }
-                for (i, r) in self.field_rects.iter().enumerate() {
-                    if r.contains(mouse) {
-                        self.focused = i;
-                        return ExpandOutcome::Stay;
-                    }
-                }
-                ExpandOutcome::Stay
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => self.handle_key(logical_key),
-            _ => ExpandOutcome::Stay,
+        );
+        if left_press {
+            if self.copy_rect.contains(mouse) {
+                return ExpandOutcome::Copy(self.preview(), self.snippet_id);
+            }
+            if self.cancel_rect.contains(mouse) {
+                return ExpandOutcome::Cancel;
+            }
         }
+
+        let pointed = self.field_rects.iter().position(|r| r.contains(mouse));
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left | MouseButton::Right,
+                ..
+            }
+        ) && let Some(index) = pointed
+        {
+            self.focused = index;
+            self.focus_field(index);
+        }
+
+        // Cursor motion reaches every editor so each can maintain accurate
+        // hover/drag state. Keyboard and IME events go only to the focused
+        // field; pointer events go to the field under the pointer.
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            for field in &mut self.fields {
+                let mut child_handled = false;
+                field.input.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    &mut child_handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+        } else if let Some(index) = pointed.or_else(|| {
+            self.fields
+                .get(self.focused)
+                .is_some_and(|f| f.input.is_focused())
+                .then_some(self.focused)
+        }) && let Some(field) = self.fields.get_mut(index)
+        {
+            let mut child_handled = false;
+            field.input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut child_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            let _ = field.input.take_dirty();
+        }
+
+        ExpandOutcome::Stay
     }
 
-    fn handle_key(&mut self, key: &Key) -> ExpandOutcome {
-        match key {
-            Key::Named(NamedKey::Escape) => ExpandOutcome::Cancel,
-            Key::Named(NamedKey::Enter) => ExpandOutcome::Copy(self.preview(), self.snippet_id),
-            Key::Named(NamedKey::Tab) => {
-                if !self.fields.is_empty() {
-                    self.focused = (self.focused + 1) % self.fields.len();
-                }
-                ExpandOutcome::Stay
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if let Some(f) = self.fields.get_mut(self.focused) {
-                    f.value.pop();
-                }
-                ExpandOutcome::Stay
-            }
-            Key::Named(NamedKey::Space) => {
-                if let Some(f) = self.fields.get_mut(self.focused) {
-                    f.value.push(' ');
-                }
-                ExpandOutcome::Stay
-            }
-            Key::Character(s) => {
-                if let Some(f) = self.fields.get_mut(self.focused) {
-                    f.value.push_str(s.as_str());
-                }
-                ExpandOutcome::Stay
-            }
-            _ => ExpandOutcome::Stay,
+    fn focus_field(&mut self, index: usize) {
+        for (i, field) in self.fields.iter_mut().enumerate() {
+            field.input.set_focus(i == index);
         }
     }
 
@@ -420,7 +517,7 @@ impl ExpandModal {
     #[doc(hidden)]
     pub fn set_field_for_test(&mut self, name: &str, value: &str) {
         if let Some(f) = self.fields.iter_mut().find(|f| f.name == name) {
-            f.value = value.to_string();
+            f.input.set_text(value);
         }
     }
 
@@ -433,12 +530,95 @@ impl ExpandModal {
     pub fn field_count_for_test(&self) -> usize {
         self.fields.len()
     }
+
+    pub fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.fields
+            .get(self.focused)
+            .and_then(|f| f.input.ime_cursor_rect())
+    }
+
+    pub fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.fields
+            .get(self.focused)
+            .and_then(|f| f.input.ime_purpose())
+    }
+
+    pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.fields.iter().find_map(|f| f.input.cursor_shape(point))
+    }
+
+    pub fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if let Some(field) = self.fields.get_mut(self.focused) {
+            field
+                .input
+                .draw_overlay(scene, transform, tr, theme, presence);
+        }
+    }
+
+    pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.fields
+            .get(self.focused)
+            .and_then(|f| f.input.accessibility())
+    }
+
+    pub fn needs_commit(&self) -> bool {
+        self.fields.iter().any(|f| f.input.needs_commit())
+    }
+
+    pub fn on_commit(&mut self) {
+        for field in &mut self.fields {
+            field.input.on_commit();
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{Language, Snippet};
+
+    fn key(named: NamedKey) -> WindowEvent {
+        // `KeyEvent`'s platform field is private; initialize the same minimal
+        // synthetic event used by the shared TextInput's own tests.
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(named);
+        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn drive(modal: &mut ExpandModal, event: &WindowEvent, doc: &mut AutoCommit) -> ExpandOutcome {
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut focus = None;
+        modal.handle_event(
+            event,
+            1.0,
+            Point::ZERO,
+            &winit::event::Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut focus,
+            node,
+            &taffy,
+        )
+    }
 
     fn templated() -> Snippet {
         let mut s = Snippet::blank("");
@@ -467,5 +647,26 @@ mod tests {
         let mut m = ExpandModal::new(&templated());
         m.set_field_for_test("name", "ada");
         assert_eq!(m.preview_for_test(), "echo hi ada from ${host}");
+    }
+
+    #[test]
+    fn shared_editor_ime_and_unicode_backspace_drive_live_preview_without_crdt_writes() {
+        let mut modal = ExpandModal::new(&templated());
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+
+        assert!(matches!(
+            drive(
+                &mut modal,
+                &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+                &mut doc,
+            ),
+            ExpandOutcome::Stay
+        ));
+        assert_eq!(modal.preview_for_test(), "echo hi 漢 from ${host}");
+
+        let _ = drive(&mut modal, &key(NamedKey::Backspace), &mut doc);
+        assert_eq!(modal.preview_for_test(), "echo hi ${name} from ${host}");
+        assert_eq!(doc.get_heads(), before, "modal values must stay peer-local");
     }
 }

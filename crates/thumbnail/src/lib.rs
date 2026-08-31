@@ -23,6 +23,19 @@
 //! yields raw RGBA + PNG bytes; the UI layer wraps them in a `peniko::ImageData`
 //! at the edge (see the file manager's adoption).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod cache;
 pub mod category;
 pub mod epub;

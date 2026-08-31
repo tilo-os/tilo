@@ -25,6 +25,19 @@
 //! shelling out. The shell crate re-exports the trait as `QsActions` and the impl as
 //! `RealQsActions` for source compatibility.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod audio;
 pub mod battery;
 pub mod bluetooth;
@@ -90,7 +103,7 @@ pub use time::{
 };
 pub use tool_intent::{
     BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
-    ToolReply, ToolRequest, VpnRoute, open_tool, tool_intent_from_env,
+    ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute, open_tool, tool_intent_from_env,
 };
 pub use users::AccountRole;
 
@@ -103,36 +116,109 @@ use tracing::warn;
 /// substitute a recording impl so the click handler can be asserted on without shelling out.
 /// (Shell call sites historically named this trait `QsActions`; a type-alias preserves it.)
 pub trait Dispatcher {
+    /// Set the display backlight to `pct` percent (0–100).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the backlight control is unavailable or the underlying
+    /// call fails.
     fn set_brightness(&self, pct: f32) -> Result<(), String>;
+    /// Set the default audio sink volume to `pct` percent (0–100).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn set_volume(&self, pct: f32) -> Result<(), String>;
+    /// Enable or disable the Wi-Fi radio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the network manager is unavailable or the underlying call
+    /// fails.
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
+    /// Enable or disable the Bluetooth radio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the Bluetooth stack is unavailable or the underlying call
+    /// fails.
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
+    /// Enable or disable wired (ethernet) networking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error by default, since not every dispatcher backs a wired connection;
+    /// implementors that do should override this.
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         let _ = enabled;
         Err("wired networking is not supported by this dispatcher".into())
     }
+    /// Enable or disable airplane mode (all radios off).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the network manager is unavailable or the underlying call
+    /// fails.
     fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
         network::set_airplane_mode(enabled)
     }
+    /// Enable or disable the Wi-Fi hotspot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the network manager is unavailable or the underlying call
+    /// fails.
     fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
         network::set_hotspot(enabled)
     }
+    /// Enable or disable mobile broadband.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the network manager is unavailable or the underlying call
+    /// fails.
     fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
         network::set_mobile_broadband(enabled)
     }
+    /// Enable or disable the named VPN connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `name` does not match a known connection or the underlying
+    /// call fails.
     fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
         network::set_vpn_connection(name, enabled)
     }
+    /// Connect to `ssid`, using `password` for secured networks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the network is unreachable, the credentials are rejected, or
+    /// the underlying call fails.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
+    /// Switch the active power profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `power-profiles-daemon` is unavailable or the underlying call
+    /// fails.
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
     /// Toggle the default audio sink mute state. Default impl delegates to
     /// [`audio::toggle_mute`]; has a default body so existing shell-crate impls keep compiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn toggle_mute(&self) -> Result<(), String> {
         audio::toggle_mute()
     }
     /// Set the sink mute state explicitly. Distinct from [`Self::toggle_mute`] because the
     /// volume-up key needs to *clear* mute regardless of prior state — toggling could silence an
     /// already-audible sink. Default body, same reason as above.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         audio::set_mute(muted)
     }

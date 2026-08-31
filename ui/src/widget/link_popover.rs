@@ -16,7 +16,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -140,10 +140,8 @@ impl LinkPopover {
     }
 
     pub fn height(&self) -> f64 {
-        PADDING_Y * 2.0
-            + FILTER_HEIGHT
-            + FILTER_GAP
-            + ROW_HEIGHT * self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64
+        let rows = self.visible.len().clamp(1, MAX_VISIBLE_ROWS);
+        PADDING_Y * 2.0 + FILTER_HEIGHT + FILTER_GAP + ROW_HEIGHT * count_f64(rows)
     }
 
     pub fn rect(&self) -> Rect {
@@ -169,12 +167,16 @@ impl LinkPopover {
     pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
         let start = self.window_start();
         if visible_index < start
-            || visible_index >= self.visible.len().min(start + MAX_VISIBLE_ROWS)
+            || visible_index
+                >= self
+                    .visible
+                    .len()
+                    .min(start.saturating_add(MAX_VISIBLE_ROWS))
         {
             return None;
         }
-        let slot = visible_index - start;
-        let y0 = self.rows_top() + slot as f64 * ROW_HEIGHT;
+        let slot = visible_index.saturating_sub(start);
+        let y0 = self.rows_top() + count_f64(slot) * ROW_HEIGHT;
         let rect = self.rect();
         Some(Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT))
     }
@@ -216,7 +218,6 @@ impl LinkPopover {
                 KeyEvent {
                     logical_key,
                     state: ElementState::Pressed,
-                    text: _,
                     ..
                 },
             ..
@@ -227,19 +228,24 @@ impl LinkPopover {
         match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 if !self.visible.is_empty() {
-                    self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
+                    self.cursor = self
+                        .cursor
+                        .saturating_add(1)
+                        .min(self.visible.len().saturating_sub(1));
                 }
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                }
+                self.cursor = self.cursor.saturating_sub(1);
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(&idx) = self.visible.get(self.cursor) {
-                    self.pending = Some(self.items[idx].clone());
+                if let Some(entry) = self
+                    .visible
+                    .get(self.cursor)
+                    .and_then(|&idx| self.items.get(idx))
+                {
+                    self.pending = Some(entry.clone());
                 }
                 self.set_visible(false);
                 true
@@ -283,8 +289,22 @@ impl LinkPopover {
         if !self.visible_flag {
             return;
         }
-        let tokens = &theme.tokens;
         let rect = self.rect();
+        self.draw_chrome_and_filter(scene, transform, text_renderer, theme, rect);
+        self.draw_rows(scene, transform, text_renderer, theme, rect);
+    }
+
+    /// The card background/border and the filter query box. Split out of
+    /// `draw_overlay` to keep that under the line cap.
+    fn draw_chrome_and_filter(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
         let shape = RoundedRect::from_rect(rect, 6.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -335,7 +355,19 @@ impl LinkPopover {
             tokens.colors.accent[5],
             true,
         );
+    }
 
+    /// The "No matches" empty state or the scrolled row window. Split out of
+    /// `draw_overlay` to keep that under the line cap.
+    fn draw_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
         let font_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
             let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
@@ -344,7 +376,7 @@ impl LinkPopover {
                 "No matches",
                 font_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((rect.x0 + PADDING_X, y)),
+                transform.pre_translate(Vec2::new(rect.x0 + PADDING_X, y)),
                 None,
             );
             return;
@@ -358,8 +390,10 @@ impl LinkPopover {
             .take(MAX_VISIBLE_ROWS)
             .enumerate()
         {
-            let row = &self.items[idx];
-            let y0 = self.rows_top() + i as f64 * ROW_HEIGHT;
+            let Some(row) = self.items.get(idx) else {
+                continue;
+            };
+            let y0 = self.rows_top() + count_f64(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             if visible_index == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, 4.0);
@@ -377,11 +411,23 @@ impl LinkPopover {
                 &row.title,
                 font_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((row_rect.x0 + PADDING_X, text_y)),
+                transform.pre_translate(Vec2::new(row_rect.x0 + PADDING_X, text_y)),
                 None,
             );
         }
     }
+}
+
+/// Widens a small on-screen row count/index (bounded by
+/// `MAX_VISIBLE_ROWS`, 8) to `f64`. Always far below f64's
+/// exact-integer range.
+fn count_f64(v: usize) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "v is bounded by MAX_VISIBLE_ROWS (8), far below f64's exact-integer range"
+    )]
+    let out = v as f64;
+    out
 }
 
 // LinkPopover lives in overlay space so most methods no-op.
@@ -466,7 +512,7 @@ impl Widget for LinkPopover {
                             selected: position == self.cursor,
                             ..Default::default()
                         })
-                        .with_position(position + 1, count)
+                        .with_position(position.saturating_add(1), count)
                 })
             })
             .collect();

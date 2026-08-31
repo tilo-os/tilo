@@ -22,7 +22,6 @@ pub fn draw_structure(
     area: Rect,
     table: &TableInfo,
 ) {
-    let p = theme.db();
     let mut y = area.y0;
 
     // Title row.
@@ -45,26 +44,38 @@ pub fn draw_structure(
     );
     y += 30.0;
 
-    // --- Columns panel ---
-    let col_headers = ["Name", "Type", "Null", "Key", "Default"];
-    let col_x = [
-        area.x0,
-        area.x0 + 200.0,
-        area.x0 + 360.0,
-        area.x0 + 430.0,
-        area.x0 + 510.0,
+    y = draw_columns_panel(scene, t, tr, theme, area, y, table);
+    y += 18.0;
+
+    if !table.foreign_keys.is_empty() || !table.primary_keys().is_empty() {
+        y = draw_keys_panel(scene, t, tr, theme, area, y, table);
+        y += 18.0;
+    }
+
+    if !table.indexes.is_empty() {
+        draw_indexes_panel(scene, t, tr, theme, area, y, table);
+    }
+}
+
+fn draw_columns_panel(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    y: f64,
+    table: &TableInfo,
+) -> f64 {
+    let p = theme.db();
+    let cols = [
+        ("Name", area.x0),
+        ("Type", area.x0 + 200.0),
+        ("Null", area.x0 + 360.0),
+        ("Key", area.x0 + 430.0),
+        ("Default", area.x0 + 510.0),
     ];
-    y = panel_header(
-        scene,
-        t,
-        tr,
-        theme,
-        area,
-        y,
-        "COLUMNS",
-        &col_headers,
-        &col_x,
-    );
+    let mut y = panel_header(scene, t, tr, theme, area, y, "COLUMNS", &cols);
+    let type_x = cols[1].1;
 
     for (i, col) in table.columns.iter().enumerate() {
         let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
@@ -72,20 +83,19 @@ pub fn draw_structure(
             scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
         }
         // Type icon chip.
-        let chip =
-            Rect::new(col_x[1] - 22.0, y + 5.0, col_x[1] - 6.0, y + 21.0).to_rounded_rect(4.0);
+        let chip = Rect::new(type_x - 22.0, y + 5.0, type_x - 6.0, y + 21.0).to_rounded_rect(4.0);
         scene.fill(Fill::NonZero, t, theme.type_color(col.class), None, &chip);
         tr.draw_text(
             scene,
             col.class.icon(),
             10.0,
             Color::from_rgb8(20, 20, 20),
-            t * Affine::translate((col_x[1] - 18.0, y + 6.0)),
+            t * Affine::translate((type_x - 18.0, y + 6.0)),
             None,
         );
 
-        cell(scene, t, tr, theme.text_primary, &col.name, col_x[0], y);
-        cell(scene, t, tr, theme.text_dim, &col.decl_type, col_x[1], y);
+        cell(scene, t, tr, theme.text_primary, &col.name, cols[0].1, y);
+        cell(scene, t, tr, theme.text_dim, &col.decl_type, cols[1].1, y);
         cell(
             scene,
             t,
@@ -96,7 +106,7 @@ pub fn draw_structure(
                 theme.text_dim
             },
             if col.not_null { "NOT NULL" } else { "nullable" },
-            col_x[2],
+            cols[2].1,
             y,
         );
         if col.primary_key {
@@ -106,103 +116,128 @@ pub fn draw_structure(
                 tr,
                 theme.tokens.colors.semantic.warning,
                 "PK",
-                col_x[3],
+                cols[3].1,
                 y,
             );
         }
         if let Some(d) = &col.default {
-            cell(scene, t, tr, theme.text_dim, d, col_x[4], y);
+            cell(scene, t, tr, theme.text_dim, d, cols[4].1, y);
         }
         y += ROW_H;
     }
+    y
+}
 
-    y += 18.0;
+fn draw_keys_panel(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    y: f64,
+    table: &TableInfo,
+) -> f64 {
+    let p = theme.db();
+    let kx = [
+        ("Constraint", area.x0),
+        ("Column", area.x0 + 220.0),
+        ("References", area.x0 + 360.0),
+    ];
+    let mut y = panel_header(scene, t, tr, theme, area, y, "KEYS", &kx);
 
-    // --- Keys panel ---
-    if !table.foreign_keys.is_empty() || !table.primary_keys().is_empty() {
-        let kh = ["Constraint", "Column", "References"];
-        let kx = [area.x0, area.x0 + 220.0, area.x0 + 360.0];
-        y = panel_header(scene, t, tr, theme, area, y, "KEYS", &kh, &kx);
-
-        for col in table.primary_keys() {
-            let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
-            scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
-            cell(
-                scene,
-                t,
-                tr,
-                theme.tokens.colors.semantic.warning,
-                "PRIMARY KEY",
-                kx[0],
-                y,
-            );
-            cell(scene, t, tr, theme.text_primary, &col.name, kx[1], y);
-            cell(scene, t, tr, theme.text_dim, "—", kx[2], y);
-            y += ROW_H;
-        }
-        for fk in &table.foreign_keys {
-            cell(
-                scene,
-                t,
-                tr,
-                theme.tokens.colors.semantic.info,
-                "FOREIGN KEY",
-                kx[0],
-                y,
-            );
-            cell(scene, t, tr, theme.text_primary, &fk.column, kx[1], y);
-            cell(
-                scene,
-                t,
-                tr,
-                theme.text_dim,
-                &format!("{}.{}", fk.ref_table, fk.ref_column),
-                kx[2],
-                y,
-            );
-            y += ROW_H;
-        }
-        y += 18.0;
+    for col in table.primary_keys() {
+        let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
+        scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
+        cell(
+            scene,
+            t,
+            tr,
+            theme.tokens.colors.semantic.warning,
+            "PRIMARY KEY",
+            kx[0].1,
+            y,
+        );
+        cell(scene, t, tr, theme.text_primary, &col.name, kx[1].1, y);
+        cell(scene, t, tr, theme.text_dim, "—", kx[2].1, y);
+        y += ROW_H;
     }
+    for fk in &table.foreign_keys {
+        cell(
+            scene,
+            t,
+            tr,
+            theme.tokens.colors.semantic.info,
+            "FOREIGN KEY",
+            kx[0].1,
+            y,
+        );
+        cell(scene, t, tr, theme.text_primary, &fk.column, kx[1].1, y);
+        cell(
+            scene,
+            t,
+            tr,
+            theme.text_dim,
+            &format!("{}.{}", fk.ref_table, fk.ref_column),
+            kx[2].1,
+            y,
+        );
+        y += ROW_H;
+    }
+    y
+}
 
-    // --- Indexes panel ---
-    if !table.indexes.is_empty() {
-        let ih = ["Index", "Unique", "Columns"];
-        let ix = [area.x0, area.x0 + 240.0, area.x0 + 330.0];
-        y = panel_header(scene, t, tr, theme, area, y, "INDEXES", &ih, &ix);
-        for (i, idx) in table.indexes.iter().enumerate() {
-            let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
-            if i % 2 == 1 {
-                scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
-            }
-            cell(scene, t, tr, theme.text_primary, &idx.name, ix[0], y);
-            cell(
-                scene,
-                t,
-                tr,
-                if idx.unique {
-                    theme.tokens.colors.semantic.success
-                } else {
-                    theme.text_dim
-                },
-                if idx.unique { "UNIQUE" } else { "—" },
-                ix[1],
-                y,
-            );
-            cell(
-                scene,
-                t,
-                tr,
-                theme.text_dim,
-                &idx.columns.join(", "),
-                ix[2],
-                y,
-            );
-            y += ROW_H;
+fn draw_indexes_panel(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    y: f64,
+    table: &TableInfo,
+) {
+    let p = theme.db();
+    let ix = [
+        ("Index", area.x0),
+        ("Unique", area.x0 + 240.0),
+        ("Columns", area.x0 + 330.0),
+    ];
+    let mut y = panel_header(scene, t, tr, theme, area, y, "INDEXES", &ix);
+    for (i, idx) in table.indexes.iter().enumerate() {
+        let row = Rect::new(area.x0, y, area.x1, y + ROW_H);
+        if i % 2 == 1 {
+            scene.fill(Fill::NonZero, t, p.row_alt, None, &row);
         }
+        cell(scene, t, tr, theme.text_primary, &idx.name, ix[0].1, y);
+        cell(
+            scene,
+            t,
+            tr,
+            if idx.unique {
+                theme.tokens.colors.semantic.success
+            } else {
+                theme.text_dim
+            },
+            if idx.unique { "UNIQUE" } else { "—" },
+            ix[1].1,
+            y,
+        );
+        cell(
+            scene,
+            t,
+            tr,
+            theme.text_dim,
+            &idx.columns.join(", "),
+            ix[2].1,
+            y,
+        );
+        y += ROW_H;
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one panel's full draw context: canvas + theme + area + this panel's title/y and its header columns (label, x) pairs"
+)]
 fn panel_header(
     scene: &mut Scene,
     t: Affine,
@@ -211,8 +246,7 @@ fn panel_header(
     area: Rect,
     mut y: f64,
     title: &str,
-    headers: &[&str],
-    xs: &[f64],
+    columns: &[(&str, f64)],
 ) -> f64 {
     let p = theme.db();
     tr.draw_text(
@@ -226,7 +260,7 @@ fn panel_header(
     y += 18.0;
     let hr = Rect::new(area.x0, y, area.x1, y + HEADER_H);
     scene.fill(Fill::NonZero, t, p.header_bg, None, &hr);
-    for (h, x) in headers.iter().zip(xs.iter()) {
+    for (h, x) in columns {
         tr.draw_text(
             scene,
             h,

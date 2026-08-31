@@ -155,9 +155,8 @@ impl DoorError {
     /// wrongly" from "it ran and could not do its job".
     pub fn code(&self) -> &'static str {
         match self {
-            DoorError::Unknown(_) => "unknown_action",
+            DoorError::Unknown(_) | DoorError::UnregisteredType(_) => "unknown_action",
             DoorError::MissingArgument(_) | DoorError::UnexpectedArgument(_) => "invalid_arguments",
-            DoorError::UnregisteredType(_) => "unknown_action",
             DoorError::Failed(_) => "action_failed",
         }
     }
@@ -233,6 +232,14 @@ pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option
 /// the encoded action itself, and so argument rules are checked in one
 /// place. Binding happens *before* anything runs, so a bad call is a
 /// refusal with the document untouched, never a half-applied edit.
+///
+/// # Errors
+///
+/// Returns [`DoorError::Unknown`] if `address` names no resource/action
+/// in `resources`; [`DoorError::UnexpectedArgument`] if `argument` is
+/// `Some` for an [`ActionInput::Immediate`] action; or
+/// [`DoorError::MissingArgument`] if it's `None` for an
+/// [`ActionInput::Prompted`] one.
 pub fn encode(
     resources: &[Resource],
     address: &ActionAddress,
@@ -259,6 +266,12 @@ pub fn encode(
 /// trusting the tree) makes this fail-closed: an unregistered action
 /// type can't run, and the decoder used here is the one a replaying peer
 /// would use too.
+///
+/// # Errors
+///
+/// Returns any error [`encode`] documents; [`DoorError::UnregisteredType`]
+/// if `registry` has no decoder for the encoded action's type; or
+/// [`DoorError::Failed`] if [`dispatch_by`] fails once decoded.
 pub fn invoke(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -321,10 +334,10 @@ mod tests {
     /// One note publishing an immediate action and a prompted one, as an app
     /// would. `star_does` / `retitle_does` decide what each *performs* while
     /// leaving every id and label identical.
-    fn note(star_does: Note, retitle_does: fn(&str) -> Note) -> Vec<Resource> {
+    fn note(star_does: &Note, retitle_does: fn(&str) -> Note) -> Vec<Resource> {
         vec![
             Resource::new("notes.note:1", "notes.note", "Harbour")
-                .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, &star_does).unwrap())
+                .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, star_does).unwrap())
                 .with_action(ActionSpec::prompted(
                     "retitle",
                     "Rename",
@@ -337,7 +350,7 @@ mod tests {
     }
 
     fn open() -> Vec<Resource> {
-        note(Note::Star, |text| Note::Retitle(text.to_string()))
+        note(&Note::Star, |text| Note::Retitle(text.to_string()))
     }
 
     fn star() -> ActionAddress {
@@ -371,7 +384,7 @@ mod tests {
     #[test]
     fn a_descriptor_carries_nothing_that_could_act() {
         let honest = open();
-        let hijacked = note(Note::Retitle("hijacked".into()), |_| Note::Star);
+        let hijacked = note(&Note::Retitle("hijacked".into()), |_| Note::Star);
         assert_eq!(
             survey(&honest),
             survey(&hijacked),

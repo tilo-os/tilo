@@ -29,6 +29,12 @@ fn take_next_polled(
 
 impl Link {
     /// Connect to the typed service capability inherited from the launcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `QOS_SVC_COLLAB_FD` is missing or the launcher's
+    /// inherited capability cannot be turned into a typed collaboration
+    /// client (wrong fd type, broker not listening, handshake rejected).
     pub fn connect(
         app_id: &str,
         cluster_id: uuid::Uuid,
@@ -46,6 +52,12 @@ impl Link {
     /// Connect to an explicit typed Cap'n Proto socket. This is for headless
     /// diagnostics that run outside the launcher but still exercise the
     /// production protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Unix socket at `path` cannot be connected
+    /// to, or when the typed collaboration client fails its handshake over
+    /// that socket.
     pub fn connect_endpoint(
         path: &Path,
         app_id: &str,
@@ -71,6 +83,10 @@ impl Link {
 
     /// Write one request. Blocking: a full-document snapshot can be large
     /// and must not be truncated by a would-block.
+    ///
+    /// # Errors
+    ///
+    /// Reserved for a future fallible transport; currently always succeeds.
     pub fn send(&mut self, req: &CollabRequest) -> Result<()> {
         self.manager.send(req.clone());
         Ok(())
@@ -84,6 +100,10 @@ impl Link {
 
     /// Publish on one explicit non-primary route. Naming the route at every
     /// call keeps a discovery subscription from becoming a mutation target.
+    ///
+    /// # Errors
+    ///
+    /// Reserved for a future fallible transport; currently always succeeds.
     pub fn send_to_route(&mut self, route: RouteSpec, req: &CollabRequest) -> Result<()> {
         self.manager.send_to_route(route, req.clone());
         Ok(())
@@ -91,6 +111,12 @@ impl Link {
 
     /// Read the next event, waiting at most `timeout`. `Ok(None)` on
     /// timeout; `Err` once the broker has gone away.
+    ///
+    /// # Errors
+    ///
+    /// Reserved for a future fallible transport; currently always succeeds
+    /// (a dead broker currently surfaces as an indefinite empty poll, not an
+    /// `Err`).
     pub fn recv(&mut self, timeout: Duration) -> Result<Option<CollabEvent>> {
         let deadline = std::time::Instant::now() + timeout;
         loop {

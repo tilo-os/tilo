@@ -27,13 +27,19 @@ pub enum ChannelKind {
     Voice,
 }
 
-impl ChannelKind {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for ChannelKind {
+    type Err = std::convert::Infallible;
+
+    /// Never fails: an unrecognised key defaults to [`ChannelKind::Text`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "voice" => ChannelKind::Voice,
             _ => ChannelKind::Text,
-        }
+        })
     }
+}
+
+impl ChannelKind {
     pub fn as_str(self) -> &'static str {
         match self {
             ChannelKind::Voice => "voice",
@@ -57,15 +63,21 @@ pub enum Presence {
     Offline,
 }
 
-impl Presence {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for Presence {
+    type Err = std::convert::Infallible;
+
+    /// Never fails: an unrecognised key defaults to [`Presence::Online`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "idle" => Presence::Idle,
             "dnd" => Presence::Dnd,
             "offline" => Presence::Offline,
             _ => Presence::Online,
-        }
+        })
     }
+}
+
+impl Presence {
     pub fn as_str(self) -> &'static str {
         match self {
             Presence::Idle => "idle",
@@ -126,6 +138,10 @@ pub struct Channel {
 /// audio state. Rendered both under the channel in the sidebar and as a
 /// tile/chip in the call overlay.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool mirrors a distinct CRDT voice-membership field (talking/muted/deafened/audio_only/sharing) read straight off the shared state — grouping them would just relocate the boolean soup, not remove it"
+)]
 pub struct VoiceMember {
     pub user: Id,
     /// True while this person's mic is transmitting above the speaking
@@ -462,12 +478,14 @@ impl AgentWork {
     }
 
     /// The same record with the decider's account attached.
+    #[must_use]
     pub fn because(mut self, reasoning: AgentReasoning) -> Self {
         self.reasoning = Some(reasoning);
         self
     }
 
     /// The same record carrying `trace`.
+    #[must_use]
     pub fn with_trace(mut self, trace: Vec<AgentStep>) -> Self {
         self.trace = trace;
         self
@@ -536,12 +554,15 @@ pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
         }
         let extend = groups.last().is_some_and(|g| {
             g.author == m.author
-                && messages
-                    .get(*g.message_indices.last().unwrap())
+                && g.message_indices
+                    .last()
+                    .and_then(|&last_idx| messages.get(last_idx))
                     .is_some_and(|prev| (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS)
         });
         if extend {
-            groups.last_mut().unwrap().message_indices.push(i);
+            if let Some(g) = groups.last_mut() {
+                g.message_indices.push(i);
+            }
         } else {
             groups.push(MessageGroup {
                 author: m.author.clone(),
@@ -578,7 +599,9 @@ pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<Id> {
 /// "is the user now reacting" flag. Pure — the CRDT writer mirrors this.
 pub fn toggle_reaction(reactions: &mut Vec<Reaction>, emoji: &str, user: &str) -> bool {
     if let Some(pos) = reactions.iter().position(|r| r.emoji == emoji) {
-        let r = &mut reactions[pos];
+        let Some(r) = reactions.get_mut(pos) else {
+            return false;
+        };
         if let Some(uidx) = r.users.iter().position(|u| u == user) {
             r.users.remove(uidx);
             if r.users.is_empty() {

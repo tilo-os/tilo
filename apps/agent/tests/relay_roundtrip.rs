@@ -5,6 +5,19 @@
 //! document, and carrying it out — asserted on the peer's replica, never on
 //! the agent's own.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is wall-clock timeout deadlines bounded by a short-lived \
+              test run, not real user data"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -171,68 +184,12 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
     qdoc::model::materialize(doc, &c).blocks
 }
 
-#[test]
-fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    let room = Uuid::new_v4();
-
-    // The peer: what the word processor is on the wire.
-    let mut peer = UnixStream::connect(&sock).expect("peer connects");
-    let hello = CollabRequest::Hello {
-        app_id: APP.into(),
-        cluster_id: room,
-        record: Some(RECORD.into()),
-        handle: Some("ada".into()),
-    };
-    send(&mut peer, &hello).unwrap();
-    let mut replica = seed_document();
-    // Let the relay register the peer's Hello before the agent's frames
-    // can race it (the relay handles each connection on its own thread).
-    std::thread::sleep(Duration::from_millis(100));
-
-    // The agent, on its own thread, once.
-    let cfg = Config {
-        endpoint: Some(sock),
-        app_id: APP.into(),
-        cluster: room,
-        record: Some(RECORD.into()),
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        // This test proves the relay and the edit path, not the decision, so
-        // it pins the choice to the keyword vocabulary: no network, no key,
-        // and the same answer every run.
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        // `run_until` bounds this test; the wait-for-a-document deadline
-        // belongs to `run`, and is exercised on its own below.
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(15))
-            .expect("agent session")
-    });
-
-    // Drive the peer exactly as the app would: answer the agent's Arrived
-    // with a full snapshot, apply every incremental change to the replica,
-    // and watch for the table.
-    peer.set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
+/// Drive the peer exactly as the app would: answer the agent's Arrived with
+/// a full snapshot, apply every incremental change to the replica, and
+/// watch for the table. Returns the replica, whether it settled into the
+/// table, and whether Scribe's own presence was observed.
+fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCommit, bool, bool) {
+    peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_scribe_presence = false;
     let mut done = false;
@@ -288,22 +245,15 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
             _ => {}
         }
     }
-    assert!(
-        saw_scribe_presence,
-        "the agent must announce itself to the room"
-    );
-    assert!(
-        done,
-        "the peer's replica never became a table; blocks: {:?}",
-        blocks(&replica)
-            .iter()
-            .map(|b| (b.kind.clone(), b.text.clone()))
-            .collect::<Vec<_>>()
-    );
-    assert!(agent.join().unwrap(), "the agent reports having acted");
+    (replica, done, saw_scribe_presence)
+}
 
+/// Assert the replica settled into a table carrying the bullets' cells with
+/// the heading intact, and that every change is attributed to the agent's
+/// own actor.
+fn assert_table_and_attribution(replica: &mut AutoCommit) {
     // The table, row-major, carries the bullets' cells; the heading stays.
-    let b = blocks(&replica);
+    let b = blocks(replica);
     assert_eq!(b[0].kind, "heading");
     assert_eq!(b[0].text, "Launch plan");
     let mut cells: Vec<(i64, i64, String)> = b
@@ -331,7 +281,7 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     // seed's own commit — both pre-date anything the agent did.
     let genesis = qdoc::model::schema_genesis_actor_hex();
     let seed = hex::encode("ada");
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+    let actors: std::collections::HashSet<String> = qdoc::history::versions(replica)
         .into_iter()
         .map(|v| v.actor_hex)
         .filter(|a| *a != genesis && *a != seed)
@@ -341,6 +291,81 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         std::collections::HashSet::from([hex::encode("Scribe")]),
         "the agent's commits carry its own actor, so the history strip names it"
     );
+}
+
+#[test]
+fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    let _broker = typed_peer::spawn(&sock);
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let room = Uuid::new_v4();
+
+    // The peer: what the word processor is on the wire.
+    let mut peer = UnixStream::connect(&sock);
+    let hello = CollabRequest::Hello {
+        app_id: APP.into(),
+        cluster_id: room,
+        record: Some(RECORD.into()),
+        handle: Some("ada".into()),
+    };
+    send(&mut peer, &hello).unwrap();
+    let replica = seed_document();
+    // Let the relay register the peer's Hello before the agent's frames
+    // can race it (the relay handles each connection on its own thread).
+    std::thread::sleep(Duration::from_millis(100));
+
+    // The agent, on its own thread, once.
+    let cfg = Config {
+        endpoint: Some(sock),
+        app_id: APP.into(),
+        cluster: room,
+        record: Some(RECORD.into()),
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        // This test proves the relay and the edit path, not the decision, so
+        // it pins the choice to the keyword vocabulary: no network, no key,
+        // and the same answer every run.
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        // `run_until` bounds this test; the wait-for-a-document deadline
+        // belongs to `run`, and is exercised on its own below.
+        await_document: Duration::ZERO,
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
+    };
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("agent connects");
+        s.run_until(Instant::now() + Duration::from_secs(15))
+            .expect("agent session")
+    });
+
+    let (mut replica, done, saw_scribe_presence) = drive_peer_to_table(peer, replica);
+    assert!(
+        saw_scribe_presence,
+        "the agent must announce itself to the room"
+    );
+    assert!(
+        done,
+        "the peer's replica never became a table; blocks: {:?}",
+        blocks(&replica)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(agent.join().unwrap(), "the agent reports having acted");
+
+    assert_table_and_attribution(&mut replica);
 }
 
 /// Another app's document in the same room must not end the run.
@@ -363,40 +388,32 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
 /// divergent histories under the same name and Automerge refuses to
 /// merge them. Both documents here are seeded that way, so the refusal
 /// this asserts against is the one that was actually seen.
-#[test]
-fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
-    // Precondition, checked rather than assumed: the two documents must
-    // genuinely refuse to merge. If they ever reconcile — a different
-    // Automerge, a changed seed — the agent would simply absorb both,
-    // still find the instruction, still build the table, and this test
-    // would pass while exercising none of what it exists for. Fail
-    // loudly at that point instead of quietly going hollow.
-    {
-        let mut a = seed_foreign();
-        let mut b = seed_colliding_document();
-        assert!(
-            a.merge(&mut b).is_err(),
-            "the two seeds must collide on their shared actor id, or this \
-             test proves nothing about a document the agent cannot merge"
-        );
-    }
+/// Precondition, checked rather than assumed: the two documents must
+/// genuinely refuse to merge. If they ever reconcile — a different
+/// Automerge, a changed seed — the agent would simply absorb both, still
+/// find the instruction, still build the table, and the test that calls
+/// this would pass while exercising none of what it exists for. Fail
+/// loudly at that point instead of quietly going hollow.
+fn assert_seeds_collide() {
+    let mut a = seed_foreign();
+    let mut b = seed_colliding_document();
+    assert!(
+        a.merge(&mut b).is_err(),
+        "the two seeds must collide on their shared actor id, or this \
+         test proves nothing about a document the agent cannot merge"
+    );
+}
 
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let room = Uuid::new_v4();
-
+/// Connect the file manager and the word processor to the same room —
+/// neither with a record, so nothing but the app id tells their documents
+/// apart.
+fn connect_files_and_word_processor(
+    sock: &std::path::Path,
+    room: Uuid,
+) -> (UnixStream, AutoCommit, UnixStream, AutoCommit) {
     // The file manager: a real document, in this room, that is not the
     // agent's business and never mentions it.
-    let mut files_peer = UnixStream::connect(&sock).expect("files connects");
+    let mut files_peer = UnixStream::connect(sock);
     send(
         &mut files_peer,
         &CollabRequest::Hello {
@@ -407,10 +424,10 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         },
     )
     .unwrap();
-    let mut files_doc = seed_foreign();
+    let files_doc = seed_foreign();
 
     // The word processor, holding the page with the instruction on it.
-    let mut wp_peer = UnixStream::connect(&sock).expect("word processor connects");
+    let mut wp_peer = UnixStream::connect(sock);
     send(
         &mut wp_peer,
         &CollabRequest::Hello {
@@ -421,58 +438,42 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         },
     )
     .unwrap();
-    let mut replica = seed_colliding_document();
-    std::thread::sleep(Duration::from_millis(100));
+    let replica = seed_colliding_document();
+    (files_peer, files_doc, wp_peer, replica)
+}
 
-    // A room, and no record to tell the room's documents apart.
-    let cfg = Config {
-        endpoint: Some(sock),
-        app_id: APP.into(),
-        cluster: room,
-        record: None,
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(20))
-            .expect("the agent must survive another app's document")
-    });
-
-    // The file manager answers first — which is the ordering that broke
-    // this — and the word processor shortly after.
-    files_peer
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
-    wp_peer
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
-    let files_thread = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            let Some(event) = recv(&mut files_peer) else {
-                continue;
+/// The file manager answers every `Arrived` with its own document — the
+/// ordering that broke this once, since it answers before the word
+/// processor does.
+fn drive_files_peer(mut files_peer: UnixStream, mut files_doc: AutoCommit) {
+    files_peer.set_read_timeout(Some(Duration::from_millis(200)));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        let Some(event) = recv(&mut files_peer) else {
+            continue;
+        };
+        if let CollabEvent::RemotePresenceUpdate {
+            payload: PresencePayload::Arrived,
+            ..
+        } = event
+        {
+            let snap = CollabRequest::SyncCRDT {
+                data: files_doc.save(),
             };
-            if let CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } = event
-            {
-                let snap = CollabRequest::SyncCRDT {
-                    data: files_doc.save(),
-                };
-                send(&mut files_peer, &snap).unwrap();
-            }
+            send(&mut files_peer, &snap).unwrap();
         }
-    });
+    }
+}
 
+/// The word processor answers its own `Arrived` shortly after the file
+/// manager does — by which point the agent has already taken the wrong
+/// document, if it was going to — then watches for its instruction to
+/// resolve into a table.
+fn drive_word_processor_to_table(
+    mut wp_peer: UnixStream,
+    mut replica: AutoCommit,
+) -> (AutoCommit, bool) {
+    wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut done = false;
     let mut answered = false;
@@ -507,6 +508,53 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
             _ => {}
         }
     }
+    (replica, done)
+}
+
+#[test]
+fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
+    assert_seeds_collide();
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    let _broker = typed_peer::spawn(&sock);
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let room = Uuid::new_v4();
+
+    let (files_peer, files_doc, wp_peer, replica) = connect_files_and_word_processor(&sock, room);
+    std::thread::sleep(Duration::from_millis(100));
+
+    // A room, and no record to tell the room's documents apart.
+    let cfg = Config {
+        endpoint: Some(sock),
+        app_id: APP.into(),
+        cluster: room,
+        record: None,
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        await_document: Duration::ZERO,
+        settle: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
+    };
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("agent connects");
+        s.run_until(Instant::now() + Duration::from_secs(20))
+            .expect("the agent must survive another app's document")
+    });
+
+    let files_thread = std::thread::spawn(move || drive_files_peer(files_peer, files_doc));
+    let (replica, done) = drive_word_processor_to_table(wp_peer, replica);
 
     assert!(
         agent.join().expect("the agent thread must not panic"),
@@ -626,7 +674,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
 
     let room = Uuid::new_v4();
 
-    let mut peer = UnixStream::connect(&sock).expect("peer connects");
+    let mut peer = UnixStream::connect(&sock);
     let hello = CollabRequest::Hello {
         app_id: APP.into(),
         cluster_id: room,
@@ -660,8 +708,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
             .expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
@@ -740,7 +787,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
 
     let room = Uuid::new_v4();
 
-    let mut peer = UnixStream::connect(&sock).expect("peer connects");
+    let mut peer = UnixStream::connect(&sock);
     let hello = CollabRequest::Hello {
         app_id: APP.into(),
         cluster_id: room,
@@ -772,8 +819,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
             .expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
+    peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {

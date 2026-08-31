@@ -107,13 +107,25 @@ pub trait SyncTransport: Send {
 
     /// Begin pairing with a peer (e.g. by scanning its QR / entering a code).
     /// Returns the peer's stable [`PeerId`] on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the pairing blob is invalid or the handshake fails.
     fn pair(&mut self, pairing_blob: &str) -> SyncResult<PeerId>;
 
     /// Push our state to a paired peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the peer is unreachable or rejects the push.
     fn push(&mut self, peer: &PeerId, state: &SyncState) -> SyncResult<()>;
 
     /// Pull the peer's state (merged into ours by the caller — Tube's CRDT
     /// handles the actual merge, the transport only carries bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the peer is unreachable or its state can't be fetched.
     fn pull(&mut self, peer: &PeerId) -> SyncResult<SyncState>;
 }
 

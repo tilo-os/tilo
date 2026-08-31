@@ -40,6 +40,18 @@ const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
 
+/// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
+/// multiply-add with no overflow trap, so it cannot panic regardless of
+/// operand magnitude — centralised here rather than repeating the exemption
+/// at every text transform composed below.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn compose(a: Affine, b: Affine) -> Affine {
+    a * b
+}
+
 /// Used by both `draw` and hit-testing so they never disagree.
 struct RowGeom {
     rect: Rect,
@@ -85,12 +97,14 @@ impl SearchResultsView {
     }
 
     /// Override the centered empty-state line shown when there are no results.
+    #[must_use]
     pub fn with_empty_text(mut self, text: impl Into<String>) -> Self {
         self.empty_text = text.into();
         self
     }
 
     /// Give the overlay a stable test id so scenarios can resolve it.
+    #[must_use]
     pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
         self
@@ -148,7 +162,7 @@ impl SearchResultsView {
     /// Clamped to the row range.
     pub fn set_cursor(&mut self, index: usize) {
         if !self.flat.is_empty() {
-            self.cursor = index.min(self.flat.len() - 1);
+            self.cursor = index.min(self.flat.len().saturating_sub(1));
         }
     }
 
@@ -166,7 +180,11 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
-        self.cursor = (self.cursor + 1) % self.flat.len();
+        self.cursor = self
+            .cursor
+            .saturating_add(1)
+            .checked_rem(self.flat.len())
+            .unwrap_or(0);
     }
 
     /// Move the highlight up one row, wrapping to the bottom past the top.
@@ -174,7 +192,12 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
-        self.cursor = (self.cursor + self.flat.len() - 1) % self.flat.len();
+        self.cursor = self
+            .cursor
+            .saturating_add(self.flat.len())
+            .saturating_sub(1)
+            .checked_rem(self.flat.len())
+            .unwrap_or(0);
     }
 
     /// No-op when there is no selection.
@@ -242,7 +265,7 @@ impl SearchResultsView {
                     ri,
                 });
                 y += rh;
-                flat += 1;
+                flat = flat.saturating_add(1);
             }
         }
         LayoutPlan { headers, rows }
@@ -265,7 +288,9 @@ impl SearchResultsView {
         row: &RowGeom,
     ) {
         let colors = &theme.tokens.colors;
-        let result = &self.groups[row.gi].results[row.ri];
+        let Some(result) = self.groups.get(row.gi).and_then(|g| g.results.get(row.ri)) else {
+            return;
+        };
         let selected = row.flat == self.cursor;
         let hovered = self.hover == Some(row.flat);
 
@@ -299,6 +324,12 @@ impl SearchResultsView {
         let has_sub = result.subtitle.is_some();
         let title_size = theme.tokens.typography.scale.base;
         let sub_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        // Clamped to >= 0.0 above; a row's text width is a small on-screen
+        // pixel span, well inside `f32`'s exact-integer range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "row text width is a small non-negative on-screen pixel span"
+        )]
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
         let title_y = if has_sub {
@@ -311,7 +342,7 @@ impl SearchResultsView {
             &result.title,
             title_size,
             colors.text_primary,
-            transform * Affine::translate((text_x, title_y)),
+            compose(transform, Affine::translate((text_x, title_y))),
             Some(text_w),
             TextWeight::Medium,
         );
@@ -329,7 +360,7 @@ impl SearchResultsView {
                 sub,
                 sub_size,
                 sub_col,
-                transform * Affine::translate((text_x, sy)),
+                compose(transform, Affine::translate((text_x, sy))),
                 Some(text_w),
             );
         }
@@ -352,7 +383,7 @@ impl SearchResultsView {
             &self.empty_text,
             size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((cx, cy)),
+            compose(transform, Affine::translate((cx, cy))),
             None,
         );
     }
@@ -373,10 +404,17 @@ impl Widget for SearchResultsView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // A results overlay's desired height is a small on-screen pixel value
+        // (a handful of rows), well inside `f32`'s exact-integer range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "desired overlay height is a small on-screen pixel value"
+        )]
+        let height_px = self.desired_height() as f32;
         let node = taffy.leaf_node(Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
-                height: length(self.desired_height() as f32),
+                height: length(height_px),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -438,7 +476,7 @@ impl Widget for SearchResultsView {
                 &label,
                 header_size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((hrect.x0 + 4.0, hy)),
+                compose(transform, Affine::translate((hrect.x0 + 4.0, hy))),
                 None,
                 TextWeight::Semibold,
             );
@@ -449,7 +487,10 @@ impl Widget for SearchResultsView {
                 &count_str,
                 header_size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((hrect.x1 - f64::from(cw) - 4.0, hy)),
+                compose(
+                    transform,
+                    Affine::translate((hrect.x1 - f64::from(cw) - 4.0, hy)),
+                ),
                 None,
             );
         }

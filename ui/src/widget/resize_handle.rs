@@ -190,9 +190,14 @@ impl Widget for ResizeHandle {
         // `flex_shrink: 0.0` / `flex_grow: 0.0` keep the handle pinned at
         // exactly 8 px regardless of the row's child-sum overflow
         // behaviour; the hit area extends beyond it via `self.rect`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "HANDLE_SLOT_PX is a small compile-time pixel constant (8.0), exact in f32"
+        )]
+        let handle_slot_px = HANDLE_SLOT_PX as f32;
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(HANDLE_SLOT_PX as f32),
+                width: Dimension::length(handle_slot_px),
                 height: Dimension::percent(1.0),
             },
             flex_grow: 0.0,
@@ -453,7 +458,7 @@ mod tests {
         let dev = unsafe { std::mem::zeroed() };
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
-        let cx_hover = (h.rect.x0 + h.rect.x1) / 2.0;
+        let cx_hover = f64::midpoint(h.rect.x0, h.rect.x1);
         h.handle_event(
             &WindowEvent::CursorMoved {
                 device_id: dev,

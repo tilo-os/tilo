@@ -6,10 +6,9 @@
 //! - `GET  /health`               → `{ "ok": true }`
 //! - `GET  /entries`              → `[RegistryEntry, …]`
 //! - `GET  /entries/<pkg-id>`     → single `RegistryEntry` or 404
-//! - `POST /entries`              → `EntryChangeRequest` body,
-//!                                 200 on success, 403 if the
-//!                                 publisher isn't allowlisted or
-//!                                 the sig doesn't verify.
+//! - `POST /entries`              → `EntryChangeRequest` body, 200 on
+//!   success, 403 if the publisher isn't allowlisted or the sig
+//!   doesn't verify.
 //!
 //! The dispatcher is kept small so the wire shape is auditable at
 //! a glance. Business logic (add / update / delete decisions) is
@@ -66,6 +65,12 @@ impl AppState {
 
 /// The one-and-only HTTP handler — dispatched to by
 /// `hyper::service_fn`.
+///
+/// # Errors
+///
+/// Never actually returns `Err` — every internal failure is caught and
+/// turned into a `500` response. The `Result<_, hyper::Error>` return
+/// type exists only because `hyper::service::service_fn` requires it.
 pub async fn handle(
     state: AppState,
     req: Request<Incoming>,
@@ -78,11 +83,11 @@ pub async fn handle(
             StatusCode::OK,
             &serde_json::json!({"ok": true}),
         )),
-        (Method::GET, "/registry") => handle_get_registry(&state).await,
-        (Method::GET, "/entries") => handle_get_entries(&state).await,
+        (Method::GET, "/registry") => handle_get_registry(&state),
+        (Method::GET, "/entries") => handle_get_entries(&state),
         (Method::GET, p) if p.starts_with("/entries/") => {
             let id = p.trim_start_matches("/entries/");
-            handle_get_entry(&state, id).await
+            handle_get_entry(&state, id)
         }
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
         _ => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
@@ -100,7 +105,12 @@ pub async fn handle(
     }
 }
 
-async fn handle_get_registry(state: &AppState) -> Result<Response<Full<Bytes>>, HandlerError> {
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "matches the Result<_, HandlerError> signature every route handler in the dispatch \
+              match shares; this route just happens to have no fallible step"
+)]
+fn handle_get_registry(state: &AppState) -> Result<Response<Full<Bytes>>, HandlerError> {
     let ident = state.identity();
     let hs = RegistryHandshake::new(
         &ident.owner_pubkey_hex,
@@ -111,7 +121,7 @@ async fn handle_get_registry(state: &AppState) -> Result<Response<Full<Bytes>>, 
     Ok(json_response(StatusCode::OK, &hs))
 }
 
-async fn handle_get_entries(state: &AppState) -> Result<Response<Full<Bytes>>, HandlerError> {
+fn handle_get_entries(state: &AppState) -> Result<Response<Full<Bytes>>, HandlerError> {
     let entries = state
         .inner
         .storage
@@ -120,7 +130,7 @@ async fn handle_get_entries(state: &AppState) -> Result<Response<Full<Bytes>>, H
     Ok(json_response(StatusCode::OK, &entries))
 }
 
-async fn handle_get_entry(
+fn handle_get_entry(
     state: &AppState,
     package_id: &str,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
@@ -298,6 +308,14 @@ async fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool 
 
 // ---- response helpers ------------------------------------------
 
+// Both `.expect()`s below can only fail on an invalid status/header, and
+// every status and header here is a hardcoded constant — never a value
+// that could make `Response::builder()` reject it.
+#[allow(
+    clippy::expect_used,
+    reason = "status codes and header values are hardcoded constants, never attacker- or \
+              caller-controlled, so the builder cannot actually fail here"
+)]
 fn json_response<T: serde::Serialize>(code: StatusCode, body: &T) -> Response<Full<Bytes>> {
     let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
     Response::builder()
@@ -307,6 +325,11 @@ fn json_response<T: serde::Serialize>(code: StatusCode, body: &T) -> Response<Fu
         .expect("build JSON response")
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "status codes and header values are hardcoded constants, never attacker- or \
+              caller-controlled, so the builder cannot actually fail here"
+)]
 fn text_response(code: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(code)

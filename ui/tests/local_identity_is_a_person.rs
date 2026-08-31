@@ -8,6 +8,16 @@
 //! These tests mutate the environment in one process, so they are serialised
 //! behind a mutex rather than left to race each other.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use ui::collaboration::{local_app_id, local_user_id};

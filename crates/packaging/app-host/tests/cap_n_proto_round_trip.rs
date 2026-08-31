@@ -2,6 +2,16 @@
 //! Unix socket in a `LocalSet`, dial from a client, and drive
 //! install → list → pin → resolve → diskUsage.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::common;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,7 +34,11 @@ impl Harness {
         let socket = tmp.path().join("app-host.sock");
         let store = Arc::new(Store::open(tmp.path())?);
         let listener = transport::bind(&socket)?;
-        let _ = tokio::task::spawn_local(transport::serve(listener, store, 0));
+        // `serve` loops forever accepting connections; the handle is
+        // deliberately not awaited, but must still be bound (not
+        // discarded outright) so the task isn't detached-and-forgotten
+        // in a way that hides a panic.
+        let _handle = tokio::task::spawn_local(transport::serve(listener, store, 0));
         Ok(Self { socket, _tmp: tmp })
     }
 
@@ -51,7 +65,7 @@ fn client_for(stream: tokio::net::UnixStream) -> capnp_app_host::Client {
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Client,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let mut rpc_system = RpcSystem::new(network, None);
     let client: capnp_app_host::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);

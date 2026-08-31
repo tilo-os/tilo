@@ -25,17 +25,33 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod account;
 pub mod actions;
+mod agenda;
 pub mod app;
 pub mod caldav;
 pub mod date;
 pub mod doc;
+mod event_popovers;
 pub mod ics;
 pub mod model;
 pub mod search_provider;
+mod sidebar;
 pub mod store;
+mod timeline_viewport;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;

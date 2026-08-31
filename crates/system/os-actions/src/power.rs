@@ -34,11 +34,20 @@ impl PowerProfile {
 }
 
 /// Set the active power profile via `powerprofilesctl set <profile>`.
+///
+/// # Errors
+///
+/// Returns an error message if `powerprofilesctl` is not installed or the command fails.
 pub fn set_power_profile(profile: PowerProfile) -> Result<(), String> {
     run("powerprofilesctl", &["set", profile.cli_arg()])
 }
 
 /// Read the active power profile via `powerprofilesctl get`.
+///
+/// # Errors
+///
+/// Returns an error message if `powerprofilesctl` is not installed, the command fails, or its
+/// output does not name a known profile.
 pub fn get_power_profile() -> Result<PowerProfile, String> {
     let out = run_capture("powerprofilesctl", &["get"])?;
     PowerProfile::from_cli(out.trim())
@@ -49,6 +58,11 @@ pub fn get_power_profile() -> Result<PowerProfile, String> {
 ///
 /// `powerprofilesctl list` is deliberately treated as the capability source;
 /// callers must not offer a profile merely because it is part of the protocol.
+///
+/// # Errors
+///
+/// Returns an error message if `powerprofilesctl` is not installed, the command fails, or its
+/// output does not advertise a known profile.
 pub fn available_power_profiles() -> Result<Vec<PowerProfile>, String> {
     let out = run_capture("powerprofilesctl", &["list"])?;
     parse_available_profiles(&out)
@@ -60,7 +74,7 @@ fn parse_available_profiles(out: &str) -> Result<Vec<PowerProfile>, String> {
         let candidate = line
             .trim()
             .strip_prefix('*')
-            .unwrap_or(line.trim())
+            .unwrap_or_else(|| line.trim())
             .trim()
             .strip_suffix(':')
             .unwrap_or("");
@@ -101,13 +115,13 @@ mod tests {
 
     #[test]
     fn parses_only_advertised_power_profiles() {
-        let output = r#"  performance:
+        let output = r"  performance:
     Driver: platform_profile
 * balanced:
     Driver: platform_profile
   power-saver:
     Driver: platform_profile
-"#;
+";
         assert_eq!(
             parse_available_profiles(output).unwrap(),
             vec![

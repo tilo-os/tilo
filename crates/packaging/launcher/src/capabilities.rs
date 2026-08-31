@@ -45,16 +45,11 @@
 //! already reads "see everything, change nothing" through the same
 //! [`decide_capability`] every other decision goes through.
 //!
-//! A read-only participant gets an absence, not a refusal: the user
-//! identity is **not** bound, so it can't originate an authored change,
-//! and the workspace tree + `fs` are both served read-only, so there's
-//! no writable descriptor anywhere. `QOS_PARTICIPATION=read-only` tells
-//! the app which shape it's in.
-//!
-//! **The gap.** An app with no workspace-scoped capability is
-//! [`Participation::Unscoped`] and keeps its identity (pre-existing
-//! behaviour) — the right shape would be read-only by default, but
-//! that's a collaboration-layer decision, not this module's.
+//! A read-only participant gets no writable path. The launcher still gives
+//! it the public identity projection for attribution; no app receives root
+//! signing material. `QOS_PARTICIPATION=read-only` tells the app which shape
+//! it is in. At launch, an unscoped app inside a workspace is resolved to
+//! read-only so missing policy fails closed.
 //!
 //! ## Deny by default
 //!

@@ -15,6 +15,19 @@
 //     seeded with a non-default (German) layout so the visual preview shows
 //     the remapped keys. Defaults to `disk`.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +47,12 @@ use vello::peniko::Color;
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns an error when `--shots` is passed and rendering the requested
+/// step fails: seeding the offscreen CRDT document, computing the taffy
+/// layout, or writing the PNG to `--shots <path>` (see
+/// [`render_shot_to_png`]).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -189,8 +208,8 @@ fn render_shot_to_png(
     let root = taffy.new_with_children(
         Style {
             size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
+                width: Dimension::length(ui::num::f32_of_u32(w)),
+                height: Dimension::length(ui::num::f32_of_u32(h)),
             },
             ..Default::default()
         },
@@ -203,8 +222,8 @@ fn render_shot_to_png(
         taffy.compute_layout_with_measure(
             root,
             taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
+                width: AvailableSpace::Definite(ui::num::f32_of_u32(w)),
+                height: AvailableSpace::Definite(ui::num::f32_of_u32(h)),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {

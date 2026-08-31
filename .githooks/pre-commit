@@ -52,4 +52,76 @@ if [ -n "$added_ignores" ]; then
   fail=1
 fi
 
+# Credentials in the staged diff.
+"$root/scripts/scan-secrets.sh" || fail=1
+
+# A conflict marker that reaches a commit compiles as neither side.
+if git diff --cached -U0 --diff-filter=ACM | grep -qE '^\+(<{7}|={7}|>{7})( |$)'; then
+  note "merge-conflict marker in the staged diff"
+  fail=1
+fi
+
+# Three ways an `#[allow]` looks like it works and does not. All three have
+# reached main in this repo: rustc reports the first two as warnings, and the
+# workspace gate is zero warnings, so they fail CI rather than the reviewer.
+added=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+' || true)
+# 1. A clippy lint without its prefix is an unknown lint: it warns AND leaves
+#    the violation in place.
+bare=$(printf '%s\n' "$added" | grep -oE '#!?\[allow\(\s*(clippy::)?[a-z_]+' \
+  | grep -v 'clippy::' \
+  | grep -oE '(similar_names|too_many_lines|too_many_arguments|indexing_slicing|unwrap_used|expect_used|missing_errors_doc|missing_panics_doc|significant_drop_tightening|needless_pass_by_value|used_underscore_binding|items_after_statements|cast_possible_truncation|arithmetic_side_effects)$' || true)
+if [ -n "$bare" ]; then
+  note "#[allow] naming a clippy lint without the clippy:: prefix: $(printf '%s' "$bare" | tr '\n' ' ')"
+  fail=1
+fi
+# 2. An attribute on a macro invocation in statement position is ignored.
+if git diff --cached -U0 -- '*.rs' | grep -A1 -E '^\+\s*#\[allow\(' | grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|write|writeln|panic|vec|format)!'; then
+  note "#[allow] directly above a macro invocation is ignored by rustc — put it on the enclosing function"
+  fail=1
+fi
+
+# `dbg!` is a debugging aid, never a thing to ship.
+if printf '%s\n' "$added" | grep -qE '(^|[^a-z_])dbg!\('; then
+  note "dbg! in the staged diff"
+  fail=1
+fi
+
+# Cargo.lock is committed and deliberately not regenerated — see CLAUDE.md.
+# A lock change with no manifest change beside it is a stray `cargo update`.
+if git diff --cached --name-only | grep -qx 'Cargo.lock' \
+   && ! git diff --cached --name-only | grep -qE '(^|/)Cargo\.toml$'; then
+  note "Cargo.lock changed with no Cargo.toml beside it — regenerating it is not supported here"
+  fail=1
+fi
+# A vendored crate's own lock file is a build artifact, not ours.
+if git diff --cached --name-only | grep -qE '^vendor/[^/]+/Cargo\.lock$'; then
+  note "a vendored crate's Cargo.lock is staged; it is a build artifact"
+  fail=1
+fi
+
+# Compile and lint the crates the change actually touches. Scoped by -p so the
+# cost tracks the diff, not the workspace. Set QOS_HOOK_NO_BUILD=1 when the
+# target directory is cold and you know it.
+if [ -n "$staged_rs" ] && [ "${QOS_HOOK_NO_BUILD:-0}" != "1" ] && command -v cargo >/dev/null 2>&1; then
+  pkgs=$(printf '%s\n' "$staged_rs" | while IFS= read -r f; do
+    d=$(dirname "$root/$f")
+    while [ "$d" != "$root" ] && [ "$d" != "/" ]; do
+      if [ -f "$d/Cargo.toml" ]; then
+        grep -m1 '^name = ' "$d/Cargo.toml" | sed 's/^name = "\(.*\)"/\1/'
+        break
+      fi
+      d=$(dirname "$d")
+    done
+  done | sort -u)
+  if [ -n "$pkgs" ]; then
+    args=$(printf '%s\n' "$pkgs" | sed 's/^/-p /' | tr '\n' ' ')
+    # shellcheck disable=SC2086
+    if ! cargo clippy --all-targets --quiet $args -- -D warnings >/dev/null 2>&1; then
+      note "cargo clippy failed for: $(printf '%s' "$pkgs" | tr '\n' ' ')"
+      note "  re-run to see it:  cargo clippy --all-targets $args"
+      fail=1
+    fi
+  fi
+fi
+
 exit "$fail"

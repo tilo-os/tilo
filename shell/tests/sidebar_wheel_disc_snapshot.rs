@@ -5,6 +5,16 @@
 //! see "the wheel went invisible under this palette". Soft-skips when no
 //! wgpu adapter is available.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -36,13 +46,50 @@ fn goldens_dir() -> PathBuf {
 /// The live slot is ~234x690 (~2.9); these numbers keep that ratio.
 const CANVAS_W: u32 = 290;
 const CANVAS_H: u32 = 700;
+// `as f32` on a compile-time canvas-size literal: 290/700 are exactly
+// representable, well under f32's 24-bit mantissa headroom.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "CANVAS_W/CANVAS_H are small compile-time constants, exactly representable in f32"
+)]
+const CANVAS_W_F32: f32 = CANVAS_W as f32;
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "CANVAS_W/CANVAS_H are small compile-time constants, exactly representable in f32"
+)]
+const CANVAS_H_F32: f32 = CANVAS_H as f32;
+
+/// Round a canvas-relative coordinate to the nearest non-negative pixel
+/// index. Test-only pixel math: every caller works within the small
+/// (290x700) canvas, never large enough to lose precision or need more
+/// than `.max(0.0)` to land in range.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to >= 0.0 immediately above; canvas coordinates never approach u32::MAX"
+)]
+fn px(v: f64) -> u32 {
+    v.round().max(0.0) as u32
+}
+
+/// Perceptual luma (BT.601) of an RGB triple. `r`/`g`/`b` are already `u8`,
+/// so the weighted sum can't leave `0.0..=255.0` — the cast just narrows
+/// the float sum back to an integer.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "0.299r + 0.587g + 0.114b with r,g,b in 0..=255 always lands in 0.0..=255.0"
+)]
+fn luma_u32(r: u8, g: u8, b: u8) -> u32 {
+    (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) as u32
+}
 
 fn screenshots_dir() -> PathBuf {
     let root = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
-                .unwrap_or(Path::new("."))
+                .unwrap_or_else(|| Path::new("."))
                 .join("target")
         },
         PathBuf::from,
@@ -105,8 +152,8 @@ fn render_disc_at(
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(CANVAS_W as f32),
-                    height: Dimension::length(CANVAS_H as f32),
+                    width: Dimension::length(CANVAS_W_F32),
+                    height: Dimension::length(CANVAS_H_F32),
                 },
                 // Mirrors `left: 0` on the live shell's absolute-positioned sidebar slot:
                 // the logical centre sits off-canvas, only the visible arc paints.
@@ -123,8 +170,8 @@ fn render_disc_at(
         .compute_layout_with_measure(
             root,
             Size {
-                width: AvailableSpace::Definite(CANVAS_W as f32),
-                height: AvailableSpace::Definite(CANVAS_H as f32),
+                width: AvailableSpace::Definite(CANVAS_W_F32),
+                height: AvailableSpace::Definite(CANVAS_H_F32),
             },
             |known, avail, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
@@ -230,17 +277,17 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
 
     let luma = |x: u32, y: u32| {
         let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
-        (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) as u32
+        luma_u32(r, g, b)
     };
 
     let (r_in, r_out) = disc.label_band_radii();
     let c = disc.disc_centre();
     let footprint = disc.get_rect();
     // The band's vertical middle, where it is at full alpha and widest.
-    let row_y = c.y.round() as u32;
-    let on_band = ((c.x + f64::midpoint(r_in, r_out)).round() as u32).min(CANVAS_W - 1);
+    let row_y = px(c.y);
+    let on_band = px(c.x + f64::midpoint(r_in, r_out)).min(CANVAS_W - 1);
     // Well inside the inner radius, where a hollow body would show through.
-    let inside_arc = ((c.x + r_in - 24.0).round() as u32).min(CANVAS_W - 1);
+    let inside_arc = px(c.x + r_in - 24.0).min(CANVAS_W - 1);
     assert!(
         f64::from(inside_arc) > footprint.x0 + 2.0,
         "probe at x={inside_arc} is outside the disc's own footprint {footprint:?} \
@@ -266,7 +313,7 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     // ...and it still ends. Mounted flush left as in the sidebar column, so
     // past the rim — clear of its outward shadow — the app must be plainly
     // visible.
-    let outside = ((c.x + r_out + RIM_SHADOW_CLEARANCE).round() as u32).min(CANVAS_W - 1);
+    let outside = px(c.x + r_out + RIM_SHADOW_CLEARANCE).min(CANVAS_W - 1);
     assert!(
         f64::from(outside) > footprint.x1 - 1.0 || f64::from(outside) > c.x + r_out,
         "probe at x={outside} is not past the rim at {:.0}",
@@ -291,6 +338,12 @@ const RIM_SHADOW_CLEARANCE: f64 = 36.0;
 /// something to differ against; over black an alpha ramp reads as almost
 /// no delta and would pass on a smear.
 #[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "c (centre point) and x/y/r/g/b (pixel coordinate and colour channels) are the \
+              idiomatic short names for geometry/colour code; spelling them out would add \
+              noise, not clarity"
+)]
 fn the_band_is_filled_flat_with_a_single_colour() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");
@@ -314,19 +367,19 @@ fn the_band_is_filled_flat_with_a_single_colour() {
     let dy = y - c.y;
     // Stay off both edges so the rim strokes and the inner hairline are
     // not in the sample.
-    let x_from = (c.x + ((r_in * r_in - dy * dy).max(0.0)).sqrt() + 10.0).round() as u32;
-    let x_to = (c.x + ((r_out * r_out - dy * dy).max(0.0)).sqrt() - 10.0).round() as u32;
+    let x_from = px(c.x + ((r_in * r_in - dy * dy).max(0.0)).sqrt() + 10.0);
+    let x_to = px(c.x + ((r_out * r_out - dy * dy).max(0.0)).sqrt() - 10.0);
     assert!(
         x_to > x_from + 20,
         "the band is too thin at y={y} to sample: x {x_from}..{x_to}"
     );
 
-    let y_u = y as u32;
+    let y_u = px(y);
     let samples: Vec<u32> = (x_from..=x_to)
         .step_by(4)
         .map(|x| {
             let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y_u);
-            (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) as u32
+            luma_u32(r, g, b)
         })
         .collect();
     let lo = *samples.iter().min().unwrap();
@@ -404,6 +457,12 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
 /// with it — three themes giving three different answers is what a
 /// hardcoded palette cannot do.
 #[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "c (centre point), a (angle) and x/y/r/g/b (pixel coordinate and colour \
+              channels) are the idiomatic short names for geometry/colour code; spelling \
+              them out would add noise, not clarity"
+)]
 fn the_disc_takes_its_colours_from_the_theme() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");
@@ -432,8 +491,8 @@ fn the_disc_takes_its_colours_from_the_theme() {
         let radius = f64::midpoint(r_in, r_out);
         let probe = |deg: f64| -> (i32, i32, i32) {
             let a = deg.to_radians();
-            let x = ((c.x + radius * a.cos()).round().max(0.0) as u32).min(CANVAS_W - 1);
-            let y = ((c.y + radius * a.sin()).round().max(0.0) as u32).min(CANVAS_H - 1);
+            let x = px(c.x + radius * a.cos()).min(CANVAS_W - 1);
+            let y = px(c.y + radius * a.sin()).min(CANVAS_H - 1);
             let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
             (i32::from(r), i32::from(g), i32::from(b))
         };

@@ -45,7 +45,7 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
     // A literal wrapped in quotes is forced text (drop the quotes).
     if trimmed.len() >= 2 && trimmed.starts_with('\'') {
         return Inferred {
-            raw: trimmed[1..].to_string(),
+            raw: trimmed.get(1..).unwrap_or("").to_string(),
             format: CellFormat::Text,
         };
     }
@@ -137,7 +137,7 @@ fn parse_number_loose(s: &str) -> Option<f64> {
         return None;
     }
     let (neg, body) = if s.starts_with('(') && s.ends_with(')') {
-        (true, &s[1..s.len() - 1])
+        (true, s.get(1..s.len() - 1).unwrap_or(s))
     } else {
         (false, s)
     };
@@ -156,9 +156,8 @@ fn has_grouping(s: &str) -> bool {
     for (i, c) in bytes.iter().enumerate() {
         if *c == ','
             && i > 0
-            && i + 1 < bytes.len()
-            && bytes[i - 1].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
+            && bytes.get(i - 1).is_some_and(char::is_ascii_digit)
+            && bytes.get(i + 1).is_some_and(char::is_ascii_digit)
         {
             return true;
         }
@@ -223,10 +222,10 @@ fn parse_date(s: &str) -> Option<f64> {
     // unambiguously valid; if both are valid, US wins (matching the ISO
     // default style we render in).
     let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() == 3 {
-        let a: i64 = parts[0].trim().parse().ok()?;
-        let b: i64 = parts[1].trim().parse().ok()?;
-        let y: i64 = parts[2].trim().parse().ok()?;
+    if let [a_s, b_s, y_s] = parts.as_slice() {
+        let a: i64 = a_s.trim().parse().ok()?;
+        let b: i64 = b_s.trim().parse().ok()?;
+        let y: i64 = y_s.trim().parse().ok()?;
         // US first.
         if valid_ymd(y, a, b) {
             return Some(date_to_serial(y, a as u32, b as u32));
@@ -249,15 +248,16 @@ fn parse_time(s: &str) -> Option<f64> {
         (s, None)
     };
     let parts: Vec<&str> = clock.split(':').collect();
-    if parts.len() < 2 || parts.len() > 3 {
-        return None;
-    }
-    let mut h: i64 = parts[0].trim().parse().ok()?;
-    let mi: i64 = parts[1].trim().parse().ok()?;
-    let se: i64 = if parts.len() == 3 {
-        parts[2].trim().parse().ok()?
-    } else {
-        0
+    let (h_s, mi_s, se_s) = match parts.as_slice() {
+        [h, mi] => (*h, *mi, None),
+        [h, mi, se] => (*h, *mi, Some(*se)),
+        _ => return None,
+    };
+    let mut h: i64 = h_s.trim().parse().ok()?;
+    let mi: i64 = mi_s.trim().parse().ok()?;
+    let se: i64 = match se_s {
+        Some(se_s) => se_s.trim().parse().ok()?,
+        None => 0,
     };
     if !(0..=59).contains(&mi) || !(0..=59).contains(&se) {
         return None;

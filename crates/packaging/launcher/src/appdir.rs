@@ -141,6 +141,11 @@ fn sanitise_component(raw: &str) -> String {
 /// real: an app with nowhere to write loses the user's work on exit, so
 /// a failure here refuses the launch rather than starting something
 /// that cannot save.
+///
+/// # Errors
+///
+/// Returns an error if the app directory or its `XDG_*` subdirectories
+/// cannot be created.
 pub fn prepare_host_app_dir(
     data_home: &Path,
     workspace_id: Option<&str>,
@@ -255,12 +260,12 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<usize> {
         if kind.is_symlink() {
             let target = std::fs::read_link(&from)?;
             let _ = std::os::unix::fs::symlink(target, &to);
-            count += 1;
+            count = count.saturating_add(1);
         } else if kind.is_dir() {
-            count += copy_tree(&from, &to)?;
+            count = count.saturating_add(copy_tree(&from, &to)?);
         } else if kind.is_file() {
             std::fs::copy(&from, &to)?;
-            count += 1;
+            count = count.saturating_add(1);
         }
         // Sockets, fifos and device nodes are not state; skipping them is not
         // a loss and copying them isn't possible.

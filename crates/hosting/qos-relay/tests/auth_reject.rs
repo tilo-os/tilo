@@ -10,6 +10,16 @@
 //! (e.g. skipping the revocation check) would slip past the unit
 //! tests but fail here.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use qos_relay::RelayClient;
 use qos_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
@@ -95,7 +105,7 @@ async fn revoked_device_is_rejected() {
 
     // The revoked device tries to connect — must fail.
     let ep = client_endpoint().await;
-    let res = RelayClient::connect(
+    let rejected = RelayClient::connect(
         ep,
         addr.clone(),
         user.user_pk,
@@ -104,7 +114,7 @@ async fn revoked_device_is_rejected() {
         RevocationList::new(),
     )
     .await;
-    assert!(res.is_err(), "revoked device must be rejected");
+    assert!(rejected.is_err(), "revoked device must be rejected");
 
     // A non-revoked device from the same user still connects fine.
     let ep2 = client_endpoint().await;

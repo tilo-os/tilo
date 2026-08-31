@@ -46,6 +46,16 @@
 //! file URI. That is the evidence that a pass here means the diagnostic really
 //! arrived, rather than that nothing was ever looked at.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -55,33 +65,40 @@ use code_editor::model::Language;
 /// rust-analyzer has to run `cargo metadata` and build a crate graph before it
 /// says anything. On a one-file crate that is seconds; the ceiling is generous
 /// so a loaded machine reports the real failure rather than a timeout.
-const BUDGET: Duration = Duration::from_mins(3);
+const BUDGET: Duration = Duration::from_secs(180);
 
 /// A minimal but genuine Cargo project containing one deliberate error.
-fn project_with_a_deliberate_error() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
+///
+/// # Errors
+/// Returns an error if the temp directory or its fixture files can't be
+/// created — a real filesystem problem the caller (a `#[test]` fn, where
+/// `.expect()` is the correct test-failure mode) should fail loudly on.
+fn project_with_a_deliberate_error() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
     let root = dir.path();
-    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src"))?;
     std::fs::write(
         root.join("Cargo.toml"),
         "[package]\nname = \"qos-lsp-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
          [dependencies]\n",
-    )
-    .unwrap();
+    )?;
     // `parse_limitt` does not exist. rustc's message for this is stable and
     // specific, which is what makes it assertable.
     std::fs::write(
         root.join("src/main.rs"),
         "fn parse_limit(n: u64) -> u64 {\n    n * 2\n}\n\n\
          fn main() {\n    let v = parse_limitt(21);\n    println!(\"{v}\");\n}\n",
-    )
-    .unwrap();
-    dir
+    )?;
+    Ok(dir)
 }
 
 /// Drive a client until `want` returns true, or the budget runs out. Returns
 /// every event seen, so a failure can report what actually happened.
 fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Vec<LspEvent>, bool) {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test value, cannot overflow: BUDGET is a fixed few-minute Duration added to the current Instant"
+    )]
     let deadline = Instant::now() + BUDGET;
     let mut seen = Vec::new();
     while Instant::now() < deadline {
@@ -89,7 +106,7 @@ fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Ve
             // Fold progress through the client the way the app does, so the
             // task table under test is the one the status bar reads.
             if let LspEvent::Progress(p) = &ev {
-                client.note_progress(p.clone());
+                client.note_progress(p);
             }
             seen.push(ev);
         }
@@ -117,7 +134,7 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     require_binary("rust-analyzer");
     require_binary("cargo");
 
-    let project = project_with_a_deliberate_error();
+    let project = project_with_a_deliberate_error().expect("build the fixture project");
     let root = project.path();
     let main_rs = root.join("src/main.rs");
 
@@ -198,7 +215,7 @@ fn indexing_is_visible_while_it_happens() {
     require_binary("rust-analyzer");
     require_binary("cargo");
 
-    let project = project_with_a_deliberate_error();
+    let project = project_with_a_deliberate_error().expect("build the fixture project");
     let mut client = LspClient::start(Language::Rust, project.path())
         .expect("rust-analyzer starts against a real directory");
 

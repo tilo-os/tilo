@@ -9,6 +9,16 @@
 //! error, and qOS's own toolkit never asks for it — so nothing in-tree
 //! noticed it was missing until the wire itself was observed.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 

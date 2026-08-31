@@ -3,7 +3,12 @@
 # runs: it must be compiled with `--target wasm32-wasip2` and produces a
 # Component Model `.wasm`, not a host-target library. Build it explicitly:
 # `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
-exclude = ["crates/doc/qdoc-codec-markdown-wasm", "vendor/winit"]
+exclude = [
+    "crates/doc/qdoc-codec-markdown-wasm",
+    "vendor/vello",
+    "vendor/vello_encoding",
+    "vendor/winit",
+]
 # `runtime-dylib` is a workspace member (so it shares the lockfile,
 # target dir, and crate SVHs with the apps that link it) but is kept
 # OUT of `default-members`: a bare `cargo build` / `cargo test` never
@@ -144,6 +149,13 @@ members = [
 ]
 resolver = "2"
 
+# qOS is distributed as one AGPL operating-system source tree, not as a set of
+# independently published crates. Members inherit this metadata so Cargo tools
+# can distinguish repository-owned path dependencies from registry packages.
+[workspace.package]
+license = "AGPL-3.0-only"
+publish = false
+
 # Every dependency shared by two or more workspace members is pinned here, and
 # the members inherit it with `dep.workspace = true`. This is the one file to
 # edit to bump a shared version — before it existed, `vello` was spelled out in
@@ -219,6 +231,14 @@ trailing_empty_array = "deny"
 # with unwrap, since that is denied too.
 as_conversions = "allow"
 
+# `duration_suboptimal_units` wants `Duration::from_days(3)` where the code
+# says `from_secs(259_200)`. It would read better — but `from_days`,
+# `from_hours`, `from_mins` and `from_weeks` are all still behind the unstable
+# `duration_constructors` feature, and the toolchain is pinned to stable. The
+# lint's own suggestion does not compile here, so denying it only produces
+# violations nobody can discharge.
+duration_suboptimal_units = "allow"
+
 # `must_use_candidate` wants `#[must_use]` on every public value-returning
 # function: 6,746 attributes here. The bug it aims at — calling something and
 # discarding a result that mattered — is better caught by `#[must_use]` on the
@@ -273,7 +293,7 @@ serde_bytes = "0.11"
 # varint, no field-reorder leeway, so signatures reproduce byte-for-byte.
 postcard = "1.1.3"
 toml = "0.8"
-quick-xml = "0.38.4"
+quick-xml = "0.41.0"
 capnp = "0.26"
 capnp-rpc = "0.26"
 capnp-futures = "0.26"

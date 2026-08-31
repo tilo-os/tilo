@@ -31,6 +31,10 @@ pub struct ThumbProvider {
 
 impl ThumbProvider {
     /// Open a provider whose cache lives under `dir` (created if missing; typically `<cache-dir>/thumbs`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `dir` cannot be created or the on-disk cache cannot be opened.
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             cache: ThumbCache::open(dir)?,

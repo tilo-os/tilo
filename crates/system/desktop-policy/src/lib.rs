@@ -5,6 +5,19 @@
 //! resolver composes those three layers; callers must not reimplement the
 //! precedence rules in UI code.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod defaults;
 pub mod storage;
 

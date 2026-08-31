@@ -68,6 +68,12 @@ pub struct Capture {
 
 impl Capture {
     /// Open `device` (e.g. `/dev/video0`) at the requested size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `GStreamer` fails to initialize, the pipeline fails
+    /// to build or is missing its appsink, or the pipeline fails to
+    /// transition to the `Playing` state.
     pub fn open(device: &str, width: u32, height: u32) -> Result<Self> {
         gst::init().context("gst init")?;
         let desc = format!(
@@ -100,7 +106,7 @@ impl Capture {
                         width: info.width(),
                         height: info.height(),
                     };
-                    let _ = tx.lock().unwrap().send(frame);
+                    let _ = tx.lock().map_err(|_| gst::FlowError::Error)?.send(frame);
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .build(),

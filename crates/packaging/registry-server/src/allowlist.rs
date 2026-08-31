@@ -32,6 +32,12 @@ pub struct PublisherRow {
 
 impl PublisherRow {
     /// Parse the hex pubkey into raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AllowlistError::BadHex`] if `pubkey_hex` isn't valid
+    /// hex, or [`AllowlistError::BadLength`] if it doesn't decode to
+    /// exactly 32 bytes.
     pub fn pubkey_bytes(&self) -> Result<[u8; 32], AllowlistError> {
         parse_pubkey_hex(&self.pubkey_hex)
     }
@@ -51,11 +57,19 @@ impl PublisherAllowlist {
     }
 
     /// Parse from TOML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AllowlistError::Parse`] if `s` isn't valid TOML for this shape.
     pub fn from_toml(s: &str) -> Result<Self, AllowlistError> {
         toml::from_str(s).map_err(|e| AllowlistError::Parse(e.to_string()))
     }
 
     /// Encode to pretty TOML for `atomic_write`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AllowlistError::Encode`] if `self` fails to encode as TOML.
     pub fn to_toml(&self) -> Result<String, AllowlistError> {
         toml::to_string_pretty(self).map_err(|e| AllowlistError::Encode(e.to_string()))
     }

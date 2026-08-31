@@ -81,12 +81,15 @@ pub fn pdf_thumb(pdf: &[u8], max_edge: u32) -> Option<RgbaThumb> {
     let doc = pdfium.load_pdf_from_byte_vec(pdf.to_vec(), None).ok()?;
     let page = doc.pages().get(0).ok()?;
     // Render at the target width; PDFs are portrait-ish so width drives the size.
-    let config = PdfRenderConfig::new().set_target_width(max_edge as Pixels);
+    let config =
+        PdfRenderConfig::new().set_target_width(Pixels::try_from(max_edge).unwrap_or(Pixels::MAX));
     let bitmap = page.render_with_config(&config).ok()?;
-    let w = bitmap.width().max(0) as u32;
-    let h = bitmap.height().max(0) as u32;
+    // `.max(0)` already rules out the sign `.try_from` would otherwise catch;
+    // `.unwrap_or(0)` just keeps the fallback consistent with that proof.
+    let w = u32::try_from(bitmap.width().max(0)).unwrap_or(0);
+    let h = u32::try_from(bitmap.height().max(0)).unwrap_or(0);
     let rgba = bitmap.as_rgba_bytes();
-    if w == 0 || h == 0 || rgba.len() != (w as usize) * (h as usize) * 4 {
+    if w == 0 || h == 0 || rgba.len() != (w as usize).saturating_mul(h as usize).saturating_mul(4) {
         return None;
     }
     rgba_to_thumb(rgba, w, h, max_edge)

@@ -1,7 +1,7 @@
 //! A small, self-contained **WYSIWYG rich-text editor** for HTML mail bodies.
 //!
 //! Its attributed paragraphs are shaped, wrapped, painted and hit-tested by
-//! the toolkit's [`RichTextLayout`], so it shares ligature, BiDi, Unicode-break
+//! the toolkit's [`RichTextLayout`], so it shares ligature, `BiDi`, Unicode-break
 //! and caret geometry with the other editors. The toolkit's existing
 //! `BlockEditor` is Markdown-only, single-line-per-block, and has no
 //! underline / block-quote / `href` link, so an HTML-mail editor needs its own
@@ -24,6 +24,8 @@
 //! * [`Wysiwyg::from_plain`] seeds the document from plain text (used when the
 //!   user switches Raw → HTML, or to import a reply quote).
 
+use std::fmt::Write as _;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -31,10 +33,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::text_selection::{next_char_boundary, prev_char_boundary};
 use ui::theme::Theme;
-use ui::tokens::TextRole;
+use ui::tokens::{Colors, TextRole};
 
 /// Inline character styling. Stored per byte run; toggled over the selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -132,7 +134,7 @@ pub struct Wysiwyg {
     block_rects: Vec<Rect>,
     /// Authoritative attributed layouts from the latest draw. Pointer hit
     /// testing reads these instead of maintaining a second approximate row
-    /// model, so ligatures, BiDi and soft wrapping agree with the ink.
+    /// model, so ligatures, `BiDi` and soft wrapping agree with the ink.
     block_layouts: Vec<RichTextLayout>,
     scroll_y: f64,
     dirty: bool,
@@ -195,13 +197,22 @@ impl Wysiwyg {
         if self.blocks.is_empty() {
             self.blocks.push(Block::paragraph());
         }
-        let last = self.blocks.len() - 1;
-        self.caret = Caret {
-            block: last,
-            glyph: self.blocks[last].glyphs.len(),
-        };
+        self.caret = self.end_caret();
         self.anchor = None;
         self.dirty = true;
+    }
+
+    /// A caret parked at the very end of the last block — used after
+    /// seeding/appending content. Falls back to `(0, 0)` if `blocks` is ever
+    /// unexpectedly empty (the invariant is that it never is).
+    fn end_caret(&self) -> Caret {
+        match self.blocks.len() {
+            0 => Caret { block: 0, glyph: 0 },
+            n => Caret {
+                block: n - 1,
+                glyph: self.blocks.get(n - 1).map_or(0, |b| b.glyphs.len()),
+            },
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -213,7 +224,7 @@ impl Wysiwyg {
     /// authoring helper for any host that wants to insert pre-styled blocks).
     pub fn push_styled_block(&mut self, kind: BlockKind, segments: &[(&str, Style)]) {
         // Replace the initial empty paragraph the constructor leaves in place.
-        if self.blocks.len() == 1 && self.blocks[0].glyphs.is_empty() {
+        if self.blocks.len() == 1 && self.blocks.first().is_some_and(|b| b.glyphs.is_empty()) {
             self.blocks.clear();
         }
         let mut b = Block {
@@ -231,11 +242,7 @@ impl Wysiwyg {
             }
         }
         self.blocks.push(b);
-        let last = self.blocks.len() - 1;
-        self.caret = Caret {
-            block: last,
-            glyph: self.blocks[last].glyphs.len(),
-        };
+        self.caret = self.end_caret();
         self.dirty = true;
     }
 
@@ -265,15 +272,15 @@ impl Wysiwyg {
     pub fn to_html(&self) -> String {
         let mut out = String::new();
         let mut i = 0;
-        while i < self.blocks.len() {
-            let b = &self.blocks[i];
-            match b.kind {
+        while let Some(b) = self.blocks.get(i) {
+            let kind = b.kind;
+            match kind {
                 BlockKind::Bullet | BlockKind::Numbered => {
-                    let ordered = matches!(b.kind, BlockKind::Numbered);
+                    let ordered = matches!(kind, BlockKind::Numbered);
                     out.push_str(if ordered { "<ol>" } else { "<ul>" });
-                    while i < self.blocks.len() && self.blocks[i].kind == b.kind {
+                    while let Some(item) = self.blocks.get(i).filter(|blk| blk.kind == kind) {
                         out.push_str("<li>");
-                        out.push_str(&self.inline_html(&self.blocks[i]));
+                        out.push_str(&inline_html(item));
                         out.push_str("</li>");
                         i += 1;
                     }
@@ -281,54 +288,17 @@ impl Wysiwyg {
                     continue;
                 }
                 _ => {
-                    let tag = b.kind.html_tag();
+                    let tag = kind.html_tag();
                     out.push('<');
                     out.push_str(tag);
                     out.push('>');
-                    out.push_str(&self.inline_html(b));
+                    out.push_str(&inline_html(b));
                     out.push_str("</");
                     out.push_str(tag);
                     out.push('>');
                 }
             }
             i += 1;
-        }
-        out
-    }
-
-    /// Render one block's glyph run to inline HTML, coalescing equal-style runs
-    /// and wrapping links. HTML-special characters are escaped.
-    fn inline_html(&self, block: &Block) -> String {
-        let mut out = String::new();
-        let mut idx = 0;
-        while idx < block.glyphs.len() {
-            let g = &block.glyphs[idx];
-            // Group a maximal run with identical style + link.
-            let mut end = idx + 1;
-            while end < block.glyphs.len()
-                && block.glyphs[end].style == g.style
-                && block.glyphs[end].link == g.link
-            {
-                end += 1;
-            }
-            let text: String = block.glyphs[idx..end].iter().map(|x| x.ch).collect();
-            let mut frag = escape_html(&text);
-            if g.style.bold {
-                frag = format!("<b>{frag}</b>");
-            }
-            if g.style.italic {
-                frag = format!("<i>{frag}</i>");
-            }
-            if g.style.underline {
-                frag = format!("<u>{frag}</u>");
-            }
-            if let Some(li) = g.link
-                && let Some(href) = block.links.get(li)
-            {
-                frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
-            }
-            out.push_str(&frag);
-            idx = end;
         }
         out
     }
@@ -344,7 +314,7 @@ impl Wysiwyg {
             match b.kind {
                 BlockKind::Bullet => out.push_str("• "),
                 BlockKind::Numbered => {
-                    out.push_str(&format!("{num}. "));
+                    let _ = write!(out, "{num}. ");
                     num += 1;
                 }
                 BlockKind::Quote => out.push_str("> "),
@@ -392,9 +362,12 @@ impl Wysiwyg {
     /// block). Toggling a kind that's already set reverts to Paragraph.
     pub fn set_block_kind(&mut self, kind: BlockKind) {
         let (a, b) = self.ordered_selection().unwrap_or((self.caret, self.caret));
-        let already = (a.block..=b.block).all(|i| self.blocks[i].kind == kind);
-        for i in a.block..=b.block {
-            self.blocks[i].kind = if already { BlockKind::Paragraph } else { kind };
+        let already =
+            (a.block..=b.block).all(|i| self.blocks.get(i).is_some_and(|blk| blk.kind == kind));
+        if let Some(range) = self.blocks.get_mut(a.block..=b.block) {
+            for blk in range {
+                blk.kind = if already { BlockKind::Paragraph } else { kind };
+            }
         }
         self.dirty = true;
     }
@@ -419,15 +392,25 @@ impl Wysiwyg {
             self.anchor = Some(start);
             self.caret = end;
         }
-        let (a, b) = self.ordered_selection().unwrap();
+        let Some((a, b)) = self.ordered_selection() else {
+            // Unreachable in practice: the branch above just turned an empty
+            // selection into a real one, or one already existed — but bail
+            // rather than panic if that invariant is ever violated.
+            return;
+        };
         // One link entry per block touched (links don't span blocks here).
         for bi in a.block..=b.block {
-            let li = self.blocks[bi].links.len();
-            self.blocks[bi].links.push(href.to_string());
             let (s, e) = self.block_selection_bounds(bi, a, b);
-            for g in &mut self.blocks[bi].glyphs[s..e] {
-                g.link = Some(li);
-                g.style.underline = true;
+            let Some(block) = self.blocks.get_mut(bi) else {
+                continue;
+            };
+            let li = block.links.len();
+            block.links.push(href.to_string());
+            if let Some(glyphs) = block.glyphs.get_mut(s..e) {
+                for g in glyphs {
+                    g.link = Some(li);
+                    g.style.underline = true;
+                }
             }
         }
         self.dirty = true;
@@ -450,7 +433,7 @@ impl Wysiwyg {
     /// The `[start, end)` glyph range of block `bi` that lies inside selection
     /// `(a, b)`.
     fn block_selection_bounds(&self, bi: usize, a: Caret, b: Caret) -> (usize, usize) {
-        let len = self.blocks[bi].glyphs.len();
+        let len = self.blocks.get(bi).map_or(0, |blk| blk.glyphs.len());
         let s = if bi == a.block { a.glyph } else { 0 };
         let e = if bi == b.block { b.glyph } else { len };
         (s.min(len), e.min(len))
@@ -459,15 +442,25 @@ impl Wysiwyg {
     fn selection_glyphs(&self, a: Caret, b: Caret) -> impl Iterator<Item = &Glyph> + '_ {
         (a.block..=b.block).flat_map(move |bi| {
             let (s, e) = self.block_selection_bounds(bi, a, b);
-            self.blocks[bi].glyphs[s..e].iter()
+            self.blocks
+                .get(bi)
+                .and_then(|blk| blk.glyphs.get(s..e))
+                .into_iter()
+                .flatten()
         })
     }
 
-    fn for_each_selected_glyph(&mut self, a: Caret, b: Caret, mut f: impl FnMut(&mut Glyph)) {
+    fn for_each_selected_glyph(&mut self, a: Caret, b: Caret, mut apply: impl FnMut(&mut Glyph)) {
         for bi in a.block..=b.block {
-            let (s, e) = self.block_selection_bounds(bi, a, b);
-            for g in &mut self.blocks[bi].glyphs[s..e] {
-                f(g);
+            let (start, end) = self.block_selection_bounds(bi, a, b);
+            if let Some(glyphs) = self
+                .blocks
+                .get_mut(bi)
+                .and_then(|blk| blk.glyphs.get_mut(start..end))
+            {
+                for g in glyphs {
+                    apply(g);
+                }
             }
         }
     }
@@ -479,12 +472,20 @@ impl Wysiwyg {
             return false;
         };
         if a.block == b.block {
-            self.blocks[a.block].glyphs.drain(a.glyph..b.glyph);
+            if let Some(blk) = self.blocks.get_mut(a.block) {
+                blk.glyphs.drain(a.glyph..b.glyph);
+            }
         } else {
             // Keep head of first block, tail of last block, drop the middle.
-            let tail: Vec<Glyph> = self.blocks[b.block].glyphs.split_off(b.glyph);
-            self.blocks[a.block].glyphs.truncate(a.glyph);
-            self.blocks[a.block].glyphs.extend(tail);
+            let tail: Vec<Glyph> = self
+                .blocks
+                .get_mut(b.block)
+                .map(|blk| blk.glyphs.split_off(b.glyph))
+                .unwrap_or_default();
+            if let Some(blk) = self.blocks.get_mut(a.block) {
+                blk.glyphs.truncate(a.glyph);
+                blk.glyphs.extend(tail);
+            }
             self.blocks.drain(a.block + 1..=b.block);
         }
         self.caret = a;
@@ -496,7 +497,9 @@ impl Wysiwyg {
     fn insert_char(&mut self, ch: char) {
         self.delete_selection();
         let style = self.pending;
-        let b = &mut self.blocks[self.caret.block];
+        let Some(b) = self.blocks.get_mut(self.caret.block) else {
+            return;
+        };
         b.glyphs.insert(
             self.caret.glyph,
             Glyph {
@@ -511,17 +514,16 @@ impl Wysiwyg {
 
     fn split_block(&mut self) {
         self.delete_selection();
-        let tail = self.blocks[self.caret.block]
-            .glyphs
-            .split_off(self.caret.glyph);
-        let cur_kind = self.blocks[self.caret.block].kind;
+        let Some(cur) = self.blocks.get_mut(self.caret.block) else {
+            return;
+        };
+        let tail = cur.glyphs.split_off(self.caret.glyph);
+        let cur_kind = cur.kind;
         // Pressing Enter in a list continues the list; elsewhere a new
         // paragraph. An Enter on an empty list item exits the list.
         let new_kind = match cur_kind {
-            BlockKind::Bullet | BlockKind::Numbered
-                if self.blocks[self.caret.block].glyphs.is_empty() =>
-            {
-                self.blocks[self.caret.block].kind = BlockKind::Paragraph;
+            BlockKind::Bullet | BlockKind::Numbered if cur.glyphs.is_empty() => {
+                cur.kind = BlockKind::Paragraph;
                 self.dirty = true;
                 return;
             }
@@ -547,20 +549,27 @@ impl Wysiwyg {
             return;
         }
         if self.caret.glyph > 0 {
-            let block = &self.blocks[self.caret.block];
-            let byte = glyph_byte(&block.glyphs, self.caret.glyph);
-            let previous = prev_char_boundary(&block.text(), byte);
-            let previous_glyph = glyph_index_at_byte(&block.glyphs, previous);
-            self.blocks[self.caret.block]
-                .glyphs
-                .drain(previous_glyph..self.caret.glyph);
-            self.caret.glyph = previous_glyph;
+            if let Some(block) = self.blocks.get(self.caret.block) {
+                let byte = glyph_byte(&block.glyphs, self.caret.glyph);
+                let previous = prev_char_boundary(&block.text(), byte);
+                let previous_glyph = glyph_index_at_byte(&block.glyphs, previous);
+                if let Some(block) = self.blocks.get_mut(self.caret.block) {
+                    block.glyphs.drain(previous_glyph..self.caret.glyph);
+                }
+                self.caret.glyph = previous_glyph;
+            }
         } else if self.caret.block > 0 {
             // Merge with previous block.
             let prev = self.caret.block - 1;
-            let prev_len = self.blocks[prev].glyphs.len();
-            let moved = std::mem::take(&mut self.blocks[self.caret.block].glyphs);
-            self.blocks[prev].glyphs.extend(moved);
+            let prev_len = self.blocks.get(prev).map_or(0, |b| b.glyphs.len());
+            let moved = self
+                .blocks
+                .get_mut(self.caret.block)
+                .map(|blk| std::mem::take(&mut blk.glyphs))
+                .unwrap_or_default();
+            if let Some(blk) = self.blocks.get_mut(prev) {
+                blk.glyphs.extend(moved);
+            }
             self.blocks.remove(self.caret.block);
             self.caret = Caret {
                 block: prev,
@@ -578,19 +587,28 @@ impl Wysiwyg {
         }
         if dx < 0 {
             if self.caret.glyph > 0 {
-                let block = &self.blocks[self.caret.block];
-                let byte = glyph_byte(&block.glyphs, self.caret.glyph);
-                self.caret.glyph =
-                    glyph_index_at_byte(&block.glyphs, prev_char_boundary(&block.text(), byte));
+                if let Some(block) = self.blocks.get(self.caret.block) {
+                    let byte = glyph_byte(&block.glyphs, self.caret.glyph);
+                    self.caret.glyph =
+                        glyph_index_at_byte(&block.glyphs, prev_char_boundary(&block.text(), byte));
+                }
             } else if self.caret.block > 0 {
                 self.caret.block -= 1;
-                self.caret.glyph = self.blocks[self.caret.block].glyphs.len();
+                self.caret.glyph = self
+                    .blocks
+                    .get(self.caret.block)
+                    .map_or(0, |b| b.glyphs.len());
             }
-        } else if self.caret.glyph < self.blocks[self.caret.block].glyphs.len() {
-            let block = &self.blocks[self.caret.block];
-            let byte = glyph_byte(&block.glyphs, self.caret.glyph);
-            self.caret.glyph =
-                glyph_index_at_byte(&block.glyphs, next_char_boundary(&block.text(), byte));
+        } else if self
+            .blocks
+            .get(self.caret.block)
+            .is_some_and(|b| self.caret.glyph < b.glyphs.len())
+        {
+            if let Some(block) = self.blocks.get(self.caret.block) {
+                let byte = glyph_byte(&block.glyphs, self.caret.glyph);
+                self.caret.glyph =
+                    glyph_index_at_byte(&block.glyphs, next_char_boundary(&block.text(), byte));
+            }
         } else if self.caret.block + 1 < self.blocks.len() {
             self.caret.block += 1;
             self.caret.glyph = 0;
@@ -644,7 +662,7 @@ impl Wysiwyg {
         self.block_layouts.clear();
         let content_w = (self.rect.width() - 2.0 * PAD_X).max(40.0);
         let mut y = self.rect.y0 + PAD_Y - self.scroll_y;
-        let mut list_num = 1;
+        let mut list_num: i32 = 1;
 
         if self.is_empty() && !self.focused {
             let style = theme.tokens.typography.style(TextRole::Body);
@@ -661,154 +679,255 @@ impl Wysiwyg {
         let selection = self.ordered_selection();
         let link_rgba = c.accent[4].to_rgba8();
         let link_rgb = [link_rgba.r, link_rgba.g, link_rgba.b];
-        for (bi, b) in self.blocks.iter().enumerate() {
-            let style = match b.kind {
-                BlockKind::Heading(1) => theme.tokens.typography.style(TextRole::Heading),
-                BlockKind::Heading(2) => theme
-                    .tokens
-                    .typography
-                    .style(TextRole::Title)
-                    .with_weight(TextWeight::Bold),
-                BlockKind::Heading(_) => theme
-                    .tokens
-                    .typography
-                    .style(TextRole::Body)
-                    .with_weight(TextWeight::Semibold),
-                _ => theme.tokens.typography.style(TextRole::Body),
-            };
-            let indent = match b.kind {
-                BlockKind::Bullet | BlockKind::Numbered => LIST_INDENT,
-                BlockKind::Quote => QUOTE_INDENT,
-                _ => 0.0,
-            };
-            let bx = self.rect.x0 + PAD_X + indent;
-            let available = (content_w - indent).max(1.0) as f32;
-
-            let mut spans = Vec::new();
-            let mut underlines = Vec::new();
-            let mut byte = 0usize;
-            let mut idx = 0usize;
-            while idx < b.glyphs.len() {
-                let glyph = &b.glyphs[idx];
-                let mut end = idx + 1;
-                while end < b.glyphs.len()
-                    && b.glyphs[end].style == glyph.style
-                    && b.glyphs[end].link == glyph.link
-                {
-                    end += 1;
-                }
-                let run: String = b.glyphs[idx..end].iter().map(|item| item.ch).collect();
-                let run_end = byte + run.len();
-                spans.push(
-                    RichSpan::new(run)
-                        .bold(glyph.style.bold)
-                        .italic(glyph.style.italic)
-                        .color(glyph.link.map(|_| link_rgb)),
-                );
-                if glyph.style.underline || glyph.link.is_some() {
-                    underlines.push((byte, run_end));
-                }
-                byte = run_end;
-                idx = end;
-            }
-            if spans.is_empty() {
-                spans.push(RichSpan::new(String::new()));
-            }
-            let layout = RichTextLayout::shape_styled(
-                &mut tr.font_system,
-                &spans,
-                &style,
-                Some(available),
-                TextAlign::Left,
-                underlines,
-                Vec::new(),
+        for bi in 0..self.blocks.len() {
+            y = self.draw_block(
+                scene,
+                t,
+                tr,
+                theme,
+                bi,
+                content_w,
+                y,
+                &mut list_num,
+                selection,
+                link_rgb,
             );
-            let layout_h = f64::from(layout.height());
-
-            // Quote bar.
-            if matches!(b.kind, BlockKind::Quote) {
-                let bar = Rect::new(
-                    self.rect.x0 + PAD_X,
-                    y,
-                    self.rect.x0 + PAD_X + 3.0,
-                    y + layout_h,
-                );
-                scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &bar);
-            }
-            // List marker.
-            if matches!(b.kind, BlockKind::Bullet) {
-                tr.draw_style(
-                    scene,
-                    "•",
-                    c.text_dim,
-                    t * Affine::translate((self.rect.x0 + PAD_X + 4.0, y)),
-                    None,
-                    &style,
-                );
-            } else if matches!(b.kind, BlockKind::Numbered) {
-                tr.draw_style(
-                    scene,
-                    &format!("{list_num}."),
-                    c.text_dim,
-                    t * Affine::translate((self.rect.x0 + PAD_X, y)),
-                    None,
-                    &style,
-                );
-                list_num += 1;
-            }
-            if !matches!(b.kind, BlockKind::Numbered) {
-                list_num = 1;
-            }
-
-            let origin = t * Affine::translate((bx, y));
-            if let Some((sa, sb)) = selection
-                && bi >= sa.block
-                && bi <= sb.block
-            {
-                let (s, e) = self.block_selection_bounds(bi, sa, sb);
-                let start = glyph_byte(&b.glyphs, s);
-                let end = glyph_byte(&b.glyphs, e);
-                for (x0, y0, x1, y1) in layout.selection_rects(start, end) {
-                    let sel = Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        origin,
-                        c.accent[5].with_alpha_factor(0.28),
-                        None,
-                        &sel,
-                    );
-                }
-            }
-            tr.draw_rich(scene, &layout, origin, c.text_primary);
-
-            if self.focused && self.caret.block == bi {
-                let caret_byte = glyph_byte(&b.glyphs, self.caret.glyph);
-                let (cx, top, height) = layout.caret_geometry(caret_byte);
-                let caret = Rect::new(
-                    f64::from(cx),
-                    f64::from(top),
-                    f64::from(cx) + theme.caret_width,
-                    f64::from(top + height),
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    origin,
-                    c.accent[5],
-                    None,
-                    &caret,
-                );
-            }
-
-            let brect = Rect::new(bx, y, bx + f64::from(available), y + layout_h);
-            self.block_rects.push(brect);
-            self.block_layouts.push(layout);
-            y += layout_h
-                + if matches!(b.kind, BlockKind::Heading(_)) {
-                    BLOCK_GAP
-                } else {
-                    LINE_GAP
-                };
         }
+    }
+
+    /// Draw one block — quote bar / list marker, selection highlight, text,
+    /// and caret — and push its rect + layout for later hit-testing. Returns
+    /// the y past it. A no-op returning `y` unchanged if `bi` is out of
+    /// range. Part of [`Self::draw`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the per-block draw state `draw` already resolved; bundling them would just move the same count into a field list"
+    )]
+    fn draw_block(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bi: usize,
+        content_w: f64,
+        mut y: f64,
+        list_num: &mut i32,
+        selection: Option<(Caret, Caret)>,
+        link_rgb: [u8; 3],
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let Some(blk) = self.blocks.get(bi) else {
+            return y;
+        };
+        let style = match blk.kind {
+            BlockKind::Heading(1) => theme.tokens.typography.style(TextRole::Heading),
+            BlockKind::Heading(2) => theme
+                .tokens
+                .typography
+                .style(TextRole::Title)
+                .with_weight(TextWeight::Bold),
+            BlockKind::Heading(_) => theme
+                .tokens
+                .typography
+                .style(TextRole::Body)
+                .with_weight(TextWeight::Semibold),
+            _ => theme.tokens.typography.style(TextRole::Body),
+        };
+        let indent = match blk.kind {
+            BlockKind::Bullet | BlockKind::Numbered => LIST_INDENT,
+            BlockKind::Quote => QUOTE_INDENT,
+            _ => 0.0,
+        };
+        let bx = self.rect.x0 + PAD_X + indent;
+        let available = (content_w - indent).max(1.0) as f32;
+
+        let (spans, underlines) = Self::build_block_spans(&blk.glyphs, link_rgb);
+        let layout = RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &spans,
+            &style,
+            Some(available),
+            TextAlign::Left,
+            underlines,
+            Vec::new(),
+        );
+        let layout_h = f64::from(layout.height());
+
+        Self::draw_block_marker(
+            scene,
+            t,
+            tr,
+            c,
+            &style,
+            blk.kind,
+            self.rect.x0 + PAD_X,
+            y,
+            layout_h,
+            list_num,
+        );
+
+        let origin = t * Affine::translate((bx, y));
+        if let Some((sa, sb)) = selection
+            && bi >= sa.block
+            && bi <= sb.block
+        {
+            let (sel_from, sel_to) = self.block_selection_bounds(bi, sa, sb);
+            let start = glyph_byte(&blk.glyphs, sel_from);
+            let end = glyph_byte(&blk.glyphs, sel_to);
+            Self::draw_block_selection(scene, origin, c, &layout, start, end);
+        }
+        tr.draw_rich(scene, &layout, origin, c.text_primary);
+
+        if self.focused && self.caret.block == bi {
+            let caret_byte = glyph_byte(&blk.glyphs, self.caret.glyph);
+            Self::draw_block_caret(scene, origin, theme, c, &layout, caret_byte);
+        }
+
+        let brect = Rect::new(bx, y, bx + f64::from(available), y + layout_h);
+        self.block_rects.push(brect);
+        self.block_layouts.push(layout);
+        y += layout_h
+            + if matches!(blk.kind, BlockKind::Heading(_)) {
+                BLOCK_GAP
+            } else {
+                LINE_GAP
+            };
+        y
+    }
+
+    /// Build the shaped-text spans and underline byte-ranges for one block's
+    /// glyph run, coalescing consecutive glyphs that share style + link into
+    /// a single [`RichSpan`]. Part of [`Self::draw_block`].
+    fn build_block_spans(
+        glyphs: &[Glyph],
+        link_rgb: [u8; 3],
+    ) -> (Vec<RichSpan>, Vec<(usize, usize)>) {
+        let mut spans = Vec::new();
+        let mut underlines = Vec::new();
+        let mut byte = 0usize;
+        // Consecutive glyphs sharing style + link coalesce into one run —
+        // `PartialEq` equality is transitive, so grouping adjacent-equal
+        // pairs matches grouping by the run's first glyph.
+        for run in glyphs.chunk_by(|a, b| a.style == b.style && a.link == b.link) {
+            let Some(glyph) = run.first() else { continue };
+            let text: String = run.iter().map(|item| item.ch).collect();
+            let run_end = byte + text.len();
+            spans.push(
+                RichSpan::new(text)
+                    .bold(glyph.style.bold)
+                    .italic(glyph.style.italic)
+                    .color(glyph.link.map(|_| link_rgb)),
+            );
+            if glyph.style.underline || glyph.link.is_some() {
+                underlines.push((byte, run_end));
+            }
+            byte = run_end;
+        }
+        if spans.is_empty() {
+            spans.push(RichSpan::new(String::new()));
+        }
+        (spans, underlines)
+    }
+
+    /// Draw a block's leading decoration: the quote bar for
+    /// [`BlockKind::Quote`], or the bullet / number marker for a list item —
+    /// advancing `list_num` for consecutive numbered items and resetting it
+    /// for any other kind. Part of [`Self::draw_block`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the block layout draw_block already resolved; bundling them would just move the same count into a field list"
+    )]
+    fn draw_block_marker(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        c: &Colors,
+        style: &TextStyle,
+        kind: BlockKind,
+        left_x: f64,
+        y: f64,
+        layout_h: f64,
+        list_num: &mut i32,
+    ) {
+        // Quote bar.
+        if matches!(kind, BlockKind::Quote) {
+            let bar = Rect::new(left_x, y, left_x + 3.0, y + layout_h);
+            scene.fill(vello::peniko::Fill::NonZero, t, c.accent[5], None, &bar);
+        }
+        // List marker.
+        if matches!(kind, BlockKind::Bullet) {
+            tr.draw_style(
+                scene,
+                "•",
+                c.text_dim,
+                t * Affine::translate((left_x + 4.0, y)),
+                None,
+                style,
+            );
+        } else if matches!(kind, BlockKind::Numbered) {
+            tr.draw_style(
+                scene,
+                &format!("{list_num}."),
+                c.text_dim,
+                t * Affine::translate((left_x, y)),
+                None,
+                style,
+            );
+            *list_num += 1;
+        }
+        if !matches!(kind, BlockKind::Numbered) {
+            *list_num = 1;
+        }
+    }
+
+    /// Draw the selection highlight within a block's already-shaped
+    /// `layout`, covering the glyph byte range `[start, end)`. Part of
+    /// [`Self::draw_block`].
+    fn draw_block_selection(
+        scene: &mut Scene,
+        origin: Affine,
+        c: &Colors,
+        layout: &RichTextLayout,
+        start: usize,
+        end: usize,
+    ) {
+        for (x0, y0, x1, y1) in layout.selection_rects(start, end) {
+            let sel = Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                origin,
+                c.accent[5].with_alpha_factor(0.28),
+                None,
+                &sel,
+            );
+        }
+    }
+
+    /// Draw the caret within a block's already-shaped `layout`, at the given
+    /// glyph byte offset. Part of [`Self::draw_block`].
+    fn draw_block_caret(
+        scene: &mut Scene,
+        origin: Affine,
+        theme: &Theme,
+        c: &Colors,
+        layout: &RichTextLayout,
+        caret_byte: usize,
+    ) {
+        let (cx, top, height) = layout.caret_geometry(caret_byte);
+        let caret = Rect::new(
+            f64::from(cx),
+            f64::from(top),
+            f64::from(cx) + theme.caret_width,
+            f64::from(top + height),
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            origin,
+            c.accent[5],
+            None,
+            &caret,
+        );
     }
 
     /// Hit-test a click to a caret position and place it (extending selection
@@ -960,11 +1079,7 @@ impl Wysiwyg {
             return;
         }
         self.anchor = Some(Caret { block: 0, glyph: 0 });
-        let last = self.blocks.len() - 1;
-        self.caret = Caret {
-            block: last,
-            glyph: self.blocks[last].glyphs.len(),
-        };
+        self.caret = self.end_caret();
         self.dirty = true;
     }
 }
@@ -998,6 +1113,46 @@ pub enum InlineMark {
     Bold,
     Italic,
     Underline,
+}
+
+/// Render one block's glyph run to inline HTML, coalescing equal-style runs
+/// and wrapping links. HTML-special characters are escaped.
+fn inline_html(block: &Block) -> String {
+    let mut out = String::new();
+    let mut idx = 0;
+    while let Some(g) = block.glyphs.get(idx) {
+        // Group a maximal run with identical style + link.
+        let mut end = idx + 1;
+        while block
+            .glyphs
+            .get(end)
+            .is_some_and(|next| next.style == g.style && next.link == g.link)
+        {
+            end += 1;
+        }
+        let Some(run) = block.glyphs.get(idx..end) else {
+            break;
+        };
+        let text: String = run.iter().map(|x| x.ch).collect();
+        let mut frag = escape_html(&text);
+        if g.style.bold {
+            frag = format!("<b>{frag}</b>");
+        }
+        if g.style.italic {
+            frag = format!("<i>{frag}</i>");
+        }
+        if g.style.underline {
+            frag = format!("<u>{frag}</u>");
+        }
+        if let Some(li) = g.link
+            && let Some(href) = block.links.get(li)
+        {
+            frag = format!("<a href=\"{}\">{frag}</a>", escape_attr(href));
+        }
+        out.push_str(&frag);
+        idx = end;
+    }
+    out
 }
 
 fn escape_html(s: &str) -> String {

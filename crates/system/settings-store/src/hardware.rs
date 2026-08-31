@@ -34,7 +34,7 @@ impl OutputMode {
             "{} × {} · {:.2} Hz",
             self.width,
             self.height,
-            self.refresh_mhz as f64 / 1000.0
+            f64::from(self.refresh_mhz) / 1000.0
         )
     }
 }
@@ -95,6 +95,10 @@ impl DisplayHardwareSnapshot {
             .then_some(snapshot)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `XDG_RUNTIME_DIR` is unset or relative, `self`
+    /// can't be serialised, or the snapshot file can't be written.
     pub fn save(&self) -> std::io::Result<()> {
         let path = display_snapshot_path()
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
@@ -158,6 +162,9 @@ impl Default for DisplayTransaction {
 impl DisplayTransaction {
     pub const CONFIRM_TIMEOUT_MS: u64 = 15_000;
 
+    /// # Errors
+    ///
+    /// Returns an error if the transaction can't be serialised or written.
     pub fn request(candidate: DisplayConfig) -> std::io::Result<Self> {
         let now = unix_ms();
         let transaction = Self {
@@ -188,6 +195,10 @@ impl DisplayTransaction {
         serde_json::from_value(value).ok()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or the section can't
+    /// be written.
     pub fn save(&self) -> std::io::Result<()> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         super::update_section(
@@ -196,6 +207,9 @@ impl DisplayTransaction {
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the transitioned state can't be [`saved`](Self::save).
     pub fn request_confirmation(&mut self) -> std::io::Result<()> {
         if self.state == DisplayTransactionState::AwaitingConfirmation {
             self.state = DisplayTransactionState::ConfirmRequested;
@@ -204,6 +218,9 @@ impl DisplayTransaction {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the transitioned state can't be [`saved`](Self::save).
     pub fn request_revert(&mut self) -> std::io::Result<()> {
         if matches!(
             self.state,
@@ -242,6 +259,15 @@ pub fn unix_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+// Four independent, user-facing toggles (Enabled, Primary, HDR, VRR), not a state
+// machine — and this document's JSON shape and field names are load-bearing across
+// `apps/settings` and `shell`, so folding them into a bitflags type ripples well
+// outside this crate.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent per-output toggles serialised by field name; consumers in \
+              other crates read and persist them directly"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputConfig {
@@ -300,6 +326,13 @@ pub enum DisplayConfigError {
 impl DisplayConfig {
     /// Validate intent against a fresh hardware snapshot. Unknown/disconnected
     /// configured outputs are retained for re-plug but ignored in this plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns the specific [`DisplayConfigError`] variant naming the first
+    /// rule an enabled, attached output's configuration violates — no
+    /// enabled output, more than one primary, an unsupported mode, scale,
+    /// HDR, VRR or color profile, or an unresolved or cyclic mirror target.
     pub fn validate_for(&self, attached: &[OutputDescriptor]) -> Result<(), DisplayConfigError> {
         let names: BTreeSet<&str> = attached.iter().map(|o| o.connector.as_str()).collect();
         let live: Vec<(&OutputDescriptor, &OutputConfig)> = attached
@@ -415,6 +448,10 @@ impl DisplayConfig {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or the section can't
+    /// be written.
     pub fn save(&self) -> std::io::Result<()> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         super::update_section(
@@ -432,6 +469,15 @@ pub enum AccelProfile {
     Adaptive,
 }
 
+// Seven independent, user-facing input toggles, not a state machine — and this
+// document's JSON shape and field names are load-bearing across `apps/settings`
+// and `shell`, so folding them into a bitflags type ripples well outside this
+// crate.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent input-device toggles serialised by field name; consumers in other \
+              crates read and persist them directly"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RichInputConfig {
@@ -563,8 +609,15 @@ impl RichInputConfig {
     }
 
     pub fn normalise_sources(&mut self) {
-        let active = KeyboardInputSource::parse(&self.keyboard_layout)
-            .unwrap_or_else(|| KeyboardInputSource::parse("us").expect("built-in XKB id"));
+        // The fallback is `KeyboardInputSource::parse("us")`'s output written out by hand,
+        // rather than re-parsing a literal we already know is valid XKB.
+        let active = KeyboardInputSource::parse(&self.keyboard_layout).unwrap_or_else(|| {
+            KeyboardInputSource {
+                id: "us".to_string(),
+                layout: "us".to_string(),
+                variant: None,
+            }
+        });
         let mut sources = Vec::<String>::new();
         for source in &self.keyboard_layouts {
             let Some(source) = KeyboardInputSource::parse(source) else {
@@ -640,6 +693,11 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
+    /// # Errors
+    ///
+    /// Returns an error if `text` names no key, its key is more than one
+    /// key (contains whitespace), a modifier is unrecognised or repeated,
+    /// or a single printable key has no modifier at all.
     pub fn parse(text: &str) -> Result<Self, &'static str> {
         let mut parts: Vec<_> = text
             .split('+')
@@ -690,17 +748,19 @@ pub struct ShortcutConfig {
 
 impl Default for ShortcutConfig {
     fn default() -> Self {
+        // Built directly rather than through the fallible `KeyChord::parse`: every
+        // chord here is a literal we already know is well-formed.
+        fn super_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Super".to_string()]),
+                key: key.to_string(),
+            }
+        }
         let bindings = [
-            (ShortcutAction::Search, KeyChord::parse("Super+K").unwrap()),
-            (
-                ShortcutAction::WorkspaceOverview,
-                KeyChord::parse("Super+Tab").unwrap(),
-            ),
-            (ShortcutAction::Lock, KeyChord::parse("Super+L").unwrap()),
-            (
-                ShortcutAction::QuickSettings,
-                KeyChord::parse("Super+Q").unwrap(),
-            ),
+            (ShortcutAction::Search, super_chord("k")),
+            (ShortcutAction::WorkspaceOverview, super_chord("tab")),
+            (ShortcutAction::Lock, super_chord("l")),
+            (ShortcutAction::QuickSettings, super_chord("q")),
         ]
         .into_iter()
         .collect();
@@ -709,6 +769,10 @@ impl Default for ShortcutConfig {
 }
 
 impl ShortcutConfig {
+    /// # Errors
+    ///
+    /// Returns the other [`ShortcutAction`] already bound to `chord`, if
+    /// any, without changing this binding's own chord.
     pub fn set(&mut self, action: ShortcutAction, chord: KeyChord) -> Result<(), ShortcutAction> {
         if let Some((other, _)) = self
             .bindings
@@ -724,6 +788,10 @@ impl ShortcutConfig {
         serde_json::from_value(serde_json::Value::Object(super::load_section("shortcuts")))
             .unwrap_or_default()
     }
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or the section can't
+    /// be written.
     pub fn save(&self) -> std::io::Result<()> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         super::update_section("shortcuts", value.as_object().cloned().unwrap_or_default())

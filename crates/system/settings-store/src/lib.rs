@@ -27,6 +27,19 @@
 //! out of range must never take an app or session down — every read path returns the
 //! caller's default instead.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -105,6 +118,11 @@ pub fn load_section(name: &str) -> Map<String, Value> {
 /// creates the config directory and file on first use, and writes through a temp file +
 /// rename so a crash mid-write can't leave a half-written document — which would otherwise
 /// reset every pane at once.
+///
+/// # Errors
+///
+/// Returns an error if no config directory is available (see
+/// [`config_root`]), or [`update_section_at`] fails.
 pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result<()> {
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
@@ -113,6 +131,10 @@ pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result
 }
 
 /// [`update_section`] against an explicit path.
+///
+/// # Errors
+///
+/// Returns an error if the document can't be serialised or written.
 pub fn update_section_at(
     path: &Path,
     name: &str,
@@ -417,7 +439,11 @@ mod tests {
             .unwrap()
             .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".tmp"))
+            .filter(|n| {
+                Path::new(n)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
             .collect();
         assert!(leftovers.is_empty(), "atomic write left {leftovers:?}");
         std::fs::remove_dir_all(&dir).ok();

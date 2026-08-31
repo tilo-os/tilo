@@ -35,10 +35,22 @@ use ui::widget::Widget;
 /// a comfort target, not a claim that an uncalibrated panel now has reference
 /// colourimetry. Red stays at unity while green/blue fall as warmth rises.
 fn night_light_multiplier(kelvin: u32) -> Color {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "kelvin is clamped to 2_000..=6_500 before this subtraction, nowhere near f32's precision limit"
+    )]
     let warmth =
         ((6_500_u32.saturating_sub(kelvin.clamp(2_000, 6_500))) as f32 / 4_500.0).clamp(0.0, 1.0);
-    let green = (255.0 - 52.0 * warmth).round() as u8;
-    let blue = (255.0 - 132.0 * warmth).round() as u8;
+    // warmth is clamped to 0.0..=1.0 above, so green/blue land in 203..=255 and 123..=255 respectively — always a non-negative u8.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=255.0 immediately above"
+    )]
+    let (green, blue) = (
+        (255.0 - 52.0 * warmth).round().clamp(0.0, 255.0) as u8,
+        (255.0 - 132.0 * warmth).round().clamp(0.0, 255.0) as u8,
+    );
     Color::from_rgb8(255, green, blue)
 }
 
@@ -158,6 +170,10 @@ impl FrameBuilder {
 
     /// Build a frame builder around an explicit `WorkspaceTree` — used by
     /// `bin/shots`'s `window` pre-roll path (loads tree state from disk first).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "taking &WorkspaceTree would ripple into bin/shots/driver.rs's ShellDriver::with_tree, out of scope for this change; its only caller already owns a tree it discards right after this call"
+    )]
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
         Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
     }
@@ -299,21 +315,43 @@ impl FrameBuilder {
             .host
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
         let (w, h) = self.viewport;
-        let root = self
-            .taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
-                    ..Default::default()
+        // Layout dimensions are bounded logical-pixel viewport sizes; the
+        // f64->f32 narrowing for taffy's `Dimension` cannot lose meaningful
+        // precision at UI scale.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel viewport size; f32 precision is sufficient"
+        )]
+        let root = self.taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
                 },
-                &[child],
-            )
-            .expect("frame-builder root node");
-        self.host_node = Some(child);
-        self.root_node = Some(root);
+                ..Default::default()
+            },
+            &[child],
+        );
+        match root {
+            Ok(root) => {
+                self.host_node = Some(child);
+                self.root_node = Some(root);
+            }
+            Err(err) => {
+                // `child` was just handed back by `self.host.build_layout`
+                // against the `TaffyTree` reset a few lines up, so wrapping
+                // it in a fresh root node cannot fail in practice. If
+                // taffy's internal bookkeeping ever disagrees, degrade to
+                // "no layout this frame" rather than aborting the whole
+                // compositor session (this crate builds with `panic = "abort"`).
+                tracing::error!(
+                    %err,
+                    "frame-builder: failed to build root taffy node; skipping this rebuild"
+                );
+                self.host_node = None;
+                self.root_node = None;
+            }
+        }
     }
 
     /// Run `compute_layout` + `apply_layout` against the current tree. Animation
@@ -329,30 +367,47 @@ impl FrameBuilder {
             self.rebuild_layout_tree();
         }
         let (w, h) = self.viewport;
-        let outer = self.root_node.expect("rebuild_layout_tree first");
-        let child = self.host_node.expect("rebuild_layout_tree first");
+        // `None` only in the narrow window where `rebuild_layout_tree` just
+        // failed to build a tree (see its doc) — nothing to lay out until
+        // the next successful rebuild.
+        let (Some(outer), Some(child)) = (self.root_node, self.host_node) else {
+            return;
+        };
         // Borrowed rather than cloned — the closure only needs read access
         // and the borrow is disjoint from `self.taffy`/`self.text_renderer`.
         // Cloning the 50-100 entry widget-ptr map every relayout was a
         // visible cost on continuous resize.
         let measure_map: &HashMap<NodeId, *mut dyn Widget> = &self.node_map;
         let tr = &mut self.text_renderer;
-        self.taffy
-            .compute_layout_with_measure(
-                outer,
-                Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("frame-builder compute_layout");
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel viewport size; f32 precision is sufficient"
+        )]
+        let available_space = Size {
+            width: AvailableSpace::Definite(w as f32),
+            height: AvailableSpace::Definite(h as f32),
+        };
+        let layout_result = self.taffy.compute_layout_with_measure(
+            outer,
+            available_space,
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        );
+        if let Err(err) = layout_result {
+            // Same "should be structurally impossible" situation as
+            // `rebuild_layout_tree`'s node-creation call: log and skip this
+            // frame's apply_layout rather than aborting the session.
+            tracing::error!(
+                %err,
+                "frame-builder: compute_layout failed; skipping apply_layout this frame"
+            );
+            return;
+        }
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
         self.layout_osk_overlay();
     }
@@ -439,7 +494,7 @@ impl FrameBuilder {
     /// Cheap on a quiet frame: `RoomRecords::replicate_with` compares a
     /// generation counter before reading any document, and the chrome only
     /// bumps when something actually arrived.
-    fn replicate_room_records(&mut self) {
+    fn replicate_room_records(&self) {
         let index = self.host.room_records();
 
         // Anything an exported action asked to bring here, first — so a
@@ -581,6 +636,10 @@ impl FrameBuilder {
                 &clip,
             );
             let z = f64::from(self.visual_accessibility.magnifier_zoom);
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+            )]
             let magnify = Affine::translate((pointer.x, pointer.y))
                 * Affine::scale(z)
                 * Affine::translate((-pointer.x, -pointer.y));
@@ -619,13 +678,20 @@ impl FrameBuilder {
         let settings = settings_store::load();
         self.night_light =
             settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false);
-        self.night_light_temperature = settings_store::f64_in(
-            &settings,
-            "display",
-            "night_light_temperature",
-            2_000.0..=6_500.0,
-            3_700.0,
-        ) as u32;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "f64_in only ever returns a value inside 2_000.0..=6_500.0 (the requested range) or the in-range default"
+        )]
+        {
+            self.night_light_temperature = settings_store::f64_in(
+                &settings,
+                "display",
+                "night_light_temperature",
+                2_000.0..=6_500.0,
+                3_700.0,
+            ) as u32;
+        }
         self.visual_accessibility = VisualAccessibility::load();
     }
 
@@ -831,8 +897,10 @@ impl FrameBuilder {
 
     /// Inner node id (host's root child). Required by the input dispatch
     /// path in `bin/shots`'s `ShellDriver`; the compositor doesn't need this.
-    pub fn host_node(&self) -> NodeId {
-        self.host_node.expect("rebuild_layout_tree first")
+    /// `None` only in the narrow window where `rebuild_layout_tree` just
+    /// failed to build a tree (see its doc).
+    pub fn host_node(&self) -> Option<NodeId> {
+        self.host_node
     }
 
     /// Read-only access to the taffy tree — also for input dispatch.
@@ -877,8 +945,12 @@ impl FrameBuilder {
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
+        let Some(child) = self.host_node() else {
+            // No layout tree yet (see `host_node`'s doc) — nothing to
+            // dispatch into.
+            return false;
+        };
         let mut handled = false;
-        let child = self.host_node();
         // Snapshot the focus going in to detect any new target set by the
         // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
@@ -1026,17 +1098,17 @@ impl FrameBuilder {
 /// name get deterministic `[0]`, `[1]`, ... suffixes. The shots
 /// `ShellDriver` uses this exact walk too — exposed `pub` so both share
 /// one implementation.
-pub fn walk_widget(
+pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     w: &dyn ui::widget::Widget,
     parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-    out: &mut HashMap<String, vello::kurbo::Rect>,
+    sibling_counts: &mut HashMap<String, usize, S1>,
+    out: &mut HashMap<String, vello::kurbo::Rect, S2>,
 ) {
     let name = w.name().to_string();
     let sibling_key = format!("{parent_path}::{name}");
     let idx = sibling_counts.entry(sibling_key).or_insert(0);
     let my_index = *idx;
-    *idx += 1;
+    *idx = idx.saturating_add(1);
     let path = if parent_path.is_empty() {
         format!("{name}[{my_index}]")
     } else {
@@ -1170,10 +1242,10 @@ mod tests {
         assert!(joined, "this session joins the peer's room");
 
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
+        let doc_root = automerge::ROOT;
         // Settle: pump once so the builder is past its first frame and
         // any revision movement below is attributable to the arrival.
-        fb.pump_apps(&mut doc, &root);
+        fb.pump_apps(&mut doc, &doc_root);
         let before = fb.chrome_revision();
 
         let landed = {
@@ -1187,7 +1259,7 @@ mod tests {
             "the peer's changes must merge into this session's tree"
         );
 
-        fb.pump_apps(&mut doc, &root);
+        fb.pump_apps(&mut doc, &doc_root);
         assert!(
             fb.chrome_revision() > before,
             "a peer's change landed in the tree and nothing told the shell \

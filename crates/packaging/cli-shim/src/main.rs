@@ -22,6 +22,19 @@
 //! - The sidecar's `launcher` override exists only for out-of-tree
 //!   testing; production installs leave it unset.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -72,7 +85,7 @@ fn main() -> ! {
     // Build the argv the launcher expects. The `--` separator matters:
     // everything after it is opaque user args forwarded verbatim —
     // without it clap would try to interpret --help etc. as launcher flags.
-    let mut argv: Vec<String> = Vec::with_capacity(6 + passthrough.len());
+    let mut argv: Vec<String> = Vec::with_capacity(6usize.saturating_add(passthrough.len()));
     argv.push(launcher.file_name().map_or_else(
         || "qos-launcher".to_string(),
         |s| s.to_string_lossy().into_owned(),
@@ -132,6 +145,11 @@ fn execv_launcher(launcher: &Path, argv: &[String]) -> ! {
     ));
 }
 
+#[allow(
+    clippy::exit,
+    reason = "this is the shim's only termination path: `main` returns `!` (it either execvs \
+              the launcher or dies here), so there is no caller to propagate an error to"
+)]
 fn die(msg: &str) -> ! {
     eprintln!("{msg}");
     std::process::exit(127);

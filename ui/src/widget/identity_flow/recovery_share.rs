@@ -18,6 +18,7 @@
 //! which point this screen is re-presented with the real mnemonic.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use automerge::{AutoCommit, ObjId};
 use sha2::{Digest, Sha512};
@@ -43,6 +44,15 @@ use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
 /// regenerate the expected words without storing them. **The
 /// placeholder is NOT a valid recovery share** (single-device mode
 /// has no shareable secret); see the module-level note.
+///
+/// # Panics
+///
+/// Does not panic in practice: SHA-512 output is always 64 bytes, so the
+/// leading 32-byte chunk taken below always exists (an all-zero fallback
+/// only guards a change to the hash algorithm), and BIP39 accepts any
+/// 16/20/24/28/32-byte entropy, so the fixed 32-byte entropy built here
+/// always succeeds. The `expect` exists only because `bip39` has no
+/// infallible constructor for a fixed-length array.
 pub fn deterministic_placeholder_mnemonic(public_key_bytes: &[u8; 32]) -> String {
     // Stretch the pubkey into 32 bytes of entropy via SHA-512 (we
     // discard the upper half). `bip39::Mnemonic::from_entropy` only
@@ -51,12 +61,20 @@ pub fn deterministic_placeholder_mnemonic(public_key_bytes: &[u8; 32]) -> String
     hasher.update(b"qos-recovery-placeholder-v1");
     hasher.update(public_key_bytes);
     let digest = hasher.finalize();
-    let entropy: [u8; 32] = digest[..32]
-        .try_into()
-        .expect("SHA-512 always produces ≥32 bytes");
-    bip39::Mnemonic::from_entropy(&entropy)
-        .expect("BIP39 accepts any 32-byte input as entropy")
-        .to_string()
+    // `first_chunk` proves the 32-byte prefix exists instead of slicing
+    // and hoping; the fallback is unreachable for SHA-512's fixed
+    // 64-byte output, but a placeholder generator never has a reason to
+    // panic over it.
+    let entropy: [u8; 32] = digest.first_chunk::<32>().copied().unwrap_or([0u8; 32]);
+    #[allow(
+        clippy::expect_used,
+        reason = "bip39 has no infallible constructor for a fixed 32-byte \
+                  entropy array, but 32 bytes is always a valid BIP39 \
+                  entropy length, so this can't actually fail"
+    )]
+    let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
+        .expect("32-byte entropy is always accepted by BIP39");
+    mnemonic.to_string()
 }
 
 /// Screen 2: recovery-share storage.
@@ -163,7 +181,8 @@ impl RecoveryShareScreen {
             if row > 0 {
                 formatted.push('\n');
             }
-            formatted.push_str(&format!("{:>2} {}", row * 4 + 1, chunk.join(" ")));
+            let start = row.saturating_mul(4).saturating_add(1);
+            let _ = write!(formatted, "{start:>2} {}", chunk.join(" "));
         }
         clipboard_copy(&formatted);
         self.clipboard_message = Some("Copied to clipboard.".to_string());
@@ -227,6 +246,276 @@ impl RecoveryShareScreen {
             _ => ScreenOutcome::Stay,
         }
     }
+
+    /// Backdrop scrim + the card shell. Returns the card's `Rect` so the
+    /// remaining draw helpers below can lay out relative to it without
+    /// recomputing it. Split out of `draw` to keep it under clippy's
+    /// line budget.
+    fn draw_backdrop_and_card(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Rect {
+        let backdrop = Color::from_rgba8(0, 0, 0, 180);
+        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
+
+        let card_w = 680.0;
+        let card_h = 540.0;
+        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
+        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
+        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
+        let radius = 12.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        card
+    }
+
+    /// Title + subtitle. Split out of `draw` to keep it under clippy's
+    /// line budget.
+    fn draw_header(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        text_renderer.draw_text(
+            scene,
+            "Your recovery words",
+            22.0,
+            theme.tokens.colors.text_primary,
+            translated(transform, card.x0 + pad, card.y0 + pad),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Write these 24 words down. They restore your identity if you lose every device.",
+            13.0,
+            theme.tokens.colors.text_dim,
+            translated(transform, card.x0 + pad, card.y0 + pad + 32.0),
+            None,
+        );
+    }
+
+    /// The "Copy to clipboard" chip. Split out of `draw` to keep it under
+    /// clippy's line budget.
+    fn draw_copy_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let copy_bg = if self.copy_hovered {
+            theme.bg_hover
+        } else {
+            theme.tokens.colors.surfaces.base
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            copy_bg,
+            None,
+            &RoundedRect::from_rect(self.copy_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(self.copy_rect, 8.0),
+        );
+        let (cw, _) = text_renderer.measure("Copy to clipboard", 13.0, None);
+        text_renderer.draw_text(
+            scene,
+            "Copy to clipboard",
+            13.0,
+            theme.tokens.colors.text_primary,
+            translated(
+                transform,
+                self.copy_rect.x0 + (self.copy_rect.width() - f64::from(cw)) / 2.0,
+                self.copy_rect.y0 + (self.copy_rect.height() - 13.0) / 2.0,
+            ),
+            None,
+        );
+    }
+
+    /// The 24-word grid: 6 rows × 4 cols. Split out of `draw` to keep it
+    /// under clippy's line budget.
+    fn draw_word_grid(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let words = self.words();
+        let grid_x = card.x0 + pad;
+        let grid_y = card.y0 + 110.0;
+        let col_w = (card.width() - 2.0 * pad) / 4.0;
+        let row_h = 36.0;
+        for (i, word) in words.iter().take(24).enumerate() {
+            let row = i / 4;
+            let col = i % 4;
+            let x = grid_x + count_to_f64(col) * col_w;
+            let y = grid_y + count_to_f64(row) * row_h;
+            let prefix = format!("{:>2}.", i.saturating_add(1));
+            text_renderer.draw_text(
+                scene,
+                &prefix,
+                12.0,
+                theme.tokens.colors.text_dim,
+                translated(transform, x, y + 6.0),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                word,
+                14.0,
+                theme.tokens.colors.text_primary,
+                translated(transform, x + 32.0, y + 4.0),
+                None,
+            );
+        }
+    }
+
+    /// The "I've written them down" checkbox row, plus any clipboard
+    /// status message beneath it. Split out of `draw` to keep it under
+    /// clippy's line budget.
+    fn draw_acknowledge_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let check_bg = if self.acknowledged {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        } else {
+            theme.tokens.colors.surfaces.base
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            check_bg,
+            None,
+            &RoundedRect::from_rect(self.ack_rect, 3.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(self.ack_rect, 3.0),
+        );
+        if self.acknowledged {
+            let mut p = vello::kurbo::BezPath::new();
+            p.move_to((self.ack_rect.x0 + 4.0, self.ack_rect.center().y));
+            p.line_to((self.ack_rect.x0 + 7.5, self.ack_rect.y1 - 4.0));
+            p.line_to((self.ack_rect.x1 - 3.0, self.ack_rect.y0 + 4.0));
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                Color::from_rgb8(255, 255, 255),
+                None,
+                &p,
+            );
+        }
+        text_renderer.draw_text(
+            scene,
+            "I've written them down somewhere safe",
+            13.0,
+            theme.tokens.colors.text_primary,
+            translated(transform, self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0),
+            None,
+        );
+        if let Some(msg) = &self.clipboard_message {
+            text_renderer.draw_text(
+                scene,
+                msg,
+                12.0,
+                theme.tokens.colors.text_dim,
+                translated(transform, card.x0 + pad, self.ack_rect.y1 + 8.0),
+                None,
+            );
+        }
+    }
+
+    /// The "Continue" button. Split out of `draw` to keep it under
+    /// clippy's line budget.
+    fn draw_continue_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let cont_enabled = self.is_continue_enabled();
+        let cont_bg = if !cont_enabled {
+            theme.tokens.colors.surfaces.base
+        } else if self.continue_hovered {
+            theme.bg_active
+        } else {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        };
+        let cont_text_color = if cont_enabled {
+            Color::from_rgb8(255, 255, 255)
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            cont_bg,
+            None,
+            &RoundedRect::from_rect(self.continue_rect, 8.0),
+        );
+        let (lw, _) = text_renderer.measure("Continue", 14.0, None);
+        text_renderer.draw_text(
+            scene,
+            "Continue",
+            14.0,
+            cont_text_color,
+            translated(
+                transform,
+                self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
+                self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
+            ),
+            None,
+        );
+    }
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
+/// pure `f64` matrix multiply-add with no overflow trap, so it cannot
+/// panic regardless of operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// Widens a grid row/column index to `f64` for layout math. Goes through
+/// `u32` (exactly representable in `f64`) with a saturating fallback
+/// rather than an `as` cast, so it's lossless for any realistic word
+/// count.
+fn count_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 impl Widget for RecoveryShareScreen {
@@ -299,195 +588,13 @@ impl Widget for RecoveryShareScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-
-        let card_w = 680.0;
-        let card_h = 540.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let radius = 12.0;
         let pad = 32.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-
-        text_renderer.draw_text(
-            scene,
-            "Your recovery words",
-            22.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Write these 24 words down. They restore your identity if you lose every device.",
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad + 32.0)),
-            None,
-        );
-
-        let copy_bg = if self.copy_hovered {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            copy_bg,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        let (cw, _) = text_renderer.measure("Copy to clipboard", 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Copy to clipboard",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    self.copy_rect.x0 + (self.copy_rect.width() - f64::from(cw)) / 2.0,
-                    self.copy_rect.y0 + (self.copy_rect.height() - 13.0) / 2.0,
-                )),
-            None,
-        );
-
-        // 24-word grid: 6 rows × 4 cols.
-        let words = self.words();
-        let grid_x = card.x0 + pad;
-        let grid_y = card.y0 + 110.0;
-        let col_w = (card_w - 2.0 * pad) / 4.0;
-        let row_h = 36.0;
-        for (i, word) in words.iter().take(24).enumerate() {
-            let row = i / 4;
-            let col = i % 4;
-            let x = grid_x + col as f64 * col_w;
-            let y = grid_y + row as f64 * row_h;
-            let prefix = format!("{:>2}.", i + 1);
-            text_renderer.draw_text(
-                scene,
-                &prefix,
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x, y + 6.0)),
-                None,
-            );
-            text_renderer.draw_text(
-                scene,
-                word,
-                14.0,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 32.0, y + 4.0)),
-                None,
-            );
-        }
-
-        let check_bg = if self.acknowledged {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            check_bg,
-            None,
-            &RoundedRect::from_rect(self.ack_rect, 3.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.ack_rect, 3.0),
-        );
-        if self.acknowledged {
-            let mut p = vello::kurbo::BezPath::new();
-            p.move_to((self.ack_rect.x0 + 4.0, self.ack_rect.center().y));
-            p.line_to((self.ack_rect.x0 + 7.5, self.ack_rect.y1 - 4.0));
-            p.line_to((self.ack_rect.x1 - 3.0, self.ack_rect.y0 + 4.0));
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                Color::from_rgb8(255, 255, 255),
-                None,
-                &p,
-            );
-        }
-        text_renderer.draw_text(
-            scene,
-            "I've written them down somewhere safe",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0)),
-            None,
-        );
-        if let Some(msg) = &self.clipboard_message {
-            text_renderer.draw_text(
-                scene,
-                msg,
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((card.x0 + pad, self.ack_rect.y1 + 8.0)),
-                None,
-            );
-        }
-
-        let cont_enabled = self.is_continue_enabled();
-        let cont_bg = if !cont_enabled {
-            theme.tokens.colors.surfaces.base
-        } else if self.continue_hovered {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        };
-        let cont_text_color = if cont_enabled {
-            Color::from_rgb8(255, 255, 255)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cont_bg,
-            None,
-            &RoundedRect::from_rect(self.continue_rect, 8.0),
-        );
-        let (lw, _) = text_renderer.measure("Continue", 14.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Continue",
-            14.0,
-            cont_text_color,
-            transform
-                * Affine::translate((
-                    self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
-                    self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
-                )),
-            None,
-        );
+        let card = self.draw_backdrop_and_card(scene, transform, theme);
+        Self::draw_header(scene, transform, text_renderer, theme, card, pad);
+        self.draw_copy_button(scene, transform, text_renderer, theme);
+        self.draw_word_grid(scene, transform, text_renderer, theme, card, pad);
+        self.draw_acknowledge_row(scene, transform, text_renderer, theme, card, pad);
+        self.draw_continue_button(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(

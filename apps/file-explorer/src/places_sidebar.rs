@@ -1,7 +1,8 @@
 //! `PlacesSidebar` — the modern Favourites / Places list down the left of the
-//! file explorer. A single widget that renders both sections (user favourites
-//! + System) and owns the drag-to-reorder interaction for the favourites via
-//! the shared [`ui::widget::drag::DragController`] (live floating ghost + reflow).
+//! file explorer. A single widget that renders both sections (user
+//! favourites + System) and owns the drag-to-reorder interaction for the
+//! favourites via the shared [`ui::widget::drag::DragController`] (live
+//! floating ghost + reflow).
 //!
 //! Because the file explorer rebuilds its whole child tree each frame, the
 //! reorder state can't live in the (throwaway) widget — it lives in a shared
@@ -90,6 +91,17 @@ impl FavState {
     }
 }
 
+/// The variable part of a row's paint — bundled so [`PlacesSidebar::draw_row`]
+/// stays under clippy's argument-count limit.
+#[derive(Clone, Copy)]
+struct RowVisual<'a> {
+    icon: Icon,
+    label: &'a str,
+    active: bool,
+    hovered: bool,
+    ghost: bool,
+}
+
 pub type FavStore = Rc<RefCell<FavState>>;
 
 /// Build a shared favourites store.
@@ -136,11 +148,13 @@ impl PlacesSidebar {
     /// widget is rebuilt every frame and hit-tests presses against its own
     /// `last_cursor`; without seeding, a press arriving with no `CursorMoved`
     /// since the rebuild would test against `(0, 0)` and miss the row.
+    #[must_use]
     pub fn with_cursor(mut self, cursor: Point) -> Self {
         self.last_cursor = cursor;
         self
     }
 
+    #[must_use]
     pub fn with_workspaces(mut self, roots: Vec<PathBuf>) -> Self {
         let mut entries: Vec<(Icon, String, PathBuf)> = roots
             .into_iter()
@@ -235,18 +249,20 @@ impl PlacesSidebar {
     }
 
     fn draw_row(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        icon: Icon,
-        label: &str,
-        active: bool,
-        hovered: bool,
-        ghost: bool,
+        visual: RowVisual,
     ) {
+        let RowVisual {
+            icon,
+            label,
+            active,
+            hovered,
+            ghost,
+        } = visual;
         let tokens = &theme.tokens;
         let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let pill = Rect::new(rect.x0, rect.y0 + 2.0, rect.x1, rect.y1 - 2.0);
@@ -349,6 +365,12 @@ impl Widget for PlacesSidebar {
         // allocates the sidebar width, but as the full-screen master pane
         // (narrow) the list must span the whole width rather than leaving a
         // dead strip. So take `percent(1.0)` and let the shell own the width.
+        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
+        // caller input; there is none to report here.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf cannot fail for a freshly built style"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -363,6 +385,12 @@ impl Widget for PlacesSidebar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a
+        // lookup miss would mean the frame cycle called these out of order.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -384,110 +412,10 @@ impl Widget for PlacesSidebar {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-        // Panel background (a hair lighter than the content) + a quiet divider.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surface_white_5,
-            None,
-            &self.rect,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_white_10,
-            None,
-            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
-        );
-
-        // Favourites header — only when there are favourites to head (an empty
-        // section header reads as a bug).
-        if self.fav_count() > 0 {
-            self.draw_header(
-                scene,
-                transform,
-                tr,
-                theme,
-                self.rect.y0 + TOP,
-                "Favourites",
-            );
-        }
-
-        // Favourite rows (with live reflow + ghost while dragging). Compute the
-        // list geometry BEFORE borrowing the store (metrics reads the store).
-        let metrics = self.metrics();
-        let (drag_active, from_idx) = {
-            let mut favs = self.favs.borrow_mut();
-            let active = favs.drag.is_active();
-            if active {
-                favs.drag.sync_insertion(&metrics);
-            }
-            (active, favs.drag.from_index())
-        };
-        {
-            let favs = self.favs.borrow();
-            for (i, fav) in favs.favorites.iter().enumerate() {
-                if drag_active && Some(i) == from_idx {
-                    continue; // painted as the floating ghost below
-                }
-                let shift = if drag_active {
-                    favs.drag.item_shift(i, &metrics)
-                } else {
-                    0.0
-                };
-                let mut rect = self.fav_row_rect(i);
-                rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
-                let active = !drag_active && fav.path == self.active;
-                let hovered = self.hover_fav == Some(i) && !active;
-                self.draw_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    rect,
-                    fav.icon(),
-                    &fav.label,
-                    active,
-                    hovered,
-                    false,
-                );
-            }
-        }
-
-        // System header + rows.
-        self.draw_header(scene, transform, tr, theme, self.sys_header_y(), "System");
-        for (i, (icon, label, path)) in self.system.iter().enumerate() {
-            let rect = self.sys_row_rect(i);
-            let active = *path == self.active;
-            let hovered = self.hover_sys == Some(i) && !active;
-            self.draw_row(
-                scene, transform, tr, theme, rect, *icon, label, active, hovered, false,
-            );
-        }
-
-        // Floating ghost of the dragged favourite.
-        if drag_active {
-            let favs = self.favs.borrow();
-            if let (Some(fi), Some(ghost)) = (
-                from_idx,
-                favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
-            ) && let Some(fav) = favs.favorites.get(fi)
-            {
-                self.draw_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    ghost,
-                    fav.icon(),
-                    &fav.label,
-                    false,
-                    false,
-                    true,
-                );
-            }
-        }
+        self.draw_panel_bg(scene, transform, theme);
+        self.draw_favourites_section(scene, transform, tr, theme);
+        self.draw_system_section(scene, transform, tr, theme);
+        self.draw_drag_ghost(scene, transform, tr, theme);
     }
 
     fn handle_event(
@@ -529,9 +457,10 @@ impl Widget for PlacesSidebar {
                     favs.drag.begin(i, i, grab, pt);
                     favs.pressed = Some(i);
                     *handled = true;
-                } else if let Some(i) = self.system_at(pt) {
-                    let path = self.system[i].2.clone();
-                    push(&self.sink, FileCommand::Navigate(path));
+                } else if let Some(i) = self.system_at(pt)
+                    && let Some((_, _, path)) = self.system.get(i)
+                {
+                    push(&self.sink, FileCommand::Navigate(path.clone()));
                     *handled = true;
                 }
             }
@@ -598,6 +527,157 @@ impl Widget for PlacesSidebar {
     }
 }
 
+impl PlacesSidebar {
+    /// Panel background (a hair lighter than the content) + a quiet divider.
+    fn draw_panel_bg(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let tokens = &theme.tokens;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surface_white_5,
+            None,
+            &self.rect,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_white_10,
+            None,
+            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
+        );
+    }
+
+    /// Favourites header (only when there are favourites to head — an empty
+    /// section header reads as a bug) plus the favourite rows, with live
+    /// reflow while dragging.
+    fn draw_favourites_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.fav_count() > 0 {
+            self.draw_header(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.rect.y0 + TOP,
+                "Favourites",
+            );
+        }
+
+        // Compute the list geometry BEFORE borrowing the store (metrics reads
+        // the store).
+        let metrics = self.metrics();
+        let (drag_active, from_idx) = {
+            let mut favs = self.favs.borrow_mut();
+            let active = favs.drag.is_active();
+            if active {
+                favs.drag.sync_insertion(&metrics);
+            }
+            (active, favs.drag.from_index())
+        };
+        let favs = self.favs.borrow();
+        for (i, fav) in favs.favorites.iter().enumerate() {
+            if drag_active && Some(i) == from_idx {
+                continue; // painted as the floating ghost below
+            }
+            let shift = if drag_active {
+                favs.drag.item_shift(i, &metrics)
+            } else {
+                0.0
+            };
+            let mut rect = self.fav_row_rect(i);
+            rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
+            let active = !drag_active && fav.path == self.active;
+            let hovered = self.hover_fav == Some(i) && !active;
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                rect,
+                RowVisual {
+                    icon: fav.icon(),
+                    label: &fav.label,
+                    active,
+                    hovered,
+                    ghost: false,
+                },
+            );
+        }
+    }
+
+    fn draw_system_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_header(scene, transform, tr, theme, self.sys_header_y(), "System");
+        for (i, (icon, label, path)) in self.system.iter().enumerate() {
+            let rect = self.sys_row_rect(i);
+            let active = *path == self.active;
+            let hovered = self.hover_sys == Some(i) && !active;
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                rect,
+                RowVisual {
+                    icon: *icon,
+                    label,
+                    active,
+                    hovered,
+                    ghost: false,
+                },
+            );
+        }
+    }
+
+    /// Floating ghost of the dragged favourite, if a drag is active. Reads
+    /// the drag state [`Self::draw_favourites_section`] already synced this
+    /// frame, so call order matters: favourites first, then the ghost.
+    fn draw_drag_ghost(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let favs = self.favs.borrow();
+        if !favs.drag.is_active() {
+            return;
+        }
+        let metrics = self.metrics();
+        let from_idx = favs.drag.from_index();
+        if let (Some(fi), Some(ghost)) = (
+            from_idx,
+            favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
+        ) && let Some(fav) = favs.favorites.get(fi)
+        {
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                ghost,
+                RowVisual {
+                    icon: fav.icon(),
+                    label: &fav.label,
+                    active: false,
+                    hovered: false,
+                    ghost: true,
+                },
+            );
+        }
+    }
+}
+
 /// Test / demo helper: begin an active favourite drag from index `from` toward
 /// `to`, using the published [`FavBand`] geometry so the reflow renders in the
 /// right coordinate space. Returns `false` if no band has been laid out yet.
@@ -660,7 +740,7 @@ mod tests {
         sb: &mut PlacesSidebar,
         tree: &TaffyTree<()>,
         node: NodeId,
-        ev: WindowEvent,
+        ev: &WindowEvent,
     ) -> bool {
         let mut handled = false;
         let mut focus = None;
@@ -668,7 +748,7 @@ mod tests {
         let root = automerge::ROOT;
         let mods = winit::event::Modifiers::default();
         sb.handle_event(
-            &ev,
+            ev,
             1.0,
             &mods,
             &mut doc,
@@ -704,7 +784,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, start_y).into(),
             },
@@ -713,7 +793,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -723,7 +803,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, end_y).into(),
             },
@@ -736,7 +816,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -771,7 +851,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, y).into(),
             },
@@ -780,7 +860,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -790,7 +870,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -822,7 +902,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, y).into(),
             },
@@ -831,7 +911,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
@@ -895,7 +975,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: device(),
                 position: (x, y).into(),
             },
@@ -904,7 +984,7 @@ mod tests {
             &mut sb,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: device(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,

@@ -9,13 +9,13 @@
 //!      * `Secret`  → the password (hidden prompt, e.g. "Password:")
 //!      * `Visible` → the username (shown prompt, some PAM stacks ask)
 //!      * `Info`    → an informational line (e.g. fprintd "Place your
-//!                    finger on the reader"); surfaced to the UI and
-//!                    answered with `None` so the conversation advances.
+//!        finger on the reader"); surfaced to the UI and
+//!        answered with `None` so the conversation advances.
 //!      * `Error`   → a `PAM_ERROR_MSG` conversation message (e.g. fprintd
-//!                    "swipe didn't match, try again"). This is *not* a
-//!                    terminal failure — the authoritative result is a
-//!                    top-level [`Response::Error`]/[`Response::Success`].
-//!                    We surface it (styled as a warning) and continue.
+//!        "swipe didn't match, try again"). This is *not* a
+//!        terminal failure — the authoritative result is a
+//!        top-level [`Response::Error`]/[`Response::Success`].
+//!        We surface it (styled as a warning) and continue.
 //! 3. on [`Response::Success`], `StartSession { cmd, env }` and (on the
 //!    second `Success`) the session is launching — the greeter exits.
 //! 4. on [`Response::Error`], `CancelSession` and report a mapped,
@@ -98,7 +98,7 @@ pub struct AuthPrompt {
 }
 
 /// Map a top-level greetd [`Response::Error`] into an [`AuthError`].
-fn map_error(error_type: ErrorType, description: String) -> AuthError {
+fn map_error(error_type: &ErrorType, description: String) -> AuthError {
     match error_type {
         ErrorType::AuthError => AuthError::BadCredentials,
         ErrorType::Error => AuthError::Greetd(description),
@@ -110,6 +110,18 @@ fn map_error(error_type: ErrorType, description: String) -> AuthError {
 /// to `on_prompt`. On success this **never returns** — it
 /// `process::exit(0)`s so greetd takes over the VT. On failure it returns
 /// a mapped [`AuthError`] for the status line.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Transport`] if `sock_path` can't be connected to or
+/// the exchange fails at the transport level, [`AuthError::BadCredentials`]
+/// if greetd rejects the credentials, or [`AuthError::Greetd`] on any other
+/// greetd-reported failure.
+#[allow(
+    clippy::exit,
+    reason = "the documented success path: greetd takes over the VT, so the \
+              greeter process ends here rather than returning to its caller"
+)]
 pub fn authenticate_and_start<F: FnMut(AuthPrompt), G: FnMut()>(
     sock_path: &str,
     username: &str,
@@ -143,6 +155,12 @@ pub fn authenticate_and_start<F: FnMut(AuthPrompt), G: FnMut()>(
 /// greetd has accepted `StartSession` (the caller then exits the process),
 /// or a mapped [`AuthError`] on failure. Every PAM conversation prompt is
 /// reported to `on_prompt`.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Transport`] on a read/write/decode failure,
+/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     stream: &mut S,
     username: &str,
@@ -161,6 +179,12 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
 /// success frame. Without it the only observable outcomes are "failed" and
 /// "the process vanished", so a successful login looks, for the moment it
 /// takes greetd to hand over the VT, exactly like a greeter that has hung.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Transport`] on a read/write/decode failure,
+/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
     stream: &mut S,
     username: &str,
@@ -235,7 +259,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                         description,
                     } => {
                         let _ = Request::CancelSession.write_to(stream);
-                        return Err(map_error(error_type, description));
+                        return Err(map_error(&error_type, description));
                     }
                     Response::AuthMessage { auth_message, .. } => {
                         let _ = Request::CancelSession.write_to(stream);
@@ -253,7 +277,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                 // a stuck half-open session.
                 let _ = Request::CancelSession.write_to(stream);
                 tracing::warn!(?error_type, %description, "greetd auth error");
-                return Err(map_error(error_type, description));
+                return Err(map_error(&error_type, description));
             }
         }
     }
@@ -274,6 +298,12 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
 ///
 /// Generic over the transport so it is unit-testable against an in-memory
 /// `UnixStream` pair, mirroring [`run_exchange`]'s tests.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Transport`] on a read/write/decode failure,
+/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     stream: &mut S,
     username: &str,
@@ -331,7 +361,7 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
             } => {
                 let _ = Request::CancelSession.write_to(stream);
                 tracing::warn!(?error_type, %description, "greetd verify error");
-                return Err(map_error(error_type, description));
+                return Err(map_error(&error_type, description));
             }
         }
     }
@@ -341,6 +371,12 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
 /// without starting a session (see [`verify_exchange`]). The convenience
 /// entry point the compositor's session-lock unlock path calls; prompts are
 /// discarded (an unlock box does not surface fingerprint copy).
+///
+/// # Errors
+///
+/// Returns [`AuthError::Transport`] if `sock_path` can't be connected to,
+/// [`AuthError::BadCredentials`] if greetd rejects the credentials, or
+/// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn verify_password(sock_path: &str, username: &str, password: &str) -> Result<(), AuthError> {
     let mut stream = UnixStream::connect(sock_path).map_err(|e| {
         AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))

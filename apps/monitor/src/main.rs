@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -19,6 +19,18 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
 )]
 
 use std::collections::HashMap;
@@ -38,6 +50,13 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, Wind
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// Monitor's binary entry point — see the module docs for the supported modes.
+///
+/// # Errors
+///
+/// Returns an error when `--shots` or `--bench-interact` fails to build or
+/// lay out the offscreen widget tree (a Taffy tree-construction or
+/// layout-compute failure).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -72,7 +91,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
         std::process::exit(ui::headless::run(
-            spec,
+            &spec,
             monitor::app_root(),
             "dev.qos.monitor",
         ));
@@ -213,92 +232,6 @@ fn render_shot_to_png(
     Ok(())
 }
 
-/// One full frame pass (sync → `build_layout` → compute → apply → draw), mirroring
-/// `ui::App`. Returns the drawn scene, the live taffy tree + root child node
-/// (to dispatch events into the just-laid-out tree) and per-pass microseconds
-/// `[sync, build, layout, apply, draw]`.
-fn bench_frame(
-    widget: &mut Box<dyn Widget>,
-    state: &mut ui::State,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permission: &PermissionContext,
-    w: u32,
-    h: u32,
-) -> (Scene, TaffyTree<()>, NodeId, [f64; 5]) {
-    let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
-
-    let t = Instant::now();
-    widget.sync(&mut state.doc, &state.root);
-    let sync_us = us(t);
-
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let t = Instant::now();
-    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
-    let build_us = us(t);
-
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-
-    let t = Instant::now();
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut *text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-    }
-    let layout_us = us(t);
-
-    let t = Instant::now();
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-    let apply_us = us(t);
-
-    let mut scene = Scene::new();
-    let t = Instant::now();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        text_renderer,
-        theme,
-        presence,
-        permission,
-    );
-    let draw_us = us(t);
-
-    (
-        scene,
-        taffy,
-        child,
-        [sync_us, build_us, layout_us, apply_us, draw_us],
-    )
-}
-
 fn synth_cursor(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
@@ -325,36 +258,11 @@ enum BenchAction {
     Scroll(f64, f64, f32),
 }
 
-/// Drive real input through the production `handle_event` path and time the full
-/// event → frame-ready compute cost. Everything here runs on the CPU/GPU exactly
-/// as the live app, MINUS the window-system present — so a fast result here with
-/// a slow live app points at the compositor/DisplayLink present, not the app.
-fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut state = ui::State::new();
-    let mut widget: Box<dyn Widget> = Box::new(monitor::MonitorApp::new());
-    let modifiers = winit::event::Modifiers::default();
-
-    // Warm caches (the first frames pay cold text-shape + allocation cost).
-    for _ in 0..3 {
-        let _ = bench_frame(
-            &mut widget,
-            &mut state,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-            w,
-            h,
-        );
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-
-    let actions: Vec<(&str, BenchAction)> = vec![
+/// The seven interactions `--bench-interact` times: two tab switches, a
+/// scroll pair, a row click and two toggles — the everyday inputs the
+/// process/resources views take.
+fn bench_actions() -> Vec<(&'static str, BenchAction)> {
+    vec![
         ("click Resources tab", BenchAction::Click(705.0, 42.0)),
         ("click Processes tab", BenchAction::Click(575.0, 42.0)),
         (
@@ -368,7 +276,202 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
         ("click a process row", BenchAction::Click(700.0, 240.0)),
         ("toggle kernel threads", BenchAction::Click(1205.0, 102.0)),
         ("toggle Tree/flat", BenchAction::Click(985.0, 102.0)),
-    ];
+    ]
+}
+
+/// [`BenchHarness::frame`]'s result: the drawn scene, the live taffy tree +
+/// root child node (to dispatch events into the just-laid-out tree), and
+/// per-pass microseconds `[sync, build, layout, apply, draw]`.
+type FramePass = (Scene, TaffyTree<()>, NodeId, [f64; 5]);
+
+/// Bundles the rig `--bench-interact` drives frames and events through, so
+/// each step's dependency on "the whole app" doesn't spill into a long
+/// parameter list on every helper.
+struct BenchHarness {
+    widget: Box<dyn Widget>,
+    state: ui::State,
+    text_renderer: TextRenderer,
+    theme: Theme,
+    presence: PresenceCtx,
+    permission: PermissionContext,
+    renderer: OffscreenRenderer,
+    modifiers: winit::event::Modifiers,
+    viewport: (u32, u32),
+}
+
+impl BenchHarness {
+    fn new(viewport: (u32, u32)) -> Self {
+        let (w, h) = viewport;
+        Self {
+            widget: Box::new(monitor::MonitorApp::new()),
+            state: ui::State::new(),
+            text_renderer: TextRenderer::new(),
+            theme: Theme::dark(),
+            presence: PresenceCtx::empty(),
+            permission: PermissionContext::permissive(),
+            renderer: OffscreenRenderer::new(w, h),
+            modifiers: winit::event::Modifiers::default(),
+            viewport,
+        }
+    }
+
+    /// One full frame pass (sync → `build_layout` → compute → apply →
+    /// draw), mirroring `ui::App`. Returns the drawn scene, the live taffy
+    /// tree + root child node (to dispatch events into the just-laid-out
+    /// tree) and per-pass microseconds `[sync, build, layout, apply, draw]`.
+    fn frame(&mut self) -> Result<FramePass, Box<dyn std::error::Error>> {
+        let (w, h) = self.viewport;
+        let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
+
+        let t = Instant::now();
+        self.widget.sync(&mut self.state.doc, &self.state.root);
+        let sync_us = us(t);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let t = Instant::now();
+        let child = self
+            .widget
+            .build_layout(&mut taffy, &self.theme, &mut node_map);
+        let build_us = us(t);
+
+        let root = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )?;
+
+        let t = Instant::now();
+        {
+            let measure_map = node_map.clone();
+            let tr = &mut self.text_renderer;
+            taffy.compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )?;
+        }
+        let layout_us = us(t);
+
+        let t = Instant::now();
+        self.widget.apply_layout(&taffy, child, Point::ORIGIN);
+        let apply_us = us(t);
+
+        let mut scene = Scene::new();
+        let t = Instant::now();
+        self.widget.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
+            &self.presence,
+            &self.permission,
+        );
+        let draw_us = us(t);
+
+        Ok((
+            scene,
+            taffy,
+            child,
+            [sync_us, build_us, layout_us, apply_us, draw_us],
+        ))
+    }
+
+    /// Dispatch one synthetic event through the production `handle_event`
+    /// path against the tree from the most recent [`Self::frame`] and time it.
+    fn dispatch(&mut self, ev: &WindowEvent, child: NodeId, taffy: &TaffyTree<()>) -> f64 {
+        let mut handled = false;
+        let mut focus = None;
+        let t = Instant::now();
+        self.widget.handle_event(
+            ev,
+            1.0,
+            &self.modifiers,
+            &mut self.state.doc,
+            &self.state.root,
+            &mut handled,
+            &mut focus,
+            child,
+            taffy,
+        );
+        t.elapsed().as_secs_f64() * 1e6
+    }
+
+    /// Drive `action`'s synthetic events into the currently laid-out tree,
+    /// repaint (full frame + GPU scene encode), and return the event
+    /// microseconds, the repaint's per-pass breakdown, and the encode
+    /// microseconds.
+    fn run_action(
+        &mut self,
+        action: &BenchAction,
+    ) -> Result<(f64, [f64; 5], f64), Box<dyn std::error::Error>> {
+        // Lay out the current state so events dispatch into a real tree.
+        let (_scene, taffy, child, _) = self.frame()?;
+        let event_us = match *action {
+            BenchAction::Click(x, y) => {
+                self.dispatch(&synth_cursor(x, y), child, &taffy)
+                    + self.dispatch(&synth_click(ElementState::Pressed), child, &taffy)
+                    + self.dispatch(&synth_click(ElementState::Released), child, &taffy)
+            }
+            BenchAction::Scroll(x, y, dy) => {
+                self.dispatch(&synth_cursor(x, y), child, &taffy)
+                    + self.dispatch(&synth_wheel(dy), child, &taffy)
+            }
+        };
+
+        // The repaint reflecting the event: full frame + GPU scene encode.
+        let (scene, _taffy, _child, frame_us) = self.frame()?;
+        let te = Instant::now();
+        let _rgba = self.renderer.render_rgba(&scene);
+        let encode_us = te.elapsed().as_secs_f64() * 1e6;
+
+        Ok((event_us, frame_us, encode_us))
+    }
+}
+
+/// Print the p50/p95/max event→frame-ready totals across all bench actions.
+fn report_bench_totals(totals: &[f64]) {
+    let mut totals = totals.to_vec();
+    totals.sort_by(f64::total_cmp);
+    let percentile = |q: f64| {
+        let idx = (((totals.len() - 1) as f64) * q).round() as usize;
+        totals.get(idx).copied().unwrap_or(0.0)
+    };
+    println!("---");
+    println!(
+        "event->frame-ready TOTAL: p50={:.0}us  p95={:.0}us  max={:.0}us   (60fps budget = 16667us)",
+        percentile(0.5),
+        percentile(0.95),
+        percentile(1.0)
+    );
+}
+
+/// Drive real input through the production `handle_event` path and time the full
+/// event → frame-ready compute cost. Everything here runs on the CPU/GPU exactly
+/// as the live app, MINUS the window-system present — so a fast result here with
+/// a slow live app points at the compositor/DisplayLink present, not the app.
+fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let mut bench = BenchHarness::new(viewport);
+
+    // Warm caches (the first frames pay cold text-shape + allocation cost).
+    for _ in 0..3 {
+        bench.frame()?;
+    }
 
     println!(
         "monitor interaction bench @ {w}x{h}  (microseconds; compute-only, excludes window present)"
@@ -379,65 +482,8 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
     );
 
     let mut totals = Vec::new();
-    for (label, action) in &actions {
-        // Lay out the current state so events dispatch into a real tree.
-        let (_s, taffy, child, _) = bench_frame(
-            &mut widget,
-            &mut state,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-            w,
-            h,
-        );
-        let dispatch =
-            |widget: &mut Box<dyn Widget>, state: &mut ui::State, ev: &WindowEvent| -> f64 {
-                let mut handled = false;
-                let mut focus = None;
-                let t = Instant::now();
-                widget.handle_event(
-                    ev,
-                    1.0,
-                    &modifiers,
-                    &mut state.doc,
-                    &state.root,
-                    &mut handled,
-                    &mut focus,
-                    child,
-                    &taffy,
-                );
-                t.elapsed().as_secs_f64() * 1e6
-            };
-        let event_us = match action {
-            BenchAction::Click(x, y) => {
-                dispatch(&mut widget, &mut state, &synth_cursor(*x, *y))
-                    + dispatch(&mut widget, &mut state, &synth_click(ElementState::Pressed))
-                    + dispatch(
-                        &mut widget,
-                        &mut state,
-                        &synth_click(ElementState::Released),
-                    )
-            }
-            BenchAction::Scroll(x, y, dy) => {
-                dispatch(&mut widget, &mut state, &synth_cursor(*x, *y))
-                    + dispatch(&mut widget, &mut state, &synth_wheel(*dy))
-            }
-        };
-        // The repaint reflecting the event: full frame + GPU scene encode.
-        let (scene, _t, _c, ft) = bench_frame(
-            &mut widget,
-            &mut state,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-            w,
-            h,
-        );
-        let te = Instant::now();
-        let _rgba = renderer.render_rgba(&scene);
-        let encode_us = te.elapsed().as_secs_f64() * 1e6;
+    for (label, action) in bench_actions() {
+        let (event_us, ft, encode_us) = bench.run_action(&action)?;
         let frame_us = ft.iter().sum::<f64>();
         let total = event_us + frame_us + encode_us;
         totals.push(total);
@@ -447,14 +493,6 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
         );
     }
 
-    totals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p = |q: f64| totals[(((totals.len() - 1) as f64) * q).round() as usize];
-    println!("---");
-    println!(
-        "event->frame-ready TOTAL: p50={:.0}us  p95={:.0}us  max={:.0}us   (60fps budget = 16667us)",
-        p(0.5),
-        p(0.95),
-        p(1.0)
-    );
+    report_bench_totals(&totals);
     Ok(())
 }

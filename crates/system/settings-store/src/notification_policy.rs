@@ -99,6 +99,14 @@ impl FocusSchedule {
     }
 }
 
+// Six independent, user-facing notification toggles, not a state machine — and this
+// document's JSON shape and field names are load-bearing across `shell`, so folding
+// them into a bitflags type ripples well outside this crate.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent notification toggles serialised by field name; consumers in other \
+              crates read and persist them directly"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationPolicy {
     #[serde(default)]
@@ -134,6 +142,13 @@ impl Default for NotificationPolicy {
     }
 }
 
+// Six independent facets of "should this notification show right now", each derived by a
+// different rule — not a state machine, and `shell` reads them by field to decide what to
+// render.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent derived notification facets read by field in `shell`"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectiveNotificationPolicy {
     pub banners: bool,

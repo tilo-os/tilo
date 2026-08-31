@@ -12,6 +12,16 @@
 // Exit code is always 0 — a test that asserted on it couldn't tell
 // "denied" from "the fixture crashed".
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::io::Write;
 
 fn main() {

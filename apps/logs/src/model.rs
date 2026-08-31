@@ -140,7 +140,7 @@ impl LogEntry {
         let _ = y;
         format!(
             "{} {:02} {:02}:{:02}:{:02}.{:03}",
-            MONTHS[(mo as usize).saturating_sub(1)],
+            MONTHS.get((mo as usize).saturating_sub(1)).unwrap_or(&""),
             d,
             hh,
             mm,

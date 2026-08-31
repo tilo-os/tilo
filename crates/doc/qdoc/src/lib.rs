@@ -5,6 +5,19 @@
 //! `Document` model that md/odt/docx map onto. See
 //! `docs/superpowers/specs/2026-06-24-crdt-native-file-formats-design.md`.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod blobstore;
 pub mod codecs;
 pub mod diff;

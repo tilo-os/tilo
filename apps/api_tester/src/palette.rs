@@ -72,7 +72,7 @@ pub fn status_class(status: u16) -> StatusClass {
 pub fn short_path(url: &str) -> String {
     let no_scheme = url.split("://").nth(1).unwrap_or(url);
     match no_scheme.find('/') {
-        Some(i) => no_scheme[i..].to_string(),
+        Some(i) => no_scheme.get(i..).unwrap_or(no_scheme).to_string(),
         None => no_scheme.to_string(),
     }
 }

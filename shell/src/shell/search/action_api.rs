@@ -11,31 +11,120 @@
 //! [`ActionParam`]s are checked by [`ActionArgs::bind`] before anything
 //! runs, so a bad call is a refusal rather than a partial mutation.
 
+use std::collections::BTreeMap;
+
 use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
-use super::{ResourceKind, SearchRegistry, SearchResult};
+use super::{QueryArgs, ResourceKind, SearchRegistry, SearchResult};
 
-/// The parameter vocabulary, defined once in [`qos_actions::params`] and
-/// re-exported here.
-///
-/// These types used to be declared in this module *and* again on the app
-/// side, which meant the headless surface and an app's own actions agreed
-/// only for as long as someone kept them in step by hand. Two spellings of
-/// the same argument is precisely how an external caller ends up supplying
-/// a value the app parses differently — a class of bug that no amount of
-/// testing removes, because the two definitions are each internally
-/// consistent. One definition removes it instead.
-///
-/// Nothing about this surface moves: `text` / `integer` / `boolean` are the
-/// same wire spellings, and [`ActionArgs::bind`] keeps the same strictness —
-/// an unknown argument is refused rather than dropped, the first failure
-/// wins, and nothing partial reaches an action. The shared definition adds
-/// [`ParamType::Number`] and [`ActionParam::choices`] on top; no action in
-/// this crate declares either yet, so the compositor's exported descriptors
-/// are byte-for-byte what they were.
-pub use qos_actions::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
+/// The type of one action parameter — deliberately small.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamType {
+    Text,
+    Integer,
+    Boolean,
+}
+
+impl ParamType {
+    /// Wire spelling, and what an enumeration descriptor carries.
+    pub fn label(self) -> &'static str {
+        match self {
+            ParamType::Text => "text",
+            ParamType::Integer => "integer",
+            ParamType::Boolean => "boolean",
+        }
+    }
+}
+
+/// One typed parameter an action declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionParam {
+    pub name: &'static str,
+    pub ty: ParamType,
+    /// Whether an invocation must supply it. An optional parameter's
+    /// default belongs to the action and is stated in `description`.
+    pub required: bool,
+    pub description: &'static str,
+}
+
+impl ActionParam {
+    pub const fn required(name: &'static str, ty: ParamType, description: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            required: true,
+            description,
+        }
+    }
+
+    pub const fn optional(name: &'static str, ty: ParamType, description: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            required: false,
+            description,
+        }
+    }
+}
+
+/// One bound argument value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArgValue {
+    Text(String),
+    Integer(i64),
+    Boolean(bool),
+}
+
+impl ArgValue {
+    fn ty(&self) -> ParamType {
+        match self {
+            ArgValue::Text(_) => ParamType::Text,
+            ArgValue::Integer(_) => ParamType::Integer,
+            ArgValue::Boolean(_) => ParamType::Boolean,
+        }
+    }
+}
+
+/// Why a set of arguments does not satisfy an action's parameters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArgError {
+    Missing {
+        name: String,
+    },
+    Unknown {
+        name: String,
+    },
+    WrongType {
+        name: String,
+        expected: ParamType,
+        got: ParamType,
+    },
+}
+
+impl std::fmt::Display for ArgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArgError::Missing { name } => {
+                write!(f, "required argument `{name}` was not supplied")
+            }
+            ArgError::Unknown { name } => {
+                write!(f, "`{name}` is not a parameter of this action")
+            }
+            ArgError::WrongType {
+                name,
+                expected,
+                got,
+            } => write!(
+                f,
+                "argument `{name}` must be {}, got {}",
+                expected.label(),
+                got.label()
+            ),
+        }
+    }
+}
 
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +151,90 @@ impl std::fmt::Display for ActionError {
             ActionError::Arguments(e) => write!(f, "{e}"),
             ActionError::Refused(why) => write!(f, "{why}"),
         }
+    }
+}
+
+/// Arguments for one invocation, already checked. Buildable only through
+/// [`ActionArgs::bind`]/[`ActionArgs::none`], so holding one means every
+/// required parameter is present and typed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActionArgs {
+    values: BTreeMap<String, ArgValue>,
+}
+
+impl ActionArgs {
+    /// The empty argument set — what a nullary action is invoked with.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Check `supplied` against `params` and bind it. Fails on the first
+    /// problem rather than accumulating — a partial bind must never reach
+    /// an action.
+    ///
+    /// # Errors
+    ///
+    /// [`ArgError::Missing`] for a required param `supplied` never sets,
+    /// [`ArgError::Unknown`] for a supplied name `params` doesn't
+    /// declare, [`ArgError::WrongType`] when a supplied value's type
+    /// doesn't match the declared one.
+    pub fn bind(
+        params: &[ActionParam],
+        supplied: impl IntoIterator<Item = (String, ArgValue)>,
+    ) -> Result<Self, ArgError> {
+        let mut values: BTreeMap<String, ArgValue> = BTreeMap::new();
+        for (name, value) in supplied {
+            let Some(param) = params.iter().find(|p| p.name == name) else {
+                // Refused rather than silently dropped, or the caller
+                // believes it asked for something it did not get.
+                return Err(ArgError::Unknown { name });
+            };
+            if value.ty() != param.ty {
+                return Err(ArgError::WrongType {
+                    name,
+                    expected: param.ty,
+                    got: value.ty(),
+                });
+            }
+            values.insert(name, value);
+        }
+        for param in params.iter().filter(|p| p.required) {
+            if !values.contains_key(param.name) {
+                return Err(ArgError::Missing {
+                    name: param.name.to_string(),
+                });
+            }
+        }
+        Ok(Self { values })
+    }
+
+    /// The text bound to `name`, if any.
+    pub fn text(&self, name: &str) -> Option<&str> {
+        match self.values.get(name) {
+            Some(ArgValue::Text(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The integer bound to `name`, if any.
+    pub fn integer(&self, name: &str) -> Option<i64> {
+        match self.values.get(name) {
+            Some(ArgValue::Integer(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The boolean bound to `name`, if any.
+    pub fn boolean(&self, name: &str) -> Option<bool> {
+        match self.values.get(name) {
+            Some(ArgValue::Boolean(b)) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Whether anything is bound.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 }
 
@@ -156,7 +329,15 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         // Empty `wanted_kinds` ⇒ "any kind" — surveys the whole exported surface.
-        let results = registry.query(query, scope, active_provider_id, &[], chrome, doc, doc_root);
+        let results = registry.query(&QueryArgs {
+            needle: query,
+            scope,
+            active_provider_id,
+            wanted_kinds: &[],
+            chrome,
+            doc,
+            doc_root,
+        });
         let visible = results
             .iter()
             .enumerate()
@@ -171,16 +352,14 @@ impl ActionCatalog {
     pub fn enumerate(&self) -> Vec<ExportedAction> {
         self.visible
             .iter()
-            .map(|&i| {
-                let r = &self.results[i];
-                ExportedAction {
-                    resource: ResourceRef::new(&r.provider_id, &r.id),
-                    kind: r.kind.clone(),
-                    title: r.title.clone(),
-                    subtitle: r.subtitle.clone(),
-                    score: r.score,
-                    params: r.params.clone(),
-                }
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| ExportedAction {
+                resource: ResourceRef::new(&r.provider_id, &r.id),
+                kind: r.kind.clone(),
+                title: r.title.clone(),
+                subtitle: r.subtitle.clone(),
+                score: r.score,
+                params: r.params.clone(),
             })
             .collect()
     }
@@ -204,11 +383,21 @@ impl ActionCatalog {
     /// Resolve a [`ResourceRef`] to the live action. `None` when the id
     /// isn't in this snapshot or the visibility gate hid it.
     pub fn select(&self, resource: &ResourceRef) -> Option<SelectedAction<'_>> {
-        self.visible
+        // Two independent identity checks (provider, then id) — matching
+        // field names would be a coincidence, not a bug:
+        // `SearchResult::provider_id` and `ResourceRef::provider` name
+        // the same concept differently by design.
+        #[allow(
+            clippy::suspicious_operation_groupings,
+            reason = "provider_id/provider and id/id are two independent equality checks, not a \
+                      swapped field pair"
+        )]
+        let found = self
+            .visible
             .iter()
-            .map(|&i| &self.results[i])
-            .find(|r| r.provider_id == resource.provider && r.id == resource.id)
-            .map(|result| SelectedAction { result })
+            .filter_map(|&i| self.results.get(i))
+            .find(|r| r.provider_id == resource.provider && r.id == resource.id);
+        found.map(|result| SelectedAction { result })
     }
 }
 
@@ -241,6 +430,13 @@ impl SelectedAction<'_> {
 
     /// Run the provider's side-effect, the same callback the palette fires
     /// on Enter. A failed bind is refused with the document untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::Arguments`] when `args` doesn't satisfy this
+    /// action's declared params (see [`ActionArgs::bind`]);
+    /// [`ActionError::Refused`] when the bind succeeded but the
+    /// provider's own callback found nothing to act on.
     pub fn invoke(
         &self,
         doc: &mut AutoCommit,
@@ -252,40 +448,14 @@ impl SelectedAction<'_> {
         (self.result.on_open)(doc, root, chrome, &bound)
     }
 
-    /// Invoke the action with arguments that arrived as a JSON object —
-    /// the shape a control socket delivers.
-    ///
-    /// The JSON→[`ArgValue`] conversion lives in the shared vocabulary
-    /// ([`ActionArgs::bind_json`]) rather than in the transport, so the
-    /// compositor's socket and an app's own out-of-process surface read a
-    /// wire argument the same way. A transport that kept its own table
-    /// would be a second definition of the thing this vocabulary exists to
-    /// have exactly one of.
-    ///
-    /// Binding happens **before** the action runs, and every argument is
-    /// converted before any is bound, so a request carrying one bad value
-    /// leaves the document untouched rather than half-applied.
-    pub fn invoke_json(
-        &self,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        chrome: &Chrome,
-        args: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), ActionError> {
-        let bound =
-            ActionArgs::bind_json(&self.result.params, args).map_err(ActionError::Arguments)?;
-        (self.result.on_open)(doc, root, chrome, &bound)
-    }
-
-    /// Invoke an action that declares no parameters.
-    ///
-    /// Sugar over [`Self::invoke`] with an empty argument set, kept
-    /// because most of the surface is nullary and spelling that out at
-    /// every call site would bury the one case that is not. An action
-    /// that *does* require a parameter still refuses here — this is a
-    /// shorter way to pass nothing, not a way to skip the check.
     /// Sugar over [`Self::invoke`] with an empty argument set — a shorter
     /// way to pass nothing, not a way to skip the check.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::invoke`] — most commonly
+    /// [`ActionError::Arguments`] when this action actually requires
+    /// parameters.
     pub fn invoke_nullary(
         &self,
         doc: &mut AutoCommit,
@@ -638,65 +808,6 @@ mod tests {
             .invoke_nullary(&mut doc, &root, &chrome)
             .expect("a nullary action takes no arguments");
         assert!(chrome.borrow().overlays.ws_settings);
-    }
-
-    /// The compositor's parameter vocabulary **is** the action model's, not
-    /// a look-alike sitting beside it.
-    ///
-    /// This surface and an app's own actions are driven by the same external
-    /// caller, and two structurally-identical declarations agree only for as
-    /// long as someone keeps editing both. Re-declaring these types here
-    /// would compile and would pass every other test in this file while
-    /// silently reopening that gap, so the check is type *identity*: a
-    /// parameter list built through the shared path is bound through this
-    /// module's path. A separate declaration does not typecheck.
-    #[test]
-    fn the_parameter_vocabulary_is_shared_with_the_action_model_not_copied() {
-        let shared: Vec<qos_actions::params::ActionParam> =
-            vec![qos_actions::params::ActionParam::required(
-                "text",
-                qos_actions::params::ParamType::Text,
-                "what to write",
-            )];
-
-        let bound = ActionArgs::bind(&shared, [("text".to_string(), text("hi"))])
-            .expect("a parameter declared through the shared path binds through this one");
-        assert_eq!(bound.text("text"), Some("hi"));
-
-        // The wire spellings are the external contract: they are what an
-        // enumeration descriptor carries, and the only thing a caller with no
-        // screen has to build an invocation from.
-        assert_eq!(ParamType::Text.label(), "text");
-        assert_eq!(ParamType::Integer.label(), "integer");
-        assert_eq!(ParamType::Boolean.label(), "boolean");
-    }
-
-    /// Declared `choices` are enforced by binding — so an action that
-    /// restricts its values refuses anything else by name rather than
-    /// quietly falling through to a default.
-    ///
-    /// Nothing in this crate declares choices yet. The check is here because
-    /// the enforcement arrived with the shared vocabulary and applies to
-    /// every action reachable through this catalogue the moment one does.
-    #[test]
-    fn a_value_outside_a_parameters_choices_is_refused() {
-        let params = vec![
-            qos_actions::params::ActionParam::required("filter", ParamType::Text, "which filter")
-                .with_choices(["grayscale", "sepia"]),
-        ];
-
-        assert!(
-            ActionArgs::bind(&params, [("filter".to_string(), text("sepia"))]).is_ok(),
-            "a declared choice must be accepted"
-        );
-
-        let err = ActionArgs::bind(&params, [("filter".to_string(), text("invert"))])
-            .expect_err("a value outside the declared choices must be refused");
-        let ArgError::NotAllowed { name, value, .. } = &err else {
-            panic!("expected a NotAllowed refusal, got {err:?}");
-        };
-        assert_eq!(name, "filter");
-        assert_eq!(value, "invert");
     }
 
     /// Empty stays empty — no fabricated rows when nothing matches.

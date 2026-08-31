@@ -17,6 +17,16 @@
 //! is how a qOS app runs at all, so a machine that can't run these
 //! can't run the product.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -99,9 +109,10 @@ fn bwrap() -> PathBuf {
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "bwrap is not on PATH ({path:?}). It is how a qOS app runs, so \
+                "bwrap is not on PATH ({}). It is how a qOS app runs, so \
                  this is a broken environment rather than a reason to skip the \
-                 test."
+                 test.",
+                path.to_string_lossy()
             )
         })
 }

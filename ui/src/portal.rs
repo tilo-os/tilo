@@ -99,16 +99,19 @@ impl FileFilter {
     /// advertises everything it can actually open — a filter narrower than
     /// the reader behind it hides a user's file with no way to discover the
     /// app would have taken it.
+    #[must_use]
     pub fn globs(&self) -> &[String] {
         &self.globs
     }
 
+    #[must_use]
     pub fn glob(mut self, g: &str) -> Self {
         self.globs.push(g.to_string());
         self
     }
 
     /// Match files by MIME type, e.g. `application/pdf`.
+    #[must_use]
     pub fn mimetype(mut self, m: &str) -> Self {
         self.mimetypes.push(m.to_string());
         self
@@ -184,6 +187,7 @@ impl PickRequest {
 
     /// Name the worker thread, so a stuck picker is identifiable in a
     /// backtrace or `top -H`.
+    #[must_use]
     pub fn thread_name(mut self, name: &str) -> Self {
         self.thread_name = name.to_string();
         self
@@ -191,12 +195,14 @@ impl PickRequest {
 
     /// Add a file-type filter. Order is the dropdown order; the first is the
     /// default.
+    #[must_use]
     pub fn filter(mut self, f: FileFilter) -> Self {
         self.filters.push(f);
         self
     }
 
     /// Append the "All files" escape hatch.
+    #[must_use]
     pub fn all_files(self) -> Self {
         self.filter(FileFilter::all_files())
     }
@@ -287,11 +293,15 @@ pub fn suppressed() -> bool {
 
 /// Spawn the portal worker. The UI may have moved on (window closed) by the
 /// time it finishes, so a dead channel is ignored by the closure itself.
+///
+/// If the OS can't spawn the thread, `work` (and whatever sender it closed
+/// over) is simply dropped: the caller's receiver observes a closed
+/// channel, the same outward signal it must already handle for a worker
+/// that spawned but whose send lost the race with a dropped receiver.
 fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
-    std::thread::Builder::new()
+    let _ = std::thread::Builder::new()
         .name(name.to_string())
-        .spawn(work)
-        .expect("spawn portal worker thread");
+        .spawn(work);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,14 +394,18 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 /// receiver the app installs, mirroring [`PickRequest::send`]'s contract.
 pub fn inject_for_test(outcome: PortalOutcome) -> PortalChannel {
     let (tx, rx) = std::sync::mpsc::channel();
-    tx.send(outcome).expect("seed injected portal outcome");
+    // `rx` is still alive right here, so the send cannot fail; ignoring the
+    // result rather than panicking costs nothing on the one path that
+    // matters (it always succeeds) and degrades gracefully if it ever
+    // doesn't.
+    let _ = tx.send(outcome);
     rx
 }
 
 /// Multi-select counterpart of [`inject_for_test`].
 pub fn inject_multi_for_test(outcome: MultiOutcome) -> MultiChannel {
     let (tx, rx) = std::sync::mpsc::channel();
-    tx.send(outcome).expect("seed injected portal outcome");
+    let _ = tx.send(outcome);
     rx
 }
 

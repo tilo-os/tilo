@@ -9,6 +9,16 @@
 //! both replicas export must be byte-identical (the codec is a pure function of
 //! the converged model, so any non-deterministic materialization would surface).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use proptest::prelude::*;
 use qdoc::codecs::odt::container::OdtContainer;
 use qdoc::{Document, FormatProvider, OdtCodec};
@@ -47,15 +57,19 @@ fn subrange(len: usize, a: u8, b: u8) -> (usize, usize) {
     if len == 0 {
         return (0, 0);
     }
-    let p = (a as usize) % (len + 1);
-    let q = (b as usize) % (len + 1);
+    let modulus = len.saturating_add(1);
+    let p = usize::from(a).checked_rem(modulus).unwrap_or(0);
+    let q = usize::from(b).checked_rem(modulus).unwrap_or(0);
     (p.min(q), p.max(q))
 }
 
 fn apply(doc: &mut Document, ops: &[Op]) {
     for op in ops {
         let blocks = doc.blocks_in_order();
-        let pick = |i: u8| blocks.get((i as usize) % blocks.len().max(1)).cloned();
+        let pick = |i: u8| {
+            let idx = usize::from(i).checked_rem(blocks.len().max(1)).unwrap_or(0);
+            blocks.get(idx).cloned()
+        };
         let block_len =
             |doc: &Document, b: &str| doc.block_text(b).map_or(0, |t| t.chars().count());
         match op {
@@ -82,7 +96,7 @@ fn apply(doc: &mut Document, ops: &[Op]) {
                     let len = block_len(doc, &b);
                     let (s, e) = subrange(len, *sz, *f);
                     if e > s {
-                        let pts = 8 + (i64::from(*sz) % 24); // 8..=31pt
+                        let pts = 8i64.saturating_add(i64::from(*sz) % 24); // 8..=31pt
                         doc.add_mark(&b, s, e, "fontSize", pts);
                     }
                 }
@@ -91,7 +105,10 @@ fn apply(doc: &mut Document, ops: &[Op]) {
                 if let Some(b) = pick(*i) {
                     let len = block_len(doc, &b);
                     if len > 0 {
-                        let fam = ["serif", "sans", "mono"][(*f as usize) % 3];
+                        let fam = ["serif", "sans", "mono"]
+                            .get(usize::from(*f) % 3)
+                            .copied()
+                            .unwrap_or("sans");
                         doc.add_mark(&b, 0, len, "fontFamily", fam);
                     }
                 }
@@ -125,6 +142,10 @@ fn apply(doc: &mut Document, ops: &[Op]) {
 
 /// The `content.xml` an exported `.odt` carries — a pure function of the model, so
 /// equal materializations must yield byte-identical content.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test fixture helper: a failure here means the codec under test is broken, and proptest reports the failing input"
+)]
 fn content_xml(doc: &Document) -> Vec<u8> {
     let odt = OdtCodec.export(doc.as_ref()).unwrap();
     OdtContainer::read(&odt)

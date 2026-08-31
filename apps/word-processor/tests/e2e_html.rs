@@ -3,6 +3,16 @@
 //! hand-written or produced by `qdoc_html::render_html`) opens into the canonical
 //! CRDT model with its headings, paragraphs, bold runs, and links intact.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::PathBuf;
 
 use ui::Widget;

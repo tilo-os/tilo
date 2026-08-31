@@ -2,6 +2,16 @@
 //! currently-selected page, request a save, drop the app, then
 //! reload and verify the on-disk body matches.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::Path;
 
 use notes::NotesApp;
@@ -9,10 +19,10 @@ use notes::storage;
 use tempfile::TempDir;
 use ui::widget::{BlockEditor, BlockKind};
 
-/// Convenience: read a page's body off disk and return it. Panics
-/// if the file is missing — the test must have produced one.
-fn read_body(root: &Path, id: uuid::Uuid) -> String {
-    storage::read_page_body(root, id).expect("body file exists")
+/// Convenience: read a page's body off disk and return it. `Err` if
+/// the file is missing — the test must have produced one.
+fn read_body(root: &Path, id: uuid::Uuid) -> std::io::Result<String> {
+    storage::read_page_body(root, id)
 }
 
 #[test]
@@ -49,7 +59,7 @@ fn editing_a_page_through_the_block_editor_persists_to_disk() {
     drop(app);
 
     // Verify disk.
-    let body = read_body(tmp.path(), welcome_id);
+    let body = read_body(tmp.path(), welcome_id).expect("body file exists");
     // After our edit the body should be "# Hello\n" turned into
     // markdown by the editor's serializer.
     assert!(body.contains("# Hello"), "got body: {body:?}");
@@ -67,7 +77,7 @@ fn split_and_save_round_trip_through_disk() {
     // appear in the saved body alongside the test's edits.
     {
         let panel = app.main_panel_mut();
-        panel.load_page(welcome_id, "Welcome".into(), String::new());
+        panel.load_page(welcome_id, "Welcome", String::new());
     }
 
     // Seed: type "First", press Enter, type "Second" — via the
@@ -87,7 +97,7 @@ fn split_and_save_round_trip_through_disk() {
     app.flush_saves();
     drop(app);
 
-    let body = read_body(tmp.path(), welcome_id);
+    let body = read_body(tmp.path(), welcome_id).expect("body file exists");
     // Two paragraphs, separated by blank line, trailing newline.
     assert_eq!(body, "First\n\nSecond\n");
 
@@ -110,7 +120,7 @@ fn heading_promotion_survives_save_reload() {
     // empty Paragraphs.
     {
         let panel = app.main_panel_mut();
-        panel.load_page(welcome_id, "Welcome".into(), String::new());
+        panel.load_page(welcome_id, "Welcome", String::new());
     }
 
     {
@@ -130,7 +140,7 @@ fn heading_promotion_survives_save_reload() {
     app.flush_saves();
     drop(app);
 
-    let body = read_body(tmp.path(), welcome_id);
+    let body = read_body(tmp.path(), welcome_id).expect("body file exists");
     assert_eq!(body, "## Heading two\n");
 
     // Reload the app from disk and assert the heading parsed back.

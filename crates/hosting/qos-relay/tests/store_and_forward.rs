@@ -12,6 +12,16 @@
 //!   6. The relay's Ready reports `pending_deltas=1` and immediately
 //!      delivers D1 to B.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use qos_relay::Envelope;
@@ -19,27 +29,18 @@ use qos_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn offline_peer_gets_queued_deltas_on_reconnect() {
-    let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let b = user.enrol("phone", DeviceCapabilities::member());
-
-    let relay = spawn_relay(
-        &user,
-        relay_dev,
-        &[5],
-        &[a.device_pubkey(), b.device_pubkey()],
-    )
-    .await;
-    let addr = relay.relay.node_addr();
-
-    // Peer A comes up.
-    let ep_a = client_endpoint().await;
+/// A connects, subscribes, publishes two deltas while B is offline, and
+/// waits until both have landed on disk in B's pending queue (retrying,
+/// since with iroh transport the write may land asynchronously).
+async fn a_publishes_two_offline_deltas(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    a: &crate::common::TestDevice,
+    pending_dir: &std::path::Path,
+) {
     let a_client = qos_relay::RelayClient::connect(
-        ep_a,
-        addr.clone(),
+        client_endpoint().await,
+        addr,
         user.user_pk,
         a.cert.clone(),
         a.sk.clone(),
@@ -70,16 +71,7 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
     // Give the relay a beat to persist.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Verify the deltas landed on disk under
-    // <state>/workspaces/5/pending/<hex(b)>/.
-    let b_hex = hex::encode(b.device_pubkey());
-    let pending_dir = relay
-        .state_root
-        .join("workspaces")
-        .join("5")
-        .join("pending")
-        .join(&b_hex);
-    let mut queued = std::fs::read_dir(&pending_dir)
+    let mut queued = std::fs::read_dir(pending_dir)
         .unwrap()
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
@@ -91,18 +83,25 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
-        queued = std::fs::read_dir(&pending_dir)
+        queued = std::fs::read_dir(pending_dir)
             .unwrap()
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .count();
     }
     assert_eq!(queued, 2, "both deltas should be queued to disk for B");
+}
 
-    // B comes online + subscribes.
-    let ep_b = client_endpoint().await;
+/// B connects, subscribes, and drains the two queued deltas plus the
+/// Ready marker (the relay drains pending before it sends Ready, so B
+/// receives Delta, Delta, then Ready).
+async fn b_connects_and_drains_queue(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    b: &crate::common::TestDevice,
+) {
     let b_client = qos_relay::RelayClient::connect(
-        ep_b,
+        client_endpoint().await,
         addr,
         user.user_pk,
         b.cert.clone(),
@@ -152,6 +151,37 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
         vec![b"first-delta".to_vec(), b"second-delta".to_vec()],
         "queued deltas must be delivered in-order"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_peer_gets_queued_deltas_on_reconnect() {
+    let user = TestUser::fresh("Alice");
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+
+    let relay = spawn_relay(
+        &user,
+        relay_dev,
+        &[5],
+        &[a.device_pubkey(), b.device_pubkey()],
+    )
+    .await;
+    let addr = relay.relay.node_addr();
+
+    // Verify the deltas landed on disk under
+    // <state>/workspaces/5/pending/<hex(b)>/.
+    let b_hex = hex::encode(b.device_pubkey());
+    let pending_dir = relay
+        .state_root
+        .join("workspaces")
+        .join("5")
+        .join("pending")
+        .join(&b_hex);
+    a_publishes_two_offline_deltas(addr.clone(), &user, &a, &pending_dir).await;
+
+    // B comes online + subscribes, and drains the queue.
+    b_connects_and_drains_queue(addr, &user, &b).await;
 
     // Pending dir should be empty now.
     let after = std::fs::read_dir(&pending_dir)

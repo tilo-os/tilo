@@ -4,6 +4,16 @@
 //! `preferred_hdr_swapchain_format` cross-checks that the SDR default
 //! yields no HDR format, so a caller degrades to `Rgba8UnormSrgb`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::shell::hdr_display::{DisplayCapabilities, preferred_hdr_swapchain_format};
 
 #[test]
@@ -33,9 +43,7 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
             compatible_surface: None,
         })
         .block_on();
-    let adapter = if let Ok(a) = adapter_opt {
-        a
-    } else {
+    let Ok(adapter) = adapter_opt else {
         eprintln!("skipping: no wgpu adapter (no llvmpipe or GPU)");
         return;
     };
@@ -62,13 +70,22 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
 
 #[test]
 fn hdr10_baseline_supports_pq_and_prefers_hdr_format() {
+    use vello::wgpu::TextureFormat;
+
     let caps = DisplayCapabilities::hdr10_baseline();
     assert!(caps.supports_pq_output);
     assert!(caps.bt2020_gamut);
-    assert_eq!(caps.max_luminance_nits as u32, 1000);
+    // Fixture value; clamped to a range f32 represents exactly, so the cast
+    // below can't misbehave regardless of the source value.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=1_000_000.0 immediately above, so it always fits a non-negative u32"
+    )]
+    let max_luminance_nits_u32 = caps.max_luminance_nits.round().clamp(0.0, 1_000_000.0) as u32;
+    assert_eq!(max_luminance_nits_u32, 1000);
     let fmt = preferred_hdr_swapchain_format(&caps).expect("HDR10 has a format");
     // Either scRGB or HDR10 primary — both are HDR-capable.
-    use vello::wgpu::TextureFormat;
     assert!(
         matches!(
             fmt,

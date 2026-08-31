@@ -25,12 +25,6 @@ pub struct CellInput {
     pub style: Option<String>,
 }
 
-impl Default for CellType {
-    fn default() -> Self {
-        CellType::Empty
-    }
-}
-
 impl CellInput {
     pub fn number(v: impl Into<String>) -> Self {
         Self {
@@ -57,6 +51,7 @@ impl CellInput {
             style: None,
         }
     }
+    #[must_use]
     pub fn with_style(mut self, style: impl Into<String>) -> Self {
         self.style = Some(style.into());
         self
@@ -72,6 +67,15 @@ pub struct SheetContainers {
 }
 
 /// Write the schema scalars + create the container maps under `root`.
+///
+/// # Panics
+/// Panics if `root` names an object that doesn't exist in `doc`. Every caller resolves `root`
+/// (`automerge::ROOT`, or a namespace node it just created) immediately before calling this,
+/// so the object is always live.
+#[allow(
+    clippy::unwrap_used,
+    reason = "root is always a live object at every call site (see the panics note above)"
+)]
 pub fn init(doc: &mut AutoCommit, root: &ObjId) -> SheetContainers {
     doc.put(root, KEY_SHEET_SCHEMA, SHEET_SCHEMA_ID).unwrap();
     doc.put(root, KEY_SHEET_SCHEMA_VERSION, SHEET_SCHEMA_VERSION)
@@ -89,6 +93,9 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> SheetContainers {
     }
 }
 
+/// # Errors
+/// Returns [`DocError`] if a required container key (`sheets`/`meta`/`preserved`) is missing
+/// under `root` or does not resolve to a map.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<SheetContainers, DocError> {
     Ok(SheetContainers {
         root: root.clone(),
@@ -168,9 +175,8 @@ pub fn cell(
     reference: &str,
 ) -> Option<CellView> {
     let cells = cells_obj(doc, c, sheet_id)?;
-    let cell_obj = match doc.get(&cells, reference) {
-        Ok(Some((Value::Object(ObjType::Map), o))) => o,
-        _ => return None,
+    let Ok(Some((Value::Object(ObjType::Map), cell_obj))) = doc.get(&cells, reference) else {
+        return None;
     };
     materialize_cell(doc, &cell_obj, reference)
 }
@@ -290,17 +296,15 @@ fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>)
         Some(id) => ordered
             .iter()
             .position(|x| x == id)
-            .map_or(ordered.len(), |i| i + 1),
+            .map_or(ordered.len(), |i| i.saturating_add(1)),
     };
-    let lo = if pos == 0 {
-        None
-    } else {
-        sheet_order(doc, c, &ordered[pos - 1])
+    let lo = match pos.checked_sub(1).and_then(|i| ordered.get(i)) {
+        Some(id) => sheet_order(doc, c, id),
+        None => None,
     };
-    let hi = if pos >= ordered.len() {
-        None
-    } else {
-        sheet_order(doc, c, &ordered[pos])
+    let hi = match ordered.get(pos) {
+        Some(id) => sheet_order(doc, c, id),
+        None => None,
     };
     crate::order::key_between(lo.as_deref(), hi.as_deref())
 }
@@ -328,6 +332,9 @@ impl Workbook {
         }
     }
 
+    /// # Errors
+    /// Returns [`DocError`] if `bytes` isn't a valid automerge document, or doesn't carry the
+    /// workbook schema's container keys.
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = open(&doc, &ROOT)?;
@@ -355,6 +362,14 @@ impl Workbook {
     }
 
     /// Add a sheet after the sheet with id `after` (or at the front if `None`).
+    ///
+    /// # Panics
+    /// Panics if `self.c.sheets` no longer resolves in `self.doc` — see the note on
+    /// [`Self::set_cell`].
+    #[allow(
+        clippy::unwrap_used,
+        reason = "self.c.sheets was resolved by open()/init() at construction and this API never invalidates it"
+    )]
     pub fn add_sheet_after(&mut self, name: &str, after: Option<&str>) -> String {
         let key = sheet_order_after(&self.doc, &self.c, after);
         let id = self.ids.mint();
@@ -374,6 +389,14 @@ impl Workbook {
     }
 
     /// Rename a sheet (no-op if the id is unknown).
+    ///
+    /// # Panics
+    /// Panics if `self.c.sheets` no longer resolves in `self.doc` — see the note on
+    /// [`Self::set_cell`].
+    #[allow(
+        clippy::unwrap_used,
+        reason = "self.c.sheets was resolved by open()/init() at construction and this API never invalidates it"
+    )]
     pub fn rename_sheet(&mut self, id: &str, name: &str) {
         if let Some(obj) = sheet_obj(&self.doc, &self.c, id) {
             self.doc.put(&obj, SHEET_NAME, name).unwrap();
@@ -393,6 +416,18 @@ impl Workbook {
     /// whose value actually changed are written, so re-setting an identical cell
     /// adds no CRDT churn. `None` for the formula/style clears that field. Returns
     /// `false` if the sheet id is unknown or the reference is malformed.
+    ///
+    /// # Panics
+    /// Panics if `cells` (just resolved-or-created above) stops resolving mid-call, which
+    /// cannot happen on this single-threaded, synchronous API.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "pub API used outside qdoc (fs::docstore); signature change out of scope for this crate-only pass"
+    )]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "`cells` was just resolved-or-created above, so put_object on it cannot fail mid-call"
+    )]
     pub fn set_cell(&mut self, sheet_id: &str, reference: &str, input: CellInput) -> bool {
         if crate::sheet::a1::parse_ref(reference).is_none() {
             return false;
@@ -434,6 +469,14 @@ impl Workbook {
     }
 
     /// Stash a verbatim (unmodeled) package part so export can re-emit it losslessly.
+    ///
+    /// # Panics
+    /// Panics if `self.c.preserved` no longer resolves in `self.doc` — see the note on
+    /// [`Self::set_cell`].
+    #[allow(
+        clippy::unwrap_used,
+        reason = "self.c.preserved was resolved by open()/init() at construction and this API never invalidates it"
+    )]
     pub fn set_preserved(&mut self, name: &str, bytes: &[u8]) {
         self.doc
             .put(&self.c.preserved, name, ScalarValue::Bytes(bytes.to_vec()))
@@ -441,6 +484,13 @@ impl Workbook {
         self.doc.commit();
     }
 
+    /// # Panics
+    /// Panics if `self.c.meta` no longer resolves in `self.doc` — see the note on
+    /// [`Self::set_cell`].
+    #[allow(
+        clippy::unwrap_used,
+        reason = "self.c.meta was resolved by open()/init() at construction, and `props` was just resolved-or-created above"
+    )]
     pub fn set_prop(&mut self, name: &str, value: &str) {
         let props = match self.doc.get(&self.c.meta, KEY_SHEET_PROPS) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -478,9 +528,13 @@ impl Workbook {
     }
 
     /// Reconstruct the workbook as of `version` (time-travel).
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if replaying the changes up to `version` doesn't reproduce a
+    /// document carrying the workbook schema's container keys.
     pub fn materialize_at(&mut self, version: usize) -> Result<WorkbookSnapshot, DocError> {
         let changes = self.doc.get_changes(&[]);
-        let take = (version + 1).min(changes.len());
+        let take = version.saturating_add(1).min(changes.len());
         let mut rebuilt = AutoCommit::new();
         rebuilt
             .apply_changes(changes.into_iter().take(take))
@@ -489,6 +543,9 @@ impl Workbook {
         Ok(materialize(&rebuilt, &c))
     }
 
+    /// # Errors
+    /// Returns [`DocError`] under the same conditions as [`Self::materialize_at`], for either
+    /// `from` or `to`.
     pub fn diff_versions(
         &mut self,
         from: usize,
@@ -500,6 +557,15 @@ impl Workbook {
     }
 
     /// Independent replica with a fresh actor id (distinct edit lineage).
+    ///
+    /// # Panics
+    /// Panics if reloading this workbook's own just-saved bytes fails, which cannot happen:
+    /// `save()`'s output is always a valid document carrying this workbook's schema.
+    #[must_use]
+    #[allow(
+        clippy::expect_used,
+        reason = "reloading this workbook's own just-saved, schema-valid bytes cannot fail"
+    )]
     pub fn fork(&mut self) -> Workbook {
         let bytes = self.save();
         let mut doc = AutoCommit::load(&bytes).expect("fork load");
@@ -517,6 +583,15 @@ impl Workbook {
     /// Merge another replica's changes into this one (low-level merge to sidestep
     /// the automerge-0.8 `AutoCommit::merge` patch-log panic, as the rich-text
     /// [`crate::Document::merge`] does).
+    ///
+    /// # Panics
+    /// Panics if `self`'s or `other`'s own just-saved bytes fail to reload, or the reloaded
+    /// document loses the workbook schema — neither can happen: both are this type's own
+    /// `save()` output, and merging never removes the schema's container keys.
+    #[allow(
+        clippy::expect_used,
+        reason = "reloading/re-merging this workbook's own schema-valid bytes cannot fail"
+    )]
     pub fn merge(&mut self, other: &mut Workbook) {
         let merged = {
             let mut a = automerge::Automerge::load(&self.doc.save()).expect("merge: load self");
@@ -546,7 +621,7 @@ fn seeded_sheet_id_gen(doc: &AutoCommit, c: &SheetContainers) -> crate::model::I
         if let Some(rest) = id.strip_prefix(&prefix)
             && let Ok(n) = rest.parse::<u64>()
         {
-            next = next.max(n + 1);
+            next = next.max(n.saturating_add(1));
         }
     }
     crate::model::IdGen::with_counter(actor, next)
@@ -554,6 +629,14 @@ fn seeded_sheet_id_gen(doc: &AutoCommit, c: &SheetContainers) -> crate::model::I
 
 /// Write a string field only when it differs from the stored value (avoids a
 /// redundant CRDT op — the store-churn guard).
+///
+/// # Panics
+/// Panics if `obj` no longer resolves in `doc`. Both call sites pass a cell object just
+/// resolved-or-created a line above, so it is always live.
+#[allow(
+    clippy::unwrap_used,
+    reason = "obj is always a live object at every call site (see the panics note above)"
+)]
 fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
     let current = match doc.get(obj, key) {
         Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
@@ -566,17 +649,25 @@ fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str)
 
 /// Set an optional string field: write it when `Some` and changed, delete it when
 /// `None` and currently present.
+///
+/// # Panics
+/// Panics if `obj` no longer resolves in `doc` — see the note on [`put_str_if_changed`].
+#[allow(
+    clippy::unwrap_used,
+    reason = "obj is always a live object at every call site (see the panics note above)"
+)]
 fn set_opt_str(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: Option<&str>) {
     let current = match doc.get(obj, key) {
         Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
         _ => None,
     };
+    if current.as_deref() == value {
+        return; // already matches: no CRDT op needed
+    }
     match value {
-        Some(v) if current.as_deref() != Some(v) => doc.put(obj, key, v).unwrap(),
-        Some(_) => {}
-        None if current.is_some() => {
+        Some(v) => doc.put(obj, key, v).unwrap(),
+        None => {
             let _ = doc.delete(obj, key);
         }
-        None => {}
     }
 }

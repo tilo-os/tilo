@@ -16,6 +16,16 @@
 //! `Relay`/`RelayCoeditSession` path — no mocks of the host or the
 //! bridge.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
@@ -140,25 +150,16 @@ async fn live_coedit_fans_out_through_host() {
     drop(host);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn never_both_online_coedit_converges_through_host() {
-    const WS: u64 = 22;
-
-    let user = TestUser::fresh("Alice");
-    let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let b = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey()];
-
-    // The host's persistent state dir survives the restart below.
-    let state = tempfile::tempdir().unwrap();
-    let state_root = state.path().to_path_buf();
-
-    // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
-    //      connected. ----
-    let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
-    let addr1 = host1.node_addr();
-
+/// A connects to `addr1`, joins the co-edit session, drains its own
+/// Ready(0), publishes `offline-note`, waits until the host has queued
+/// it on disk for the (never-yet-connected) B, then disconnects.
+async fn publish_offline_coedit(
+    addr1: iroh_base::EndpointAddr,
+    user: &TestUser,
+    a: &crate::common::TestDevice,
+    ws: u64,
+    pending_dir: &std::path::Path,
+) -> AutoCommit {
     let a_client = RelayClient::connect(
         client_endpoint().await,
         addr1,
@@ -169,7 +170,7 @@ async fn never_both_online_coedit_converges_through_host() {
     )
     .await
     .expect("A connect");
-    let a_session = RelayCoeditSession::join(a_client, WS, a.device_pubkey()).unwrap();
+    let a_session = RelayCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
     // Drain A's own Ready(0).
     match tokio::time::timeout(Duration::from_secs(2), a_session.recv())
         .await
@@ -184,16 +185,9 @@ async fn never_both_online_coedit_converges_through_host() {
     let delta = doc_a.save_incremental();
     a_session.publish_delta(delta).unwrap();
 
-    // B never connected, so the co-edit must be queued on disk for it.
-    let b_hex = hex::encode(b.device_pubkey());
-    let pending_dir = state_root
-        .join("workspaces")
-        .join(WS.to_string())
-        .join("pending")
-        .join(&b_hex);
     let mut queued = 0;
     for _ in 0..40 {
-        queued = pending_count(&pending_dir);
+        queued = pending_count(pending_dir);
         if queued >= 1 {
             break;
         }
@@ -203,21 +197,18 @@ async fn never_both_online_coedit_converges_through_host() {
 
     // A disconnects; now neither device is online.
     drop(a_session);
+    doc_a
+}
 
-    // ---- The host restarts on the same state directory. ----
-    drop(host1);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        pending_count(&pending_dir),
-        1,
-        "the queued co-edit must survive the host process dying"
-    );
-
-    let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
-    let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
-    let addr2 = host2.node_addr();
-
-    // ---- B connects for the very first time, to the restarted host. ----
+/// B connects for the very first time (to the restarted host), joins,
+/// and drains its offline co-edit queue through the bridge until both
+/// the queued `Delta` and the `Ready` marker have arrived.
+async fn catch_up_first_connection(
+    addr2: iroh_base::EndpointAddr,
+    user: &TestUser,
+    b: &crate::common::TestDevice,
+    ws: u64,
+) -> AutoCommit {
     let b_client = RelayClient::connect(
         client_endpoint().await,
         addr2,
@@ -228,7 +219,7 @@ async fn never_both_online_coedit_converges_through_host() {
     )
     .await
     .expect("B connect after restart");
-    let b_session = RelayCoeditSession::join(b_client, WS, b.device_pubkey()).unwrap();
+    let b_session = RelayCoeditSession::join(b_client, ws, b.device_pubkey()).unwrap();
 
     // B drains its offline queue through the bridge and converges — even
     // though A and B were never online together and the host restarted.
@@ -260,6 +251,52 @@ async fn never_both_online_coedit_converges_through_host() {
     }
     assert!(got_delta, "B must receive the queued co-edit after restart");
     assert!(got_ready, "B must receive Ready");
+    doc_b
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn never_both_online_coedit_converges_through_host() {
+    const WS: u64 = 22;
+
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+    let members = [a.device_pubkey(), b.device_pubkey()];
+
+    // The host's persistent state dir survives the restart below.
+    let state = tempfile::tempdir().unwrap();
+    let state_root = state.path().to_path_buf();
+
+    // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
+    //      connected. ----
+    let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
+    let addr1 = host1.node_addr();
+
+    // B never connected, so the co-edit must be queued on disk for it.
+    let b_hex = hex::encode(b.device_pubkey());
+    let pending_dir = state_root
+        .join("workspaces")
+        .join(WS.to_string())
+        .join("pending")
+        .join(&b_hex);
+    let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &pending_dir).await;
+
+    // ---- The host restarts on the same state directory. ----
+    drop(host1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        pending_count(&pending_dir),
+        1,
+        "the queued co-edit must survive the host process dying"
+    );
+
+    let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
+    let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
+    let addr2 = host2.node_addr();
+
+    // ---- B connects for the very first time, to the restarted host. ----
+    let mut doc_b = catch_up_first_connection(addr2, &user, &b, WS).await;
 
     assert_eq!(text_of(&doc_b), "offline-note", "B renders A's co-edit");
     assert_eq!(

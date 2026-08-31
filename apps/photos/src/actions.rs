@@ -112,8 +112,32 @@ pub fn register(registry: &mut ActionRegistry) {
 
 /// Encode into the wire form the palette and the on-screen buttons both
 /// dispatch — the one place an action becomes a replayable envelope.
+///
+/// # Panics
+///
+/// Never in practice: [`PhotosAction`] holds only [`Rect01`] and `u8` fields,
+/// which always serialize. `ActionSpec::prompted`'s `build` closure must
+/// return an `EncodedAction` directly rather than a `Result`, so there is no
+/// error path here to propagate to instead.
+#[allow(
+    clippy::expect_used,
+    reason = "PhotosAction always serializes (Rect01/u8 fields only); the \
+              prompted-builder closure this feeds must return EncodedAction \
+              directly, not a Result, so there is nowhere to propagate a failure"
+)]
 pub fn encode(action: &PhotosAction) -> EncodedAction {
     EncodedAction::encode(PHOTOS_ACTION_TYPE, action).expect("PhotosAction is always serializable")
+}
+
+/// `ActionSpec::immediate` for a [`PhotosAction`] that lands `next` outright.
+/// Every field it carries always serializes — see [`encode`].
+#[allow(
+    clippy::expect_used,
+    reason = "PhotosAction always serializes (Rect01/u8 fields only); see encode()"
+)]
+fn immediate_photos_spec(id: &str, label: &str, next: Edits) -> ActionSpec {
+    ActionSpec::immediate(id, label, PHOTOS_ACTION_TYPE, &PhotosAction::set(&next))
+        .expect("PhotosAction is always serializable")
 }
 
 /// Parse the `x,y,w,h` argument a prompted crop collects.
@@ -168,18 +192,13 @@ impl ResourceProvider for PhotosResources {
         // and its facts cannot drift apart.
         let id = resource_id(&image);
 
-        let spec = |id: &str, label: &str, next: Edits| {
-            ActionSpec::immediate(id, label, PHOTOS_ACTION_TYPE, &PhotosAction::set(&next))
-                .expect("PhotosAction is always serializable")
-        };
-
         let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name)
             .with_action(
-                spec("rotate-right", "Rotate right", edits.rotated_right())
+                immediate_photos_spec("rotate-right", "Rotate right", edits.rotated_right())
                     .with_description("Turn the photograph a quarter turn clockwise"),
             )
             .with_action(
-                spec("rotate-left", "Rotate left", edits.rotated_left())
+                immediate_photos_spec("rotate-left", "Rotate left", edits.rotated_left())
                     .with_description("Turn the photograph a quarter turn anticlockwise"),
             )
             .with_action(
@@ -208,7 +227,7 @@ impl ResourceProvider for PhotosResources {
         // never offers an operation that would do nothing.
         if !edits.is_identity() {
             resource = resource.with_action(
-                spec("reset", "Reset edits", Edits::default())
+                immediate_photos_spec("reset", "Reset edits", Edits::default())
                     .with_description("Discard the crop and rotation, returning to the original"),
             );
         }

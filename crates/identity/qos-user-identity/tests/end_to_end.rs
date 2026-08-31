@@ -16,6 +16,16 @@
 //!    verifies the other's cert chains to the same user identity
 //!    — the "matching identities get owner permissions" check.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use qos_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
     WorkspaceDirectory, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
@@ -76,7 +86,7 @@ fn full_enrollment_and_directory_sync_flow() {
     let mut phone_dir = WorkspaceDirectory::new(user.public_key, phone_dev.public_key);
     primary_dir.add_workspace(1, "Notes").unwrap();
     primary_dir
-        .set_member_devices(1, vec![primary_dev.public_key, phone_dev.public_key])
+        .set_member_devices(1, &[primary_dev.public_key, phone_dev.public_key])
         .unwrap();
     phone_dir.add_workspace(2, "Photos").unwrap();
 

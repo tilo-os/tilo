@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -216,7 +216,7 @@ fn draw_button(
         label,
         text_size,
         text_color,
-        transform * Affine::translate((text_x, text_y)),
+        transform.pre_translate(Vec2::new(text_x, text_y)),
         None,
     );
 }
@@ -235,6 +235,10 @@ impl Widget for PermissionPrompt {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
+                )]
                 height: Dimension::length(PROMPT_HEIGHT as f32),
             },
             flex_grow: 0.0,
@@ -307,7 +311,7 @@ impl Widget for PermissionPrompt {
             &self.app_id,
             app_id_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((label_x, label_y)),
+            transform.pre_translate(Vec2::new(label_x, label_y)),
             None,
         );
         text_renderer.draw_text(
@@ -315,7 +319,7 @@ impl Widget for PermissionPrompt {
             &self.capability_label,
             cap_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((label_x, label_y + f64::from(app_id_size) + 4.0)),
+            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_size) + 4.0)),
             None,
         );
 
@@ -330,7 +334,7 @@ impl Widget for PermissionPrompt {
         ];
         for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
             let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
-            let is_hover = self.hover_idx == Some(i as u8) && !is_disabled;
+            let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
             draw_button(
                 scene,
                 transform,
@@ -568,6 +572,11 @@ mod tests {
         let style = taffy.style(node).unwrap();
         // `Dimension` is opaque, so this compares against the canonical
         // constructor rather than pattern-matching a private representation.
-        assert_eq!(style.size.height, Dimension::length(PROMPT_HEIGHT as f32));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
+        )]
+        let expected = Dimension::length(PROMPT_HEIGHT as f32);
+        assert_eq!(style.size.height, expected);
     }
 }

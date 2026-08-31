@@ -239,11 +239,15 @@ impl Canvas {
         }
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
         let a = a.clamp(0.0, 1.0);
-        for k in 0..3 {
-            let dst = f64::from(self.px[i + k]);
-            self.px[i + k] = (f64::from(rgb[k]) * a + dst * (1.0 - a)) as u8;
+        let Some(px) = self.px.get_mut(i..i + 4) else {
+            return;
+        };
+        for (dst, src) in px.iter_mut().zip(rgb) {
+            *dst = (f64::from(src) * a + f64::from(*dst) * (1.0 - a)) as u8;
         }
-        self.px[i + 3] = 255;
+        if let Some(alpha) = self.px.get_mut(i + 3) {
+            *alpha = 255;
+        }
     }
 
     fn vgradient(&mut self, top: [u8; 3], bottom: [u8; 3]) {
@@ -269,7 +273,7 @@ impl Canvas {
         let y1 = (r.y + r.h).ceil() as i32;
         for y in y0..y1 {
             for x in x0..x1 {
-                let a = self.round_coverage(r, rad, f64::from(x) + 0.5, f64::from(y) + 0.5);
+                let a = Self::round_coverage(r, rad, f64::from(x) + 0.5, f64::from(y) + 0.5);
                 self.blend(x, y, rgb, a);
             }
         }
@@ -291,15 +295,15 @@ impl Canvas {
             for x in x0..x1 {
                 let fx = f64::from(x) + 0.5;
                 let fy = f64::from(y) + 0.5;
-                let outer = self.round_coverage(r, rad, fx, fy);
-                let hole = self.round_coverage(inner, (rad - width).max(0.0), fx, fy);
+                let outer = Self::round_coverage(r, rad, fx, fy);
+                let hole = Self::round_coverage(inner, (rad - width).max(0.0), fx, fy);
                 self.blend(x, y, rgb, (outer - hole).max(0.0));
             }
         }
     }
 
     /// Coverage (0..1) of a point inside a rounded rect, softened at edges.
-    fn round_coverage(&self, r: Rectf, rad: f64, px: f64, py: f64) -> f64 {
+    fn round_coverage(r: Rectf, rad: f64, px: f64, py: f64) -> f64 {
         // Distance outside the rounded rectangle (0 inside).
         let dx = (r.x + rad - px).max(px - (r.x + r.w - rad)).max(0.0);
         let dy = (r.y + rad - py).max(py - (r.y + r.h - rad)).max(0.0);

@@ -25,19 +25,35 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod actions;
 pub mod app;
+mod color_picker;
 mod comment_overlay;
 pub mod content;
 pub mod doc;
 pub mod epub;
+mod input_controls;
 pub mod model;
 pub mod paginate;
 pub mod paint;
-pub mod portal;
+mod reader_bubble;
 pub mod reader_theme;
+mod reading_settings;
 pub mod search_provider;
+mod shelf_controls;
 pub mod xhtml;
 
 pub use app::BooksApp;

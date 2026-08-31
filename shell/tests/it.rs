@@ -3,6 +3,16 @@
 // modules. nextest runs each test in its own process, so tests that touch
 // process state keep the isolation separate binaries gave them.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 #[path = "support/mod.rs"]
 mod support;
 

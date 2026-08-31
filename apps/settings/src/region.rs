@@ -321,18 +321,16 @@ impl RegionSettings {
     /// document so foreign keys survive. `existing` is the current file
     /// contents (or empty).
     pub fn to_json_merged(&self, existing: &str) -> String {
-        let mut root: serde_json::Value =
-            serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
-        if !root.is_object() {
-            root = serde_json::json!({});
-        }
-        let obj = root.as_object_mut().expect("just ensured object");
+        let mut obj = match serde_json::from_str::<serde_json::Value>(existing) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
         obj.insert("version".into(), serde_json::json!(1));
         obj.insert(
             "locale".into(),
             serde_json::to_value(self.locale).unwrap_or(serde_json::Value::Null),
         );
-        serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
+        serde_json::to_string_pretty(&obj).unwrap_or_else(|_| "{}".into())
     }
 
     /// Load from the shared path. Returns defaults if the file is absent.
@@ -348,6 +346,12 @@ impl RegionSettings {
 
     /// Persist to the shared path, preserving foreign keys. Creates the
     /// `qos` config directory if needed. Returns the path written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no config directory can be resolved (`no config
+    /// dir`), or if creating the parent directory or writing the JSON file
+    /// fails (permissions, missing/read-only filesystem, etc).
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = Self::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {

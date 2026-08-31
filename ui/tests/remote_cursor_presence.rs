@@ -3,6 +3,16 @@
 //! `PresenceCtx::remote_cursors` — the source the shell's
 //! `RemoteCursorOverlay` actually renders from.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use ui::app::App;
 use ui::collaboration::CollabEvent;
 use ui::presence::user_color;

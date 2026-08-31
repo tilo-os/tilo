@@ -10,6 +10,16 @@
 //!      arrives at C tagged with the id each announced — so the two are
 //!      distinct — and A never receives its own presence back.
 //!
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::thread;
 use std::time::Duration;
 

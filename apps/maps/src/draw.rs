@@ -34,9 +34,9 @@ pub fn hex_color(s: &str) -> Option<Color> {
     if s.len() != 6 {
         return None;
     }
-    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
+    let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
+    let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
     Some(Color::from_rgba8(r, g, b, 255))
 }
 
@@ -90,8 +90,11 @@ pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: 
         return;
     }
     let mut path = BezPath::new();
-    path.move_to(pts[0]);
-    for p in &pts[1..] {
+    let Some((&first, rest)) = pts.split_first() else {
+        return;
+    };
+    path.move_to(first);
+    for p in rest {
         path.line_to(*p);
     }
     let stroke = Stroke::new(width)
@@ -119,8 +122,11 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
         return;
     }
     let mut path = BezPath::new();
-    path.move_to(pts[0]);
-    for p in &pts[1..] {
+    let Some((&first, rest)) = pts.split_first() else {
+        return;
+    };
+    path.move_to(first);
+    for p in rest {
         path.line_to(*p);
     }
     path.close_path();
@@ -143,6 +149,12 @@ pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, 
 }
 
 /// Left-aligned text with top-left at `(x, y)`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
+              other draw helper in this module; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 pub fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -157,6 +169,12 @@ pub fn text(
 }
 
 /// Weighted left-aligned text.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
+              other draw helper in this module; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 pub fn text_w(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -180,6 +198,12 @@ pub fn text_w(
 }
 
 /// Left-aligned text clipped to `max_w` (ellipsised by cosmic-text wrap).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
+              other draw helper in this module; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 pub fn text_clip(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -203,6 +227,12 @@ pub fn text_clip(
 }
 
 /// Right-aligned text with the right edge at `x_right`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
+              other draw helper in this module; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 pub fn text_right(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -225,6 +255,17 @@ pub fn text_right(
 }
 
 /// Centre text horizontally within `[x0, x1]`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tr, t, ...) drawing-context params with every \
+              other draw helper in this module; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "conventional short names for the shared drawing context (t: transform) and the \
+              text baseline geometry (x0, x1, y) used consistently across this module"
+)]
 pub fn text_center(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -259,10 +300,8 @@ pub fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Strin
         }
         out.push(ch);
     }
-    if out.is_empty() {
-        out.push('…');
-    } else {
-        out.push('…');
-    }
+    // The ellipsis is appended either way — even a first character that
+    // already overflows still yields a visible truncation marker.
+    out.push('…');
     out
 }

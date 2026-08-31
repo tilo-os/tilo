@@ -52,6 +52,19 @@ pub enum BackupsRoute {
     Restore,
 }
 
+/// Safe destinations inside the shell-owned workspace lens. Unlike a Studio,
+/// this does not launch a package: the shell binds the request to the
+/// requester's concrete workspace before revealing its governance controls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSettingsRoute {
+    #[default]
+    General,
+    Members,
+    PrivacySecurity,
+    AppsFiles,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
 pub enum ToolIntent {
@@ -73,9 +86,19 @@ pub enum ToolIntent {
         #[serde(default)]
         route: BackupsRoute,
     },
+    WorkspaceSettings {
+        #[serde(default)]
+        route: WorkspaceSettingsRoute,
+    },
 }
 
 impl ToolIntent {
+    /// Check that this intent's contextual data is safe to hand to the shell.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if a route that requires a VPN profile name has none, or the
+    /// supplied profile name is empty, too long, or contains control characters.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Vpn { route, profile } => {
@@ -96,16 +119,19 @@ impl ToolIntent {
                 Ok(())
             }
             Self::Firewall { .. } => Ok(()),
-            Self::Disks { .. } | Self::Backups { .. } => Ok(()),
+            Self::Disks { .. } | Self::Backups { .. } | Self::WorkspaceSettings { .. } => Ok(()),
         }
     }
 
-    pub fn package_id(&self) -> &'static str {
+    /// Installed package for a specialist tool, or `None` for a shell-owned
+    /// contextual surface.
+    pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            Self::Vpn { .. } => "dev.qos.vpn",
-            Self::Firewall { .. } => "dev.qos.firewall",
-            Self::Disks { .. } => "dev.qos.disks",
-            Self::Backups { .. } => "dev.qos.backups",
+            Self::Vpn { .. } => Some("dev.qos.vpn"),
+            Self::Firewall { .. } => Some("dev.qos.firewall"),
+            Self::Disks { .. } => Some("dev.qos.disks"),
+            Self::Backups { .. } => Some("dev.qos.backups"),
+            Self::WorkspaceSettings { .. } => None,
         }
     }
 }
@@ -124,6 +150,12 @@ pub struct ToolReply {
 }
 
 /// Ask the current shell session to open a known tool at a typed context.
+///
+/// # Errors
+///
+/// Returns an error message if `intent` fails [`ToolIntent::validate`], the process is not
+/// attached to a qOS workspace or its tool service, the request is too large to send, or the
+/// shell rejects or fails to answer the request.
 pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
     intent.validate()?;
     let workspace_id = std::env::var("QOS_WORKSPACE_ID")
@@ -151,7 +183,7 @@ pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
     }
     stream
         .write_all(&encoded)
-        .and_then(|_| stream.write_all(b"\n"))
+        .and_then(|()| stream.write_all(b"\n"))
         .map_err(|e| format!("sending tool request: {e}"))?;
 
     let mut reply = String::new();
@@ -223,10 +255,23 @@ mod tests {
         let intent = ToolIntent::Firewall {
             route: FirewallRoute::Rules,
         };
-        assert_eq!(intent.package_id(), "dev.qos.firewall");
+        assert_eq!(intent.package_id(), Some("dev.qos.firewall"));
         let json = serde_json::to_value(intent).unwrap();
         assert_eq!(json["tool"], "firewall");
         assert_eq!(json["route"], "rules");
         assert!(json.get("program").is_none());
+    }
+
+    #[test]
+    fn workspace_settings_is_a_shell_route_not_an_executable() {
+        let intent = ToolIntent::WorkspaceSettings {
+            route: WorkspaceSettingsRoute::PrivacySecurity,
+        };
+        assert_eq!(intent.package_id(), None);
+        let json = serde_json::to_value(intent).unwrap();
+        assert_eq!(json["tool"], "workspace_settings");
+        assert_eq!(json["route"], "privacy_security");
+        assert!(json.get("program").is_none());
+        assert!(json.get("package_id").is_none());
     }
 }

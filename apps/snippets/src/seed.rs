@@ -10,138 +10,201 @@ use crate::model::{Language, Snippet};
 /// Build the starter set of snippets. Ids are fresh each call, so seeding
 /// always produces a distinct library.
 pub fn starter_library() -> Vec<Snippet> {
-    let mk = |title: &str,
-              language: Language,
-              folder: &str,
-              tags: &[&str],
-              description: &str,
-              body: &str,
-              favorite: bool,
-              uses: u32| {
-        let mut s = Snippet::blank(folder);
-        s.title = title.to_string();
-        s.language = language;
-        s.tags = tags.iter().map(std::string::ToString::to_string).collect();
-        s.description = description.to_string();
-        s.body = body.to_string();
-        s.favorite = favorite;
-        s.uses = uses;
-        s
-    };
+    let mut lib = ops_snippets();
+    lib.extend(git_snippets());
+    lib.extend(database_snippets());
+    lib.extend(rust_snippets());
+    lib.extend(container_snippets());
+    lib.extend(writing_snippets());
+    lib
+}
 
+/// One starter snippet, bundled into a struct rather than passed as
+/// positional fields so `mk` doesn't collect an unreadable pile of
+/// same-typed arguments.
+struct SeedSnippet<'a> {
+    title: &'a str,
+    language: Language,
+    folder: &'a str,
+    tags: &'a [&'a str],
+    description: &'a str,
+    body: &'a str,
+    favorite: bool,
+    uses: u32,
+}
+
+fn mk(seed: &SeedSnippet<'_>) -> Snippet {
+    let mut s = Snippet::blank(seed.folder);
+    s.title = seed.title.to_string();
+    s.language = seed.language;
+    s.tags = seed
+        .tags
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    s.description = seed.description.to_string();
+    s.body = seed.body.to_string();
+    s.favorite = seed.favorite;
+    s.uses = seed.uses;
+    s
+}
+
+fn ops_snippets() -> Vec<Snippet> {
     vec![
-        mk(
-            "Restart deployment",
-            Language::Shell,
-            "Ops",
-            &["k8s", "deploy"],
-            "Roll a Kubernetes deployment in the given namespace.",
-            "kubectl -n ${namespace} rollout restart deployment/${deployment}\n\
+        mk(&SeedSnippet {
+            title: "Restart deployment",
+            language: Language::Shell,
+            folder: "Ops",
+            tags: &["k8s", "deploy"],
+            description: "Roll a Kubernetes deployment in the given namespace.",
+            body: "kubectl -n ${namespace} rollout restart deployment/${deployment}\n\
              kubectl -n ${namespace} rollout status deployment/${deployment} --timeout=120s",
-            true,
-            12,
-        ),
-        mk(
-            "Tail container logs",
-            Language::Shell,
-            "Ops",
-            &["k8s", "logs"],
-            "Follow the last 200 log lines from a pod.",
-            "kubectl -n ${namespace} logs -f --tail=200 ${pod}",
-            false,
-            5,
-        ),
-        mk(
-            "Amend last commit",
-            Language::Git,
-            "Git",
-            &["commit", "fixup"],
-            "Reword the most recent commit without changing its contents.",
-            "git commit --amend -m \"${message}\"",
-            true,
-            21,
-        ),
-        mk(
-            "Interactive rebase",
-            Language::Git,
-            "Git",
-            &["rebase", "history"],
-            "Squash and reorder the last N commits onto the base branch.",
-            "git fetch origin\n\
+            favorite: true,
+            uses: 12,
+        }),
+        mk(&SeedSnippet {
+            title: "Tail container logs",
+            language: Language::Shell,
+            folder: "Ops",
+            tags: &["k8s", "logs"],
+            description: "Follow the last 200 log lines from a pod.",
+            body: "kubectl -n ${namespace} logs -f --tail=200 ${pod}",
+            favorite: false,
+            uses: 5,
+        }),
+        mk(&SeedSnippet {
+            title: "Bash strict mode",
+            language: Language::Shell,
+            folder: "Ops",
+            tags: &["bash", "safety"],
+            description: "The header every robust shell script should start with.",
+            body: "#!/usr/bin/env bash\n\
+             set -euo pipefail\n\
+             IFS=$'\\n\\t'",
+            favorite: true,
+            uses: 14,
+        }),
+    ]
+}
+
+fn git_snippets() -> Vec<Snippet> {
+    vec![
+        mk(&SeedSnippet {
+            title: "Amend last commit",
+            language: Language::Git,
+            folder: "Git",
+            tags: &["commit", "fixup"],
+            description: "Reword the most recent commit without changing its contents.",
+            body: "git commit --amend -m \"${message}\"",
+            favorite: true,
+            uses: 21,
+        }),
+        mk(&SeedSnippet {
+            title: "Interactive rebase",
+            language: Language::Git,
+            folder: "Git",
+            tags: &["rebase", "history"],
+            description: "Squash and reorder the last N commits onto the base branch.",
+            body: "git fetch origin\n\
              git rebase -i origin/${base_branch}",
-            false,
-            8,
-        ),
-        mk(
-            "Wipe a branch back to remote",
-            Language::Git,
-            "Git",
-            &["reset", "danger"],
-            "Discard all local changes and match the upstream branch exactly.",
-            "git reset --hard origin/${branch}\n\
+            favorite: false,
+            uses: 8,
+        }),
+        mk(&SeedSnippet {
+            title: "Wipe a branch back to remote",
+            language: Language::Git,
+            folder: "Git",
+            tags: &["reset", "danger"],
+            description: "Discard all local changes and match the upstream branch exactly.",
+            body: "git reset --hard origin/${branch}\n\
              git clean -fd",
-            false,
-            2,
-        ),
-        mk(
-            "Find recent users",
-            Language::Sql,
-            "Database",
-            &["postgres", "query"],
-            "Most recently created accounts, newest first.",
-            "SELECT id, email, created_at\n\
+            favorite: false,
+            uses: 2,
+        }),
+        mk(&SeedSnippet {
+            title: "Pretty git log",
+            language: Language::Git,
+            folder: "Git",
+            tags: &["log", "alias"],
+            description: "Compact one-line graph of recent history.",
+            body: "git log --graph --oneline --decorate -n ${count}",
+            favorite: false,
+            uses: 11,
+        }),
+    ]
+}
+
+fn database_snippets() -> Vec<Snippet> {
+    vec![
+        mk(&SeedSnippet {
+            title: "Find recent users",
+            language: Language::Sql,
+            folder: "Database",
+            tags: &["postgres", "query"],
+            description: "Most recently created accounts, newest first.",
+            body: "SELECT id, email, created_at\n\
              FROM users\n\
              WHERE created_at > now() - interval '${days} days'\n\
              ORDER BY created_at DESC\n\
              LIMIT ${limit};",
-            true,
-            17,
-        ),
-        mk(
-            "Add a non-null column",
-            Language::Sql,
-            "Database",
-            &["postgres", "migration"],
-            "Backfill-safe column add with a default.",
-            "ALTER TABLE ${table}\n\
+            favorite: true,
+            uses: 17,
+        }),
+        mk(&SeedSnippet {
+            title: "Add a non-null column",
+            language: Language::Sql,
+            folder: "Database",
+            tags: &["postgres", "migration"],
+            description: "Backfill-safe column add with a default.",
+            body: "ALTER TABLE ${table}\n\
              ADD COLUMN ${column} ${type} NOT NULL DEFAULT ${default};",
-            false,
-            3,
-        ),
-        mk(
-            "Result-returning main",
-            Language::Rust,
-            "Rust",
-            &["boilerplate"],
-            "A main that bubbles errors up with the ? operator.",
-            "fn main() -> Result<(), Box<dyn std::error::Error>> {\n\
+            favorite: false,
+            uses: 3,
+        }),
+    ]
+}
+
+fn rust_snippets() -> Vec<Snippet> {
+    vec![
+        mk(&SeedSnippet {
+            title: "Result-returning main",
+            language: Language::Rust,
+            folder: "Rust",
+            tags: &["boilerplate"],
+            description: "A main that bubbles errors up with the ? operator.",
+            body: "fn main() -> Result<(), Box<dyn std::error::Error>> {\n\
              \x20   let ${var} = ${value};\n\
              \x20   println!(\"{}\", ${var});\n\
              \x20   Ok(())\n\
              }",
-            true,
-            9,
-        ),
-        mk(
-            "Derive the usual traits",
-            Language::Rust,
-            "Rust",
-            &["derive"],
-            "The everyday derive set for a plain data struct.",
-            "#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\n\
+            favorite: true,
+            uses: 9,
+        }),
+        mk(&SeedSnippet {
+            title: "Derive the usual traits",
+            language: Language::Rust,
+            folder: "Rust",
+            tags: &["derive"],
+            description: "The everyday derive set for a plain data struct.",
+            body: "#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\n\
              pub struct ${Name} {\n\
              \x20   pub ${field}: ${Type},\n\
              }",
-            false,
-            6,
-        ),
-        mk(
-            "Multi-stage Rust build",
-            Language::Dockerfile,
-            "Containers",
-            &["docker", "rust"],
-            "Cargo build in a builder image, copy the binary into a slim runtime.",
-            "FROM rust:1 AS builder\n\
+            favorite: false,
+            uses: 6,
+        }),
+    ]
+}
+
+fn container_snippets() -> Vec<Snippet> {
+    vec![
+        mk(&SeedSnippet {
+            title: "Multi-stage Rust build",
+            language: Language::Dockerfile,
+            folder: "Containers",
+            tags: &["docker", "rust"],
+            description: "Cargo build in a builder image, copy the binary into a slim runtime.",
+            body: "FROM rust:1 AS builder\n\
              WORKDIR /app\n\
              COPY . .\n\
              RUN cargo build --release --bin ${binary}\n\
@@ -149,16 +212,16 @@ pub fn starter_library() -> Vec<Snippet> {
              FROM debian:bookworm-slim\n\
              COPY --from=builder /app/target/release/${binary} /usr/local/bin/${binary}\n\
              ENTRYPOINT [\"/usr/local/bin/${binary}\"]",
-            false,
-            4,
-        ),
-        mk(
-            "Compose service block",
-            Language::Yaml,
-            "Containers",
-            &["docker", "compose"],
-            "A service definition with a healthcheck and a named volume.",
-            "services:\n\
+            favorite: false,
+            uses: 4,
+        }),
+        mk(&SeedSnippet {
+            title: "Compose service block",
+            language: Language::Yaml,
+            folder: "Containers",
+            tags: &["docker", "compose"],
+            description: "A service definition with a healthcheck and a named volume.",
+            body: "services:\n\
              \x20 ${name}:\n\
              \x20   image: ${image}\n\
              \x20   ports:\n\
@@ -166,51 +229,32 @@ pub fn starter_library() -> Vec<Snippet> {
              \x20   environment:\n\
              \x20     - LOG_LEVEL=${log_level}\n\
              \x20   restart: unless-stopped",
-            false,
-            7,
-        ),
-        mk(
-            "Bash strict mode",
-            Language::Shell,
-            "Ops",
-            &["bash", "safety"],
-            "The header every robust shell script should start with.",
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
-             IFS=$'\\n\\t'",
-            true,
-            14,
-        ),
-        mk(
-            "Pretty git log",
-            Language::Git,
-            "Git",
-            &["log", "alias"],
-            "Compact one-line graph of recent history.",
-            "git log --graph --oneline --decorate -n ${count}",
-            false,
-            11,
-        ),
-        mk(
-            "Meeting note",
-            Language::Markdown,
-            "Writing",
-            &["template"],
-            "A reusable meeting-notes scaffold.",
-            "# ${topic}\n\
-             \n\
-             **Date:** ${date}  \n\
-             **Attendees:** ${attendees}\n\
-             \n\
-             ## Decisions\n\
-             - \n\
-             \n\
-             ## Action items\n\
-             - [ ] ${owner}: ",
-            false,
-            1,
-        ),
+            favorite: false,
+            uses: 7,
+        }),
     ]
+}
+
+fn writing_snippets() -> Vec<Snippet> {
+    vec![mk(&SeedSnippet {
+        title: "Meeting note",
+        language: Language::Markdown,
+        folder: "Writing",
+        tags: &["template"],
+        description: "A reusable meeting-notes scaffold.",
+        body: "# ${topic}\n\
+         \n\
+         **Date:** ${date}  \n\
+         **Attendees:** ${attendees}\n\
+         \n\
+         ## Decisions\n\
+         - \n\
+         \n\
+         ## Action items\n\
+         - [ ] ${owner}: ",
+        favorite: false,
+        uses: 1,
+    })]
 }
 
 #[cfg(test)]

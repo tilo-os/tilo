@@ -373,13 +373,16 @@ pub fn mime_for_path(path: &std::path::Path) -> Option<&'static str> {
 }
 
 fn percent_encode_path(path: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(path.len());
     for b in path.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -492,17 +495,26 @@ fn read_into_mirror(
                     return Ok(PostAction::Remove);
                 }
                 Ok(n) => {
-                    if buf.len() + n > MAX_SELECTION_BYTES {
+                    // `Read::read` guarantees `n <= chunk.len()`; treat a violation as a hard
+                    // read failure rather than slicing blind on a client-influenced count.
+                    let Some(read) = chunk.get(..n) else {
+                        tracing::warn!(
+                            target: "shell::selection",
+                            "selection pipe read reported more bytes than the buffer holds"
+                        );
+                        return Ok(PostAction::Remove);
+                    };
+                    if buf.len().saturating_add(n) > MAX_SELECTION_BYTES {
                         overflowed = true;
                         buf.clear();
                     } else {
-                        buf.extend_from_slice(&chunk[..n]);
+                        buf.extend_from_slice(read);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     return Ok(PostAction::Continue);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     tracing::warn!(target: "shell::selection", error = %e, "selection pipe read failed");
                     return Ok(PostAction::Remove);
@@ -548,7 +560,7 @@ impl State {
     }
 
     /// Turn a pending chrome copy into a compositor-owned Wayland selection.
-    fn publish_chrome_selection(&mut self) {
+    fn publish_chrome_selection(&self) {
         for target in [Target::Clipboard, Target::Primary] {
             let action = {
                 let Ok(mut store) = self.selection.store.lock() else {
@@ -637,11 +649,11 @@ impl State {
     }
 
     /// Answer a `receive` on a compositor-owned selection out of the mirror.
-    fn serve_selection(&mut self, target: Target, mime_type: &str, fd: OwnedFd) {
+    fn serve_selection(&self, target: Target, mime_type: &str, fd: OwnedFd) {
+        use std::io::Write;
         if !text_mime_types().iter().any(|m| m == mime_type) {
             return;
         }
-        use std::io::Write;
         let text = mirror_text(&self.selection.store, target).unwrap_or_default();
         let mut file = File::from(fd);
         // Fits the pipe buffer: the kernel takes it regardless of whether the

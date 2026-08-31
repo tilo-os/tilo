@@ -41,37 +41,50 @@ pub fn unix_now() -> f64 {
 }
 
 /// RFC 4226 HOTP value for an 8-byte big-endian counter. Returns the
-/// truncated integer already reduced modulo `10^digits`. The modulus is
-/// computed in `u64` so digit counts up to 10 can't overflow.
-fn hotp(key: &[u8], counter: u64, digits: u32, algorithm: Algorithm) -> u64 {
+/// truncated integer already reduced modulo `10^digits`, or `None` if the
+/// HMAC construction itself failed — which `new_from_slice` never actually
+/// does for HMAC (any key length is valid; the fallible signature only
+/// exists because it comes from the shared `Mac` trait), but propagating
+/// it as an `Option` beats an `expect()` that can panic on secret-derived
+/// input. The modulus is computed in `u64` so digit counts up to 10 can't
+/// overflow.
+fn hotp(key: &[u8], counter: u64, digits: u32, algorithm: Algorithm) -> Option<u64> {
     let msg = counter.to_be_bytes();
     let digest: Vec<u8> = match algorithm {
         Algorithm::Sha1 => {
-            let mut mac = <Hmac<Sha1>>::new_from_slice(key).expect("HMAC accepts any key length");
+            let mut mac = <Hmac<Sha1>>::new_from_slice(key).ok()?;
             mac.update(&msg);
             mac.finalize().into_bytes().to_vec()
         }
         Algorithm::Sha256 => {
-            let mut mac = <Hmac<Sha256>>::new_from_slice(key).expect("HMAC accepts any key length");
+            let mut mac = <Hmac<Sha256>>::new_from_slice(key).ok()?;
             mac.update(&msg);
             mac.finalize().into_bytes().to_vec()
         }
         Algorithm::Sha512 => {
-            let mut mac = <Hmac<Sha512>>::new_from_slice(key).expect("HMAC accepts any key length");
+            let mut mac = <Hmac<Sha512>>::new_from_slice(key).ok()?;
             mac.update(&msg);
             mac.finalize().into_bytes().to_vec()
         }
     };
 
-    // Dynamic truncation (RFC 4226 §5.3): the low nibble of the last
-    // byte selects a 4-byte window; mask the top bit of the first byte
-    // to stay positive.
-    let offset = (digest[digest.len() - 1] & 0x0f) as usize;
-    let bin = ((u32::from(digest[offset]) & 0x7f) << 24)
-        | (u32::from(digest[offset + 1]) << 16)
-        | (u32::from(digest[offset + 2]) << 8)
-        | u32::from(digest[offset + 3]);
-    u64::from(bin) % 10u64.pow(digits)
+    // Dynamic truncation (RFC 4226 §5.3): the low nibble of the last byte
+    // selects a 4-byte window; mask the top bit of the first byte to stay
+    // positive. `digest` is always at least 20 bytes (the shortest HMAC
+    // output, SHA1) and the nibble caps the offset at 15, so the window
+    // always exists — `.get()` plus a zeroed fallback documents that
+    // instead of indexing straight into secret-derived bytes.
+    let last = digest.last().copied().unwrap_or(0);
+    let offset = usize::from(last & 0x0f);
+    let window: [u8; 4] = digest
+        .get(offset..offset + 4)
+        .and_then(|w| w.try_into().ok())
+        .unwrap_or([0; 4]);
+    let bin = ((u32::from(window[0]) & 0x7f) << 24)
+        | (u32::from(window[1]) << 16)
+        | (u32::from(window[2]) << 8)
+        | u32::from(window[3]);
+    Some(u64::from(bin) % 10u64.pow(digits))
 }
 
 /// The TOTP code string for `account` at Unix time `unix_secs`, derived
@@ -91,7 +104,9 @@ pub fn code_at(account: &Account, unix_secs: f64) -> String {
     }
     let period = f64::from(account.period.max(1));
     let counter = (unix_secs / period).floor() as u64;
-    let value = hotp(&key, counter, digits, account.algorithm);
+    let Some(value) = hotp(&key, counter, digits, account.algorithm) else {
+        return "•".repeat(digits as usize);
+    };
     format!("{value:0width$}", width = digits as usize)
 }
 
@@ -165,9 +180,9 @@ mod tests {
     fn rfc6238_sha1_vectors() {
         let a = acc("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", Algorithm::Sha1, 8, 30);
         assert_eq!(code_at(&a, 59.0), "94287082");
-        assert_eq!(code_at(&a, 1111111109.0), "07081804");
-        assert_eq!(code_at(&a, 1234567890.0), "89005924");
-        assert_eq!(code_at(&a, 2000000000.0), "69279037");
+        assert_eq!(code_at(&a, 1_111_111_109.0), "07081804");
+        assert_eq!(code_at(&a, 1_234_567_890.0), "89005924");
+        assert_eq!(code_at(&a, 2_000_000_000.0), "69279037");
     }
 
     #[test]

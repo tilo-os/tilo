@@ -107,7 +107,7 @@ pub fn record_run(
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
 
     // Replacing the record wholesale keeps a re-record atomic: no peer ever
     // observes the new label against the old step list.
@@ -146,11 +146,15 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         let Some(label) = str_at(doc, &rec, "label") else {
             continue;
         };
+        // `filter` above guarantees `ms > 0` by the time the cast below runs,
+        // so the conversion never loses a sign; `checked_add` only guards
+        // the (unreachable for a real timestamp) case of overflowing
+        // `SystemTime`'s own representation.
         let at = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
-            .map_or(UNIX_EPOCH, |ms| {
-                UNIX_EPOCH + Duration::from_millis(ms as u64)
-            });
+            .and_then(|ms| u64::try_from(ms).ok())
+            .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)))
+            .unwrap_or(UNIX_EPOCH);
         let mut steps = Vec::new();
         if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&rec, "steps") {
             for i in 0..doc.length(&list) {
@@ -236,7 +240,7 @@ fn int_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Int(n) => Some(*n),
-            ScalarValue::Uint(n) => Some(*n as i64),
+            ScalarValue::Uint(n) => Some(i64::try_from(*n).unwrap_or(i64::MAX)),
             _ => None,
         },
         _ => None,

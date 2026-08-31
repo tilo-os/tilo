@@ -48,10 +48,15 @@ impl RingBuffer {
     pub fn push_slice(&mut self, bytes: &[u8]) {
         if bytes.len() >= self.capacity {
             self.buf.clear();
-            self.buf.extend(&bytes[bytes.len() - self.capacity..]);
+            let start = bytes.len().saturating_sub(self.capacity);
+            self.buf.extend(bytes.get(start..).unwrap_or(&[]));
             return;
         }
-        let overflow = (self.buf.len() + bytes.len()).saturating_sub(self.capacity);
+        let overflow = self
+            .buf
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(self.capacity);
         for _ in 0..overflow {
             self.buf.pop_front();
         }
@@ -96,7 +101,8 @@ impl PrefetchProgress {
         match self.total {
             Some(total) if total > 0 => {
                 let read = self.bytes_read().min(total);
-                ((read * 100) / total) as u8
+                let permille = read.saturating_mul(100).checked_div(total).unwrap_or(0);
+                u8::try_from(permille).unwrap_or(100)
             }
             _ => {
                 if self.is_done() {
@@ -110,7 +116,10 @@ impl PrefetchProgress {
 
     /// Drain up to `max` buffered bytes from the ring (the most-recent window).
     pub fn drain(&self, max: usize) -> Vec<u8> {
-        self.ring.lock().unwrap().drain(max)
+        self.ring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(max)
     }
 }
 
@@ -124,12 +133,17 @@ impl Prefetcher {
     /// Spawn a thread that reads `reader` in `chunk`-sized reads into a ring of
     /// `ring_capacity` bytes, counting total bytes pulled. `total` is the
     /// source's byte length when known (drives the percentage).
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the prefetch thread could not be spawned (e.g.
+    /// the process is out of resources).
     pub fn spawn(
         mut reader: Box<dyn Read + Send>,
         total: Option<u64>,
         ring_capacity: usize,
         chunk: usize,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let bytes_read = Arc::new(AtomicU64::new(0));
         let done = Arc::new(AtomicBool::new(false));
         let ring = Arc::new(Mutex::new(RingBuffer::new(ring_capacity)));
@@ -148,21 +162,22 @@ impl Prefetcher {
                     match reader.read(&mut scratch) {
                         Ok(0) => break, // EOF
                         Ok(n) => {
-                            ring.lock().unwrap().push_slice(&scratch[..n]);
+                            ring.lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push_slice(scratch.get(..n).unwrap_or(&[]));
                             bytes_read.fetch_add(n as u64, Ordering::Relaxed);
                         }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(_) => break, // treat a read error as end-of-prefetch
                     }
                 }
                 done.store(true, Ordering::Relaxed);
-            })
-            .expect("spawn media-prefetch thread");
+            })?;
 
-        Self {
+        Ok(Self {
             progress,
             _handle: handle,
-        }
+        })
     }
 
     /// A cheap, cloneable handle to this prefetch's progress.
@@ -200,7 +215,7 @@ mod tests {
         let data = vec![7u8; 10 * 1024];
         let total = data.len() as u64;
         let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(data));
-        let pf = Prefetcher::spawn(reader, Some(total), 4096, 1024);
+        let pf = Prefetcher::spawn(reader, Some(total), 4096, 1024).unwrap();
         let progress = pf.progress();
 
         // Wait (bounded) for the background read to finish.
@@ -218,7 +233,7 @@ mod tests {
     #[test]
     fn percent_without_total_is_binary_on_completion() {
         let reader: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(vec![0u8; 256]));
-        let pf = Prefetcher::spawn(reader, None, 128, 64);
+        let pf = Prefetcher::spawn(reader, None, 128, 64).unwrap();
         let progress = pf.progress();
         for _ in 0..200 {
             if progress.is_done() {

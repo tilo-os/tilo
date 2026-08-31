@@ -12,6 +12,16 @@
 //!     -- --ignored --nocapture
 //! ```
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 
 use automerge::{AutoCommit, ROOT};
@@ -42,14 +52,14 @@ impl Driver {
             focus: None,
         }
     }
-    fn send(&mut self, fb: &mut FrameBuilder, ev: WindowEvent) {
+    fn send(&mut self, fb: &mut FrameBuilder, ev: &WindowEvent) {
         let mods = Modifiers::default();
-        fb.dispatch_event(&ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
+        fb.dispatch_event(ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
     }
     fn cursor(&mut self, fb: &mut FrameBuilder, p: Point) {
         self.send(
             fb,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
@@ -58,7 +68,7 @@ impl Driver {
     fn click(&mut self, fb: &mut FrameBuilder) {
         self.send(
             fb,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -66,7 +76,7 @@ impl Driver {
         );
         self.send(
             fb,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Released,
                 button: MouseButton::Left,

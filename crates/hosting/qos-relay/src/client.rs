@@ -36,7 +36,7 @@ pub struct RelayClient {
     /// stream, so the host can begin offline delivery without a QUIC timeout.
     subscriptions: Mutex<HashSet<u64>>,
     /// Kept alive so the connection is not dropped.
-    _connection: Connection,
+    connection: Connection,
     /// Kept alive for the same reason. A `Connection` does **not** keep
     /// its endpoint open: when the last `Endpoint` handle drops, the
     /// socket it owns goes with it and every connection dialled from it
@@ -46,7 +46,7 @@ pub struct RelayClient {
     /// on the wire) and then loses the connection before the first
     /// envelope — a failure that surfaces as an unexplained silence on
     /// `recv`, not as a dial error.
-    _endpoint: Endpoint,
+    endpoint: Endpoint,
     /// The task driving the send/recv split. Dropping this handle detaches the
     /// task, which owns the endpoint until it can finish the stream cleanly.
     /// A `Connection` alone does not keep its endpoint socket open.
@@ -71,7 +71,7 @@ impl Drop for RelayClient {
             graceful = false;
         }
         if !graceful {
-            self._connection
+            self.connection
                 .close(0u32.into(), b"client cleanup queue saturated");
         }
     }
@@ -105,6 +105,13 @@ impl RelayClient {
     ///
     /// The returned client owns `endpoint` and holds it open for its own
     /// lifetime, so a caller may pass its only handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the dial or bi-stream open fails, the
+    /// handshake frames can't be encoded/decoded or fail to write/read,
+    /// or the server's `HelloAck` fails auth verification (wrong user
+    /// chain, bad signature, revoked, or stale nonce).
     pub async fn connect(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -127,6 +134,13 @@ impl RelayClient {
     /// Connect to a host whose Iroh endpoint address was obtained from a
     /// trusted workspace configuration/invite. The host may be provider-owned
     /// and therefore chain to a different user root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] if the dial or bi-stream open fails, the
+    /// handshake frames can't be encoded/decoded or fail to write/read,
+    /// or the server's `HelloAck` fails auth verification (bad
+    /// signature, revoked, or stale nonce).
     pub async fn connect_to_pinned_host(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -181,9 +195,9 @@ impl RelayClient {
         };
 
         let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
-        let ack2_bytes =
+        let own_ack2_bytes =
             postcard::to_allocvec(&ack2).map_err(|e| ClientError::Codec(e.to_string()))?;
-        write_frame(&mut send, &ack2_bytes).await?;
+        write_frame(&mut send, &own_ack2_bytes).await?;
 
         // Split into pump halves.
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
@@ -218,8 +232,7 @@ impl RelayClient {
                             Ok(Some(env)) => {
                                 if inbound_tx.send(env).await.is_err() { break; }
                             }
-                            Ok(None) => break,
-                            Err(_) => break,
+                            Ok(None) | Err(_) => break,
                         }
                     }
                 }
@@ -231,14 +244,19 @@ impl RelayClient {
             outbound: outbound_tx,
             inbound: Arc::new(AsyncMutex::new(inbound_rx)),
             subscriptions: Mutex::new(HashSet::new()),
-            _connection: conn,
-            _endpoint: endpoint,
+            connection: conn,
+            endpoint,
             _pump: pump,
         })
     }
 
     /// Convenience: send an envelope.
-    pub fn send(&self, env: Envelope) -> Result<(), Envelope> {
+    ///
+    /// # Errors
+    ///
+    /// Returns the envelope back to the caller, boxed, if the outbound
+    /// channel to the pump task is closed (the connection is gone).
+    pub fn send(&self, env: Envelope) -> Result<(), Box<Envelope>> {
         let subscription_update = match &env {
             Envelope::Subscribe { workspace_id } => Some((*workspace_id, true)),
             Envelope::Unsubscribe { workspace_id } => Some((*workspace_id, false)),
@@ -246,7 +264,7 @@ impl RelayClient {
         };
         self.outbound
             .try_send(env)
-            .map_err(tokio::sync::mpsc::error::TrySendError::into_inner)?;
+            .map_err(|e| Box::new(e.into_inner()))?;
         if let Some((workspace_id, subscribing)) = subscription_update
             && let Ok(mut subscriptions) = self.subscriptions.lock()
         {
@@ -280,8 +298,8 @@ impl RelayClient {
     /// daemon's federation dial loop passes the relay's own endpoint — must
     /// drop the handle instead.
     pub async fn close(self) {
-        self._connection.close(0u32.into(), b"client closed");
-        self._connection.closed().await;
-        self._endpoint.close().await;
+        self.connection.close(0u32.into(), b"client closed");
+        self.connection.closed().await;
+        self.endpoint.close().await;
     }
 }

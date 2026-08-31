@@ -42,7 +42,10 @@ pub trait Presenter: Send {
 }
 
 enum PresentMsg {
-    Frame { scene: Scene, output: OutputId },
+    // Boxed so the message is no bigger than its next-largest variant — a `Scene` inline here
+    // would size every `Resize`/`Dpms`/`Stop` message (and the channel's internal buffer slot)
+    // to match it.
+    Frame { scene: Box<Scene>, output: OutputId },
     Resize((u32, u32)),
     Dpms(bool),
     Stop,
@@ -79,12 +82,12 @@ impl PresentPipe {
     pub fn spawn(mut presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
-        let presented = Arc::new(AtomicU64::new(0));
+        let presented_frames = Arc::new(AtomicU64::new(0));
         let thread_inflight = inflight.clone();
-        let thread_presented = presented.clone();
+        let thread_presented = presented_frames.clone();
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
-        let handle = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("qos-present".to_string())
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
@@ -104,15 +107,31 @@ impl PresentPipe {
                         PresentMsg::Stop => break,
                     }
                 }
-            })
-            .expect("spawn qos-present thread");
+            });
+        // If the OS refuses to hand over a thread, `rx` (moved into the closure above) is
+        // dropped right here along with the rest of the unspawned closure — so every future
+        // `submit`/`resize`/`set_dpms` sees a channel with no receiver and reports failure,
+        // exactly the "lost display" path this pipe already has to handle, rather than a panic
+        // that would take the whole session down with it.
+        let handle = match spawned {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(
+                    target: "shell::compositor::present",
+                    error = %e,
+                    "could not start the qos-present render thread; presentation stays unavailable"
+                );
+                finished.store(true, Ordering::Release);
+                None
+            }
+        };
         Self {
             tx,
             inflight,
-            presented,
+            presented: presented_frames,
             backpressured: 0,
             finished,
-            handle: Some(handle),
+            handle,
         }
     }
 
@@ -123,7 +142,7 @@ impl PresentPipe {
 
     /// Count a tick on which the paint gate declined for lack of capacity.
     pub fn note_backpressure(&mut self) {
-        self.backpressured += 1;
+        self.backpressured = self.backpressured.saturating_add(1);
     }
 
     pub fn backpressured(&self) -> u64 {
@@ -144,7 +163,14 @@ impl PresentPipe {
     /// thread has gone away — fatal for presentation but not the compositor: the caller logs it and keeps serving clients.
     pub fn submit(&mut self, scene: Scene, output: OutputId) -> bool {
         self.inflight.fetch_add(1, Ordering::AcqRel);
-        if self.tx.send(PresentMsg::Frame { scene, output }).is_err() {
+        if self
+            .tx
+            .send(PresentMsg::Frame {
+                scene: Box::new(scene),
+                output,
+            })
+            .is_err()
+        {
             self.inflight.fetch_sub(1, Ordering::AcqRel);
             return false;
         }
@@ -174,7 +200,11 @@ impl PresentPipe {
             return;
         };
         let _ = self.tx.send(PresentMsg::Stop);
-        let deadline = Instant::now() + grace;
+        // An unrepresentable deadline degrades to "already due" — the loop below then gives up
+        // on its very first check rather than panicking on the addition.
+        let deadline = Instant::now()
+            .checked_add(grace)
+            .unwrap_or_else(Instant::now);
         while !self.finished.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
                 eprintln!(
@@ -252,7 +282,9 @@ mod tests {
     // waits on it — the other order still works but pays `SHUTDOWN_GRACE` on every teardown instead of exercising the clean path.
 
     fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .unwrap_or_else(std::time::Instant::now);
         while std::time::Instant::now() < deadline {
             if cond() {
                 return;
@@ -343,7 +375,7 @@ mod tests {
         );
         drop(held);
         wait_until(
-            || pipe.presented() as usize == accepted,
+            || usize::try_from(pipe.presented()).is_ok_and(|presented| presented == accepted),
             "the queued frames to drain",
         );
         assert!(
@@ -429,7 +461,10 @@ mod tests {
         );
         drop(held);
         wait_until(
-            || wakeups.load(Ordering::Acquire) as usize == accepted,
+            || {
+                usize::try_from(wakeups.load(Ordering::Acquire))
+                    .is_ok_and(|wakeups| wakeups == accepted)
+            },
             "one wakeup per retired frame",
         );
         assert!(

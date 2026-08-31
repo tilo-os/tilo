@@ -62,7 +62,7 @@ pub const MAX_COPIES: u32 = 100;
 pub const FALLBACK_TITLE: &str = "Document";
 
 /// How long a `PreparePrint` token stays redeemable — a dialog the user configured and walked away from shouldn't leave a live capability behind.
-const TOKEN_TTL: Duration = Duration::from_mins(5);
+const TOKEN_TTL: Duration = Duration::from_secs(300);
 
 /// Outstanding tokens held at once — bounds memory an app can pin by looping `PreparePrint` without ever printing; oldest is evicted past this.
 const MAX_OUTSTANDING_TOKENS: usize = 32;
@@ -92,6 +92,12 @@ pub trait PrintSpooler: Send + Sync {
     fn destinations(&self) -> Vec<String>;
 
     /// Submit `job`. `Ok` carries the spooler's job id for the log.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when `job.destination` is invalid, `job.document` is
+    /// empty, the print system is unavailable, or the underlying spool
+    /// command reports failure.
     fn submit(&self, job: PrintJobRequest) -> Result<String, String>;
 }
 
@@ -102,11 +108,13 @@ pub struct PrintSpoolerHandle {
 }
 
 impl PrintSpoolerHandle {
+    #[must_use]
     pub fn new(inner: Arc<dyn PrintSpooler>) -> Self {
         Self { inner }
     }
 
     /// The real thing: `lp` against the local CUPS.
+    #[must_use]
     pub fn cups() -> Self {
         Self {
             inner: Arc::new(LpSpooler),
@@ -114,6 +122,7 @@ impl PrintSpoolerHandle {
     }
 
     /// A handle with no print system behind it — every submission fails and the destination list is empty, surfacing as "no printers".
+    #[must_use]
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullPrintSpooler),
@@ -124,6 +133,12 @@ impl PrintSpoolerHandle {
         self.inner.destinations()
     }
 
+    /// Submit `job` to the wrapped spooler.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` under the same conditions as the wrapped
+    /// [`PrintSpooler::submit`] implementation.
     pub fn submit(&self, job: PrintJobRequest) -> Result<String, String> {
         self.inner.submit(job)
     }
@@ -380,7 +395,11 @@ fn random_token() -> u32 {
 impl PrintBackend {
     /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
-    async fn version(&self) -> u32 {
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro dispatches D-Bus property getters as instance methods, even though this constant value doesn't depend on self"
+    )]
+    fn version(&self) -> u32 {
         PRINT_VERSION
     }
 
@@ -392,6 +411,11 @@ impl PrintBackend {
     /// network. An app that only ever calls `PreparePrint` would collect all
     /// of that without a prompt firing if submission were the only gate.
     /// Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.PreparePrint D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+    )]
     async fn prepare_print(
         &self,
         #[zbus(signal_context)] _sig: SignalContext<'_>,
@@ -447,6 +471,11 @@ impl PrintBackend {
 
     /// `Print` — hand over the bytes. `fd` is a descriptor the app chose;
     /// treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.Print D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+    )]
     async fn print(
         &self,
         #[zbus(signal_context)] _sig: SignalContext<'_>,
@@ -542,6 +571,10 @@ impl PrintBackend {
 /// socket with no writer blocks forever; a character device can be
 /// infinite), seek to the start (the app may have left the offset at
 /// EOF), and read one byte past the cap so an oversize document is *detected*, not silently truncated.
+///
+/// # Errors
+///
+/// Returns an error if the descriptor is not a regular file, exceeds the size limit, or cannot be read.
 pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, String> {
     let std_fd: std::os::fd::OwnedFd = fd.into();
     let mut file = std::fs::File::from(std_fd);
@@ -563,7 +596,7 @@ pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, Stri
     let _ = file.seek(SeekFrom::Start(0));
 
     let mut buf = Vec::new();
-    file.take(MAX_SPOOL_BYTES as u64 + 1)
+    file.take((MAX_SPOOL_BYTES as u64).saturating_add(1))
         .read_to_end(&mut buf)
         .map_err(|e| format!("reading document: {e}"))?;
     if buf.len() > MAX_SPOOL_BYTES {
@@ -593,7 +626,7 @@ pub fn sanitise_title(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.chars() {
         let safe = if is_unsafe_title_char(ch) { ' ' } else { ch };
-        if out.len() + safe.len_utf8() > MAX_TITLE_BYTES {
+        if out.len().saturating_add(safe.len_utf8()) > MAX_TITLE_BYTES {
             break;
         }
         out.push(safe);

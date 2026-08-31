@@ -9,17 +9,17 @@
 //! Layers:
 //! - [`model`]        — connection profiles, schema types, query results.
 //! - [`engine`]       — the `SQLite` driver, the [`engine::LiveEngine`] enum that
-//!                      unifies all three engines, and [`engine::open_engine`].
+//!   unifies all three engines, and [`engine::open_engine`].
 //! - [`engine_pg`]    — the `PostgreSQL` driver: introspection + query execution.
 //! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
 //! - [`worker`]    — the background thread that owns the live engine and runs
-//!                   every blocking connect/introspect/query off the UI thread.
+//!   every blocking connect/introspect/query off the UI thread.
 //! - [`actions`]   — the [`actions::DbAction`] CRUD of the saved-connection list,
-//!                   routed through [`ui::ActionHost`] (collaborative doc state).
+//!   routed through [`ui::ActionHost`] (collaborative doc state).
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
-//! - [`editor`]    — the syntax-highlighting SQL editor widget.
+//! - [`ui::CodeEditor`] — the shared CRDT-backed SQL editing surface.
 //! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
 //! - [`schema_tree`] — the database → schema → table → column browser.
 //! - [`structure`] — the columns/keys/indexes inspector.
@@ -44,12 +44,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod actions;
 pub mod app;
 pub mod connect_modal;
 pub mod doc;
-pub mod editor;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
@@ -59,7 +70,6 @@ pub mod sample;
 pub mod schema_tree;
 pub mod session;
 pub mod structure;
-pub mod syntax;
 pub mod theme_ext;
 pub mod worker;
 

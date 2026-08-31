@@ -2,6 +2,8 @@
 name = "ebook"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "ebook"
@@ -26,7 +28,6 @@ qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

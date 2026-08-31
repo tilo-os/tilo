@@ -39,6 +39,19 @@
 //! [`output`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -100,6 +113,10 @@ pub fn package_id() -> String {
 
 /// Print to stdout if it's a terminal, else write unstyled — small enough
 /// to skip the `output` module for simple hello-world code paths.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error if the write to stdout fails.
 pub fn println_terminal_aware(text: &str) -> io::Result<()> {
     let mut out = io::stdout().lock();
     let _ = out.is_terminal(); // ensure the trait is imported at call sites
@@ -107,6 +124,11 @@ pub fn println_terminal_aware(text: &str) -> io::Result<()> {
 }
 
 /// Like `fs::create_dir_all`, but the error names the offending path.
+///
+/// # Errors
+///
+/// Returns an error naming `dir` if the directory (and its ancestors)
+/// cannot be created.
 pub fn ensure_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .map_err(|e| anyhow::anyhow!("creating directory {}: {e}", dir.display()))

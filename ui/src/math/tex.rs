@@ -33,148 +33,178 @@ pub fn parse_tex(source: &str) -> ParseOutput {
 /// Source-mode formulas retain their original bytes; this serializer is only
 /// used once the structured editor has made a semantic change.
 pub fn serialize_tex(expr: &MathExpr) -> String {
-    fn row(nodes: &Row, out: &mut String) {
-        for node in nodes {
-            match node {
-                Node::Char(ch) => out.push(*ch),
-                Node::Frac { num, den } => {
-                    out.push_str(r"\frac{");
-                    row(num, out);
-                    out.push_str("}{");
-                    row(den, out);
-                    out.push('}');
-                }
-                Node::Sup { exp } => {
-                    out.push_str("^{");
-                    row(exp, out);
-                    out.push('}');
-                }
-                Node::Sub { sub } => {
-                    out.push_str("_{");
-                    row(sub, out);
-                    out.push('}');
-                }
-                Node::SubSup { sub, sup } => {
-                    out.push_str("_{");
-                    row(sub, out);
-                    out.push_str("}^{");
-                    row(sup, out);
-                    out.push('}');
-                }
-                Node::Sqrt { index, radicand } => {
-                    out.push_str(r"\sqrt");
-                    if let Some(index) = index {
-                        out.push('[');
-                        row(index, out);
-                        out.push(']');
-                    }
-                    out.push('{');
-                    row(radicand, out);
-                    out.push('}');
-                }
-                Node::Paren { body } => {
-                    out.push_str(r"\left(");
-                    row(body, out);
-                    out.push_str(r"\right)");
-                }
-                Node::Delimited { open, close, body } => {
-                    out.push_str(r"\left");
-                    write_delimiter(*open, out);
-                    row(body, out);
-                    out.push_str(r"\right");
-                    write_delimiter(*close, out);
-                }
-                Node::Func { name, arg } => {
-                    if matches!(name.as_str(), "sin" | "cos" | "tan" | "log" | "ln" | "exp") {
-                        out.push('\\');
-                        out.push_str(name);
-                    } else {
-                        out.push_str(r"\operatorname{");
-                        out.push_str(name);
-                        out.push('}');
-                    }
-                    out.push_str(r"\left(");
-                    row(arg, out);
-                    out.push_str(r"\right)");
-                }
-                Node::Text(text) => {
-                    out.push_str(r"\text{");
-                    out.push_str(
-                        &text
-                            .replace('\\', r"\textbackslash ")
-                            .replace('{', r"\{")
-                            .replace('}', r"\}"),
-                    );
-                    out.push('}');
-                }
-                Node::Accent { base, mark, over } => {
-                    let command = match (*mark, *over) {
-                        ('ˆ' | '^', true) => "hat",
-                        ('˜' | '~', true) => "widetilde",
-                        ('→', true) => "overrightarrow",
-                        ('←', true) => "overleftarrow",
-                        ('˙', true) => "dot",
-                        ('¨', true) => "ddot",
-                        ('_', false) => "underline",
-                        _ => "overline",
-                    };
-                    out.push('\\');
-                    out.push_str(command);
-                    out.push('{');
-                    row(base, out);
-                    out.push('}');
-                }
-                Node::UnderOver { base, under, over } => {
-                    row(base, out);
-                    if let Some(under) = under {
-                        out.push_str("_{");
-                        row(under, out);
-                        out.push('}');
-                    }
-                    if let Some(over) = over {
-                        out.push_str("^{");
-                        row(over, out);
-                        out.push('}');
-                    }
-                }
-                Node::Table { rows } => {
-                    out.push_str(r"\begin{matrix}");
-                    for (row_index, cells) in rows.iter().enumerate() {
-                        if row_index > 0 {
-                            out.push_str(r"\\");
-                        }
-                        for (cell_index, cell) in cells.iter().enumerate() {
-                            if cell_index > 0 {
-                                out.push('&');
-                            }
-                            row(cell, out);
-                        }
-                    }
-                    out.push_str(r"\end{matrix}");
-                }
-            }
-        }
-    }
-
-    fn write_delimiter(delimiter: Option<char>, out: &mut String) {
-        match delimiter {
-            None => out.push('.'),
-            Some('{') => out.push_str(r"\{"),
-            Some('}') => out.push_str(r"\}"),
-            Some('⟨') => out.push_str(r"\langle"),
-            Some('⟩') => out.push_str(r"\rangle"),
-            Some('⌊') => out.push_str(r"\lfloor"),
-            Some('⌋') => out.push_str(r"\rfloor"),
-            Some('⌈') => out.push_str(r"\lceil"),
-            Some('⌉') => out.push_str(r"\rceil"),
-            Some('‖') => out.push_str(r"\Vert"),
-            Some(ch) => out.push(ch),
-        }
-    }
-
     let mut out = String::new();
-    row(&expr.root, &mut out);
+    serialize_row(&expr.root, &mut out);
     out
+}
+
+fn serialize_row(nodes: &Row, out: &mut String) {
+    for node in nodes {
+        serialize_node(node, out);
+    }
+}
+
+fn serialize_node(node: &Node, out: &mut String) {
+    match node {
+        Node::Char(ch) => out.push(*ch),
+        Node::Frac { num, den } => serialize_frac(num, den, out),
+        Node::Sup { exp } => serialize_sup(exp, out),
+        Node::Sub { sub } => serialize_sub(sub, out),
+        Node::SubSup { sub, sup } => serialize_subsup(sub, sup, out),
+        Node::Sqrt { index, radicand } => serialize_sqrt(index.as_ref(), radicand, out),
+        Node::Paren { body } => serialize_paren(body, out),
+        Node::Delimited { open, close, body } => serialize_delimited(*open, *close, body, out),
+        Node::Func { name, arg } => serialize_func(name, arg, out),
+        Node::Text(text) => serialize_text(text, out),
+        Node::Accent { base, mark, over } => serialize_accent(base, *mark, *over, out),
+        Node::UnderOver { base, under, over } => {
+            serialize_under_over(base, under.as_ref(), over.as_ref(), out);
+        }
+        Node::Table { rows } => serialize_table(rows, out),
+    }
+}
+
+fn serialize_frac(num: &Row, den: &Row, out: &mut String) {
+    out.push_str(r"\frac{");
+    serialize_row(num, out);
+    out.push_str("}{");
+    serialize_row(den, out);
+    out.push('}');
+}
+
+fn serialize_sup(exp: &Row, out: &mut String) {
+    out.push_str("^{");
+    serialize_row(exp, out);
+    out.push('}');
+}
+
+fn serialize_sub(sub: &Row, out: &mut String) {
+    out.push_str("_{");
+    serialize_row(sub, out);
+    out.push('}');
+}
+
+fn serialize_subsup(sub: &Row, sup: &Row, out: &mut String) {
+    out.push_str("_{");
+    serialize_row(sub, out);
+    out.push_str("}^{");
+    serialize_row(sup, out);
+    out.push('}');
+}
+
+fn serialize_sqrt(index: Option<&Row>, radicand: &Row, out: &mut String) {
+    out.push_str(r"\sqrt");
+    if let Some(index) = index {
+        out.push('[');
+        serialize_row(index, out);
+        out.push(']');
+    }
+    out.push('{');
+    serialize_row(radicand, out);
+    out.push('}');
+}
+
+fn serialize_paren(body: &Row, out: &mut String) {
+    out.push_str(r"\left(");
+    serialize_row(body, out);
+    out.push_str(r"\right)");
+}
+
+fn serialize_delimited(open: Option<char>, close: Option<char>, body: &Row, out: &mut String) {
+    out.push_str(r"\left");
+    write_delimiter(open, out);
+    serialize_row(body, out);
+    out.push_str(r"\right");
+    write_delimiter(close, out);
+}
+
+fn serialize_func(name: &str, arg: &Row, out: &mut String) {
+    if matches!(name, "sin" | "cos" | "tan" | "log" | "ln" | "exp") {
+        out.push('\\');
+        out.push_str(name);
+    } else {
+        out.push_str(r"\operatorname{");
+        out.push_str(name);
+        out.push('}');
+    }
+    out.push_str(r"\left(");
+    serialize_row(arg, out);
+    out.push_str(r"\right)");
+}
+
+fn serialize_text(text: &str, out: &mut String) {
+    out.push_str(r"\text{");
+    out.push_str(
+        &text
+            .replace('\\', r"\textbackslash ")
+            .replace('{', r"\{")
+            .replace('}', r"\}"),
+    );
+    out.push('}');
+}
+
+fn serialize_accent(base: &Row, mark: char, over: bool, out: &mut String) {
+    let command = match (mark, over) {
+        ('ˆ' | '^', true) => "hat",
+        ('˜' | '~', true) => "widetilde",
+        ('→', true) => "overrightarrow",
+        ('←', true) => "overleftarrow",
+        ('˙', true) => "dot",
+        ('¨', true) => "ddot",
+        ('_', false) => "underline",
+        _ => "overline",
+    };
+    out.push('\\');
+    out.push_str(command);
+    out.push('{');
+    serialize_row(base, out);
+    out.push('}');
+}
+
+fn serialize_under_over(base: &Row, under: Option<&Row>, over: Option<&Row>, out: &mut String) {
+    serialize_row(base, out);
+    if let Some(under) = under {
+        out.push_str("_{");
+        serialize_row(under, out);
+        out.push('}');
+    }
+    if let Some(over) = over {
+        out.push_str("^{");
+        serialize_row(over, out);
+        out.push('}');
+    }
+}
+
+fn serialize_table(rows: &[Vec<Row>], out: &mut String) {
+    out.push_str(r"\begin{matrix}");
+    for (row_index, cells) in rows.iter().enumerate() {
+        if row_index > 0 {
+            out.push_str(r"\\");
+        }
+        for (cell_index, cell) in cells.iter().enumerate() {
+            if cell_index > 0 {
+                out.push('&');
+            }
+            serialize_row(cell, out);
+        }
+    }
+    out.push_str(r"\end{matrix}");
+}
+
+fn write_delimiter(delimiter: Option<char>, out: &mut String) {
+    match delimiter {
+        None => out.push('.'),
+        Some('{') => out.push_str(r"\{"),
+        Some('}') => out.push_str(r"\}"),
+        Some('⟨') => out.push_str(r"\langle"),
+        Some('⟩') => out.push_str(r"\rangle"),
+        Some('⌊') => out.push_str(r"\lfloor"),
+        Some('⌋') => out.push_str(r"\rfloor"),
+        Some('⌈') => out.push_str(r"\lceil"),
+        Some('⌉') => out.push_str(r"\rceil"),
+        Some('‖') => out.push_str(r"\Vert"),
+        Some(ch) => out.push(ch),
+    }
 }
 
 struct TexParser {
@@ -198,6 +228,10 @@ impl TexParser {
         self.chars.get(self.pos).copied()
     }
 
+    fn advance(&mut self) {
+        self.pos = self.pos.saturating_add(1);
+    }
+
     fn parse_row(&mut self, end: Option<char>, stop_on_right: bool) -> Row {
         let mut row = Vec::new();
         while let Some(ch) = self.peek() {
@@ -205,17 +239,17 @@ impl TexParser {
                 break;
             }
             if ch.is_whitespace() {
-                self.pos += 1;
+                self.advance();
                 continue;
             }
             if ch == '}' || ch == ']' {
                 self.error("unmatched closing delimiter");
-                self.pos += 1;
+                self.advance();
                 continue;
             }
             if ch == '^' || ch == '_' {
                 self.error("script has no base");
-                self.pos += 1;
+                self.advance();
                 let _ = self.parse_argument();
                 continue;
             }
@@ -231,11 +265,11 @@ impl TexParser {
             Some('{') => self.parse_group(),
             Some('\\') => self.parse_command(),
             Some('~') => {
-                self.pos += 1;
+                self.advance();
                 vec![Node::Char('\u{00a0}')]
             }
             Some(ch) => {
-                self.pos += 1;
+                self.advance();
                 vec![Node::Char(normalize_ascii_operator(ch))]
             }
             None => Vec::new(),
@@ -246,10 +280,10 @@ impl TexParser {
         if self.peek() != Some('{') {
             return self.parse_atom();
         }
-        self.pos += 1;
+        self.advance();
         let row = self.parse_row(Some('}'), false);
         if self.peek() == Some('}') {
-            self.pos += 1;
+            self.advance();
         } else {
             self.error("unclosed group");
         }
@@ -261,10 +295,10 @@ impl TexParser {
         if self.peek() != Some('[') {
             return None;
         }
-        self.pos += 1;
+        self.advance();
         let row = self.parse_row(Some(']'), false);
         if self.peek() == Some(']') {
-            self.pos += 1;
+            self.advance();
         } else {
             self.error("unclosed optional argument");
         }
@@ -282,19 +316,31 @@ impl TexParser {
 
     fn parse_command(&mut self) -> Row {
         let command_start = self.pos;
-        self.pos += 1;
+        self.advance();
         if self.peek() == Some('\\') {
-            self.pos += 1;
+            self.advance();
             return Vec::new();
         }
         let name = self.read_command_name();
         if name.is_empty() {
             return self.peek().map_or_else(Vec::new, |ch| {
-                self.pos += 1;
+                self.advance();
                 vec![Node::Char(ch)]
             });
         }
-        match name.as_str() {
+        if let Some(row) = self.parse_structural_command(&name) {
+            return row;
+        }
+        if let Some(row) = self.parse_accent_or_layout_command(&name) {
+            return row;
+        }
+        self.parse_operator_or_symbol_command(name, command_start)
+    }
+
+    /// Commands that build a structural node: fractions, roots, delimited
+    /// groups, text and alphabet-styling commands.
+    fn parse_structural_command(&mut self, name: &str) -> Option<Row> {
+        Some(match name {
             "frac" | "dfrac" | "tfrac" => vec![Node::Frac {
                 num: self.parse_argument(),
                 den: self.parse_argument(),
@@ -330,6 +376,14 @@ impl TexParser {
             "mathfrak" => map_row_chars(self.parse_argument(), MathAlphabet::Fraktur),
             "mathtt" => map_row_chars(self.parse_argument(), MathAlphabet::Monospace),
             "mathit" => self.parse_argument(),
+            _ => return None,
+        })
+    }
+
+    /// Accent commands, over/under decorations, environments and the
+    /// limit-mode toggles that change how a following script attaches.
+    fn parse_accent_or_layout_command(&mut self, name: &str) -> Option<Row> {
+        Some(match name {
             "overline" | "bar" => self.accent('¯', true),
             "underline" => self.accent('_', false),
             "hat" | "widehat" => self.accent('ˆ', true),
@@ -383,6 +437,15 @@ impl TexParser {
                 };
                 vec![Node::Text(argument)]
             }
+            _ => return None,
+        })
+    }
+
+    /// Big operators, named functions, spacing/punctuation commands and the
+    /// final fallback: a known TeX symbol, or an unsupported command
+    /// preserved verbatim with a diagnostic.
+    fn parse_operator_or_symbol_command(&mut self, name: String, command_start: usize) -> Row {
+        match name.as_str() {
             "sum" | "prod" | "coprod" | "bigcup" | "bigcap" | "bigvee" | "bigwedge" | "lim"
             | "limsup" | "liminf" | "max" | "min" | "sup" | "inf" => {
                 let base = operator_row(&name);
@@ -431,7 +494,7 @@ impl TexParser {
         let open = self.read_delimiter();
         let body = self.parse_row(None, true);
         let close = if self.command_ahead("right") {
-            self.pos += 1;
+            self.advance();
             let _ = self.read_command_name();
             self.skip_space();
             self.read_delimiter()
@@ -444,7 +507,7 @@ impl TexParser {
 
     fn read_delimiter(&mut self) -> Option<char> {
         if self.peek() == Some('\\') {
-            self.pos += 1;
+            self.advance();
             let name = self.read_command_name();
             return match name.as_str() {
                 "langle" => Some('⟨'),
@@ -461,7 +524,7 @@ impl TexParser {
             };
         }
         let ch = self.peek()?;
-        self.pos += 1;
+        self.advance();
         (ch != '.').then_some(ch)
     }
 
@@ -473,16 +536,16 @@ impl TexParser {
             self.skip_space();
             match self.peek() {
                 Some('_') if sub.is_none() => {
-                    self.pos += 1;
+                    self.advance();
                     sub = Some(self.parse_argument());
                 }
                 Some('^') if sup.is_none() => {
-                    self.pos += 1;
+                    self.advance();
                     sup = Some(self.parse_argument());
                 }
                 Some('\'') => {
-                    self.pos += 1;
-                    primes += 1;
+                    self.advance();
+                    primes = primes.saturating_add(1);
                 }
                 _ => break,
             }
@@ -517,12 +580,14 @@ impl TexParser {
         {
             row.extend(base);
         }
-        row.push(match (sub, sup) {
-            (Some(sub), Some(sup)) => Node::SubSup { sub, sup },
-            (Some(sub), None) => Node::Sub { sub },
-            (None, Some(exp)) => Node::Sup { exp },
-            (None, None) => unreachable!(),
-        });
+        match (sub, sup) {
+            (Some(sub), Some(sup)) => row.push(Node::SubSup { sub, sup }),
+            (Some(sub), None) => row.push(Node::Sub { sub }),
+            (None, Some(exp)) => row.push(Node::Sup { exp }),
+            // Unreachable: the early return above guarantees at least one of
+            // `sub`/`sup` is `Some` by this point.
+            (None, None) => {}
+        }
     }
 
     fn parse_environment(&mut self, name: &str) -> Row {
@@ -530,23 +595,39 @@ impl TexParser {
         let start = self.pos;
         let mut depth = 0i32;
         while self.pos < self.chars.len() {
-            if depth == 0 && self.chars[self.pos..].starts_with(&end_marker) {
+            if depth == 0 && self.rest_starts_with(&end_marker) {
                 break;
             }
-            match self.chars[self.pos] {
-                '{' => depth += 1,
-                '}' => depth -= 1,
+            let Some(ch) = self.peek() else { break };
+            match ch {
+                '{' => depth = depth.saturating_add(1),
+                '}' => depth = depth.saturating_sub(1),
                 _ => {}
             }
-            self.pos += 1;
+            self.advance();
         }
-        let content: String = self.chars[start..self.pos].iter().collect();
-        if self.chars[self.pos..].starts_with(&end_marker) {
-            self.pos += end_marker.len();
+        let content: String = self
+            .chars
+            .get(start..self.pos)
+            .unwrap_or_default()
+            .iter()
+            .collect();
+        if self.rest_starts_with(&end_marker) {
+            self.pos = self.pos.saturating_add(end_marker.len());
         } else {
             self.error(&format!("unclosed {name} environment"));
         }
-        let cells = split_environment(&content);
+        self.parse_environment_body(name, &content)
+    }
+
+    fn rest_starts_with(&self, marker: &[char]) -> bool {
+        self.chars
+            .get(self.pos..)
+            .is_some_and(|slice| slice.starts_with(marker))
+    }
+
+    fn parse_environment_body(&mut self, name: &str, content: &str) -> Row {
+        let cells = split_environment(content);
         let mut rows = Vec::new();
         let mut nested_diagnostics = Vec::new();
         for source_row in cells {
@@ -598,36 +679,51 @@ impl TexParser {
             self.error("expected braced argument");
             return String::new();
         }
-        self.pos += 1;
+        self.advance();
         let start = self.pos;
         let mut depth = 1usize;
         while self.pos < self.chars.len() && depth > 0 {
-            match self.chars[self.pos] {
-                '{' => depth += 1,
-                '}' => depth -= 1,
+            let Some(ch) = self.peek() else { break };
+            match ch {
+                '{' => depth = depth.saturating_add(1),
+                '}' => depth = depth.saturating_sub(1),
                 _ => {}
             }
-            self.pos += 1;
+            self.advance();
         }
-        let end = if depth == 0 { self.pos - 1 } else { self.pos };
+        let end = if depth == 0 {
+            self.pos.saturating_sub(1)
+        } else {
+            self.pos
+        };
         if depth != 0 {
             self.error("unclosed braced argument");
         }
-        self.chars[start..end].iter().collect()
+        self.chars
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .collect()
     }
 
     fn command_ahead(&self, wanted: &str) -> bool {
         if self.peek() != Some('\\') {
             return false;
         }
-        let rest: String = self.chars[self.pos + 1..]
-            .iter()
-            .take(wanted.len())
-            .collect();
+        let rest: String = self
+            .chars
+            .get(self.pos.saturating_add(1)..)
+            .map_or_else(String::new, |slice| {
+                slice.iter().take(wanted.len()).collect()
+            });
         rest == wanted
             && self
                 .chars
-                .get(self.pos + 1 + wanted.chars().count())
+                .get(
+                    self.pos
+                        .saturating_add(1)
+                        .saturating_add(wanted.chars().count()),
+                )
                 .is_none_or(|ch| !ch.is_ascii_alphabetic())
     }
 
@@ -635,17 +731,21 @@ impl TexParser {
         let start = self.pos;
         if self.peek().is_some_and(|ch| ch.is_ascii_alphabetic()) {
             while self.peek().is_some_and(|ch| ch.is_ascii_alphabetic()) {
-                self.pos += 1;
+                self.advance();
             }
         } else if self.peek().is_some() {
-            self.pos += 1;
+            self.advance();
         }
-        self.chars[start..self.pos].iter().collect()
+        self.chars
+            .get(start..self.pos)
+            .unwrap_or_default()
+            .iter()
+            .collect()
     }
 
     fn skip_space(&mut self) {
         while self.peek().is_some_and(char::is_whitespace) {
-            self.pos += 1;
+            self.advance();
         }
     }
 
@@ -659,14 +759,22 @@ impl TexParser {
 
 fn strip_math_wrapper(source: &str) -> &str {
     let source = source.trim();
-    if source.len() >= 2 && source.starts_with('$') && source.ends_with('$') {
-        return source[1..source.len() - 1].trim();
+    if source.len() >= 2
+        && let Some(stripped) = source.strip_prefix('$').and_then(|s| s.strip_suffix('$'))
+    {
+        return stripped.trim();
     }
     if source.len() >= 4
-        && ((source.starts_with(r"\(") && source.ends_with(r"\)"))
-            || (source.starts_with(r"\[") && source.ends_with(r"\]")))
+        && let Some(stripped) = source
+            .strip_prefix(r"\(")
+            .and_then(|s| s.strip_suffix(r"\)"))
+            .or_else(|| {
+                source
+                    .strip_prefix(r"\[")
+                    .and_then(|s| s.strip_suffix(r"\]"))
+            })
     {
-        return source[2..source.len() - 2].trim();
+        return stripped.trim();
     }
     source
 }
@@ -676,18 +784,26 @@ fn split_environment(source: &str) -> Vec<Vec<String>> {
     let mut rows = vec![vec![String::new()]];
     let mut depth = 0i32;
     let mut i = 0usize;
-    while i < chars.len() {
-        match chars[i] {
-            '{' => depth += 1,
-            '}' => depth -= 1,
-            '&' if depth == 0 => rows.last_mut().unwrap().push(String::new()),
-            '\\' if depth == 0 && chars.get(i + 1) == Some(&'\\') => {
-                rows.push(vec![String::new()]);
-                i += 1;
+    while let Some(&ch) = chars.get(i) {
+        match ch {
+            '{' => depth = depth.saturating_add(1),
+            '}' => depth = depth.saturating_sub(1),
+            '&' if depth == 0 => {
+                if let Some(last) = rows.last_mut() {
+                    last.push(String::new());
+                }
             }
-            ch => rows.last_mut().unwrap().last_mut().unwrap().push(ch),
+            '\\' if depth == 0 && chars.get(i.saturating_add(1)) == Some(&'\\') => {
+                rows.push(vec![String::new()]);
+                i = i.saturating_add(1);
+            }
+            ch => {
+                if let Some(last_cell) = rows.last_mut().and_then(|row| row.last_mut()) {
+                    last_cell.push(ch);
+                }
+            }
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     rows.retain(|row| row.iter().any(|cell| !cell.trim().is_empty()));
     rows
@@ -740,7 +856,7 @@ fn map_row_chars(mut row: Row, alphabet: MathAlphabet) -> Row {
                 *radicand = map_row_chars(std::mem::take(radicand), alphabet);
             }
             Node::Paren { body } | Node::Delimited { body, .. } => {
-                *body = map_row_chars(std::mem::take(body), alphabet)
+                *body = map_row_chars(std::mem::take(body), alphabet);
             }
             Node::Func { arg, .. } => *arg = map_row_chars(std::mem::take(arg), alphabet),
             Node::Accent { base, .. } => *base = map_row_chars(std::mem::take(base), alphabet),
@@ -770,7 +886,7 @@ fn map_row_chars(mut row: Row, alphabet: MathAlphabet) -> Row {
 }
 
 fn styled_char(ch: char, alphabet: MathAlphabet) -> Option<char> {
-    let (upper, lower, digit) = match alphabet {
+    let (upper, lower, digit): (u32, u32, Option<u32>) = match alphabet {
         MathAlphabet::Bold => (0x1D400, 0x1D41A, Some(0x1D7CE)),
         MathAlphabet::Blackboard => (0x1D538, 0x1D552, Some(0x1D7D8)),
         MathAlphabet::Script => (0x1D49C, 0x1D4B6, None),
@@ -778,9 +894,9 @@ fn styled_char(ch: char, alphabet: MathAlphabet) -> Option<char> {
         MathAlphabet::Monospace => (0x1D670, 0x1D68A, Some(0x1D7F6)),
     };
     let code = match ch {
-        'A'..='Z' => upper + (ch as u32 - 'A' as u32),
-        'a'..='z' => lower + (ch as u32 - 'a' as u32),
-        '0'..='9' => digit? + (ch as u32 - '0' as u32),
+        'A'..='Z' => upper.saturating_add((ch as u32).saturating_sub('A' as u32)),
+        'a'..='z' => lower.saturating_add((ch as u32).saturating_sub('a' as u32)),
+        '0'..='9' => digit?.saturating_add((ch as u32).saturating_sub('0' as u32)),
         _ => return None,
     };
     char::from_u32(code)
@@ -795,6 +911,16 @@ fn normalize_ascii_operator(ch: char) -> char {
 }
 
 fn tex_symbol(name: &str) -> Option<char> {
+    tex_greek_symbol(name)
+        .or_else(|| tex_calculus_symbol(name))
+        .or_else(|| tex_logic_set_symbol(name))
+        .or_else(|| tex_operator_symbol(name))
+        .or_else(|| tex_relation_symbol(name))
+        .or_else(|| tex_arrow_symbol(name))
+        .or_else(|| tex_misc_symbol(name))
+}
+
+fn tex_greek_symbol(name: &str) -> Option<char> {
     Some(match name {
         "alpha" => 'α',
         "beta" => 'β',
@@ -836,6 +962,12 @@ fn tex_symbol(name: &str) -> Option<char> {
         "Phi" => 'Φ',
         "Psi" => 'Ψ',
         "Omega" => 'Ω',
+        _ => return None,
+    })
+}
+
+fn tex_calculus_symbol(name: &str) -> Option<char> {
+    Some(match name {
         "int" => '∫',
         "iint" => '∬',
         "iiint" => '∭',
@@ -849,6 +981,12 @@ fn tex_symbol(name: &str) -> Option<char> {
         "jmath" => 'ȷ',
         "Re" => 'ℜ',
         "Im" => 'ℑ',
+        _ => return None,
+    })
+}
+
+fn tex_logic_set_symbol(name: &str) -> Option<char> {
+    Some(match name {
         "forall" => '∀',
         "exists" => '∃',
         "nexists" => '∄',
@@ -864,6 +1002,12 @@ fn tex_symbol(name: &str) -> Option<char> {
         "cup" => '∪',
         "cap" => '∩',
         "setminus" => '∖',
+        _ => return None,
+    })
+}
+
+fn tex_operator_symbol(name: &str) -> Option<char> {
+    Some(match name {
         "times" => '×',
         "div" => '÷',
         "cdot" => '·',
@@ -875,6 +1019,12 @@ fn tex_symbol(name: &str) -> Option<char> {
         "mp" => '∓',
         "oplus" => '⊕',
         "otimes" => '⊗',
+        _ => return None,
+    })
+}
+
+fn tex_relation_symbol(name: &str) -> Option<char> {
+    Some(match name {
         "le" | "leq" => '≤',
         "ge" | "geq" => '≥',
         "ne" | "neq" => '≠',
@@ -886,6 +1036,12 @@ fn tex_symbol(name: &str) -> Option<char> {
         "perp" => '⊥',
         "parallel" => '∥',
         "mid" => '∣',
+        _ => return None,
+    })
+}
+
+fn tex_arrow_symbol(name: &str) -> Option<char> {
+    Some(match name {
         "to" | "rightarrow" => '→',
         "leftarrow" => '←',
         "leftrightarrow" => '↔',
@@ -895,14 +1051,19 @@ fn tex_symbol(name: &str) -> Option<char> {
         "mapsto" => '↦',
         "uparrow" => '↑',
         "downarrow" => '↓',
+        _ => return None,
+    })
+}
+
+fn tex_misc_symbol(name: &str) -> Option<char> {
+    Some(match name {
         "ldots" => '…',
         "cdots" => '⋯',
         "vdots" => '⋮',
         "ddots" => '⋱',
         "angle" => '∠',
         "triangle" => '△',
-        "square" => '□',
-        "Box" => '□',
+        "square" | "Box" => '□',
         "prime" => '′',
         "degree" => '°',
         "aleph" => 'ℵ',

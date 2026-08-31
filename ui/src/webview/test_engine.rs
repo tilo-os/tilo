@@ -47,11 +47,11 @@ impl TestEngine {
 
     /// Every command received so far, in order.
     pub fn commands(&self) -> Vec<WebViewCommand> {
-        self.inner.lock().unwrap().commands.clone()
+        self.lock_inner().commands.clone()
     }
 
     pub fn current_uri(&self) -> Option<String> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner();
         inner.history.get(inner.index).cloned()
     }
 
@@ -60,37 +60,46 @@ impl TestEngine {
     pub fn page_color(uri: &str) -> [u8; 3] {
         // FNV-1a, folded to RGB. Keep in sync with nothing else — this is
         // the definition.
-        let mut h: u32 = 2166136261;
+        let mut h: u32 = 2_166_136_261;
         for b in uri.bytes() {
             h ^= u32::from(b);
-            h = h.wrapping_mul(16777619);
+            h = h.wrapping_mul(16_777_619);
         }
-        [(h >> 16) as u8, (h >> 8) as u8, h as u8]
+        // The low three bytes of the hash, big-endian — equivalent to the
+        // old `(h >> 16) as u8, (h >> 8) as u8, h as u8` but without a
+        // truncating cast.
+        let [_, r, g, b] = h.to_be_bytes();
+        [r, g, b]
     }
 
     fn render_locked(&self, inner: &Inner) {
         let Some(uri) = inner.history.get(inner.index) else {
             return;
         };
-        let (w, h) = (inner.width.max(1), inner.height.max(1));
+        let (width, height) = (inner.width.max(1), inner.height.max(1));
         let [r, g, b] = Self::page_color(uri);
         let band = [r / 2, g / 2, b / 2];
-        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-        for y in 0..h {
+        let pixel_count = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX));
+        let mut rgba = Vec::with_capacity(pixel_count.saturating_mul(4));
+        for y in 0..height {
             let px: [u8; 3] = if y < HEADER_BAND_PX { band } else { [r, g, b] };
-            for _ in 0..w {
+            for _ in 0..width {
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
             }
         }
-        *self.frames.lock().unwrap() = Some(Frame {
+        *self.lock_frames() = Some(Frame {
             rgba: Arc::new(rgba),
-            width: w,
-            height: h,
+            width,
+            height,
         });
     }
 
     fn emit_navigation_locked(&self, inner: &mut Inner) {
-        let uri = inner.history[inner.index].clone();
+        let Some(uri) = inner.history.get(inner.index).cloned() else {
+            return;
+        };
         inner.events.push(WebViewEvent::UriChanged(uri.clone()));
         inner
             .events
@@ -99,35 +108,53 @@ impl TestEngine {
         inner.events.push(WebViewEvent::LoadFinished);
         inner.events.push(WebViewEvent::HistoryChanged {
             can_go_back: inner.index > 0,
-            can_go_forward: inner.index + 1 < inner.history.len(),
+            can_go_forward: inner.index.saturating_add(1) < inner.history.len(),
         });
         self.render_locked(inner);
     }
 }
 
+impl TestEngine {
+    /// Recovers the mutex if a panicking test callback poisoned it while
+    /// holding the lock, rather than making every later call into the
+    /// engine panic too.
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Same recovery as [`Self::lock_inner`], for the frame slot.
+    fn lock_frames(&self) -> std::sync::MutexGuard<'_, Option<Frame>> {
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 impl WebViewEngine for TestEngine {
     fn send(&self, cmd: WebViewCommand) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
         match cmd {
             WebViewCommand::Navigate(uri) => {
                 if !inner.history.is_empty() {
-                    let cut = inner.index + 1;
+                    let cut = inner.index.saturating_add(1);
                     inner.history.truncate(cut);
                 }
                 inner.history.push(uri);
-                inner.index = inner.history.len() - 1;
+                inner.index = inner.history.len().saturating_sub(1);
                 self.emit_navigation_locked(&mut inner);
             }
             WebViewCommand::GoBack => {
                 if inner.index > 0 {
-                    inner.index -= 1;
+                    inner.index = inner.index.saturating_sub(1);
                     self.emit_navigation_locked(&mut inner);
                 }
             }
             WebViewCommand::GoForward => {
-                if inner.index + 1 < inner.history.len() {
-                    inner.index += 1;
+                if inner.index.saturating_add(1) < inner.history.len() {
+                    inner.index = inner.index.saturating_add(1);
                     self.emit_navigation_locked(&mut inner);
                 }
             }
@@ -159,6 +186,9 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetUserScripts(_)
             | WebViewCommand::ClearWebsiteData => {}
         }
+        // Nothing below uses `inner` — drop the guard here rather than
+        // leaving it held until the function's closing brace.
+        drop(inner);
     }
 
     fn frames(&self) -> FrameSlot {
@@ -166,7 +196,7 @@ impl WebViewEngine for TestEngine {
     }
 
     fn drain_events(&self) -> Vec<WebViewEvent> {
-        std::mem::take(&mut self.inner.lock().unwrap().events)
+        std::mem::take(&mut self.lock_inner().events)
     }
 }
 

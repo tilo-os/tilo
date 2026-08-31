@@ -352,23 +352,20 @@ mod tests {
             stream.url
         );
         assert!(stream.has_audio, "a muxed format carries audio");
-        let client = match reqwest::blocking::Client::builder()
+        let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent(BROWSER_UA)
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
+        else {
+            return;
         };
         // Request a range well past the first-segment boundary raw googlevideo
         // URLs refuse (~2 MB in).
-        let resp = if let Ok(r) = client
+        let Ok(resp) = client
             .get(&stream.url)
             .header(reqwest::header::RANGE, "bytes=2000000-2100000")
             .send()
-        {
-            r
-        } else {
+        else {
             eprintln!("[proxy test] skipped — proxy fetch failed");
             return;
         };

@@ -233,6 +233,12 @@ pub struct FirewallApp {
     actions: ui::ActionHost,
 }
 
+impl Default for FirewallApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FirewallApp {
     /// The live app: read the **real** current firewall from the host. If
     /// firewalld is absent or stopped, start on an honest empty/unavailable
@@ -314,9 +320,9 @@ impl FirewallApp {
     /// This is *only* the CRDT mutation. Pushing the ruleset to the kernel
     /// (`firewall-cmd`/`nft`, see [`Self::apply`]) is a separate side effect
     /// driven by the resulting document state — never part of an action.
-    fn perform_action(&mut self, state: &mut AutoCommit, action: FirewallAction) {
+    fn perform_action(&mut self, state: &mut AutoCommit, action: &FirewallAction) {
         self.actions
-            .dispatch(state, crate::actions::FIREWALL_ACTION_TYPE, &action);
+            .dispatch(state, crate::actions::FIREWALL_ACTION_TYPE, action);
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(json) = FirewallDoc::load_json(state) {
             if let Some(cfg) = FirewallConfig::from_json(&json) {
@@ -359,7 +365,22 @@ impl FirewallApp {
         l.narrow = narrow;
         l.services_visible = services_visible;
 
-        // Header spans the full width; controls are right-aligned.
+        let by = Self::layout_header(r, &mut l, narrow);
+        let content = self.layout_rail(r, &mut l, by);
+        self.layout_center(r, &mut l, content, narrow, services_visible);
+
+        self.layout = l;
+        // Keep embedded inputs positioned.
+        self.form.port.apply_layout_external(self.layout.port_field);
+        self.form
+            .source
+            .apply_layout_external(self.layout.source_field);
+    }
+
+    /// Header spans the full width; controls are right-aligned. Returns the
+    /// header's vertical center, reused by [`Self::layout_rail`] for the
+    /// hamburger toggle.
+    fn layout_header(r: Rect, l: &mut Layout, narrow: bool) -> f64 {
         l.header = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
         let by = r.y0 + HEADER_H / 2.0;
         let mut rx = r.x1 - PAD;
@@ -371,7 +392,12 @@ impl FirewallApp {
         rx = l.panic_btn.x0 - 8.0;
         let enable_w = if narrow { 80.0 } else { 92.0 };
         l.enable_pill = Rect::new(rx - enable_w, by - 17.0, rx, by + 17.0);
+        by
+    }
 
+    /// Resolve the rail drawer (docked vs overlay), its toggle, and the zone
+    /// rows within it. Returns the content rect the rail insets.
+    fn layout_rail(&mut self, r: Rect, l: &mut Layout, by: f64) -> Rect {
         // Content area below the header. The rail drawer decides docked (wide)
         // vs overlay (narrow) from its width, insetting the content when docked.
         let content_outer = Rect::new(r.x0, r.y0 + HEADER_H, r.x1, r.y1);
@@ -416,6 +442,19 @@ impl FirewallApp {
             }
         }
 
+        content
+    }
+
+    /// Services panel, summary, filter row, form + table, and services rows —
+    /// everything inside the rail-inset `content` rect.
+    fn layout_center(
+        &self,
+        r: Rect,
+        l: &mut Layout,
+        content: Rect,
+        narrow: bool,
+        services_visible: bool,
+    ) {
         // Services panel earns its column only when wide.
         if services_visible {
             l.services = Rect::new(content.x1 - SERVICES_W, content.y0, content.x1, content.y1);
@@ -459,10 +498,10 @@ impl FirewallApp {
 
         // Rules table fills the gap.
         l.table = Rect::new(cx0, fy + seg_h + 10.0, cx1, l.form.y0 - PAD);
-        self.build_table_rows(&mut l, narrow);
+        self.build_table_rows(l, narrow);
 
         // Form internals.
-        self.build_form(&mut l, narrow);
+        self.build_form(l, narrow);
 
         // Services rows.
         if services_visible {
@@ -488,13 +527,6 @@ impl FirewallApp {
                 let _ = def;
             }
         }
-
-        self.layout = l;
-        // Keep embedded inputs positioned.
-        self.form.port.apply_layout_external(self.layout.port_field);
-        self.form
-            .source
-            .apply_layout_external(self.layout.source_field);
     }
 
     fn build_table_rows(&self, l: &mut Layout, narrow: bool) {
@@ -666,7 +698,7 @@ impl FirewallApp {
         let id = rule.id;
         self.perform_action(
             state,
-            crate::actions::add_rule_action(self.selected_zone, rule),
+            &crate::actions::add_rule_action(self.selected_zone, rule),
         );
         self.selected_rule = Some(id);
         self.status = format!("Added {} {} rule", action.label(), label);
@@ -675,7 +707,7 @@ impl FirewallApp {
     fn delete_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
         self.perform_action(
             state,
-            crate::actions::delete_rule_action(self.selected_zone, id),
+            &crate::actions::delete_rule_action(self.selected_zone, id),
         );
         if self.selected_rule == Some(id) {
             self.selected_rule = None;
@@ -686,7 +718,7 @@ impl FirewallApp {
     fn toggle_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
         self.perform_action(
             state,
-            crate::actions::toggle_rule_action(self.selected_zone, id),
+            &crate::actions::toggle_rule_action(self.selected_zone, id),
         );
     }
 
@@ -704,7 +736,7 @@ impl FirewallApp {
         let on = !currently;
         self.perform_action(
             state,
-            crate::actions::set_service_action(self.selected_zone, id, on),
+            &crate::actions::set_service_action(self.selected_zone, id, on),
         );
         self.status = format!(
             "{} {} in {}",
@@ -717,14 +749,14 @@ impl FirewallApp {
     fn set_active_zone(&mut self, state: &mut AutoCommit) {
         self.perform_action(
             state,
-            crate::actions::set_default_zone_action(self.selected_zone),
+            &crate::actions::set_default_zone_action(self.selected_zone),
         );
         self.status = format!("{} is now the active zone", self.selected_zone.name());
     }
 
     fn toggle_panic(&mut self, state: &mut AutoCommit) {
         let on = !self.config.panic_mode;
-        self.perform_action(state, crate::actions::set_panic_action(on));
+        self.perform_action(state, &crate::actions::set_panic_action(on));
         self.status = if on {
             "PANIC MODE ON — all traffic dropped".to_string()
         } else {
@@ -734,7 +766,7 @@ impl FirewallApp {
 
     fn toggle_enabled(&mut self, state: &mut AutoCommit) {
         let on = !self.config.enabled;
-        self.perform_action(state, crate::actions::set_enabled_action(on));
+        self.perform_action(state, &crate::actions::set_enabled_action(on));
         self.status = if on {
             "Firewall enabled".to_string()
         } else {
@@ -762,7 +794,7 @@ impl FirewallApp {
         input: &mut TextInput,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         taffy: &TaffyTree<()>,
@@ -772,7 +804,7 @@ impl FirewallApp {
         input.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut handled,
@@ -906,7 +938,7 @@ impl Widget for FirewallApp {
                     &mut self.form.port,
                     event,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     state,
                     path,
                     taffy,
@@ -915,14 +947,14 @@ impl Widget for FirewallApp {
                     &mut self.form.source,
                     event,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     state,
                     path,
                     taffy,
                 );
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_key(event, modifiers, state, path, handled, taffy);
+                self.handle_key(event, *modifiers, state, path, handled, taffy);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -934,7 +966,7 @@ impl Widget for FirewallApp {
                     state,
                     handled,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     path,
                     taffy,
                     event,
@@ -948,7 +980,7 @@ impl Widget for FirewallApp {
                     &mut self.form.port,
                     event,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     state,
                     path,
                     taffy,
@@ -957,7 +989,7 @@ impl Widget for FirewallApp {
                     &mut self.form.source,
                     event,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     state,
                     path,
                     taffy,
@@ -1000,7 +1032,7 @@ impl FirewallApp {
     fn handle_key(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1025,7 +1057,6 @@ impl FirewallApp {
             Key::Named(NamedKey::Tab) => {
                 let next = match self.form.focus {
                     Some(FocusField::Source) if !self.form.is_service => Some(FocusField::Port),
-                    Some(FocusField::Port) => Some(FocusField::Source),
                     _ => Some(FocusField::Source),
                 };
                 self.set_form_focus(next);
@@ -1094,14 +1125,19 @@ impl FirewallApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the click-dispatch entry point threading the shared event/input context; \
+                  splitting the body into handle_click_* helpers (below) is what keeps this \
+                  one under the line-length lint, not shrinking its argument list further"
+    )]
     fn handle_click(
         &mut self,
         p: Point,
         state: &mut AutoCommit,
         handled: &mut bool,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         path: &ObjId,
         taffy: &TaffyTree<()>,
         event: &WindowEvent,
@@ -1114,17 +1150,48 @@ impl FirewallApp {
 
         let l = self.layout.clone();
 
-        // Rail drawer first: a scrim tap dismisses an open overlay; the toggle
-        // flips it; a tap inside an open overlay drawer only selects a zone (and
-        // then closes it) — it never falls through to the content behind.
+        if self.handle_click_rail(p, &l, handled) {
+            return;
+        }
+        if self.handle_click_primary(p, state, &l, handled) {
+            return;
+        }
+        if self.handle_click_form(p, state, &l, handled) {
+            return;
+        }
+        if self.handle_click_text_field(
+            p,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            taffy,
+            &l,
+            handled,
+        ) {
+            return;
+        }
+
+        // Clicked empty space: drop field focus + rule selection.
+        self.set_form_focus(None);
+    }
+
+    /// Rail drawer: a scrim tap dismisses an open overlay; the toggle flips
+    /// it; a tap inside an open overlay drawer only selects a zone (and then
+    /// closes it) — it never falls through to the content behind. Returns
+    /// whether the click was consumed here.
+    fn handle_click_rail(&mut self, p: Point, l: &Layout, handled: &mut bool) -> bool {
         if self.rail.press_dismisses(p) {
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if l.rail_toggle.contains(p) {
             self.rail.toggle();
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if self.rail.is_overlay() && self.rail.is_open() && self.rail.sidebar_contains(p) {
             for (kind, rect) in &l.zone_rows {
@@ -1132,28 +1199,44 @@ impl FirewallApp {
                     self.select_zone(*kind);
                     self.rail.close();
                     *handled = true;
-                    return self.set_form_focus(None);
+                    self.set_form_focus(None);
+                    return true;
                 }
             }
             *handled = true;
-            return;
+            return true;
         }
+        false
+    }
 
+    /// Header controls, docked zone rail, summary set-active, filter
+    /// segmented, rule rows, and service toggles. Returns whether the click
+    /// was consumed here.
+    fn handle_click_primary(
+        &mut self,
+        p: Point,
+        state: &mut AutoCommit,
+        l: &Layout,
+        handled: &mut bool,
+    ) -> bool {
         // Header controls.
         if l.enable_pill.contains(p) {
             self.toggle_enabled(state);
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if l.panic_btn.contains(p) {
             self.toggle_panic(state);
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if l.apply_btn.contains(p) {
             self.apply();
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
 
         // Zone rail.
@@ -1161,7 +1244,8 @@ impl FirewallApp {
             if rect.contains(p) {
                 self.select_zone(*kind);
                 *handled = true;
-                return self.set_form_focus(None);
+                self.set_form_focus(None);
+                return true;
             }
         }
 
@@ -1169,7 +1253,8 @@ impl FirewallApp {
         if l.set_active_btn.contains(p) {
             self.set_active_zone(state);
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
 
         // Filter segmented.
@@ -1177,7 +1262,8 @@ impl FirewallApp {
             self.filter = Filter::ALL[i];
             self.selected_rule = None;
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
 
         // Rule rows: toggle / delete / select.
@@ -1185,17 +1271,20 @@ impl FirewallApp {
             if row.delete.contains(p) {
                 self.delete_rule(row.id, state);
                 *handled = true;
-                return self.set_form_focus(None);
+                self.set_form_focus(None);
+                return true;
             }
             if row.toggle.contains(p) {
                 self.toggle_rule(row.id, state);
                 *handled = true;
-                return self.set_form_focus(None);
+                self.set_form_focus(None);
+                return true;
             }
             if row.rect.contains(p) {
                 self.selected_rule = Some(row.id);
                 *handled = true;
-                return self.set_form_focus(None);
+                self.set_form_focus(None);
+                return true;
             }
         }
 
@@ -1204,46 +1293,83 @@ impl FirewallApp {
             if row.contains(p) {
                 self.toggle_service(*idx, state);
                 *handled = true;
-                return self.set_form_focus(None);
+                self.set_form_focus(None);
+                return true;
             }
         }
 
-        // Form controls.
+        false
+    }
+
+    /// Add-rule form controls: kind/proto/action segmented, service
+    /// prev/next, add button. Returns whether the click was consumed here.
+    fn handle_click_form(
+        &mut self,
+        p: Point,
+        state: &mut AutoCommit,
+        l: &Layout,
+        handled: &mut bool,
+    ) -> bool {
         if let Some(i) = seg_index(&l.kind_seg, p) {
             self.form.is_service = i == 0;
             self.set_form_focus(None);
             *handled = true;
-            return;
+            return true;
         }
         if l.service_prev.contains(p) {
             let n = ServiceCatalog::ALL.len();
             self.form.service_idx = (self.form.service_idx + n - 1) % n;
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if l.service_next.contains(p) || l.service_sel.contains(p) {
             let n = ServiceCatalog::ALL.len();
             self.form.service_idx = (self.form.service_idx + 1) % n;
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if let Some(i) = seg_index(&l.proto_seg, p) {
             self.form.proto = Proto::ALL[i];
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if let Some(i) = seg_index(&l.action_seg, p) {
             self.form.action = Action::ALL[i];
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
         if l.add_btn.contains(p) {
             self.add_rule_from_form(state);
             *handled = true;
-            return self.set_form_focus(None);
+            self.set_form_focus(None);
+            return true;
         }
+        false
+    }
 
-        // Text fields: focus + forward press for caret placement.
+    /// Port/source text fields: focus + forward the press for caret
+    /// placement. Returns whether the click was consumed here.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the same shared event/input context as handle_click, split out only \
+                  to keep handle_click itself under the line-length lint"
+    )]
+    fn handle_click_text_field(
+        &mut self,
+        p: Point,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        taffy: &TaffyTree<()>,
+        l: &Layout,
+        handled: &mut bool,
+    ) -> bool {
         if !self.form.is_service && l.port_field.contains(p) {
             self.set_form_focus(Some(FocusField::Port));
             Self::forward_to_input(
@@ -1256,7 +1382,7 @@ impl FirewallApp {
                 taffy,
             );
             *handled = true;
-            return;
+            return true;
         }
         if l.source_field.contains(p) {
             self.set_form_focus(Some(FocusField::Source));
@@ -1270,11 +1396,9 @@ impl FirewallApp {
                 taffy,
             );
             *handled = true;
-            return;
+            return true;
         }
-
-        // Clicked empty space: drop field focus + rule selection.
-        self.set_form_focus(None);
+        false
     }
 }
 
@@ -1298,7 +1422,6 @@ fn draw_toggle(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, on: bool
 
 impl FirewallApp {
     fn draw_segmented(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1436,6 +1559,28 @@ impl FirewallApp {
         paint::fill_rect(scene, t, h, theme.tokens.colors.neutral[0]);
         paint::hline(scene, t, h.x0, h.x1, h.y1, theme.border_standard, 1.0);
 
+        self.draw_header_status(scene, t, tr, theme, l, h);
+
+        // With no readable firewall there are no live controls to offer.
+        if !self.available {
+            return;
+        }
+        self.draw_header_controls(scene, t, tr, theme, l, h);
+    }
+
+    /// The contextual status line + its colour (panic vs. normal). Dropped at
+    /// narrow widths, where there's no room for it beside the controls (the
+    /// enable pill + red "Panic ON" button already carry active / panic
+    /// state).
+    fn draw_header_status(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+        h: Rect,
+    ) {
         // The OS owns the window title/app-name — the header shows only the
         // contextual firewall status (functional, not an app wordmark).
         let sub = if !self.available {
@@ -1453,10 +1598,8 @@ impl FirewallApp {
         } else {
             theme.text_primary
         };
-        // The status line is dropped at narrow widths, where there's no room
-        // for it beside the controls (the enable pill + red "Panic ON" button
-        // already carry active / panic state). When shown, shift it right past
-        // the header hamburger and clamp its width under the controls.
+        // When shown, shift it right past the header hamburger and clamp its
+        // width under the controls.
         if !l.narrow {
             let toggle_in_header = !(self.rail.is_docked() && self.rail.is_open());
             let sub_x = if toggle_in_header {
@@ -1482,12 +1625,23 @@ impl FirewallApp {
                 sub_max,
             );
         }
+    }
 
-        // With no readable firewall there are no live controls to offer.
-        if !self.available {
-            return;
-        }
-
+    /// Mode chip + enable pill + panic button + apply button, right-aligned
+    /// in the header. Only reached once the firewall is available.
+    #[allow(
+        clippy::similar_names,
+        reason = "bg/fg is the standard background/foreground pairing; renaming either would read worse"
+    )]
+    fn draw_header_controls(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+        h: Rect,
+    ) {
         // Backend mode chip, just left of the enable pill (hidden when narrow).
         if !l.narrow {
             let mode_txt = match self.backend.mode() {
@@ -1719,8 +1873,22 @@ impl FirewallApp {
         let Some(z) = self.config.zone(self.selected_zone) else {
             return;
         };
-        let x = card.x0 + 18.0;
-        // Title.
+        let inset_x = card.x0 + 18.0;
+        self.draw_summary_title(scene, t, tr, theme, card, inset_x);
+        Self::draw_summary_chips(scene, t, tr, theme, card, inset_x, z);
+        self.draw_summary_set_active(scene, t, tr, theme, l);
+    }
+
+    /// Zone title + active-zone chip + description, left-aligned at `inset_x`.
+    fn draw_summary_title(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        inset_x: f64,
+    ) {
         paint::label(
             tr,
             scene,
@@ -1728,7 +1896,7 @@ impl FirewallApp {
             self.selected_zone.name(),
             22.0,
             theme.text_primary,
-            x,
+            inset_x,
             card.y0 + 14.0,
             260.0,
         );
@@ -1742,14 +1910,13 @@ impl FirewallApp {
                 9.0,
                 Color::WHITE,
                 theme.accent_primary,
-                x + title_w + 12.0,
+                inset_x + title_w + 12.0,
                 card.y0 + 26.0,
                 7.0,
                 16.0,
                 8.0,
             );
         }
-        // Description.
         paint::label(
             tr,
             scene,
@@ -1757,13 +1924,23 @@ impl FirewallApp {
             self.selected_zone.description(),
             12.0,
             theme.text_dim,
-            x,
+            inset_x,
             card.y0 + 46.0,
             card.width() - 36.0,
         );
+    }
 
-        // Stat chips: laid out left-to-right, wrapping onto further rows so a
-        // narrow card never runs them off its right edge.
+    /// Stat chips row: laid out left-to-right, wrapping onto further rows so
+    /// a narrow card never runs them off its right edge.
+    fn draw_summary_chips(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        inset_x: f64,
+        z: &Zone,
+    ) {
         let (allow, deny) = z.rule_counts();
         let ifaces = if z.interfaces.is_empty() {
             "—".to_string()
@@ -1800,49 +1977,60 @@ impl FirewallApp {
         let row_h = 48.0;
         let chips_top = card.y0 + 74.0;
         let max_x = card.x1 - 16.0;
-        let mut sx = x;
+        let mut sx = inset_x;
         let mut row = 0.0_f64;
         for (caption, value, color) in &chips {
-            let w = self.stat_chip_width(tr, caption, value);
-            if sx + w > max_x && sx > x + 0.5 {
+            let w = Self::stat_chip_width(tr, caption, value);
+            if sx + w > max_x && sx > inset_x + 0.5 {
                 row += 1.0;
-                sx = x;
+                sx = inset_x;
             }
             let cy = chips_top + row * row_h + 20.0;
-            self.stat_chip(scene, t, tr, theme, caption, value, *color, sx, cy);
+            Self::stat_chip(scene, t, tr, theme, caption, value, *color, sx, cy);
             sx += w + gap;
         }
+    }
 
-        // Set-active button (only meaningful when not already active).
-        if self.selected_zone != self.config.default_zone {
-            paint::fill_rrect(
-                scene,
-                t,
-                l.set_active_btn,
-                8.0,
-                theme.tokens.colors.neutral[2],
-            );
-            paint::stroke_rrect(scene, t, l.set_active_btn, 8.0, theme.accent_primary, 1.0);
-            let txt = "Set as active";
-            let w = paint::text_width(tr, txt, 12.0);
-            paint::label_v(
-                tr,
-                scene,
-                t,
-                txt,
-                12.0,
-                theme.text_primary,
-                l.set_active_btn.x0 + (l.set_active_btn.width() - w) / 2.0,
-                l.set_active_btn.y0,
-                l.set_active_btn.height(),
-                w + 2.0,
-            );
+    /// Set-active button, drawn only when the selected zone isn't already
+    /// active.
+    fn draw_summary_set_active(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+    ) {
+        if self.selected_zone == self.config.default_zone {
+            return;
         }
+        paint::fill_rrect(
+            scene,
+            t,
+            l.set_active_btn,
+            8.0,
+            theme.tokens.colors.neutral[2],
+        );
+        paint::stroke_rrect(scene, t, l.set_active_btn, 8.0, theme.accent_primary, 1.0);
+        let txt = "Set as active";
+        let w = paint::text_width(tr, txt, 12.0);
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            txt,
+            12.0,
+            theme.text_primary,
+            l.set_active_btn.x0 + (l.set_active_btn.width() - w) / 2.0,
+            l.set_active_btn.y0,
+            l.set_active_btn.height(),
+            w + 2.0,
+        );
     }
 
     /// The width [`Self::stat_chip`] will paint for `caption`/`value`, so the
     /// summary can wrap chips before drawing them.
-    fn stat_chip_width(&self, tr: &mut TextRenderer, caption: &str, value: &str) -> f64 {
+    fn stat_chip_width(tr: &mut TextRenderer, caption: &str, value: &str) -> f64 {
         let cap_w = paint::text_width(tr, caption, 9.0);
         let val_w = paint::text_width(tr, value, 13.0);
         cap_w.max(val_w) + 20.0
@@ -1850,8 +2038,12 @@ impl FirewallApp {
 
     /// A two-tier stat: a dim caption with a coloured value beneath, framed
     /// in a soft chip. Returns the chip width.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a single-call-site draw primitive; bundling position/color/text into a \
+                  struct would only add construction boilerplate for no real readability gain"
+    )]
     fn stat_chip(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1927,9 +2119,55 @@ impl FirewallApp {
             .iter()
             .position(|f| *f == self.filter)
             .unwrap_or(0);
-        self.draw_segmented(scene, t, tr, theme, &l.filter_seg, &labels, sel);
+        Self::draw_segmented(scene, t, tr, theme, &l.filter_seg, &labels, sel);
     }
+}
 
+/// A rule row's derived presentation: colors and the action chip's text,
+/// computed once per row and shared between the narrow and wide layouts.
+struct RowStyle {
+    primary: Color,
+    secondary: Color,
+    dot_color: Color,
+    action_color: Color,
+    action_text: &'static str,
+    dim: bool,
+}
+
+impl RowStyle {
+    fn for_rule(theme: &Theme, rule: &Rule) -> Self {
+        let dim = !rule.enabled;
+        let primary = if dim {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
+        let secondary = if dim {
+            alpha(theme.text_dim, 140)
+        } else {
+            theme.text_dim
+        };
+        let dot_color = if rule.matcher.is_service() {
+            theme.accent_primary
+        } else {
+            theme.tokens.colors.semantic.info
+        };
+        let (action_color, action_text) = match rule.action {
+            Action::Allow => (theme.tokens.colors.semantic.success, "allow"),
+            Action::Deny => (theme.tokens.colors.semantic.danger, "deny"),
+        };
+        Self {
+            primary,
+            secondary,
+            dot_color,
+            action_color,
+            action_text,
+            dim,
+        }
+    }
+}
+
+impl FirewallApp {
     fn draw_table(
         &self,
         scene: &mut Scene,
@@ -1942,8 +2180,47 @@ impl FirewallApp {
         paint::fill_rrect(scene, t, table, CARD_R, theme.tokens.colors.surfaces.raised);
         paint::stroke_rrect(scene, t, table, CARD_R, theme.border_standard, 1.0);
 
-        let (cx_target, cx_proto, cx_action, cx_source, cx_ctrl) = rule_columns(table);
-        // Header — the five columns collapse to two labels when narrow.
+        let cols = rule_columns(table);
+        Self::draw_table_header(scene, t, tr, theme, l, table, cols);
+
+        if l.rule_rows.is_empty() {
+            paint::label(
+                tr,
+                scene,
+                t,
+                "No rules match this filter.",
+                13.0,
+                theme.text_dim,
+                cols.0,
+                table.y0 + 44.0,
+                300.0,
+            );
+            return;
+        }
+
+        let Some(z) = self.config.zone(self.selected_zone) else {
+            return;
+        };
+        for row in &l.rule_rows {
+            let Some(rule) = z.rules.iter().find(|r| r.id == row.id) else {
+                continue;
+            };
+            self.draw_table_row(scene, t, tr, theme, l, cols, row, rule);
+        }
+    }
+
+    /// Column headers — five columns collapse to two labels when narrow —
+    /// and the separator line beneath them.
+    fn draw_table_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+        table: Rect,
+        cols: (f64, f64, f64, f64, f64),
+    ) {
+        let (cx_target, cx_proto, cx_action, cx_source, cx_ctrl) = cols;
         let hy = table.y0 + 8.0;
         let hc = theme.text_dim;
         if l.narrow {
@@ -1965,228 +2242,266 @@ impl FirewallApp {
             theme.border_standard,
             1.0,
         );
+    }
 
-        if l.rule_rows.is_empty() {
-            paint::label(
-                tr,
-                scene,
-                t,
-                "No rules match this filter.",
-                13.0,
-                theme.text_dim,
-                cx_target,
-                table.y0 + 44.0,
-                300.0,
-            );
-            return;
-        }
-
-        let Some(z) = self.config.zone(self.selected_zone) else {
-            return;
-        };
-        for row in &l.rule_rows {
-            let Some(rule) = z.rules.iter().find(|r| r.id == row.id) else {
-                continue;
-            };
-            let selected = self.selected_rule == Some(row.id);
-            if selected {
-                paint::fill_rrect(
-                    scene,
-                    t,
-                    row.rect,
-                    8.0,
-                    theme.tokens.colors.surface_white_10,
-                );
-                paint::stroke_rrect(scene, t, row.rect, 8.0, theme.accent_primary, 1.0);
-            }
-            let dim = !rule.enabled;
-            let primary = if dim {
-                theme.text_dim
-            } else {
-                theme.text_primary
-            };
-            let secondary = if dim {
-                alpha(theme.text_dim, 140)
-            } else {
-                theme.text_dim
-            };
-            let dot_c = if rule.matcher.is_service() {
-                theme.accent_primary
-            } else {
-                theme.tokens.colors.semantic.info
-            };
-            let (ac, atxt) = match rule.action {
-                Action::Allow => (theme.tokens.colors.semantic.success, "allow"),
-                Action::Deny => (theme.tokens.colors.semantic.danger, "deny"),
-            };
-            let src = rule.source_label();
-
-            if l.narrow {
-                // Two-line row: target + action on top, proto · source beneath.
-                let dot_y = row.rect.y0 + 18.0;
-                paint::dot(
-                    scene,
-                    t,
-                    Point::new(cx_target + 4.0, dot_y),
-                    3.0,
-                    if dim { alpha(dot_c, 120) } else { dot_c },
-                );
-                let label_max = row.toggle.x0 - (cx_target + 14.0) - 60.0;
-                paint::label(
-                    tr,
-                    scene,
-                    t,
-                    &rule.matcher.label(),
-                    14.0,
-                    primary,
-                    cx_target + 14.0,
-                    row.rect.y0 + 10.0,
-                    label_max.max(40.0),
-                );
-                // Action chip on the top line, just left of the toggle.
-                let _ = paint::chip(
-                    tr,
-                    scene,
-                    t,
-                    atxt,
-                    11.0,
-                    ac,
-                    alpha(ac, 40),
-                    row.toggle.x0 - 62.0,
-                    dot_y,
-                    8.0,
-                    20.0,
-                    6.0,
-                );
-                // Second line: proto · source.
-                let sub = if src == "anywhere" {
-                    format!("{} · anywhere", rule.matcher.proto_label())
-                } else {
-                    format!("{} · {}", rule.matcher.proto_label(), src)
-                };
-                paint::label(
-                    tr,
-                    scene,
-                    t,
-                    &sub,
-                    12.0,
-                    secondary,
-                    cx_target + 14.0,
-                    row.rect.y0 + 32.0,
-                    row.rect.width() - 30.0,
-                );
-            } else {
-                let cy = f64::midpoint(row.rect.y0, row.rect.y1);
-                paint::dot(
-                    scene,
-                    t,
-                    Point::new(cx_target + 4.0, cy),
-                    3.0,
-                    if dim { alpha(dot_c, 120) } else { dot_c },
-                );
-                paint::label_v(
-                    tr,
-                    scene,
-                    t,
-                    &rule.matcher.label(),
-                    14.0,
-                    primary,
-                    cx_target + 14.0,
-                    row.rect.y0,
-                    row.rect.height(),
-                    cx_proto - cx_target - 18.0,
-                );
-                paint::label_v(
-                    tr,
-                    scene,
-                    t,
-                    &rule.matcher.proto_label(),
-                    12.0,
-                    secondary,
-                    cx_proto,
-                    row.rect.y0,
-                    row.rect.height(),
-                    60.0,
-                );
-                let _ = paint::chip(
-                    tr,
-                    scene,
-                    t,
-                    atxt,
-                    11.0,
-                    ac,
-                    alpha(ac, 40),
-                    cx_action,
-                    cy,
-                    8.0,
-                    20.0,
-                    6.0,
-                );
-                let src_color = if src == "anywhere" {
-                    secondary
-                } else {
-                    primary
-                };
-                paint::label_v(
-                    tr,
-                    scene,
-                    t,
-                    src,
-                    12.0,
-                    src_color,
-                    cx_source,
-                    row.rect.y0,
-                    row.rect.height(),
-                    cx_ctrl - cx_source - 8.0,
-                );
-            }
-
-            // Enable toggle.
-            draw_toggle(scene, t, theme, row.toggle, rule.enabled);
-
-            // Delete (×) drawn as two strokes inside a soft danger button.
-            let d = row.delete;
+    /// One rule row: selection highlight, narrow/wide content, then the
+    /// shared toggle + delete controls and row separator.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "per-row paint orchestrator threading the shared scene/transform/theme plus \
+                  this row's own geometry and data; a single call site, so bundling further \
+                  would only add boilerplate"
+    )]
+    fn draw_table_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+        cols: (f64, f64, f64, f64, f64),
+        row: &RuleRow,
+        rule: &Rule,
+    ) {
+        let selected = self.selected_rule == Some(row.id);
+        if selected {
             paint::fill_rrect(
                 scene,
                 t,
-                d,
-                6.0,
-                alpha(theme.tokens.colors.semantic.danger, 30),
+                row.rect,
+                8.0,
+                theme.tokens.colors.surface_white_10,
             );
-            let m = 8.0;
-            let dc = theme.tokens.colors.semantic.danger;
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.6),
-                t,
-                dc,
-                None,
-                &vello::kurbo::Line::new(
-                    Point::new(d.x0 + m, d.y0 + m),
-                    Point::new(d.x1 - m, d.y1 - m),
-                ),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.6),
-                t,
-                dc,
-                None,
-                &vello::kurbo::Line::new(
-                    Point::new(d.x1 - m, d.y0 + m),
-                    Point::new(d.x0 + m, d.y1 - m),
-                ),
-            );
-
-            // Row separator.
-            paint::hline(
-                scene,
-                t,
-                row.rect.x0,
-                row.rect.x1,
-                row.rect.y1 + 2.0,
-                alpha(theme.border_standard, 120),
-                1.0,
-            );
+            paint::stroke_rrect(scene, t, row.rect, 8.0, theme.accent_primary, 1.0);
         }
+        let style = RowStyle::for_rule(theme, rule);
+        let src = rule.source_label();
+
+        if l.narrow {
+            Self::draw_table_row_narrow(scene, t, tr, cols.0, row, rule, &style, src);
+        } else {
+            Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
+        }
+
+        Self::draw_table_row_controls(scene, t, theme, row, rule.enabled);
+    }
+
+    /// Two-line row: target + action on top, proto · source beneath. Used
+    /// when the table is too narrow for five columns abreast.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "per-row paint helper threading the shared scene/transform plus this row's \
+                  own geometry and precomputed style; a single call site, so bundling further \
+                  would only add boilerplate"
+    )]
+    fn draw_table_row_narrow(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        cx_target: f64,
+        row: &RuleRow,
+        rule: &Rule,
+        style: &RowStyle,
+        src: &str,
+    ) {
+        let dot_y = row.rect.y0 + 18.0;
+        paint::dot(
+            scene,
+            t,
+            Point::new(cx_target + 4.0, dot_y),
+            3.0,
+            if style.dim {
+                alpha(style.dot_color, 120)
+            } else {
+                style.dot_color
+            },
+        );
+        let label_max = row.toggle.x0 - (cx_target + 14.0) - 60.0;
+        paint::label(
+            tr,
+            scene,
+            t,
+            &rule.matcher.label(),
+            14.0,
+            style.primary,
+            cx_target + 14.0,
+            row.rect.y0 + 10.0,
+            label_max.max(40.0),
+        );
+        // Action chip on the top line, just left of the toggle.
+        let _ = paint::chip(
+            tr,
+            scene,
+            t,
+            style.action_text,
+            11.0,
+            style.action_color,
+            alpha(style.action_color, 40),
+            row.toggle.x0 - 62.0,
+            dot_y,
+            8.0,
+            20.0,
+            6.0,
+        );
+        // Second line: proto · source.
+        let sub = if src == "anywhere" {
+            format!("{} · anywhere", rule.matcher.proto_label())
+        } else {
+            format!("{} · {}", rule.matcher.proto_label(), src)
+        };
+        paint::label(
+            tr,
+            scene,
+            t,
+            &sub,
+            12.0,
+            style.secondary,
+            cx_target + 14.0,
+            row.rect.y0 + 32.0,
+            row.rect.width() - 30.0,
+        );
+    }
+
+    /// Five columns abreast: target, proto, action chip, source.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "per-row paint helper threading the shared scene/transform plus this row's \
+                  own geometry and precomputed style; a single call site, so bundling further \
+                  would only add boilerplate"
+    )]
+    fn draw_table_row_wide(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        cols: (f64, f64, f64, f64, f64),
+        row: &RuleRow,
+        rule: &Rule,
+        style: &RowStyle,
+        src: &str,
+    ) {
+        let (cx_target, cx_proto, cx_action, cx_source, cx_ctrl) = cols;
+        let cy = f64::midpoint(row.rect.y0, row.rect.y1);
+        paint::dot(
+            scene,
+            t,
+            Point::new(cx_target + 4.0, cy),
+            3.0,
+            if style.dim {
+                alpha(style.dot_color, 120)
+            } else {
+                style.dot_color
+            },
+        );
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            &rule.matcher.label(),
+            14.0,
+            style.primary,
+            cx_target + 14.0,
+            row.rect.y0,
+            row.rect.height(),
+            cx_proto - cx_target - 18.0,
+        );
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            &rule.matcher.proto_label(),
+            12.0,
+            style.secondary,
+            cx_proto,
+            row.rect.y0,
+            row.rect.height(),
+            60.0,
+        );
+        let _ = paint::chip(
+            tr,
+            scene,
+            t,
+            style.action_text,
+            11.0,
+            style.action_color,
+            alpha(style.action_color, 40),
+            cx_action,
+            cy,
+            8.0,
+            20.0,
+            6.0,
+        );
+        let src_color = if src == "anywhere" {
+            style.secondary
+        } else {
+            style.primary
+        };
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            src,
+            12.0,
+            src_color,
+            cx_source,
+            row.rect.y0,
+            row.rect.height(),
+            cx_ctrl - cx_source - 8.0,
+        );
+    }
+
+    /// Enable toggle + delete (×) button + row separator — identical in the
+    /// narrow and wide layouts.
+    fn draw_table_row_controls(
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        row: &RuleRow,
+        enabled: bool,
+    ) {
+        draw_toggle(scene, t, theme, row.toggle, enabled);
+
+        // Delete (×) drawn as two strokes inside a soft danger button.
+        let d = row.delete;
+        paint::fill_rrect(
+            scene,
+            t,
+            d,
+            6.0,
+            alpha(theme.tokens.colors.semantic.danger, 30),
+        );
+        let m = 8.0;
+        let dc = theme.tokens.colors.semantic.danger;
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.6),
+            t,
+            dc,
+            None,
+            &vello::kurbo::Line::new(
+                Point::new(d.x0 + m, d.y0 + m),
+                Point::new(d.x1 - m, d.y1 - m),
+            ),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.6),
+            t,
+            dc,
+            None,
+            &vello::kurbo::Line::new(
+                Point::new(d.x1 - m, d.y0 + m),
+                Point::new(d.x0 + m, d.y1 - m),
+            ),
+        );
+
+        // Row separator.
+        paint::hline(
+            scene,
+            t,
+            row.rect.x0,
+            row.rect.x1,
+            row.rect.y1 + 2.0,
+            alpha(theme.border_standard, 120),
+            1.0,
+        );
     }
 
     fn draw_services(
@@ -2302,7 +2617,7 @@ impl FirewallApp {
 
         // kind segmented.
         let kind_sel = usize::from(!self.form.is_service);
-        self.draw_segmented(
+        Self::draw_segmented(
             scene,
             t,
             tr,
@@ -2313,61 +2628,7 @@ impl FirewallApp {
         );
 
         if self.form.is_service {
-            // service cycle selector.
-            let svc_id = self.form.current_service();
-            let name = ServiceCatalog::name_of(&svc_id);
-            paint::fill_rrect(
-                scene,
-                t,
-                l.service_prev,
-                7.0,
-                theme.tokens.colors.neutral[2],
-            );
-            paint::fill_rrect(scene, t, l.service_sel, 0.0, theme.tokens.colors.neutral[1]);
-            paint::fill_rrect(
-                scene,
-                t,
-                l.service_next,
-                7.0,
-                theme.tokens.colors.neutral[2],
-            );
-            paint::label_v(
-                tr,
-                scene,
-                t,
-                "<",
-                14.0,
-                theme.text_primary,
-                l.service_prev.x0 + 12.0,
-                l.service_prev.y0,
-                l.service_prev.height(),
-                20.0,
-            );
-            paint::label_v(
-                tr,
-                scene,
-                t,
-                ">",
-                14.0,
-                theme.text_primary,
-                l.service_next.x0 + 12.0,
-                l.service_next.y0,
-                l.service_next.height(),
-                20.0,
-            );
-            let w = paint::text_width(tr, name, 13.0);
-            paint::label_v(
-                tr,
-                scene,
-                t,
-                name,
-                13.0,
-                theme.text_primary,
-                l.service_sel.x0 + (l.service_sel.width() - w) / 2.0,
-                l.service_sel.y0,
-                l.service_sel.height(),
-                w + 2.0,
-            );
+            self.draw_form_service_selector(scene, t, tr, theme, l);
         } else {
             // port field (TextInput) + proto segmented.
             self.form.port.draw(scene, t, tr, theme, presence);
@@ -2375,7 +2636,7 @@ impl FirewallApp {
                 Proto::Tcp => 0,
                 Proto::Udp => 1,
             };
-            self.draw_segmented(scene, t, tr, theme, &l.proto_seg, &["tcp", "udp"], psel);
+            Self::draw_segmented(scene, t, tr, theme, &l.proto_seg, &["tcp", "udp"], psel);
         }
 
         // action segmented.
@@ -2383,10 +2644,104 @@ impl FirewallApp {
             Action::Allow => 0,
             Action::Deny => 1,
         };
-        self.draw_segmented(scene, t, tr, theme, &l.action_seg, &["allow", "deny"], asel);
+        Self::draw_segmented(scene, t, tr, theme, &l.action_seg, &["allow", "deny"], asel);
 
-        // Source label + field. The label sits above the full-width field when
-        // stacked (narrow), and beside it when the form is a single row (wide).
+        self.draw_form_source(scene, t, tr, theme, presence, l);
+        Self::draw_form_add_button(scene, t, tr, theme, l);
+
+        // Status line (wide only — the stacked form fills its card top to bottom).
+        if !self.status.is_empty() && !l.narrow {
+            paint::label(
+                tr,
+                scene,
+                t,
+                &self.status,
+                11.0,
+                theme.text_dim,
+                card.x0 + 16.0,
+                card.y1 - 22.0,
+                card.width() - 32.0,
+            );
+        }
+    }
+
+    /// Service-kind matcher control: a cycle selector `[< name >]`.
+    fn draw_form_service_selector(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+    ) {
+        let svc_id = self.form.current_service();
+        let name = ServiceCatalog::name_of(&svc_id);
+        paint::fill_rrect(
+            scene,
+            t,
+            l.service_prev,
+            7.0,
+            theme.tokens.colors.neutral[2],
+        );
+        paint::fill_rrect(scene, t, l.service_sel, 0.0, theme.tokens.colors.neutral[1]);
+        paint::fill_rrect(
+            scene,
+            t,
+            l.service_next,
+            7.0,
+            theme.tokens.colors.neutral[2],
+        );
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            "<",
+            14.0,
+            theme.text_primary,
+            l.service_prev.x0 + 12.0,
+            l.service_prev.y0,
+            l.service_prev.height(),
+            20.0,
+        );
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            ">",
+            14.0,
+            theme.text_primary,
+            l.service_next.x0 + 12.0,
+            l.service_next.y0,
+            l.service_next.height(),
+            20.0,
+        );
+        let w = paint::text_width(tr, name, 13.0);
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            name,
+            13.0,
+            theme.text_primary,
+            l.service_sel.x0 + (l.service_sel.width() - w) / 2.0,
+            l.service_sel.y0,
+            l.service_sel.height(),
+            w + 2.0,
+        );
+    }
+
+    /// Source label + field. The label sits above the full-width field when
+    /// stacked (narrow), and beside it when the form is a single row (wide).
+    fn draw_form_source(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        l: &Layout,
+    ) {
+        let card = l.form;
         if l.narrow {
             paint::label(
                 tr,
@@ -2414,8 +2769,15 @@ impl FirewallApp {
             );
         }
         self.form.source.draw(scene, t, tr, theme, presence);
+    }
 
-        // Add button.
+    fn draw_form_add_button(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+    ) {
         paint::fill_rrect(scene, t, l.add_btn, 8.0, theme.accent_primary);
         let at = "Add rule";
         let w = paint::text_width(tr, at, 13.0);
@@ -2431,21 +2793,6 @@ impl FirewallApp {
             l.add_btn.height(),
             w + 2.0,
         );
-
-        // Status line (wide only — the stacked form fills its card top to bottom).
-        if !self.status.is_empty() && !l.narrow {
-            paint::label(
-                tr,
-                scene,
-                t,
-                &self.status,
-                11.0,
-                theme.text_dim,
-                card.x0 + 16.0,
-                card.y1 - 22.0,
-                card.width() - 32.0,
-            );
-        }
     }
 }
 
@@ -2676,7 +3023,7 @@ mod tests {
             .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
             .map(|act| match &act.input {
                 ActionInput::Immediate(enc) => enc.clone(),
-                _ => panic!("delete is an immediate action"),
+                ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
             })
             .expect("a delete spec for the rule");
 

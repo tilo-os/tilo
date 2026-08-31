@@ -85,18 +85,25 @@ pub fn resolve_mentions(text: &str, room: &[RoomMember]) -> Vec<MentionRef> {
     let haystack: &str = if fold { &lowered } else { text };
 
     let mut out: Vec<MentionRef> = Vec::new();
-    let mut cursor = 0usize;
-    while let Some(rel) = text[cursor..].find('@') {
-        let at = cursor + rel;
-        let opens_word = text[..at]
-            .chars()
-            .next_back()
+    let mut cursor: usize = 0;
+    // `cursor`/`at`/`after`/`tail` are all byte offsets this loop derives
+    // from `find`/`starts_with`/char-boundary walks over `text`, so they
+    // always land on char boundaries — but `.get()` + `saturating_add`
+    // says so without leaning on that proof at every slice/add.
+    while let Some(tail_str) = text.get(cursor..) {
+        let Some(rel) = tail_str.find('@') else {
+            break;
+        };
+        let at = cursor.saturating_add(rel);
+        let opens_word = text
+            .get(..at)
+            .and_then(|s| s.chars().next_back())
             .is_none_or(char::is_whitespace);
         if !opens_word {
-            cursor = at + '@'.len_utf8();
+            cursor = at.saturating_add('@'.len_utf8());
             continue;
         }
-        let after = at + '@'.len_utf8();
+        let after = at.saturating_add('@'.len_utf8());
         let mut matched: Option<usize> = None;
         let mut who: Option<&RoomMember> = None;
         for m in &by_len {
@@ -112,13 +119,16 @@ pub fn resolve_mentions(text: &str, room: &[RoomMember]) -> Vec<MentionRef> {
             } else {
                 &m.name
             };
-            if !haystack[after..].starts_with(needle) {
+            let Some(rest) = haystack.get(after..) else {
+                break;
+            };
+            if !rest.starts_with(needle) {
                 continue;
             }
-            let tail = after + needle.len();
-            let boundary = text[tail..]
-                .chars()
-                .next()
+            let tail = after.saturating_add(needle.len());
+            let boundary = text
+                .get(tail..)
+                .and_then(|s| s.chars().next())
                 .is_none_or(|c| !c.is_alphanumeric());
             if boundary {
                 matched = Some(needle.len());
@@ -131,10 +141,10 @@ pub fn resolve_mentions(text: &str, room: &[RoomMember]) -> Vec<MentionRef> {
                 out.push(MentionRef {
                     user: m.id.clone(),
                     start: at,
-                    len: '@'.len_utf8() + n,
+                    len: '@'.len_utf8().saturating_add(n),
                     is_agent: m.is_agent,
                 });
-                cursor = after + n;
+                cursor = after.saturating_add(n);
             }
             _ => cursor = after,
         }
@@ -255,10 +265,7 @@ impl Delivery {
         match self {
             Delivery::Channel { .. } => &[],
             Delivery::DirectedInChannel { to, .. } => to,
-            Delivery::Private { .. } => std::slice::from_ref(match self {
-                Delivery::Private { to } => to,
-                _ => unreachable!(),
-            }),
+            Delivery::Private { to } => std::slice::from_ref(to),
         }
     }
 }

@@ -292,7 +292,9 @@ fn image_block_adds_an_image_manifest_item_and_packaged_resource() {
     );
     let (img_name, img_bytes) = img_part.unwrap();
     assert!(
-        img_name.ends_with(".png"),
+        std::path::Path::new(img_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png")),
         "PNG blob packaged with .png extension: {img_name}"
     );
     assert_eq!(
@@ -458,7 +460,7 @@ fn text_specials_are_xml_escaped_not_injected() {
 fn assert_well_formed_xml(xml: &str) {
     let bytes = xml.as_bytes();
     let mut stack: Vec<String> = Vec::new();
-    let mut i = 0;
+    let mut i: usize = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'<' => {
@@ -466,12 +468,12 @@ fn assert_well_formed_xml(xml: &str) {
                 let rel = xml[i..]
                     .find('>')
                     .unwrap_or_else(|| panic!("unterminated tag at {i}\n{xml}"));
-                let end = i + rel;
-                let tag = &xml[i + 1..end]; // inside the angle brackets
+                let end = i.saturating_add(rel);
+                let tag = &xml[i.saturating_add(1)..end]; // inside the angle brackets
 
                 if tag.starts_with('?') || tag.starts_with('!') {
                     // XML prolog / declaration / comment — skip.
-                    i = end + 1;
+                    i = end.saturating_add(1);
                     continue;
                 }
                 if let Some(close) = tag.strip_prefix('/') {
@@ -490,11 +492,11 @@ fn assert_well_formed_xml(xml: &str) {
                     // Opening tag.
                     stack.push(tag_name(tag).clone());
                 }
-                i = end + 1;
+                i = end.saturating_add(1);
             }
             b'&' => {
                 // Must be a well-formed entity: &name; or &#nnn;.
-                let rest = &xml[i + 1..];
+                let rest = &xml[i.saturating_add(1)..];
                 let semi = rest
                     .find(';')
                     .unwrap_or_else(|| panic!("unescaped '&' at {i}\n{xml}"));
@@ -503,9 +505,9 @@ fn assert_well_formed_xml(xml: &str) {
                     !ent.is_empty() && ent.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'),
                     "malformed entity '&{ent};' at {i}\n{xml}"
                 );
-                i += 1 + semi + 1;
+                i = i.saturating_add(1).saturating_add(semi).saturating_add(1);
             }
-            _ => i += 1,
+            _ => i = i.saturating_add(1),
         }
     }
     assert!(stack.is_empty(), "unclosed tags {stack:?}\n{xml}");

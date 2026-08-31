@@ -175,7 +175,7 @@ impl SelectionModel {
             self.selected.insert(i);
         }
         self.anchor = Some(0);
-        self.primary = Some(count - 1);
+        self.primary = Some(count.saturating_sub(1));
     }
 
     /// Drop any selected/anchor/primary index that is `>= count`. Call

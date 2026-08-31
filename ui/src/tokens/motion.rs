@@ -293,8 +293,8 @@ mod tests {
         // than the one before it, all the way out.
         let mut prev_gain = f32::INFINITY;
         let mut prev = 0.0;
-        let mut d = 1.0;
-        while d <= 400.0 {
+        for step in 1_u16..=400 {
+            let d = f32::from(step);
             let v = rubber_band(d, limit);
             let gain = v - prev;
             assert!(
@@ -308,7 +308,6 @@ mod tests {
             assert!(v < limit, "overscroll must stay under the limit (d = {d})");
             prev_gain = gain;
             prev = v;
-            d += 1.0;
         }
         // Far out, the surface has all but stopped moving.
         assert!(rubber_band(1.0e4, limit) > limit * 0.99);

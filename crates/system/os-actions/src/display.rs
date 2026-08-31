@@ -30,6 +30,11 @@ const BACKLIGHT: &str = "/sys/class/backlight";
 const IIO_DEVICES: &str = "/sys/bus/iio/devices";
 
 /// Set the backlight brightness to `pct` percent, clamped to `[0, 100]`.
+///
+/// # Errors
+///
+/// Returns an error message if the sysfs write fails and the `brightnessctl` fallback is
+/// either not installed or also fails.
 pub fn set_brightness(pct: f32) -> Result<(), String> {
     let clamped = pct.clamp(0.0, 100.0);
     match set_brightness_in(Path::new(BACKLIGHT), clamped) {
@@ -40,16 +45,25 @@ pub fn set_brightness(pct: f32) -> Result<(), String> {
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
-            run(
-                "brightnessctl",
-                &["set", &format!("{}%", clamped.round() as u32)],
-            )
-            .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 0.0..=100.0 above, so the rounded value always fits in u32 \
+                          with no sign loss"
+            )]
+            let percent = clamped.round() as u32;
+            run("brightnessctl", &["set", &format!("{percent}%")])
+                .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
         }
     }
 }
 
 /// Read the current brightness as a `0.0..=1.0` fraction.
+///
+/// # Errors
+///
+/// Returns an error message if no backlight device is found and the `brightnessctl` fallback is
+/// either not installed, fails, or its output cannot be parsed.
 pub fn get_brightness() -> Result<f32, String> {
     match get_brightness_in(Path::new(BACKLIGHT)) {
         Ok(v) => Ok(v),
@@ -110,19 +124,10 @@ fn read_f32(path: &Path) -> Option<f32> {
 /// Stateful lux→brightness policy.  Logarithmic mapping matches human light
 /// perception; the EMA and deadband prevent a desk shadow from making the
 /// panel visibly pulse.  The controller emits only meaningful changes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AmbientBrightnessController {
     filtered_lux: Option<f32>,
     last_output: Option<f32>,
-}
-
-impl Default for AmbientBrightnessController {
-    fn default() -> Self {
-        Self {
-            filtered_lux: None,
-            last_output: None,
-        }
-    }
 }
 
 impl AmbientBrightnessController {
@@ -158,7 +163,13 @@ fn get_brightness_in(root: &Path) -> Result<f32, String> {
         return Err("backlight max_brightness is 0".to_string());
     }
     let now = read_u32(&dev, "brightness").ok_or("backlight brightness unreadable")?;
-    Ok((now as f32 / max as f32).clamp(0.0, 1.0))
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "backlight raw values are far below 2^24, so the f32 division loses no \
+                  precision in practice"
+    )]
+    let fraction = (now as f32 / max as f32).clamp(0.0, 1.0);
+    Ok(fraction)
 }
 
 fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
@@ -167,6 +178,13 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
     if max == 0 {
         return Err("backlight max_brightness is 0".to_string());
     }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "max_brightness is far below 2^24, and the result is clamped into 0.0..=max \
+                  before the final cast, so no precision is lost and the value never goes negative"
+    )]
     let raw = ((pct / 100.0) * max as f32).round().clamp(0.0, max as f32) as u32;
     // Never write a hard 0 from a percentage above zero: some panels treat 0 as "backlight off"
     // with no way for the user to see the screen well enough to bring it back.
@@ -212,7 +230,10 @@ fn parse_brightness_machine(stdout: &str) -> Result<f32, String> {
         return Err(format!("brightnessctl -m unexpected: {line}"));
     }
     // Field 3 is the percentage with a trailing `%`.
-    let pct_str = fields[3].trim_end_matches('%');
+    let pct_str = fields
+        .get(3)
+        .ok_or_else(|| format!("brightnessctl -m unexpected: {line}"))?
+        .trim_end_matches('%');
     let pct: f32 = pct_str
         .parse()
         .map_err(|e| format!("brightness pct parse: {e} ({pct_str:?})"))?;

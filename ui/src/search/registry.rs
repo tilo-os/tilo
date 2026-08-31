@@ -89,7 +89,9 @@ impl SearchRegistry {
         let bonus = fuzzy_score(query, &r.title)
             .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
             .unwrap_or(0);
-        r.score * PROVIDER_BIAS_WEIGHT + bonus
+        r.score
+            .saturating_mul(PROVIDER_BIAS_WEIGHT)
+            .saturating_add(bonus)
     }
 
     /// Sorted by descending [`rank_key`](Self::rank_key); ties keep provider
@@ -236,7 +238,7 @@ mod tests {
     fn struct_provider_registers_and_queries() {
         struct Fixed;
         impl SearchProvider for Fixed {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "Fixed"
             }
             fn search(&self, _q: &str) -> Vec<SearchResult> {

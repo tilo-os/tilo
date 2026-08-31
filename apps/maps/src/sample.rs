@@ -67,8 +67,8 @@ impl Rng {
     fn f(&mut self) -> f64 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
     }
     fn range(&mut self, lo: f64, hi: f64) -> f64 {
@@ -102,12 +102,11 @@ pub fn demo_clock_base() -> chrono::DateTime<chrono::Local> {
     let today = chrono::Local::now().date_naive();
     let hh = (DEMO_CLOCK_BASE_MIN / 60) as u32;
     let mm = (DEMO_CLOCK_BASE_MIN % 60) as u32;
-    let naive = today
-        .and_hms_opt(hh, mm, 0)
-        .expect("demo clock base is a valid wall-clock time");
+    let Some(naive) = today.and_hms_opt(hh, mm, 0) else {
+        return chrono::Local::now();
+    };
     match chrono::Local.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => dt,
-        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => dt,
         chrono::LocalResult::None => chrono::Local::now(),
     }
 }
@@ -120,15 +119,24 @@ fn axis_steps(a: f64, b: f64) -> Vec<f64> {
     if (b - a).abs() < 1e-9 {
         return out;
     }
+    // Bounded by the grid span (+2) rather than a float `while`, so a
+    // pathological input can't spin forever on rounding.
+    let bound = (b - a).abs().ceil() as u32 + 2;
     if b > a {
         let mut n = a.floor() + 1.0;
-        while n < b - 1e-9 {
+        for _ in 0..bound {
+            if n >= b - 1e-9 {
+                break;
+            }
             out.push(n);
             n += 1.0;
         }
     } else {
         let mut n = a.ceil() - 1.0;
-        while n > b + 1e-9 {
+        for _ in 0..bound {
+            if n <= b + 1e-9 {
+                break;
+            }
             out.push(n);
             n -= 1.0;
         }
@@ -157,6 +165,17 @@ fn grid_path(from: (f64, f64), to: (f64, f64)) -> Vec<LatLon> {
 }
 
 /// Build the stylised basemap.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one deterministic generation pass per layer (river, parks, buildings, roads); \
+              splitting it would only relocate the code, not shrink what a reader must trace"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "`nx`/`ny` (the grid cell under test) and `px`/`py` (a park centre from the \
+              lookup table) name genuinely different things; the shared axis-letter suffix \
+              is the point, not an accident"
+)]
 pub fn basemap() -> Basemap {
     let mut rng = Rng(0x51ED_2026_C0FF_EE01);
     let mut areas: Vec<Area> = Vec::new();
@@ -297,15 +316,15 @@ pub fn basemap() -> Basemap {
 
 /// An irregular closed polygon ("blob") around `c`, radii in grid units.
 fn blob(rng: &mut Rng, c: LatLon, rx: f64, ry: f64, n: usize) -> Vec<LatLon> {
-    let mut ring = Vec::with_capacity(n);
+    let mut pts = Vec::with_capacity(n);
     for i in 0..n {
         let a = (i as f64) / (n as f64) * std::f64::consts::TAU;
         let jitter = rng.range(0.78, 1.18);
         let dx = a.cos() * rx * jitter;
         let dy = a.sin() * ry * jitter;
-        ring.push(LatLon::new(c.lat + dy * DLAT, c.lon + dx * DLON));
+        pts.push(LatLon::new(c.lat + dy * DLAT, c.lon + dx * DLON));
     }
-    ring
+    pts
 }
 
 /// The bundled places (POIs).
@@ -509,21 +528,33 @@ pub fn sample_route() -> Route {
     // East along the ny ≈ -6 row to nx = 0, then north along nx = 0 col.
     let mut geometry = Vec::new();
     let row_y = -6.0;
+    // Bounded rather than a float `while`; the grid span here is a small
+    // compile-time-known constant, so 64 steps is generous headroom.
     let mut nx = -6.5;
-    while nx <= 0.0 {
+    for _ in 0..64 {
+        if nx > 0.0 {
+            break;
+        }
         geometry.push(cell(nx, row_y));
         nx += 1.0;
     }
     geometry.push(cell(0.0, row_y));
     let mut ny = row_y;
-    while ny <= 0.0 {
+    for _ in 0..64 {
+        if ny > 0.0 {
+            break;
+        }
         geometry.push(cell(0.0, ny));
         ny += 1.0;
     }
     geometry.push(cell(0.0, 0.0));
 
-    let leg_east = polyline_length_m(&geometry[..7.min(geometry.len())]);
-    let leg_north = polyline_length_m(&geometry[6.min(geometry.len().saturating_sub(1))..]);
+    let leg_east = polyline_length_m(geometry.get(..7.min(geometry.len())).unwrap_or(&[]));
+    let leg_north = polyline_length_m(
+        geometry
+            .get(6.min(geometry.len().saturating_sub(1))..)
+            .unwrap_or(&[]),
+    );
     let total = polyline_length_m(&geometry);
     let _ = (o, leg_east, leg_north);
 
@@ -625,6 +656,11 @@ pub fn fallback_route(from: LatLon, to: LatLon, mode: TravelMode) -> Route {
 /// a plausible on-grid `geometry` polyline so the offline `--shots` map and the
 /// hermetic tests exercise the real on-map itinerary rendering (the live app
 /// gets these from the planner's `legGeometry`).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one block per bundled sample itinerary; splitting it would only relocate the \
+              fixture data, not shrink what a reader must trace for one journey"
+)]
 pub fn sample_transit() -> Vec<TransitJourney> {
     // All departure/arrival clocks derive from the one shared demo base so the
     // Transit departures stay consistent with the Drive summary's clock.
@@ -837,8 +873,10 @@ pub fn download_regions() -> Vec<crate::net::RegionHit> {
 }
 
 pub fn default_model() -> MapModel {
-    let mut m = MapModel::default();
-    m.places = places();
+    let mut m = MapModel {
+        places: places(),
+        ..Default::default()
+    };
     // Pre-save a couple of favourites so the Explore list is populated.
     for id in ["hofgarten", "cafe-glueck"] {
         m.toggle_saved(id);

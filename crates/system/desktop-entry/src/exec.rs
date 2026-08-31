@@ -15,6 +15,9 @@
 //! they bracket nothing, and an empty pair is removed rather than passed on.
 
 use std::path::Path;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// Why an `Exec=` could not become an argv.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -27,11 +30,16 @@ pub enum ExecError {
 
 /// Split an `Exec=` value into tokens, honouring the spec's quoting. Field codes are left
 /// as-is — [`expand`] substitutes them, since only the caller knows what is being opened.
+///
+/// # Errors
+///
+/// Returns [`ExecError::UnterminatedQuote`] if a `"` is never closed, or
+/// [`ExecError::Empty`] if `raw` contains no tokens at all.
 pub fn split_exec(raw: &str) -> Result<Vec<String>, ExecError> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut has_token = false;
-    let mut chars = raw.chars().peekable();
+    let mut chars = raw.chars();
 
     while let Some(c) = chars.next() {
         match c {
@@ -120,7 +128,7 @@ pub fn expand(argv: &[String], ctx: &ExpandContext<'_>) -> Vec<String> {
             }
         }
     }
-    strip_empty_forwarding_markers(out)
+    strip_empty_forwarding_markers(&out)
 }
 
 /// Substitute the single-value codes inside one token. `None` means the token expanded to
@@ -132,7 +140,7 @@ fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Opt
     }
     let mut out = String::with_capacity(token.len());
     let mut dropped_value = false;
-    let mut chars = token.chars().peekable();
+    let mut chars = token.chars();
     while let Some(c) = chars.next() {
         if c != '%' {
             out.push(c);
@@ -161,9 +169,9 @@ fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Opt
             // The list codes are only valid as a whole token; reaching here means one was embedded in a
             // larger argument, which the spec forbids. Drop the whole token rather than guess.
             Some('F' | 'U' | 'i') => return None,
-            // Deprecated: "must be removed".
-            Some('d' | 'D' | 'n' | 'N' | 'v' | 'm') => {}
-            // A trailing or unknown code. Keep neither the `%` nor the letter: an unknown code is not a literal.
+            // Everything else — the deprecated codes (`%d %D %n %N %v %m`, spec: "must be
+            // removed"), a trailing `%`, or any other unknown letter — keeps neither the `%`
+            // nor the letter: an unknown code is not a literal.
             Some(_) | None => {}
         }
     }
@@ -180,17 +188,18 @@ fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Opt
 /// uses these to mark arguments it should rewrite for the sandbox; when the launch opens
 /// nothing, the pair ends up bracketing empty space — `flatpak` tolerates that, but it's
 /// noise in every log and `ps` listing, so it goes.
-fn strip_empty_forwarding_markers(argv: Vec<String>) -> Vec<String> {
+fn strip_empty_forwarding_markers(argv: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(argv.len());
-    let mut i = 0;
-    while i < argv.len() {
-        let is_open = argv[i] == "@@" || argv[i] == "@@u";
-        if is_open && argv.get(i + 1).map(String::as_str) == Some("@@") {
-            i += 2;
+    let mut iter = argv.iter().peekable();
+    // `for tok in &mut iter` would hold the borrow for the whole loop, so the
+    // `peek` below could not look ahead; `while let` releases it each step.
+    while let Some(tok) = iter.next() {
+        let is_open = tok == "@@" || tok == "@@u";
+        if is_open && iter.peek().is_some_and(|next| next.as_str() == "@@") {
+            iter.next(); // consume the matching close marker too
             continue;
         }
-        out.push(argv[i].clone());
-        i += 1;
+        out.push(tok.clone());
     }
     out
 }
@@ -208,7 +217,7 @@ pub fn path_to_url(path: &str) -> String {
         if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
             out.push(c);
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            let _ = write!(out, "%{b:02X}");
         }
     }
     out

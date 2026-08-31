@@ -1288,6 +1288,12 @@ fn empty_state(theme: &Theme, title: &str, body: &str) -> Flex {
 // watch page
 // ---------------------------------------------------------------------------
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single linear layout build over the watch page's fixed regions (player, \
+              title/actions, tabs, comments); splitting it would only relocate the line \
+              count, not the amount a reader must hold in mind"
+)]
 pub fn watch(
     model: &TubeModel,
     theme: &Theme,
@@ -1848,6 +1854,12 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         .push(text_c(mode.label(), 12.5, fg))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single linear layout build over the settings page's fixed sections; \
+              splitting it would only relocate the line count, not the amount a reader \
+              must hold in mind"
+)]
 pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable {
     let s = &model.settings;
 
@@ -2266,6 +2278,14 @@ mod search_screen_tests {
     #[test]
     fn search_screen_has_type_chips_and_no_count_header() {
         use crate::model::Route;
+
+        fn has_id(w: &dyn Widget, id: &str) -> bool {
+            if w.test_id() == Some(id) {
+                return true;
+            }
+            w.children().iter().any(|c| has_id(*c, id))
+        }
+
         let mut model = crate::sample::model();
         let mut v = model.videos[0].clone();
         v.id = "only".into();
@@ -2295,12 +2315,6 @@ mod search_screen_tests {
             )
             .unwrap();
 
-        fn has_id(w: &dyn Widget, id: &str) -> bool {
-            if w.test_id() == Some(id) {
-                return true;
-            }
-            w.children().iter().any(|c| has_id(*c, id))
-        }
         assert!(
             has_id(&screen, "search_type_chips"),
             "the Video·Playlist·Creator chips are present"
@@ -2319,7 +2333,8 @@ mod search_screen_tests {
     /// `video_card` image path Home/Trending use.
     #[test]
     fn search_result_row_paints_the_fetched_thumbnail() {
-        let store = ui::ImageStore::new(Arc::new(|_u: &str| Some(px_png())));
+        let fetcher: ui::image_store::Fetcher = Arc::new(|_u: &str| Some(px_png()));
+        let store = ui::ImageStore::new(&fetcher);
 
         let mut model = crate::sample::model();
         let mut v = model.videos[0].clone();

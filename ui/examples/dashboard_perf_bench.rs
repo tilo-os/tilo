@@ -27,6 +27,7 @@
 //! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use automerge::AutoCommit;
@@ -49,6 +50,26 @@ use winit::event::{
     DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 
+/// Narrows the canvas size (bounded, well under 10,000px) from `u32` to
+/// `f32` for taffy's available-space measurement.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "canvas dimensions are small (<10000px), far below f32's exact-integer range"
+)]
+fn canvas_f32(v: u32) -> f32 {
+    v as f32
+}
+
+/// Widens a bench-loop index (bounded by `iters`, far below f64's
+/// exact-integer range) to `f64` for the per-event cursor wobble.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "i is bounded by the loop's iters count, far below f64's exact-integer range"
+)]
+fn idx_f64(i: usize) -> f64 {
+    i as f64
+}
+
 /// One panel of the dashboard: header + a column of mixed widgets.
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     let mut col = Column::new().push(Box::new(Text::new(title_key).with_size(18.0)));
@@ -59,7 +80,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     // default to `true` and would peg the gate forever. Once
     // those are migrated this can grow back.
     for i in 0..20 {
-        let row_idx = idx * 20 + i;
+        let row_idx = idx.saturating_mul(20).saturating_add(i);
         let label_key = leak_label(&format!("dash_lbl_{row_idx}"));
         match i % 3 {
             0 => {
@@ -77,7 +98,9 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Badge::count((i as u32) * 3))),
+                        .push(Box::new(Badge::count(
+                            u32::try_from(i).unwrap_or(u32::MAX).saturating_mul(3),
+                        ))),
                 ));
             }
             _ => {
@@ -157,6 +180,11 @@ fn build_tree(include_animated: bool) -> Box<dyn Widget> {
     )
 }
 
+#[allow(
+    clippy::struct_field_names,
+    reason = "the shared `_us` postfix states the unit (microseconds) on every timing field; \
+              dropping it would read as unitless durations"
+)]
 #[derive(Default, Clone)]
 struct Phase {
     handle_us: u128,
@@ -166,34 +194,34 @@ struct Phase {
     total_us: u128,
 }
 
-// One call site: this is the whole benchmark's "run one entire frame" step,
-// and each parameter is a distinct piece of frame state (widget tree,
-// layout engine, render targets, timing out-param). Bundling would trade
-// named parameters for an equally large ad-hoc struct with no behavioural
-// change.
-#[allow(clippy::too_many_arguments)]
-fn full_draw(
-    root: &mut Box<dyn Widget>,
-    taffy: &mut TaffyTree<()>,
-    node_map: &HashMap<NodeId, *mut dyn Widget>,
+/// Everything one bench frame needs to lay out, dispatch events to, and
+/// draw the dashboard tree — bundled into one struct so `full_draw` and
+/// `dispatch` stay well under clippy's argument-count limit.
+struct BenchState<'a> {
+    root: &'a mut Box<dyn Widget>,
+    taffy: &'a mut TaffyTree<()>,
+    node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
-    text_renderer: &mut TextRenderer,
-    presence: &PresenceCtx,
-    perms: &PermissionContext,
-    theme: &Theme,
-    scene: &mut Scene,
-    renderer: &mut OffscreenRenderer,
+    text_renderer: &'a mut TextRenderer,
+    presence: &'a PresenceCtx,
+    perms: &'a PermissionContext,
+    theme: &'a Theme,
+    scene: &'a mut Scene,
+    renderer: &'a mut OffscreenRenderer,
     canvas_w: u32,
     canvas_h: u32,
-    phase: &mut Phase,
-) {
+}
+
+fn full_draw(state: &mut BenchState<'_>, phase: &mut Phase) {
     let t_layout = Instant::now();
-    if root.is_layout_dirty() {
-        let _ = taffy.compute_layout_with_measure(
-            root_node,
+    if state.root.is_layout_dirty() {
+        let node_map = state.node_map;
+        let text_renderer = &mut *state.text_renderer;
+        let _ = state.taffy.compute_layout_with_measure(
+            state.root_node,
             Size {
-                width: AvailableSpace::Definite(canvas_w as f32),
-                height: AvailableSpace::Definite(canvas_h as f32),
+                width: AvailableSpace::Definite(canvas_f32(state.canvas_w)),
+                height: AvailableSpace::Definite(canvas_f32(state.canvas_h)),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = node_map.get(&node_id) {
@@ -203,47 +231,50 @@ fn full_draw(
                 }
             },
         );
-        root.apply_layout(taffy, root_node, Point::ZERO);
+        state
+            .root
+            .apply_layout(state.taffy, state.root_node, Point::ZERO);
     }
     phase.layout_us = t_layout.elapsed().as_micros();
 
     let t_draw = Instant::now();
-    scene.reset();
+    state.scene.reset();
     // Wire the spatial-culling viewport just like the live App
     // does. Without this the bench's `draw_with_presence` walks
     // see `viewport == None` and skip the culling short-circuit,
     // masking the Item 1 win in the benchmark output.
-    let vp = vello::kurbo::Rect::new(0.0, 0.0, f64::from(canvas_w), f64::from(canvas_h));
-    let prev_vp = presence.push_viewport(vp);
-    root.draw_with_presence(
-        scene,
-        Affine::IDENTITY,
-        text_renderer,
-        theme,
-        presence,
-        perms,
+    let vp = vello::kurbo::Rect::new(
+        0.0,
+        0.0,
+        f64::from(state.canvas_w),
+        f64::from(state.canvas_h),
     );
-    presence.pop_viewport(prev_vp);
+    let prev_vp = state.presence.push_viewport(vp);
+    state.root.draw_with_presence(
+        state.scene,
+        Affine::IDENTITY,
+        state.text_renderer,
+        state.theme,
+        state.presence,
+        state.perms,
+    );
+    state.presence.pop_viewport(prev_vp);
     phase.draw_us = t_draw.elapsed().as_micros();
 
     let t_render = Instant::now();
-    let _ = renderer.render(scene, theme.tokens.colors.surfaces.base);
+    let _ = state
+        .renderer
+        .render(state.scene, state.theme.tokens.colors.surfaces.base);
     phase.render_us = t_render.elapsed().as_micros();
 
-    root.mark_drawn();
+    state.root.mark_drawn();
 }
 
-fn dispatch(
-    root: &mut Box<dyn Widget>,
-    taffy: &TaffyTree<()>,
-    root_node: NodeId,
-    doc: &mut AutoCommit,
-    event: &WindowEvent,
-) {
+fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEvent) {
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     let modifiers = Modifiers::default();
-    root.handle_event(
+    state.root.handle_event(
         event,
         1.0,
         &modifiers,
@@ -251,8 +282,8 @@ fn dispatch(
         &automerge::ObjId::Root,
         &mut handled,
         &mut focus_target,
-        root_node,
-        taffy,
+        state.root_node,
+        state.taffy,
     );
 }
 
@@ -291,21 +322,346 @@ fn make_wheel(dy: f32) -> WindowEvent {
     }
 }
 
-pub fn run(_args: &[String]) {
+/// Register every label key so `Text::new(key)` resolves through i18n
+/// without panicking.
+fn init_i18n_resources() {
     I18nManager::init("en-US");
-    // Register every label key so `Text::new(key)` resolves
-    // through i18n without panicking.
     let mut ftl = String::new();
     ftl.push_str("dash_title = QuickDesktop Dashboard\n");
     for i in 0..8 {
-        ftl.push_str(&format!("dash_p{i} = Panel {i}\n"));
+        let _ = writeln!(ftl, "dash_p{i} = Panel {i}");
     }
     for row_idx in 0..160 {
-        ftl.push_str(&format!("dash_lbl_{row_idx} = Metric {row_idx}\n"));
-        ftl.push_str(&format!("dash_btn_{row_idx} = btn_{row_idx}\n"));
-        ftl.push_str(&format!("dash_btnlbl_{row_idx} = Open\n"));
+        let _ = writeln!(ftl, "dash_lbl_{row_idx} = Metric {row_idx}");
+        let _ = writeln!(ftl, "dash_btn_{row_idx} = btn_{row_idx}");
+        let _ = writeln!(ftl, "dash_btnlbl_{row_idx} = Open");
     }
     I18nManager::add_resource("en-US", ftl);
+}
+
+/// Counts the total widget tree size for the report.
+fn count_widgets(w: &dyn Widget) -> usize {
+    1usize.saturating_add(
+        w.children()
+            .iter()
+            .map(|c| count_widgets(*c))
+            .sum::<usize>(),
+    )
+}
+
+fn dirty_culprits(w: &dyn Widget, depth: usize, out: &mut Vec<(String, usize)>) {
+    if w.needs_redraw() {
+        out.push((w.name().to_string(), depth));
+    }
+    for c in w.children() {
+        dirty_culprits(c, depth.saturating_add(1), out);
+    }
+}
+
+/// A count out of a total, as a percentage. Both bounded by the bench's
+/// iteration count, far below f64's exact-integer range.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "count/total are bounded by the bench's iters, far below f64's exact-integer range"
+)]
+fn count_pct(count: usize, total: usize) -> f64 {
+    (count as f64) / (total.max(1) as f64) * 100.0
+}
+
+/// Widens a microsecond duration (bounded by realistic per-frame times,
+/// far below f64's exact-integer range) to a millisecond `f64`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "durations here are bounded by realistic per-frame microsecond counts, far below \
+              f64's exact-integer range"
+)]
+fn us_to_ms(us: u128) -> f64 {
+    (us as f64) / 1000.0
+}
+
+/// Widens a histogram length (bounded by `iters`, far below f64's
+/// exact-integer range) to `f64` for percentile-index math.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "v.len() is bounded by iters, far below f64's exact-integer range"
+)]
+fn len_f64(n: usize) -> f64 {
+    n as f64
+}
+
+fn pct(hist: &[Phase], pct_v: f64, f: impl Fn(&Phase) -> u128) -> u128 {
+    let mut v: Vec<u128> = hist.iter().map(&f).collect();
+    v.sort_unstable();
+    // `pct_v` is always 95.0 or 99.0 from call sites and `v` is non-empty
+    // (iters >= 1), so the rounded rank always lands in `0..v.len()`;
+    // `unwrap_or(0)` below only matters if that invariant is ever broken.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "idx is a percentile rank of v.len(), always non-negative and in range"
+    )]
+    let idx = ((len_f64(v.len()) - 1.0) * pct_v / 100.0).round() as usize;
+    v.get(idx).copied().unwrap_or(0)
+}
+
+fn mean(hist: &[Phase], f: impl Fn(&Phase) -> u128) -> u128 {
+    if hist.is_empty() {
+        return 0;
+    }
+    let sum: u128 = hist.iter().map(&f).sum();
+    sum.checked_div(hist.len() as u128).unwrap_or(0)
+}
+
+fn frozen_cursor_pos(state: &BenchState<'_>) -> (f64, f64) {
+    (
+        f64::from(state.canvas_w) - 5.0,
+        f64::from(state.canvas_h) - 5.0,
+    )
+}
+
+/// Prime the cursor at the frozen position so the first event doesn't
+/// trigger a hover-state change, then draw one frame to clear pending
+/// dirty flags.
+fn prime_frozen_cursor(state: &mut BenchState<'_>, doc: &mut AutoCommit) {
+    let p = frozen_cursor_pos(state);
+    dispatch(state, doc, &make_cursor(p.0, p.1));
+    let mut warm = Phase::default();
+    full_draw(state, &mut warm);
+}
+
+/// Two warm-up frames: first `compute_layout`, second post-cache.
+fn warm_up(state: &mut BenchState<'_>) {
+    for _ in 0..2 {
+        let mut warm = Phase::default();
+        full_draw(state, &mut warm);
+    }
+}
+
+fn print_warmup_report(state: &BenchState<'_>) {
+    println!(
+        "after warm-up: root.needs_redraw()={} root.is_layout_dirty()={}",
+        state.root.needs_redraw(),
+        state.root.is_layout_dirty()
+    );
+    let mut culprits = Vec::new();
+    dirty_culprits(state.root.as_ref(), 0, &mut culprits);
+    println!("dirty culprits after warmup: {} widgets", culprits.len());
+    for (name, d) in culprits.iter().take(8) {
+        println!("  {name} (depth {d})");
+    }
+    let (warm_hits, warm_misses) = state.text_renderer.cache_stats();
+    println!(
+        "after warm-up: measure-cache hits={} misses={} hit-rate={:.1}%",
+        warm_hits,
+        warm_misses,
+        count_pct(
+            usize::try_from(warm_hits).unwrap_or(usize::MAX),
+            usize::try_from(warm_hits.saturating_add(warm_misses)).unwrap_or(usize::MAX),
+        ),
+    );
+}
+
+/// One event-mix tick: routes to the scroll/frozen/mixed-cursor path per
+/// `i`. `positions` is `[pa, pb, pc, pd, pe]` — the 5 hand-picked cursor
+/// spots documented on [`run_bench_loop`].
+fn dispatch_bench_event(
+    state: &mut BenchState<'_>,
+    doc: &mut AutoCommit,
+    i: usize,
+    scroll_mode: bool,
+    frozen: bool,
+    positions: [(f64, f64); 5],
+) {
+    let [pa, pb, pc, pd, pe] = positions;
+    if scroll_mode {
+        // Alternate scroll direction every ~50 events so we
+        // exercise both clamp-eats-it (at the edges) and
+        // dirty-signal-fires paths.
+        let dy = if (i / 50).is_multiple_of(2) {
+            -3.0
+        } else {
+            3.0
+        };
+        dispatch(state, doc, &make_wheel(dy));
+    } else if frozen {
+        // Identical no-op event — see comment above.
+        let p = frozen_cursor_pos(state);
+        dispatch(state, doc, &make_cursor(p.0, p.1));
+    } else {
+        let pick = i % 20;
+        match pick {
+            0..=13 => dispatch(
+                state,
+                doc,
+                &make_cursor(pa.0 + idx_f64(i).sin() * 4.0, pa.1),
+            ),
+            14 | 15 => dispatch(state, doc, &make_cursor(pb.0, pb.1)),
+            16 => dispatch(state, doc, &make_cursor(pc.0, pc.1)),
+            17 => {
+                let p = if i % 40 < 20 { pd } else { pe };
+                dispatch(state, doc, &make_cursor(p.0, p.1));
+                dispatch(state, doc, &make_click_press());
+                dispatch(state, doc, &make_click_release());
+            }
+            _ => dispatch(
+                state,
+                doc,
+                &make_cursor(pa.0 + idx_f64(i).cos() * 4.0, pa.1),
+            ),
+        }
+    }
+}
+
+/// Drives `iters` events through the tree and times each one. Positions
+/// exercise different parts of it: A empty panel area (no edge crossing),
+/// B a button's hover edge, C a toggle's hover edge, D/E the header
+/// `ToggleGroup`'s "Week"/"Month" segments (clicked alternately so each
+/// click actually changes the selected segment).
+fn run_bench_loop(
+    state: &mut BenchState<'_>,
+    doc: &mut AutoCommit,
+    iters: usize,
+    scroll_mode: bool,
+    frozen: bool,
+) -> (Vec<Phase>, usize, usize) {
+    let positions = [
+        (400.0, 300.0),
+        (200.0, 200.0),
+        (240.0, 200.0),
+        (380.0, 50.0),
+        (520.0, 50.0),
+    ];
+
+    let mut total_redraws = 0usize;
+    let mut total_skipped = 0usize;
+    let mut histo: Vec<Phase> = Vec::with_capacity(iters);
+
+    for i in 0..iters {
+        let t_total = Instant::now();
+        let mut phase = Phase::default();
+
+        let t_handle = Instant::now();
+        dispatch_bench_event(state, doc, i, scroll_mode, frozen, positions);
+        phase.handle_us = t_handle.elapsed().as_micros();
+
+        // App-style gate: only draw if the tree signals dirty.
+        if state.root.needs_redraw() {
+            total_redraws = total_redraws.saturating_add(1);
+            full_draw(state, &mut phase);
+        } else {
+            total_skipped = total_skipped.saturating_add(1);
+        }
+        phase.total_us = t_total.elapsed().as_micros();
+        histo.push(phase);
+    }
+
+    (histo, total_redraws, total_skipped)
+}
+
+fn print_timing_table(histo: &[Phase]) {
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "phase", "mean us", "p95 us", "p99 us"
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "handle_event",
+        mean(histo, |p| p.handle_us),
+        pct(histo, 95.0, |p| p.handle_us),
+        pct(histo, 99.0, |p| p.handle_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "layout (gated)",
+        mean(histo, |p| p.layout_us),
+        pct(histo, 95.0, |p| p.layout_us),
+        pct(histo, 99.0, |p| p.layout_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "draw_to_scene",
+        mean(histo, |p| p.draw_us),
+        pct(histo, 95.0, |p| p.draw_us),
+        pct(histo, 99.0, |p| p.draw_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "vello render",
+        mean(histo, |p| p.render_us),
+        pct(histo, 95.0, |p| p.render_us),
+        pct(histo, 99.0, |p| p.render_us)
+    );
+    println!(
+        "{:<20} {:>8} {:>8} {:>8}",
+        "TOTAL/event",
+        mean(histo, |p| p.total_us),
+        pct(histo, 95.0, |p| p.total_us),
+        pct(histo, 99.0, |p| p.total_us)
+    );
+}
+
+fn print_throughput_report(histo: &[Phase], total_redraws: usize) {
+    let mean_total = mean(histo, |p| p.total_us).max(1);
+    let mean_redraw_only: u128 = if total_redraws == 0 {
+        0
+    } else {
+        let sum: u128 = histo
+            .iter()
+            .filter(|p| p.render_us > 0 || p.draw_us > 0)
+            .map(|p| p.total_us)
+            .sum();
+        sum.checked_div(total_redraws as u128).unwrap_or(0)
+    };
+    println!();
+    println!(
+        "throughput (mean across mixed events):     {:>5} Hz   ({:.1} ms / event)",
+        1_000_000_u128.checked_div(mean_total).unwrap_or(0),
+        us_to_ms(mean_total),
+    );
+    if total_redraws > 0 {
+        println!(
+            "throughput (redrawing events only):        {:>5} Hz   ({:.1} ms / redraw)",
+            1_000_000_u128.checked_div(mean_redraw_only).unwrap_or(0),
+            us_to_ms(mean_redraw_only),
+        );
+    }
+}
+
+fn print_final_report(
+    state: &BenchState<'_>,
+    histo: &[Phase],
+    iters: usize,
+    total_redraws: usize,
+    total_skipped: usize,
+) {
+    println!();
+    println!(
+        "=== Dashboard bench ({iters} events, canvas {}×{}) ===",
+        state.canvas_w, state.canvas_h
+    );
+    println!(
+        "redrawn events:  {total_redraws}  ({:.1}%)",
+        count_pct(total_redraws, iters)
+    );
+    println!("skipped events:  {total_skipped}  (no widget signalled dirty)");
+    println!();
+    print_timing_table(histo);
+    print_throughput_report(histo, total_redraws);
+
+    let (hits_end, misses_end) = state.text_renderer.cache_stats();
+    println!(
+        "measure-cache final: hits={} misses={} hit-rate={:.1}%",
+        hits_end,
+        misses_end,
+        count_pct(
+            usize::try_from(hits_end).unwrap_or(usize::MAX),
+            usize::try_from(hits_end.saturating_add(misses_end)).unwrap_or(usize::MAX),
+        ),
+    );
+}
+
+pub fn run(_args: &[String]) {
+    init_i18n_resources();
 
     let iters: usize = std::env::var("QUICK_UI_DASH_ITERS")
         .ok()
@@ -336,81 +692,26 @@ pub fn run(_args: &[String]) {
     let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
     let mut scene = Scene::new();
 
-    // Count the total widget tree size for the report.
-    fn count_widgets(w: &dyn Widget) -> usize {
-        1 + w
-            .children()
-            .iter()
-            .map(|c| count_widgets(*c))
-            .sum::<usize>()
-    }
     let tree_size = count_widgets(root.as_ref());
     println!("dashboard widget tree: {tree_size} widgets");
 
-    // Two warm-up frames: first compute_layout, second post-cache.
-    for _ in 0..2 {
-        let mut warm = Phase::default();
-        full_draw(
-            &mut root,
-            &mut taffy,
-            &node_map,
-            root_node,
-            &mut text_renderer,
-            &presence,
-            &perms,
-            &theme,
-            &mut scene,
-            &mut renderer,
-            canvas_w,
-            canvas_h,
-            &mut warm,
-        );
-    }
-    println!(
-        "after warm-up: root.needs_redraw()={} root.is_layout_dirty()={}",
-        root.needs_redraw(),
-        root.is_layout_dirty()
-    );
-    fn dirty_culprits(w: &dyn Widget, depth: usize, out: &mut Vec<(String, usize)>) {
-        if w.needs_redraw() {
-            out.push((w.name().to_string(), depth));
-        }
-        for c in w.children() {
-            dirty_culprits(c, depth + 1, out);
-        }
-    }
-    let mut culprits = Vec::new();
-    dirty_culprits(root.as_ref(), 0, &mut culprits);
-    println!("dirty culprits after warmup: {} widgets", culprits.len());
-    for (name, d) in culprits.iter().take(8) {
-        println!("  {name} (depth {d})");
-    }
-    let (warm_hits, warm_misses) = text_renderer.cache_stats();
-    println!(
-        "after warm-up: measure-cache hits={} misses={} hit-rate={:.1}%",
-        warm_hits,
-        warm_misses,
-        (warm_hits as f64) / ((warm_hits + warm_misses).max(1) as f64) * 100.0,
-    );
+    let mut state = BenchState {
+        root: &mut root,
+        taffy: &mut taffy,
+        node_map: &node_map,
+        root_node,
+        text_renderer: &mut text_renderer,
+        presence: &presence,
+        perms: &perms,
+        theme: &theme,
+        scene: &mut scene,
+        renderer: &mut renderer,
+        canvas_w,
+        canvas_h,
+    };
 
-    // Event mix. We hand-craft 5 distinct cursor positions that
-    // exercise different parts of the tree:
-    //   - A: empty area inside a panel (no widget edge crossing)
-    //   - B: hover edge of a button (state change)
-    //   - C: hover edge of a toggle (state change)
-    //   - D: inside the header ToggleGroup ("Week" segment)
-    //   - E: inside the header ToggleGroup ("Month" segment)
-    // Click events fire on D/E alternately so each click changes
-    // the ToggleGroup's selected segment.
-    let pa = (400.0, 300.0);
-    let pb = (200.0, 200.0);
-    let pc = (240.0, 200.0);
-    let pd = (380.0, 50.0);
-    let pe = (520.0, 50.0);
-
-    let mut total_redraws = 0usize;
-    let mut total_skipped = 0usize;
-    let mut histo: Vec<Phase> = Vec::with_capacity(iters);
+    warm_up(&mut state);
+    print_warmup_report(&state);
 
     // FROZEN — identical no-op CursorMoved every event. Proves
     // the Unit 1+2 gate skips when nothing in the tree mutates.
@@ -422,224 +723,11 @@ pub fn run(_args: &[String]) {
     let frozen = std::env::var("QUICK_UI_DASH_FROZEN").is_ok();
     let scroll_mode = std::env::var("QUICK_UI_DASH_SCROLL").is_ok();
     if frozen {
-        // Prime the cursor at the frozen position so the first
-        // event doesn't trigger a hover-state change.
-        let p = (f64::from(canvas_w) - 5.0, f64::from(canvas_h) - 5.0);
-        dispatch(
-            &mut root,
-            &taffy,
-            root_node,
-            &mut doc,
-            &make_cursor(p.0, p.1),
-        );
-        // Draw one frame to clear pending dirty flags.
-        let mut warm = Phase::default();
-        full_draw(
-            &mut root,
-            &mut taffy,
-            &node_map,
-            root_node,
-            &mut text_renderer,
-            &presence,
-            &perms,
-            &theme,
-            &mut scene,
-            &mut renderer,
-            canvas_w,
-            canvas_h,
-            &mut warm,
-        );
+        prime_frozen_cursor(&mut state, &mut doc);
     }
 
-    for i in 0..iters {
-        let t_total = Instant::now();
-        let mut phase = Phase::default();
+    let (histo, total_redraws, total_skipped) =
+        run_bench_loop(&mut state, &mut doc, iters, scroll_mode, frozen);
 
-        let t_handle = Instant::now();
-        if scroll_mode {
-            // Alternate scroll direction every ~50 events so we
-            // exercise both clamp-eats-it (at the edges) and
-            // dirty-signal-fires paths.
-            let dy = if (i / 50) % 2 == 0 { -3.0 } else { 3.0 };
-            dispatch(&mut root, &taffy, root_node, &mut doc, &make_wheel(dy));
-        } else if frozen {
-            // Identical no-op event — see comment above.
-            let p = (f64::from(canvas_w) - 5.0, f64::from(canvas_h) - 5.0);
-            dispatch(
-                &mut root,
-                &taffy,
-                root_node,
-                &mut doc,
-                &make_cursor(p.0, p.1),
-            );
-        } else {
-            let pick = i % 20;
-            match pick {
-                0..=13 => dispatch(
-                    &mut root,
-                    &taffy,
-                    root_node,
-                    &mut doc,
-                    &make_cursor(pa.0 + (i as f64).sin() * 4.0, pa.1),
-                ),
-                14 | 15 => dispatch(
-                    &mut root,
-                    &taffy,
-                    root_node,
-                    &mut doc,
-                    &make_cursor(pb.0, pb.1),
-                ),
-                16 => dispatch(
-                    &mut root,
-                    &taffy,
-                    root_node,
-                    &mut doc,
-                    &make_cursor(pc.0, pc.1),
-                ),
-                17 => {
-                    let p = if i % 40 < 20 { pd } else { pe };
-                    dispatch(
-                        &mut root,
-                        &taffy,
-                        root_node,
-                        &mut doc,
-                        &make_cursor(p.0, p.1),
-                    );
-                    dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_press());
-                    dispatch(
-                        &mut root,
-                        &taffy,
-                        root_node,
-                        &mut doc,
-                        &make_click_release(),
-                    );
-                }
-                _ => dispatch(
-                    &mut root,
-                    &taffy,
-                    root_node,
-                    &mut doc,
-                    &make_cursor(pa.0 + (i as f64).cos() * 4.0, pa.1),
-                ),
-            }
-        }
-        phase.handle_us = t_handle.elapsed().as_micros();
-
-        // App-style gate: only draw if the tree signals dirty.
-        if root.needs_redraw() {
-            total_redraws += 1;
-            full_draw(
-                &mut root,
-                &mut taffy,
-                &node_map,
-                root_node,
-                &mut text_renderer,
-                &presence,
-                &perms,
-                &theme,
-                &mut scene,
-                &mut renderer,
-                canvas_w,
-                canvas_h,
-                &mut phase,
-            );
-        } else {
-            total_skipped += 1;
-        }
-        phase.total_us = t_total.elapsed().as_micros();
-        histo.push(phase);
-    }
-
-    fn pct(hist: &[Phase], pct_v: f64, f: impl Fn(&Phase) -> u128) -> u128 {
-        let mut v: Vec<u128> = hist.iter().map(&f).collect();
-        v.sort_unstable();
-        let idx = ((v.len() as f64 - 1.0) * pct_v / 100.0).round() as usize;
-        v[idx]
-    }
-    fn mean(hist: &[Phase], f: impl Fn(&Phase) -> u128) -> u128 {
-        if hist.is_empty() {
-            return 0;
-        }
-        hist.iter().map(&f).sum::<u128>() / hist.len() as u128
-    }
-
-    println!();
-    println!("=== Dashboard bench ({iters} events, canvas {canvas_w}×{canvas_h}) ===");
-    println!(
-        "redrawn events:  {total_redraws}  ({:.1}%)",
-        (total_redraws as f64) / (iters as f64) * 100.0
-    );
-    println!("skipped events:  {total_skipped}  (no widget signalled dirty)");
-    println!();
-    println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "phase", "mean us", "p95 us", "p99 us"
-    );
-    println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "handle_event",
-        mean(&histo, |p| p.handle_us),
-        pct(&histo, 95.0, |p| p.handle_us),
-        pct(&histo, 99.0, |p| p.handle_us)
-    );
-    println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "layout (gated)",
-        mean(&histo, |p| p.layout_us),
-        pct(&histo, 95.0, |p| p.layout_us),
-        pct(&histo, 99.0, |p| p.layout_us)
-    );
-    println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "draw_to_scene",
-        mean(&histo, |p| p.draw_us),
-        pct(&histo, 95.0, |p| p.draw_us),
-        pct(&histo, 99.0, |p| p.draw_us)
-    );
-    println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "vello render",
-        mean(&histo, |p| p.render_us),
-        pct(&histo, 95.0, |p| p.render_us),
-        pct(&histo, 99.0, |p| p.render_us)
-    );
-    println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "TOTAL/event",
-        mean(&histo, |p| p.total_us),
-        pct(&histo, 95.0, |p| p.total_us),
-        pct(&histo, 99.0, |p| p.total_us)
-    );
-
-    let mean_total = mean(&histo, |p| p.total_us).max(1);
-    let mean_redraw_only: u128 = if total_redraws == 0 {
-        0
-    } else {
-        histo
-            .iter()
-            .filter(|p| p.render_us > 0 || p.draw_us > 0)
-            .map(|p| p.total_us)
-            .sum::<u128>()
-            / total_redraws as u128
-    };
-    println!();
-    println!(
-        "throughput (mean across mixed events):     {:>5} Hz   ({:.1} ms / event)",
-        1_000_000 / mean_total,
-        (mean_total as f64) / 1000.0,
-    );
-    if total_redraws > 0 {
-        println!(
-            "throughput (redrawing events only):        {:>5} Hz   ({:.1} ms / redraw)",
-            1_000_000_u128.checked_div(mean_redraw_only).unwrap_or(0),
-            (mean_redraw_only as f64) / 1000.0,
-        );
-    }
-    let (hits_end, misses_end) = text_renderer.cache_stats();
-    println!(
-        "measure-cache final: hits={} misses={} hit-rate={:.1}%",
-        hits_end,
-        misses_end,
-        (hits_end as f64) / ((hits_end + misses_end).max(1) as f64) * 100.0,
-    );
+    print_final_report(&state, &histo, iters, total_redraws, total_skipped);
 }

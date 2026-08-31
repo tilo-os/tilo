@@ -5,6 +5,16 @@
 //! These tests verify the whole loop: signature construction ↔
 //! JSON round-trip ↔ server-side verify ↔ disk write ↔ GET.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;

@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
 use crate::network::behaviour::load_or_create_keypair;
+use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
@@ -27,7 +28,12 @@ pub fn room_topic_id(room: RoomId) -> u64 {
     if room.is_nil() {
         return DEFAULT_WS_TOPIC;
     }
-    qos_relay::room_workspace_id(&room.to_string()).expect("RoomId is a valid UUID")
+    // `room.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
+    // can always re-parse, so the `Err` path is unreachable in practice.
+    // Fall back to the "no room identity" topic rather than panic on this
+    // hot path — `room_workspace_id` never returns 0 on success, so a real
+    // topic id can't collide with the fallback.
+    qos_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
 /// Largest app-document snapshot this shell will put on the gossip
@@ -78,9 +84,9 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     }
     if let Ok(value) = std::env::var("QOS_COLLAB_HOST") {
         if let Some(addr) = parse_host_addr(&value) {
-            hosts.push(addr)
+            hosts.push(addr);
         } else {
-            tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id")
+            tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id");
         }
     }
     hosts.sort_by_key(|addr| addr.id.to_string());
@@ -130,6 +136,11 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// Verified transport-device chains received on workspace topics.
+    peer_identities: PeerIdentityStore,
+    /// Production is fail-closed until a peer presents `IdentityHello`.
+    /// The in-process test bridge disables this because it has no Iroh actor.
+    require_peer_identity: bool,
     /// Names this machine has promised to whoever redeems the invite it
     /// last minted for a room, keyed by that room — held here rather
     /// than in the token because the token is a bearer credential that
@@ -138,6 +149,10 @@ pub struct ShellNetwork {
     /// [`Self::name_invitee_on_arrival`] writes it once the invitee's
     /// `PeerId` is known.
     pending_invitees: Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
+    /// Invite redemptions awaiting a certificate-bearing person principal.
+    /// Unlike the display-name map, unnamed invites also enter this table.
+    pending_identity_admissions:
+        Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -236,7 +251,7 @@ pub struct InboundScrollbackRequest {
 pub struct InboundScrollbackResponse {
     pub responder: u64,
     pub artifact: collab_types::ArtifactId,
-    pub ops: Vec<Box<collab_types::SignedOp>>,
+    pub ops: Vec<collab_types::SignedOp>,
 }
 
 /// One received cursor-presence update, merged by the shell's
@@ -264,12 +279,77 @@ struct SnapshotWindow {
     released: std::collections::HashSet<(String, String)>,
 }
 
+/// Start mDNS LAN peer discovery when `QOS_COLLAB_LAN_DISCOVERY` requests
+/// it, registering it with `endpoint`'s address lookup. Returns `None`
+/// when discovery is disabled, disallowed by the env var, or the mDNS
+/// service or address-lookup registry is unavailable — the caller then
+/// simply skips [`spawn_lan_discovery_forwarding`].
+fn init_lan_discovery(
+    endpoint: &iroh::Endpoint,
+) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
+    let lan_discovery = std::env::var_os("QOS_COLLAB_LAN_DISCOVERY")
+        .is_some_and(|value| value != "0" && !value.is_empty());
+    if !lan_discovery {
+        return None;
+    }
+    let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+        .service_name("qos-collab-v1")
+        .build(endpoint.id())
+    {
+        Ok(mdns) => mdns,
+        Err(error) => {
+            tracing::warn!(%error, "LAN discovery requested but could not start");
+            return None;
+        }
+    };
+    let Ok(address_lookup) = endpoint.address_lookup() else {
+        tracing::warn!("LAN discovery requested but endpoint has no address lookup registry");
+        return None;
+    };
+    address_lookup.add(mdns.clone());
+    Some(mdns)
+}
+
+/// Forward every mDNS-discovered peer into `cmd_tx` as a
+/// `NetCmd::Connect`, on a task spawned onto `runtime`.
+fn spawn_lan_discovery_forwarding(
+    runtime: &tokio::runtime::Runtime,
+    mdns: iroh_mdns_address_lookup::MdnsAddressLookup,
+    cmd_tx: &mpsc::Sender<NetCmd>,
+) {
+    let discovery_tx = cmd_tx.clone();
+    runtime.spawn(async move {
+        use futures_lite::StreamExt;
+        let mut events = mdns.subscribe().await;
+        while let Some(event) = events.next().await {
+            if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. } =
+                event
+            {
+                let _ = discovery_tx
+                    .send(NetCmd::Connect {
+                        addr: endpoint_info.into_endpoint_addr(),
+                    })
+                    .await;
+            }
+        }
+    });
+    tracing::info!(
+        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _qos-collab-v1._udp.local"
+    );
+}
+
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared [`WorkspaceTree`] in a [`WorkspaceTreeReplica`], and
     /// return a handle the shell can use to drive sync. The keypair is
     /// loaded if it already exists, otherwise a fresh ed25519 key is
     /// generated and persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tokio runtime fails to build, the device
+    /// keypair can't be loaded or generated at `keypair_path`, or the
+    /// Iroh endpoint fails to bind.
     pub fn spawn(
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
@@ -294,32 +374,7 @@ impl ShellNetwork {
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
-        let lan_discovery = std::env::var_os("QOS_COLLAB_LAN_DISCOVERY")
-            .is_some_and(|value| value != "0" && !value.is_empty());
-        let mdns = if lan_discovery {
-            match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-                .service_name("qos-collab-v1")
-                .build(endpoint.id())
-            {
-                Ok(mdns) => {
-                    if let Ok(address_lookup) = endpoint.address_lookup() {
-                        address_lookup.add(mdns.clone());
-                        Some(mdns)
-                    } else {
-                        tracing::warn!(
-                            "LAN discovery requested but endpoint has no address lookup registry"
-                        );
-                        None
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "LAN discovery requested but could not start");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let mdns = init_lan_discovery(&endpoint);
         tracing::info!(
             local_peer_id = %local_peer_id,
             addr = ?endpoint.addr(),
@@ -334,27 +389,7 @@ impl ShellNetwork {
             Arc::clone(&listen_addrs),
         );
         if let Some(mdns) = mdns {
-            let discovery_tx = cmd_tx.clone();
-            runtime.spawn(async move {
-                use futures_lite::StreamExt;
-                let mut events = mdns.subscribe().await;
-                while let Some(event) = events.next().await {
-                    if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered {
-                        endpoint_info,
-                        ..
-                    } = event
-                    {
-                        let _ = discovery_tx
-                            .send(NetCmd::Connect {
-                                addr: endpoint_info.into_endpoint_addr(),
-                            })
-                            .await;
-                    }
-                }
-            });
-            tracing::info!(
-                "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _qos-collab-v1._udp.local"
-            );
+            spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
         }
 
         let host_addrs = configured_host_addrs();
@@ -383,7 +418,10 @@ impl ShellNetwork {
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
             last_sync_kick: Mutex::new(None),
+            peer_identities: PeerIdentityStore::new(),
+            require_peer_identity: true,
             pending_invitees: Mutex::new(std::collections::HashMap::new()),
+            pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -505,7 +543,7 @@ impl ShellNetwork {
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
             user: crate::shell::state::local_user_id(),
@@ -887,7 +925,7 @@ impl ShellNetwork {
         &self,
         responder: u64,
         artifact: collab_types::ArtifactId,
-        ops: Vec<Box<collab_types::SignedOp>>,
+        ops: Vec<collab_types::SignedOp>,
     ) {
         if let Ok(mut buf) = self.inbound_scrollback_response.lock() {
             buf.push(InboundScrollbackResponse {
@@ -932,6 +970,12 @@ impl ShellNetwork {
     /// `expiry_seconds_from_now`. Signs with this shell's own Iroh
     /// key and embeds the address the endpoint actually bound, so the
     /// token a user copies is one a peer can act on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (as a message) if peer-sync has no dial address
+    /// yet, `local` names no known workspace, or the replica lock is
+    /// poisoned.
     pub fn issue_invite(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -944,6 +988,10 @@ impl ShellNetwork {
     /// `invitee` does not go into the token (see
     /// [`Self::pending_invitees`]) and is held until that peer turns up.
     /// A second invite for a room replaces the name waiting on it.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
     pub fn issue_invite_named(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -953,6 +1001,12 @@ impl ShellNetwork {
         self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee))
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "ws is fully chained from tree (via replica's lock); nothing to drop \
+                  earlier without cloning the tree data out for no real gain, and the \
+                  block already ends right after ws is cloned out"
+    )]
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -963,26 +1017,33 @@ impl ShellNetwork {
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            let tree = replica.tree.read();
-            let ws = tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == local)
-                .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
+            let ws = {
+                let replica = self
+                    .replica
+                    .lock()
+                    .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+                let tree = replica.tree.read();
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id == local)
+                    .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?
+                    .clone()
+            };
+            // Clone `ws` out and drop both guards above before the
+            // (unrelated) hosts lock and the invite-signing work below —
+            // neither needs the replica/tree lock held.
             let hosts = self
                 .host_addrs
                 .lock()
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
-            let token = crate::network::invite::make_invite_token_with_hosts(
+            let device_cert = selected_device_cert(ws.room, &self.keypair)?;
+            let token = crate::network::invite::make_invite_token_with_identity(
                 &self.keypair,
-                ws,
+                &ws,
                 &addr,
                 &hosts,
+                Some(device_cert),
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
@@ -995,7 +1056,7 @@ impl ShellNetwork {
         // can't be forged. Best-effort: a non-administering machine has
         // the write refused and stays an id rather than failing the invite.
         if let Ok(replica) = self.replica.lock() {
-            let me = crate::shell::state::local_user_id();
+            let me = crate::shell::state::local_user_id_for_room(&room);
             let peer = self.local_peer_id.to_string();
             replica.tree.write().name_peer(room, &me, &peer, &me);
         }
@@ -1003,10 +1064,14 @@ impl ShellNetwork {
 
         // And park the invitee's name against the room, for
         // `name_invitee_on_arrival` to write when they turn up.
-        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty())
+        let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
+        if let Some(invitee) = invitee
             && let Ok(mut pending) = self.pending_invitees.lock()
         {
             pending.insert(room, invitee.to_string());
+        }
+        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+            pending.insert(room, invitee.unwrap_or("Member").to_string());
         }
         Ok(token)
     }
@@ -1068,6 +1133,11 @@ impl ShellNetwork {
     /// without that request a freshly accepted invite sits idle until
     /// something else kicks a round. Takes the token *string*, not a
     /// parsed token, so validation cannot be skipped on the way in.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error (as a message) if the replica lock is poisoned
+    /// or `token` fails to parse/validate.
     pub fn accept_invite(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1146,257 +1216,521 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         // Hold the lock for the whole drain so a concurrent frame-tick
-        // never sees half-merged events.
-        let mut event_rx = self
-            .event_rx
-            .lock()
-            .expect("event_rx mutex must not be poisoned");
+        // never sees half-merged events. A poisoned mutex (a prior
+        // holder panicked mid-drain) just skips this tick rather than
+        // panicking this one too.
+        let Ok(mut event_rx) = self.event_rx.lock() else {
+            return;
+        };
         while let Ok(event) = event_rx.try_recv() {
-            if let NetEvent::HostReady { ws, peer } = event {
-                let room = self.replica.lock().ok().and_then(|replica| {
-                    replica
-                        .tree
-                        .read()
-                        .rooms()
-                        .into_iter()
-                        .find(|room| room_topic_id(*room) == ws)
-                });
-                if let Some(room) = room {
-                    // Seed a complete shell-room checkpoint. Unlike SyncReq,
-                    // this does not need another device online to answer it.
-                    let changes = self
-                        .replica
-                        .lock()
-                        .ok()
-                        .and_then(|replica| {
-                            replica.tree.write().export_room_changes_since(room, &[])
-                        })
-                        .unwrap_or_default();
-                    if !changes.is_empty() {
-                        let _ = self.publish_shell_checkpoint(NeighbourMsg::SyncResp {
-                            changes,
-                            room: room.to_string(),
-                        });
-                    }
+            self.dispatch_net_event(event);
+        }
+    }
 
-                    // Apps answer an Arrived presence event with their full
-                    // Automerge document. Synthesize that local event for the
-                    // durable host so its retained checkpoints include app
-                    // state that existed before the host connected.
-                    let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
-                    for payload in [
-                        ui::collaboration::PresencePayload::Arrived,
-                        ui::collaboration::PresencePayload::Left,
-                    ] {
-                        let key = ui::presence::PresenceKey::Workspace {
-                            id: room.to_string(),
-                        };
-                        if let Some(presence) =
-                            crate::shell::collab_presence::to_peer(&key, &payload)
-                        {
-                            self.handle_typed_app_presence_message(
-                                host_peer,
-                                String::new(),
-                                room.to_string(),
-                                presence,
-                            );
-                        }
-                    }
-                }
-                continue;
-            }
-            if let NetEvent::PeerJoined { .. } = event {
-                self.publish_sync_requests();
-                continue;
-            }
+    /// Route one drained [`NetEvent`] to its handler. Split out of
+    /// [`Self::tick`], which owns only the drain loop and the
+    /// `event_rx` lock.
+    fn dispatch_net_event(&self, event: NetEvent) {
+        match event {
+            NetEvent::HostReady { ws, peer } => self.handle_host_ready(ws, peer),
+            NetEvent::PeerJoined { .. } => self.publish_sync_requests(),
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
-            if let NetEvent::PeerLeft { peer, .. } = event {
+            NetEvent::PeerLeft { peer, .. } => {
                 let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                self.peer_identities
+                    .remove(&crate::shell::state::PeerOrigin::peer(&peer));
                 if let Ok(replica) = self.replica.lock() {
                     replica.tree.write().retire_session(handle);
                 }
-                continue;
             }
-            if let NetEvent::Msg { ws, peer, msg } = event {
-                if let Some(expected) = Self::explicit_topic_for_message(&msg)
-                    && expected != ws
-                {
-                    tracing::warn!(
-                        ws,
-                        expected,
-                        "dropping collaboration message on the wrong room topic"
-                    );
-                    continue;
-                }
-                // Ephemeral overlay state, not CRDT state — skips the
-                // replica entirely.
-                if let NeighbourMsg::PresenceMoved {
-                    peer: peer_hash,
-                    ref user,
-                    ref key,
-                    point,
-                    ts,
-                } = msg
-                {
-                    self.handle_presence_message(peer_hash, user.clone(), key.clone(), point, ts);
-                    continue;
-                }
-                // Opaque app-level Automerge blobs, not shell-tree
-                // changes; self-publishes are filtered so a local edit
-                // doesn't loop back as a "remote" event.
-                if let NeighbourMsg::AppCrdtIncremental {
-                    peer: peer_hash,
-                    ref app_id,
-                    ref cluster_id,
-                    ref record_id,
-                    ref data,
-                } = msg
-                {
-                    tracing::info!(
-                        target: "qos_collab_probe",
-                        from = peer_hash,
-                        me = self.local_peer_hash,
-                        app = %app_id,
-                        cluster = %cluster_id,
-                        record = %record_id,
-                        bytes = data.len(),
-                        "PROBE gossip recv AppCrdtIncremental",
-                    );
-                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
-                        self.handle_app_crdt_message(
-                            peer_hash,
-                            app_id.clone(),
-                            cluster_id.clone(),
-                            record_id.clone(),
-                            data.clone(),
-                        );
-                    }
-                    continue;
-                }
-                // A whole document for a peer with no history to apply
-                // deltas against. Same two gates as the increment, and
-                // they matter more here: a whole document merged into
-                // the wrong one cannot be taken back out.
-                if let NeighbourMsg::AppCrdtSnapshot {
-                    peer: peer_hash,
-                    ref app_id,
-                    ref cluster_id,
-                    ref record_id,
-                    ref data,
-                } = msg
-                {
-                    tracing::info!(
-                        target: "qos_collab_probe",
-                        from = peer_hash,
-                        me = self.local_peer_hash,
-                        app = %app_id,
-                        cluster = %cluster_id,
-                        record = %record_id,
-                        bytes = data.len(),
-                        "PROBE gossip recv AppCrdtSnapshot",
-                    );
-                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
-                        self.handle_app_crdt_snapshot_message(
-                            peer_hash,
-                            app_id.clone(),
-                            cluster_id.clone(),
-                            record_id.clone(),
-                            data.clone(),
-                        );
-                    }
-                    continue;
-                }
-                // Signed path, same routing as the plain increment.
-                if let NeighbourMsg::AppCrdtIncrementalSigned {
-                    peer: peer_hash,
-                    ref app_id,
-                    ref cluster_id,
-                    ref record_id,
-                    ref envelope,
-                } = msg
-                {
-                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
-                        self.handle_app_crdt_signed_message(
-                            peer_hash,
-                            app_id.clone(),
-                            cluster_id.clone(),
-                            record_id.clone(),
-                            (**envelope).clone(),
-                        );
-                    }
-                    continue;
-                }
-                if let NeighbourMsg::AppPresenceV2 {
-                    peer: peer_hash,
-                    ref app_id,
-                    ref cluster_id,
-                    ref presence,
-                } = msg
-                {
-                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
-                        self.handle_typed_app_presence_message(
-                            peer_hash,
-                            app_id.clone(),
-                            cluster_id.clone(),
-                            presence.clone(),
-                        );
-                    }
-                    continue;
-                }
-                // Cooperative scrollback: skip self-echoes.
-                if let NeighbourMsg::ScrollbackRequest {
-                    artifact,
-                    before_seq,
-                    max,
-                    requester,
-                } = msg
-                {
-                    if requester != self.local_peer_hash {
-                        self.handle_scrollback_request_message(
-                            requester, artifact, before_seq, max,
-                        );
-                    }
-                    continue;
-                }
-                if let NeighbourMsg::ScrollbackResponse {
-                    artifact,
-                    ref ops,
-                    responder,
-                } = msg
-                {
-                    if responder != self.local_peer_hash {
-                        self.handle_scrollback_response_message(responder, artifact, ops.clone());
-                    }
-                    continue;
-                }
-                // A SyncReq is a peer redeeming an invite; name it
-                // before the replica answers, so roster and reply land
-                // together.
-                if let NeighbourMsg::SyncReq { ref room, .. } = msg {
-                    self.name_invitee_on_arrival(&peer, room);
-                }
-                let mut rep = self.replica.lock().unwrap();
-                // The peer's own identity, not the liveness-handle
-                // digest: this decides whether the payload may rewrite
-                // a room's governance.
-                rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), &msg);
-                let outgoing = rep.drain_outgoing();
-                drop(rep);
-                for out_msg in outgoing {
-                    let _ = self.publish_message(out_msg);
-                }
+            NetEvent::Msg { ws, peer, msg } => self.dispatch_neighbour_msg(ws, peer, msg),
+        }
+    }
+
+    /// Seed a durable host's checkpoint once it finishes subscribing to
+    /// `ws` — see [`NetEvent::HostReady`]. Unlike `SyncReq`, this does
+    /// not need another device online to answer it.
+    fn handle_host_ready(&self, ws: u64, peer: iroh::EndpointId) {
+        let room = self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == ws)
+        });
+        let Some(room) = room else {
+            return;
+        };
+        // Seed a complete shell-room checkpoint.
+        let changes = self
+            .replica
+            .lock()
+            .ok()
+            .and_then(|replica| replica.tree.write().export_room_changes_since(room, &[]))
+            .unwrap_or_default();
+        if !changes.is_empty() {
+            let _ = self.publish_shell_checkpoint(NeighbourMsg::SyncResp {
+                changes,
+                room: room.to_string(),
+            });
+        }
+
+        // Apps answer an Arrived presence event with their full
+        // Automerge document. Synthesize that local event for the
+        // durable host so its retained checkpoints include app
+        // state that existed before the host connected.
+        let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
+        for payload in [
+            ui::collaboration::PresencePayload::Arrived,
+            ui::collaboration::PresencePayload::Left,
+        ] {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            if let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                self.handle_typed_app_presence_message(
+                    host_peer,
+                    String::new(),
+                    room.to_string(),
+                    presence,
+                );
             }
         }
     }
+
+    /// Route one gossip [`NeighbourMsg`] that arrived on topic `ws`
+    /// from `peer` to its per-variant handler, then flush anything the
+    /// replica queued in response. Split out of [`Self::tick`] via
+    /// [`Self::dispatch_net_event`].
+    fn dispatch_neighbour_msg(&self, ws: u64, peer: iroh::EndpointId, msg: NeighbourMsg) {
+        if let Some(expected) = Self::explicit_topic_for_message(&msg)
+            && expected != ws
+        {
+            tracing::warn!(
+                ws,
+                expected,
+                "dropping collaboration message on the wrong room topic"
+            );
+            return;
+        }
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
+            self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
+            return;
+        }
+        if self.require_peer_identity && self.peer_identities.get(&origin).is_none() {
+            tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+            return;
+        }
+        match msg {
+            // Ephemeral overlay state, not CRDT state — skips the replica entirely.
+            NeighbourMsg::PresenceMoved {
+                peer: peer_hash,
+                user,
+                key,
+                point,
+                ts,
+            } => {
+                self.handle_presence_message(peer_hash, user, key, point, ts);
+            }
+            NeighbourMsg::AppCrdtIncremental {
+                peer: peer_hash,
+                app_id,
+                cluster_id,
+                record_id,
+                data,
+            } => {
+                self.dispatch_app_crdt_incremental(
+                    &origin, peer_hash, app_id, cluster_id, record_id, data,
+                );
+            }
+            NeighbourMsg::AppCrdtSnapshot {
+                peer: peer_hash,
+                app_id,
+                cluster_id,
+                record_id,
+                data,
+            } => {
+                self.dispatch_app_crdt_snapshot(
+                    &origin, peer_hash, app_id, cluster_id, record_id, data,
+                );
+            }
+            // Signed path, same routing as the plain increment.
+            NeighbourMsg::AppCrdtIncrementalSigned {
+                peer: peer_hash,
+                app_id,
+                cluster_id,
+                record_id,
+                envelope,
+            } => {
+                if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+                    self.handle_app_crdt_signed_message(
+                        peer_hash, app_id, cluster_id, record_id, *envelope,
+                    );
+                }
+            }
+            NeighbourMsg::AppPresenceV2 {
+                peer: peer_hash,
+                app_id,
+                cluster_id,
+                presence,
+            } => self.dispatch_app_presence_v2(peer_hash, app_id, cluster_id, presence),
+            // Cooperative scrollback: skip self-echoes.
+            NeighbourMsg::ScrollbackRequest {
+                artifact,
+                before_seq,
+                max,
+                requester,
+            } => self.dispatch_scrollback_request(requester, artifact, before_seq, max),
+            NeighbourMsg::ScrollbackResponse {
+                artifact,
+                ops,
+                responder,
+            } => self.dispatch_scrollback_response(
+                responder,
+                artifact,
+                // Unbox at the wire boundary: nothing downstream needs
+                // per-op indirection once it's off the wire.
+                ops.into_iter().map(|op| *op).collect(),
+            ),
+            other => self.dispatch_to_replica(peer, &other),
+        }
+    }
+
+    /// `AppPresenceV2`: app-level presence crossing the host boundary.
+    /// Split out of [`Self::dispatch_neighbour_msg`].
+    fn dispatch_app_presence_v2(
+        &self,
+        peer_hash: u64,
+        app_id: String,
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
+    ) {
+        if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+            self.handle_typed_app_presence_message(peer_hash, app_id, cluster_id, presence);
+        }
+    }
+
+    /// `ScrollbackRequest`: skip self-echoes, otherwise queue for the
+    /// broker's drainer. Split out of [`Self::dispatch_neighbour_msg`].
+    fn dispatch_scrollback_request(
+        &self,
+        requester: u64,
+        artifact: collab_types::ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) {
+        if requester != self.local_peer_hash {
+            self.handle_scrollback_request_message(requester, artifact, before_seq, max);
+        }
+    }
+
+    /// `ScrollbackResponse`: skip self-echoes, otherwise queue for the
+    /// broker's drainer. Split out of [`Self::dispatch_neighbour_msg`].
+    fn dispatch_scrollback_response(
+        &self,
+        responder: u64,
+        artifact: collab_types::ArtifactId,
+        ops: Vec<collab_types::SignedOp>,
+    ) {
+        if responder != self.local_peer_hash {
+            self.handle_scrollback_response_message(responder, artifact, ops);
+        }
+    }
+
+    /// `AppCrdtIncremental`: opaque app-level Automerge blobs, not
+    /// shell-tree changes; self-publishes are filtered so a local edit
+    /// doesn't loop back as a "remote" event. Split out of
+    /// [`Self::dispatch_neighbour_msg`].
+    fn dispatch_app_crdt_incremental(
+        &self,
+        origin: &crate::shell::state::PeerOrigin,
+        peer_hash: u64,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        tracing::info!(
+            target: "qos_collab_probe",
+            from = peer_hash,
+            me = self.local_peer_hash,
+            app = %app_id,
+            cluster = %cluster_id,
+            record = %record_id,
+            bytes = data.len(),
+            "PROBE gossip recv AppCrdtIncremental",
+        );
+        if peer_hash != self.local_peer_hash
+            && self.is_in_room(&cluster_id)
+            && (!self.require_peer_identity
+                || self.peer_may_write_app(origin, &cluster_id, &app_id))
+        {
+            self.handle_app_crdt_message(peer_hash, app_id, cluster_id, record_id, data);
+        }
+    }
+
+    /// `AppCrdtSnapshot`: a whole document for a peer with no history to
+    /// apply deltas against. Same two gates as the increment, and they
+    /// matter more here: a whole document merged into the wrong one
+    /// cannot be taken back out. Split out of
+    /// [`Self::dispatch_neighbour_msg`].
+    fn dispatch_app_crdt_snapshot(
+        &self,
+        origin: &crate::shell::state::PeerOrigin,
+        peer_hash: u64,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        tracing::info!(
+            target: "qos_collab_probe",
+            from = peer_hash,
+            me = self.local_peer_hash,
+            app = %app_id,
+            cluster = %cluster_id,
+            record = %record_id,
+            bytes = data.len(),
+            "PROBE gossip recv AppCrdtSnapshot",
+        );
+        if peer_hash != self.local_peer_hash
+            && self.is_in_room(&cluster_id)
+            && (!self.require_peer_identity
+                || self.peer_may_write_app(origin, &cluster_id, &app_id))
+        {
+            self.handle_app_crdt_snapshot_message(peer_hash, app_id, cluster_id, record_id, data);
+        }
+    }
+
+    /// Every [`NeighbourMsg`] variant not special-cased in
+    /// [`Self::dispatch_neighbour_msg`] (`SyncReq`, `SyncResp`, ...)
+    /// replicates through the shell-tree replica. `SyncReq`
+    /// additionally names the peer redeeming an invite before the
+    /// replica answers, so roster and reply land together.
+    fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: &NeighbourMsg) {
+        if let NeighbourMsg::SyncReq { room, .. } = msg {
+            self.name_invitee_on_arrival(&peer, room);
+        }
+        // A poisoned replica lock here just drops this one message
+        // rather than panicking the whole compositor.
+        let Ok(mut rep) = self.replica.lock() else {
+            return;
+        };
+        // The peer's own identity, not the liveness-handle
+        // digest: this decides whether the payload may rewrite
+        // a room's governance.
+        rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), msg);
+        let outgoing = rep.drain_outgoing();
+        drop(rep);
+        for out_msg in outgoing {
+            let _ = self.publish_message(out_msg);
+        }
+    }
+
+    fn accept_identity_hello(
+        &self,
+        workspace_topic: u64,
+        origin: &crate::shell::state::PeerOrigin,
+        peer: &iroh::EndpointId,
+        cert: &qos_user_identity::DeviceCert,
+        revocations: &[qos_user_identity::RevocationEntry],
+    ) {
+        if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
+            tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
+            self.peer_identities.remove(origin);
+            return;
+        }
+        let mut list = qos_user_identity::RevocationList::new();
+        for entry in revocations {
+            if entry.user_public_key != cert.user_public_key || list.insert(entry.clone()).is_err()
+            {
+                tracing::warn!(peer = %peer, "rejecting peer identity with invalid revocation set");
+                self.peer_identities.remove(origin);
+                return;
+            }
+        }
+        self.peer_identities
+            .set_revocations(cert.user_public_key, &list);
+        let was_known = self.peer_identities.get(origin).is_some();
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        if self
+            .peer_identities
+            .insert(origin.clone(), cert.clone(), now_ns)
+            .is_err()
+            || self.peer_identities.is_revoked(
+                &cert.user_public_key,
+                &cert.device_public_key,
+                now_ns,
+            )
+        {
+            tracing::warn!(peer = %peer, "rejecting expired, invalid, or revoked peer device");
+            self.peer_identities.remove(origin);
+            return;
+        }
+        self.admit_invited_identity(workspace_topic, peer, cert);
+        // The initial SyncReq can race ahead of the periodic identity hello
+        // and is intentionally dropped. Re-kick anti-entropy after trust is
+        // established so joining never waits for another topology event.
+        if !was_known {
+            self.publish_sync_requests();
+        }
+    }
+
+    fn admit_invited_identity(
+        &self,
+        workspace_topic: u64,
+        peer: &iroh::EndpointId,
+        cert: &qos_user_identity::DeviceCert,
+    ) {
+        let room = self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == workspace_topic)
+        });
+        let Some(room) = room else { return };
+        let name = self
+            .pending_identity_admissions
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&room).cloned());
+        let Some(name) = name else { return };
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            )
+        else {
+            return;
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let mut tree = replica.tree.write();
+        let local = crate::shell::state::local_user_id_for_room(&room);
+        let granted = {
+            let Some(workspace) = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+            else {
+                return;
+            };
+            let room_scope = workspace.room.to_string();
+            workspace
+                .grant_as(
+                    &local,
+                    crate::shell::state::CapOverride::membership(
+                        crate::shell::state::Subject::person(person.clone()),
+                        room_scope,
+                        crate::shell::state::Verb::Write,
+                    ),
+                )
+                .is_some()
+        };
+        if !granted {
+            return;
+        }
+        let session = crate::network::behaviour::peer_liveness_handle(peer);
+        tree.admit_collaborator_in_room(
+            room,
+            crate::shell::state::Collaborator::new(person, name.clone()).with_session(session),
+        );
+        let _ = tree.name_peer(room, &local, &peer.to_string(), &name);
+        tree.flush_to_disk();
+        drop(tree);
+        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+            pending.remove(&room);
+        }
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "replica and tree (read from replica) are both read from through the \
+                  function's last statement (workspace/actor/allows); nothing to drop earlier"
+    )]
+    fn peer_may_write_app(
+        &self,
+        origin: &crate::shell::state::PeerOrigin,
+        cluster_id: &str,
+        app_id: &str,
+    ) -> bool {
+        let Some(identity) = self.peer_identities.get(origin) else {
+            return false;
+        };
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+            )
+        else {
+            return false;
+        };
+        let Some(room) = RoomId::parse(cluster_id) else {
+            return false;
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return false;
+        };
+        let tree_handle = replica.tree.clone();
+        drop(replica);
+        let tree = tree_handle.read();
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+        else {
+            return false;
+        };
+        let actor = workspace.actor_for_person(&person);
+        workspace.allows(
+            &actor,
+            &crate::shell::state::ResourceRef::App(app_id.to_string()),
+            crate::shell::state::Verb::Write,
+        )
+    }
+}
+
+fn selected_device_cert(
+    room: RoomId,
+    keypair: &iroh::SecretKey,
+) -> Result<qos_user_identity::DeviceCert, String> {
+    let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let cert = qos_user_identity::persist::read_device_cert(
+        &paths.device_cert_for_user(&profile.user_public_key),
+    )
+    .map_err(|error| error.to_string())?;
+    qos_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
+    if cert.user_public_key != profile.user_public_key
+        || cert.device_public_key != *keypair.public().as_bytes()
+    {
+        return Err("workspace identity certificate does not match this device".into());
+    }
+    if crate::device_fleet::DeviceFleetStore::from_env()
+        .and_then(|store| store.load(&profile.id))
+        .is_ok_and(|fleet| fleet.is_revoked(&cert.device_public_key))
+    {
+        return Err("this device has been revoked for the workspace identity".into());
+    }
+    Ok(cert)
 }
 
 fn host_identity_for_key(
     keypair: &iroh::SecretKey,
     keypair_path: &std::path::Path,
 ) -> Option<HostIdentity> {
-    let root = keypair_path.parent()?.parent()?;
-    let paths = qos_user_identity::IdentityPaths::under(root);
+    let identity_root = keypair_path.parent()?.parent()?;
+    let paths = qos_user_identity::IdentityPaths::under(identity_root);
     let user_public_key = qos_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
     let device_cert = qos_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
     if qos_user_identity::verify_device_cert(&device_cert).is_err()
@@ -1406,9 +1740,49 @@ fn host_identity_for_key(
         tracing::warn!("ignoring invalid collaboration device certificate");
         return None;
     }
+    let mut workspace_device_certs = std::collections::HashMap::new();
+    let mut workspace_revocations = std::collections::HashMap::new();
+    if let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env()
+        && let Ok(registry) = store.migrate_legacy_primary()
+    {
+        for (room, identity_id) in &registry.workspace_identities {
+            let Some(profile) = registry.identities.get(identity_id) else {
+                continue;
+            };
+            let Some(room_id) = RoomId::parse(room) else {
+                continue;
+            };
+            let cert_path = paths.device_cert_for_user(&profile.user_public_key);
+            let Ok(cert) = qos_user_identity::persist::read_device_cert(&cert_path) else {
+                tracing::warn!(
+                    room = %room_id,
+                    identity = %identity_id,
+                    "workspace identity has no device certificate"
+                );
+                continue;
+            };
+            if qos_user_identity::verify_device_cert(&cert).is_ok()
+                && cert.user_public_key == profile.user_public_key
+                && cert.device_public_key == *keypair.public().as_bytes()
+                && !crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| store.load(identity_id))
+                    .is_ok_and(|fleet| fleet.is_revoked(&cert.device_public_key))
+            {
+                workspace_device_certs.insert(room_topic_id(room_id), cert);
+                if let Ok(fleet) = crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| store.load(identity_id))
+                {
+                    workspace_revocations.insert(room_topic_id(room_id), fleet.revocations);
+                }
+            }
+        }
+    }
     Some(HostIdentity {
         device_cert,
         device_signing_key: ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
+        workspace_device_certs,
+        workspace_revocations,
+        identity_paths: Some(paths),
     })
 }
 
@@ -1449,7 +1823,10 @@ pub(crate) fn shell_network_for_test(
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
         last_sync_kick: Mutex::new(None),
+        peer_identities: PeerIdentityStore::new(),
+        require_peer_identity: false,
         pending_invitees: Mutex::new(std::collections::HashMap::new()),
+        pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -1465,6 +1842,85 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn identity_hello_redeems_invite_as_editor_and_revocation_removes_trust() {
+        use qos_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+            sign_revocation_entry,
+        };
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let device = iroh::SecretKey::from_bytes(&[62; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Guest laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).expect("certificate");
+
+        let room = RoomId::new();
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(17),
+            "Shared",
+        );
+        workspace.room = room;
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (net, _commands) = shell_network_for_test(tree.shared(), 99);
+        net.pending_identity_admissions
+            .lock()
+            .expect("pending")
+            .insert(room, "Ada".into());
+
+        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
+        net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            )
+        else {
+            unreachable!()
+        };
+        let replica = net.replica.lock().expect("replica");
+        let tree = replica.tree.read();
+        let joined = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("workspace");
+        assert_eq!(
+            joined.role_of(&person),
+            Some(crate::shell::state::CapRole::Editor)
+        );
+        drop(tree);
+        drop(replica);
+        assert!(net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+
+        let mut revoked = RevocationEntry {
+            user_public_key: cert.user_public_key,
+            revoked_device_public_key: cert.device_public_key,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        net.accept_identity_hello(
+            room_topic_id(room),
+            &origin,
+            &device.public(),
+            &cert,
+            &[revoked],
+        );
+        assert!(net.peer_identities.get(&origin).is_none());
+        assert!(!net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+    }
 
     #[test]
     fn shell_network_spawns_with_default_keypair() {
@@ -1634,7 +2090,7 @@ mod tests {
                 msg: NeighbourMsg::SyncResp { ref room, .. },
             }) if ws == topic && room == &room_id.to_string()
         ));
-        let app_events = net.inbound_app_presence.lock().unwrap();
+        let app_events = net.inbound_app_presence.lock().unwrap().clone();
         assert_eq!(
             app_events.len(),
             2,
@@ -1658,12 +2114,12 @@ mod tests {
     }
 
     /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
-    fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
+    fn app_crdt_event(cluster_id: &str, from_peer_hash: u64, peer: iroh::PublicKey) -> NetEvent {
         NetEvent::Msg {
             ws: RoomId::parse(cluster_id)
                 .filter(|room| !room.is_nil())
                 .map_or(DEFAULT_WS_TOPIC, room_topic_id),
-            peer: iroh::SecretKey::generate().public(),
+            peer,
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
                 app_id: "dev.qos.notes".to_string(),
@@ -1683,14 +2139,54 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
+        tree.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("workspace")
+            .set_owner(crate::shell::state::local_user_id_for_room(&our_room));
         let handle = tree.shared();
         let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
+
+        // Plain legacy app deltas are accepted only after the sender has
+        // proven an identity->device chain and received membership. Keep the
+        // routing assertion's positive control authenticated like production.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+        let device = iroh::SecretKey::from_bytes(&[72; 32]);
+        let mut cert = qos_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Peer laptop".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
+        net.pending_identity_admissions
+            .lock()
+            .expect("pending admission")
+            .insert(our_room, "Peer".into());
+        net.event_tx
+            .try_send(NetEvent::Msg {
+                ws: room_topic_id(our_room),
+                peer: device.public(),
+                msg: NeighbourMsg::IdentityHello {
+                    cert: Box::new(cert),
+                    revocations: Vec::new(),
+                },
+            })
+            .expect("queue identity proof");
+        net.tick();
 
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
 
         net.event_tx
-            .try_send(app_crdt_event(&stranger_room.to_string(), 0xBBBBu64))
+            .try_send(app_crdt_event(
+                &stranger_room.to_string(),
+                0xBBBBu64,
+                device.public(),
+            ))
             .expect("queue the stranger's publish");
         net.tick();
         assert!(
@@ -1699,7 +2195,7 @@ mod tests {
         );
 
         net.event_tx
-            .try_send(app_crdt_event("not-a-room", 0xBBBBu64))
+            .try_send(app_crdt_event("not-a-room", 0xBBBBu64, device.public()))
             .expect("queue the malformed publish");
         net.tick();
         assert!(
@@ -1708,7 +2204,11 @@ mod tests {
         );
 
         net.event_tx
-            .try_send(app_crdt_event(&our_room.to_string(), 0xBBBBu64))
+            .try_send(app_crdt_event(
+                &our_room.to_string(),
+                0xBBBBu64,
+                device.public(),
+            ))
             .expect("queue the member's publish");
         net.tick();
         let delivered = net.inbound_app_crdt_handle().lock().unwrap().len();
@@ -2012,7 +2512,7 @@ mod tests {
             "file:/work/report.odt".into(),
             vec![0x01, 0x02],
         );
-        let buf = buf_handle.lock().unwrap();
+        let buf = buf_handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 7u64);
         assert_eq!(buf[0].app_id, "dev.qos.word-processor");
@@ -2036,7 +2536,7 @@ mod tests {
             (10.0, 20.0),
             1_700_000_000,
         );
-        let buf = buf_handle.lock().unwrap();
+        let buf = buf_handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 7u64);
         assert_eq!(buf[0].user, "bob");
@@ -2127,7 +2627,7 @@ mod tests {
             "file:/work/notes.md".into(),
             vec![0x01, 0x02],
         );
-        let buf = buf_handle.lock().unwrap();
+        let buf = buf_handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 7u64);
         assert_eq!(buf[0].app_id, "terminal");
@@ -2202,7 +2702,7 @@ mod tests {
             "uuid:9f".to_string(),
             envelope.clone(),
         );
-        let buf = buf_handle.lock().unwrap();
+        let buf = buf_handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 99u64);
         assert_eq!(buf[0].app_id, "notes");
@@ -2260,7 +2760,7 @@ mod tests {
         let handle = net.inbound_scrollback_request_handle();
         let artifact = ArtifactId::new();
         net.handle_scrollback_request_message(7u64, artifact, 50, 10);
-        let buf = handle.lock().unwrap();
+        let buf = handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].requester, 7u64);
         assert_eq!(buf[0].artifact, artifact);
@@ -2275,13 +2775,13 @@ mod tests {
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_response_handle();
         let artifact = ArtifactId::new();
-        let env = Box::new(make_envelope(11));
+        let env = make_envelope(11);
         net.handle_scrollback_response_message(99u64, artifact, vec![env.clone()]);
-        let buf = handle.lock().unwrap();
+        let buf = handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].responder, 99u64);
         assert_eq!(buf[0].artifact, artifact);
         assert_eq!(buf[0].ops.len(), 1);
-        assert_eq!(*buf[0].ops[0], *env);
+        assert_eq!(buf[0].ops[0], env);
     }
 }

@@ -38,6 +38,8 @@
 //! other marks for v0.1 — if the parser sees `**[[Page]]**` the
 //! double-bracket wins and the bold is dropped from that range.
 
+use std::fmt::Write as _;
+
 use ui::widget::marks::{Mark, MarkSpan, PageId};
 
 /// Storage-friendly block representation. Carries the kind tag, the
@@ -171,17 +173,19 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
     let mut level: u8 = 0;
     let b = line.as_bytes();
     while level < MAX_LIST_INDENT {
-        if b.len() >= bytes + 2 && &b[bytes..bytes + 2] == b"  " {
+        if b.get(bytes..bytes + 2)
+            .is_some_and(|s| s == b"  ".as_slice())
+        {
             bytes += 2;
             level += 1;
-        } else if b.len() > bytes && b[bytes] == b'\t' {
+        } else if b.get(bytes) == Some(&b'\t') {
             bytes += 1;
             level += 1;
         } else {
             break;
         }
     }
-    (level, &line[bytes..])
+    (level, line.get(bytes..).unwrap_or(""))
 }
 
 /// Detect an ordered-list marker (`123. ` or `123) `) at the start of
@@ -191,17 +195,16 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
 fn strip_ordered_prefix(body: &str) -> Option<&str> {
     let bytes = body.as_bytes();
     let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
+    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
         i += 1;
     }
     // At least one digit, then `. ` or `) `.
-    if i == 0 || i + 1 >= bytes.len() {
+    if i == 0 {
         return None;
     }
-    if (bytes[i] == b'.' || bytes[i] == b')') && bytes[i + 1] == b' ' {
-        Some(&body[i + 2..])
-    } else {
-        None
+    match bytes.get(i..i + 2) {
+        Some([b'.' | b')', b' ']) => body.get(i + 2..),
+        _ => None,
     }
 }
 
@@ -231,23 +234,22 @@ pub fn parse_inline(line: &str) -> InlineText {
     let mut i = 0usize;
     while i < bytes.len() {
         // Inline code.
-        if bytes[i] == b'`'
+        if bytes.get(i) == Some(&b'`')
             && let Some(end) = find_unescaped(bytes, i + 1, b'`')
         {
             let start = plain.len();
-            plain.push_str(&line[i + 1..end]);
+            plain.push_str(line.get(i + 1..end).unwrap_or_default());
             let stop = plain.len();
             marks.push(MarkSpan::new(start..stop, Mark::Code));
             i = end + 1;
             continue;
         }
         // Page link `[[Title]]`.
-        if i + 1 < bytes.len()
-            && bytes[i] == b'['
-            && bytes[i + 1] == b'['
+        if bytes.get(i) == Some(&b'[')
+            && bytes.get(i + 1) == Some(&b'[')
             && let Some(end) = find_pair(bytes, i + 2, b']', b']')
         {
-            let title = &line[i + 2..end];
+            let title = line.get(i + 2..end).unwrap_or_default();
             let start = plain.len();
             plain.push_str(title);
             let stop = plain.len();
@@ -260,13 +262,12 @@ pub fn parse_inline(line: &str) -> InlineText {
         }
         // Bold `**...**` (run before italic so `**` doesn't parse as
         // empty italic).
-        if i + 1 < bytes.len()
-            && bytes[i] == b'*'
-            && bytes[i + 1] == b'*'
+        if bytes.get(i) == Some(&b'*')
+            && bytes.get(i + 1) == Some(&b'*')
             && let Some(end) = find_pair(bytes, i + 2, b'*', b'*')
         {
             // Body may contain nested italic via `*text*`. Recurse.
-            let body = &line[i + 2..end];
+            let body = line.get(i + 2..end).unwrap_or_default();
             let body_parsed = parse_inline(body);
             let start = plain.len();
             plain.push_str(&body_parsed.text);
@@ -283,14 +284,14 @@ pub fn parse_inline(line: &str) -> InlineText {
             continue;
         }
         // Italic `*...*`.
-        if bytes[i] == b'*'
+        if bytes.get(i) == Some(&b'*')
             && let Some(end) = find_unescaped(bytes, i + 1, b'*')
         {
             // Empty `**` body wouldn't reach here (bold path
             // above already claimed it). A lone `*` with no
             // closing partner falls through.
             if end > i + 1 {
-                let body = &line[i + 1..end];
+                let body = line.get(i + 1..end).unwrap_or_default();
                 let body_parsed = parse_inline(body);
                 let start = plain.len();
                 plain.push_str(&body_parsed.text);
@@ -311,9 +312,14 @@ pub fn parse_inline(line: &str) -> InlineText {
         // multi-byte UTF-8 — pushing a single byte as `char` mangles
         // those into Latin-1 (e.g. an em-dash `—` becomes three
         // garbled glyphs). Walk by char to preserve the full
-        // codepoint.
-        let rest = &line[i..];
-        let c = rest.chars().next().unwrap();
+        // codepoint. `i` always sits on a char boundary here (it only
+        // ever advances by whole `len_utf8()` steps or ASCII-delimiter
+        // widths), so this lookup cannot fail in practice; bail out of
+        // the loop rather than panicking if that invariant is ever
+        // broken.
+        let Some(c) = line.get(i..).and_then(|rest| rest.chars().next()) else {
+            break;
+        };
         plain.push(c);
         i += c.len_utf8();
     }
@@ -327,11 +333,11 @@ pub fn parse_inline(line: &str) -> InlineText {
 fn find_unescaped(bytes: &[u8], start: usize, delim: u8) -> Option<usize> {
     let mut i = start;
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+        if bytes.get(i) == Some(&b'\\') && i + 1 < bytes.len() {
             i += 2;
             continue;
         }
-        if bytes[i] == delim {
+        if bytes.get(i) == Some(&delim) {
             return Some(i);
         }
         i += 1;
@@ -345,11 +351,11 @@ fn find_unescaped(bytes: &[u8], start: usize, delim: u8) -> Option<usize> {
 fn find_pair(bytes: &[u8], start: usize, delim1: u8, delim2: u8) -> Option<usize> {
     let mut i = start;
     while i + 1 < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+        if bytes.get(i) == Some(&b'\\') && i + 1 < bytes.len() {
             i += 2;
             continue;
         }
-        if bytes[i] == delim1 && bytes[i + 1] == delim2 {
+        if bytes.get(i) == Some(&delim1) && bytes.get(i + 1) == Some(&delim2) {
             return Some(i);
         }
         i += 1;
@@ -369,48 +375,45 @@ fn find_pair(bytes: &[u8], start: usize, delim1: u8, delim2: u8) -> Option<usize
 /// 1. Bold (outermost)
 /// 2. Italic
 /// 3. Code / Link (innermost — exclusive with one another)
+fn open_marker(mark: &Mark) -> &'static str {
+    match mark {
+        Mark::Bold => "**",
+        Mark::Italic => "*",
+        Mark::Code => "`",
+        Mark::Link(_) => "[[",
+        Mark::Underline => "__",
+        Mark::Strikethrough => "~~",
+    }
+}
+fn close_marker(mark: &Mark) -> &'static str {
+    match mark {
+        Mark::Bold => "**",
+        Mark::Italic => "*",
+        Mark::Code => "`",
+        Mark::Link(_) => "]]",
+        Mark::Underline => "__",
+        Mark::Strikethrough => "~~",
+    }
+}
+// Sort marks for deterministic emission: by start ascending, then
+// by priority (Bold < Italic < Underline < Strikethrough < Code < Link).
+fn priority(m: &Mark) -> u8 {
+    match m {
+        Mark::Bold => 0,
+        Mark::Italic => 1,
+        Mark::Underline => 2,
+        Mark::Strikethrough => 3,
+        Mark::Code => 4,
+        Mark::Link(_) => 5,
+    }
+}
+
 pub fn serialize_inline(text: &InlineText) -> String {
     let mut out = String::with_capacity(text.text.len() + text.marks.len() * 4);
     // For each byte position we maintain a stack of currently-open
     // marks (in order of opening). We open marks at their `start`
     // byte (in priority order Bold → Italic → Code/Link) and close
     // them at their `end` byte in reverse order.
-
-    // Pre-compute, for each byte position, the spans that open / close
-    // there. We use boolean fields rather than a token stack so
-    // ordering is deterministic.
-    fn open_marker(mark: &Mark) -> &'static str {
-        match mark {
-            Mark::Bold => "**",
-            Mark::Italic => "*",
-            Mark::Code => "`",
-            Mark::Link(_) => "[[",
-            Mark::Underline => "__",
-            Mark::Strikethrough => "~~",
-        }
-    }
-    fn close_marker(mark: &Mark) -> &'static str {
-        match mark {
-            Mark::Bold => "**",
-            Mark::Italic => "*",
-            Mark::Code => "`",
-            Mark::Link(_) => "]]",
-            Mark::Underline => "__",
-            Mark::Strikethrough => "~~",
-        }
-    }
-    // Sort marks for deterministic emission: by start ascending, then
-    // by priority (Bold < Italic < Underline < Strikethrough < Code < Link).
-    fn priority(m: &Mark) -> u8 {
-        match m {
-            Mark::Bold => 0,
-            Mark::Italic => 1,
-            Mark::Underline => 2,
-            Mark::Strikethrough => 3,
-            Mark::Code => 4,
-            Mark::Link(_) => 5,
-        }
-    }
     let mut marks = text.marks.clone();
     marks.sort_by(|a, b| {
         a.range
@@ -439,17 +442,20 @@ pub fn serialize_inline(text: &InlineText) -> String {
             }
         }
         // Open any marks whose range.start == i.
-        while mi < marks.len() && marks[mi].range.start == i {
-            open.push(&marks[mi]);
-            out.push_str(open_marker(&marks[mi].mark));
+        while let Some(m) = marks.get(mi).filter(|m| m.range.start == i) {
+            open.push(m);
+            out.push_str(open_marker(&m.mark));
             mi += 1;
         }
         if i < bytes_len {
             // Push the *char* starting at byte i, not the raw byte —
             // mark ranges are still byte indices, but the rendered
-            // text uses full UTF-8 codepoints.
-            let rest = &text.text[i..];
-            let c = rest.chars().next().unwrap();
+            // text uses full UTF-8 codepoints. `i` only ever advances
+            // by whole `len_utf8()` steps, so it always sits on a char
+            // boundary; bail out rather than panic if that ever breaks.
+            let Some(c) = text.text.get(i..).and_then(|rest| rest.chars().next()) else {
+                break;
+            };
             out.push(c);
             i += c.len_utf8();
         } else {
@@ -464,7 +470,7 @@ pub fn serialize_inline(text: &InlineText) -> String {
 /// Empty input → a single empty paragraph.
 pub fn parse(md: &str) -> Vec<BlockSpec> {
     let mut blocks = Vec::new();
-    let mut lines = md.split('\n').peekable();
+    let mut lines = md.split('\n');
     while let Some(line) = lines.next() {
         if line.is_empty() {
             continue;
@@ -476,12 +482,11 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
                 Some(rest.to_string())
             };
             let mut body: Vec<&str> = Vec::new();
-            while let Some(next) = lines.peek() {
-                if *next == "```" {
-                    lines.next();
+            for next in lines.by_ref() {
+                if next == "```" {
                     break;
                 }
-                body.push(lines.next().unwrap());
+                body.push(next);
             }
             blocks.push(BlockSpec::code_block(lang, body.join("\n")));
             continue;
@@ -571,7 +576,9 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
         }
         if let BlockSpec::Numbered { indent, .. } = b {
             let lvl = (*indent as usize).min(MAX_LIST_INDENT as usize);
-            counters[lvl] += 1;
+            if let Some(c) = counters.get_mut(lvl) {
+                *c += 1;
+            }
             for c in counters.iter_mut().skip(lvl + 1) {
                 *c = 0;
             }
@@ -596,8 +603,11 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
             }
             BlockSpec::Numbered { indent, text } => {
                 push_indent(&mut out, *indent);
-                let n = counters[(*indent as usize).min(MAX_LIST_INDENT as usize)];
-                out.push_str(&format!("{n}. "));
+                let n = counters
+                    .get((*indent as usize).min(MAX_LIST_INDENT as usize))
+                    .copied()
+                    .unwrap_or(0);
+                let _ = write!(out, "{n}. ");
                 out.push_str(&serialize_inline(text));
             }
             BlockSpec::Checklist { indent, done, text } => {
@@ -684,8 +694,7 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
     use ui::widget::BlockKind;
     let mut out = Vec::with_capacity(blocks.len());
     let mut i = 0usize;
-    while i < blocks.len() {
-        let b = &blocks[i];
+    while let Some(b) = blocks.get(i) {
         match &b.kind {
             BlockKind::Paragraph => {
                 out.push(BlockSpec::Paragraph(InlineText::new(
@@ -731,11 +740,11 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 let mut lines: Vec<String> = vec![b.text().to_string()];
                 let run_lang = lang.clone();
                 i += 1;
-                while i < blocks.len() {
-                    if let BlockKind::CodeBlock { lang: next_lang } = &blocks[i].kind
+                while let Some(next) = blocks.get(i) {
+                    if let BlockKind::CodeBlock { lang: next_lang } = &next.kind
                         && *next_lang == run_lang
                     {
-                        lines.push(blocks[i].text().to_string());
+                        lines.push(next.text().to_string());
                         i += 1;
                         continue;
                     }
@@ -764,22 +773,21 @@ where
     F: FnMut(&str) -> Option<PageId>,
 {
     for b in blocks {
-        let inline = match b {
-            BlockSpec::Paragraph(t)
-            | BlockSpec::Heading { text: t, .. }
-            | BlockSpec::Bullet { text: t, .. }
-            | BlockSpec::Numbered { text: t, .. }
-            | BlockSpec::Checklist { text: t, .. } => t,
-            _ => continue,
+        let (BlockSpec::Paragraph(inline)
+        | BlockSpec::Heading { text: inline, .. }
+        | BlockSpec::Bullet { text: inline, .. }
+        | BlockSpec::Numbered { text: inline, .. }
+        | BlockSpec::Checklist { text: inline, .. }) = b
+        else {
+            continue;
         };
         for m in &mut inline.marks {
             if let Mark::Link(id) = &m.mark
                 && id.is_nil()
+                && let Some(title) = inline.text.get(m.range.clone())
+                && let Some(new_id) = resolver(title)
             {
-                let title = &inline.text[m.range.clone()];
-                if let Some(new_id) = resolver(title) {
-                    m.mark = Mark::Link(new_id);
-                }
+                m.mark = Mark::Link(new_id);
             }
         }
     }
@@ -863,7 +871,7 @@ mod tests {
         assert_eq!(inline.text, "hello Welcome there");
         let m = &inline.marks[0];
         assert!(matches!(m.mark, Mark::Link(_)));
-        assert_eq!(&inline.text[m.range.clone()], "Welcome");
+        assert_eq!(inline.text.get(m.range.clone()), Some("Welcome"));
     }
 
     #[test]
@@ -1016,14 +1024,14 @@ Last paragraph.
 
     #[test]
     fn tex_and_typst_formula_fences_round_trip_as_editable_source() {
-        let source = r#"```tex
+        let source = r"```tex
 \frac{x^2+1}{\sqrt{y}}
 ```
 
 ```typst visual
 sum_(i=1)^n frac(1, i^2)
 ```
-"#;
+";
         let specs = parse(source);
         assert_eq!(specs.len(), 2);
         assert!(matches!(

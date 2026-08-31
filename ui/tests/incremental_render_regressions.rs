@@ -16,6 +16,16 @@
 //!    came back during scroll (which inflated dirty bounds) and
 //!    disappeared again on scroll stop.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -47,7 +57,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
         .with_intrinsic_height()
         .push(Box::new(Text::new(title_key).with_size(18.0)));
     for i in 0..ROWS_PER_PANEL {
-        let row_idx = idx * ROWS_PER_PANEL + i;
+        let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
         let label_key = leak(&format!("dash_lbl_{row_idx}"));
         match i % 3 {
             0 => {
@@ -65,7 +75,9 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Badge::count((i as u32) * 3))),
+                        .push(Box::new(Badge::count(
+                            u32::try_from(i).unwrap().saturating_mul(3),
+                        ))),
                 ));
             }
             _ => {
@@ -133,16 +145,18 @@ fn build_dashboard_root() -> Box<Scrollable> {
 }
 
 fn register_i18n() {
+    use std::fmt::Write as _;
+
     I18nManager::init("en-US");
     let mut ftl = String::new();
     ftl.push_str("dash_title = QuickDesktop Dashboard\n");
     for i in 0..8 {
-        ftl.push_str(&format!("dash_p{i} = Panel {i}\n"));
+        writeln!(ftl, "dash_p{i} = Panel {i}").unwrap();
     }
     for row_idx in 0..(8 * ROWS_PER_PANEL) {
-        ftl.push_str(&format!("dash_lbl_{row_idx} = Metric {row_idx}\n"));
-        ftl.push_str(&format!("dash_btn_{row_idx} = btn_{row_idx}\n"));
-        ftl.push_str(&format!("dash_btnlbl_{row_idx} = Open\n"));
+        writeln!(ftl, "dash_lbl_{row_idx} = Metric {row_idx}").unwrap();
+        writeln!(ftl, "dash_btn_{row_idx} = btn_{row_idx}").unwrap();
+        writeln!(ftl, "dash_btnlbl_{row_idx} = Open").unwrap();
     }
     I18nManager::add_resource("en-US", ftl);
 }
@@ -159,10 +173,10 @@ fn count_non_bg(rgba: &[u8], bg: vello::peniko::Color) -> usize {
     let [br, bgc, bb, _] = bg.to_rgba8().to_u8_array();
     rgba.chunks_exact(4)
         .filter(|p| {
-            let dr = i32::from(p[0]) - i32::from(br);
-            let dg = i32::from(p[1]) - i32::from(bgc);
-            let db = i32::from(p[2]) - i32::from(bb);
-            dr.abs() + dg.abs() + db.abs() > 12
+            let dr = i32::from(p[0]).saturating_sub(i32::from(br));
+            let dg = i32::from(p[1]).saturating_sub(i32::from(bgc));
+            let db = i32::from(p[2]).saturating_sub(i32::from(bb));
+            dr.abs().saturating_add(dg.abs()).saturating_add(db.abs()) > 12
         })
         .count()
 }
@@ -185,6 +199,12 @@ struct Harness {
 }
 
 impl Harness {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "logical_w/logical_h are small test canvas dimensions (a few thousand px at \
+                  most) divided by a small scale factor; f32 has ample precision at that \
+                  magnitude, matching the live App's own f64->f32 compositing cast"
+    )]
     fn new(canvas_w: u32, canvas_h: u32, scale: f64) -> Self {
         ensure_i18n();
         let theme = Theme::dark();
@@ -246,6 +266,12 @@ impl Harness {
     /// Re-run `compute_layout` + `apply_layout` — the live App
     /// fires this on any frame where `layout_dirty` is set
     /// (scroll, resize, text change, …).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "logical_w/logical_h are small test canvas dimensions (a few thousand px at \
+                  most) divided by a small scale factor; f32 has ample precision at that \
+                  magnitude, matching the live App's own f64->f32 compositing cast"
+    )]
     fn relayout(&mut self) {
         let node_map = &self.node_map;
         let text_renderer = &mut self.text_renderer;
@@ -294,6 +320,11 @@ impl Harness {
 }
 
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "pixel counts are bounded by the test canvas area (at most ~2,000,000), far below \
+              f64's 2^53 exact-integer range"
+)]
 fn column_row_subtree_cache_renders_correctly_at_dpi_scale_2() {
     let mut h = Harness::new(1600, 1200, 2.0);
 
@@ -361,6 +392,12 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         r.build_layout(&mut taffy, &theme, &mut node_map)
     };
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "logical_w/logical_h are small test canvas dimensions (a few thousand px at \
+                  most); f32 has ample precision at that magnitude, matching the live App's own \
+                  f64->f32 compositing cast"
+    )]
     let do_layout = |root: &mut Scrollable,
                      taffy: &mut TaffyTree<()>,
                      node_map: &HashMap<NodeId, *mut dyn Widget>,

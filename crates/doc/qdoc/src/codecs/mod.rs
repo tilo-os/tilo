@@ -32,6 +32,18 @@ pub use xlsx::XlsxCodec;
 
 use crate::format::{ProviderTier, Registry};
 
+/// Decode the UTF-8 attribute values required by OOXML and ODF and resolve XML
+/// entities. Keeping this here avoids tying leaf parsers to `quick-xml`'s
+/// optional legacy-encoding feature, which is unified across the workspace.
+pub(crate) fn unescape_attr(
+    attribute: &quick_xml::events::attributes::Attribute<'_>,
+) -> Option<String> {
+    let raw = std::str::from_utf8(attribute.value.as_ref()).ok()?;
+    quick_xml::escape::unescape(raw)
+        .ok()
+        .map(std::borrow::Cow::into_owned)
+}
+
 /// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
 /// from [`builtin_registry`] since spreadsheets speak [`SheetProvider`], not [`crate::format::FormatProvider`].
 pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {

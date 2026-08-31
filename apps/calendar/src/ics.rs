@@ -100,7 +100,8 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
     let lines = unfold(text);
     let mut i = 0;
     while i < lines.len() {
-        match lines[i].trim() {
+        let Some(cur) = lines.get(i) else { break };
+        match cur.trim() {
             "BEGIN:VEVENT" => {
                 let (ev, ni) = parse_vevent(&lines, i + 1);
                 if let Some(ev) = ev {
@@ -132,15 +133,15 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<Event>, usize) {
     let mut reminder: Option<i64> = None;
 
     while i < lines.len() {
-        let raw = &lines[i];
+        let Some(raw) = lines.get(i) else { break };
         if raw.trim() == "END:VEVENT" {
             i += 1;
             break;
         }
         if raw.trim() == "BEGIN:VALARM" {
             // Scan the alarm for a TRIGGER:-PTnM.
-            while i < lines.len() && lines[i].trim() != "END:VALARM" {
-                if let Some((k, v)) = split_prop(&lines[i])
+            while i < lines.len() && lines.get(i).is_some_and(|l| l.trim() != "END:VALARM") {
+                if let Some((k, v)) = lines.get(i).and_then(|l| split_prop(l))
                     && k.starts_with("TRIGGER")
                 {
                     reminder = parse_trigger_minutes(&v);
@@ -172,9 +173,8 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<Event>, usize) {
         i += 1;
     }
 
-    let start = match start {
-        Some(s) => s,
-        None => return (None, i),
+    let Some(start) = start else {
+        return (None, i);
     };
     let end = end.unwrap_or(start);
     (
@@ -202,7 +202,7 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
     let mut priority = Priority::None;
 
     while i < lines.len() {
-        let raw = &lines[i];
+        let Some(raw) = lines.get(i) else { break };
         if raw.trim() == "END:VTODO" {
             i += 1;
             break;
@@ -277,7 +277,7 @@ fn escape(s: &str) -> String {
 
 fn unescape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
+    let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
@@ -299,8 +299,11 @@ fn unfold(text: &str) -> Vec<String> {
     for raw in text.split('\n') {
         let trimmed = raw.strip_suffix('\r').unwrap_or(raw);
         if (trimmed.starts_with(' ') || trimmed.starts_with('\t')) && !out.is_empty() {
-            let last = out.last_mut().unwrap();
-            last.push_str(&trimmed[1..]);
+            // The fold whitespace is exactly one ASCII byte, so `get(1..)`
+            // never straddles a UTF-8 boundary.
+            if let Some(last) = out.last_mut() {
+                last.push_str(trimmed.get(1..).unwrap_or(""));
+            }
         } else {
             out.push(trimmed.to_string());
         }
@@ -310,14 +313,16 @@ fn unfold(text: &str) -> Vec<String> {
 
 fn split_prop(line: &str) -> Option<(String, String)> {
     let idx = line.find(':')?;
-    Some((line[..idx].to_string(), line[idx + 1..].to_string()))
+    let key = line.get(..idx)?;
+    let val = line.get(idx + 1..)?;
+    Some((key.to_string(), val.to_string()))
 }
 
 fn parse_cal_datetime(key: &str, val: &str) -> (NaiveDateTime, bool) {
     if (key.contains("VALUE=DATE") || val.len() == 8)
         && let Some(d) = parse_cal_date(val)
     {
-        return (d.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()), true);
+        return (d.and_time(NaiveTime::MIN), true);
     }
     let clean = val.trim_end_matches('Z');
     if let Ok(dt) = NaiveDateTime::parse_from_str(clean, DT_LOCAL) {
@@ -325,7 +330,7 @@ fn parse_cal_datetime(key: &str, val: &str) -> (NaiveDateTime, bool) {
     }
     // Fall back to a date-only parse.
     if let Some(d) = parse_cal_date(val) {
-        return (d.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()), true);
+        return (d.and_time(NaiveTime::MIN), true);
     }
     (chrono::Local::now().naive_local(), false)
 }
@@ -366,7 +371,9 @@ pub fn suggested_filename(anchor: NaiveDate) -> String {
 pub fn sample_ics(today: NaiveDate) -> String {
     use crate::model::Project;
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap())
+        // Only ever called below with fixed, valid literals; midnight is a
+        // safe fallback for any hour/minute pair that wouldn't be.
+        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
     };
     let d = |delta: i64| today + chrono::Duration::days(delta);
     let model = Model {

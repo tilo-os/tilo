@@ -2,6 +2,16 @@
 //! Pinned ones. Uses real .qpkg installs so both the payload tree and
 //! the blob store contribute to reported disk usage.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::common;
 use app_host::gc;
 use app_host::install::install_qpkg;

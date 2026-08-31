@@ -22,6 +22,7 @@
 /// assert_eq!(bytes(1024), "1.0 KiB");
 /// assert_eq!(bytes(5 * 1024 * 1024), "5.0 MiB");
 /// ```
+#[must_use]
 pub fn bytes(n: u64) -> String {
     const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     scale(n, 1024.0, &UNITS)
@@ -37,6 +38,7 @@ pub fn bytes(n: u64) -> String {
 /// assert_eq!(bytes_si(1000), "1.0 kB");
 /// assert_eq!(bytes_si(1_500_000), "1.5 MB");
 /// ```
+#[must_use]
 pub fn bytes_si(n: u64) -> String {
     const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
     scale(n, 1000.0, &UNITS)
@@ -44,17 +46,27 @@ pub fn bytes_si(n: u64) -> String {
 
 /// Shared scaler for [`bytes`]/[`bytes_si`]: divide by `base` until below
 /// one step; whole units print with no decimal, larger ones with one.
+#[must_use]
 fn scale(n: u64, base: f64, units: &[&str]) -> String {
+    // Display-only: rounded to one decimal place, so the precision `f64`
+    // drops above 2^52 never changes what's shown.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display value rounded to 1 decimal place; f64's precision loss is invisible at that rounding"
+    )]
     let mut value = n as f64;
     let mut unit = 0;
-    while value >= base && unit < units.len() - 1 {
+    // `units` is one of the fixed unit tables below, always non-empty.
+    while value >= base && unit < units.len().saturating_sub(1) {
         value /= base;
-        unit += 1;
+        unit = unit.saturating_add(1);
     }
     if unit == 0 {
-        format!("{} {}", n, units[0])
+        // `units` is non-empty (checked above via the loop bound), so index 0 exists.
+        format!("{n} {}", units.first().unwrap_or(&""))
     } else {
-        format!("{:.1} {}", value, units[unit])
+        // `unit` was only ever incremented while `< units.len() - 1`, so it's in bounds.
+        format!("{value:.1} {}", units.get(unit).unwrap_or(&""))
     }
 }
 
@@ -67,18 +79,20 @@ fn scale(n: u64, base: f64, units: &[&str]) -> String {
 /// assert_eq!(rate(512.0), "512 B/s");
 /// assert_eq!(rate(6_710_886.0), "6.4 MiB/s");
 /// ```
+#[must_use]
 pub fn rate(bytes_per_sec: f64) -> String {
     const UNITS: [&str; 5] = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"];
-    let mut v = bytes_per_sec.max(0.0);
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
+    let mut value = bytes_per_sec.max(0.0);
+    let mut unit_index = 0;
+    while value >= 1024.0 && unit_index < UNITS.len().saturating_sub(1) {
+        value /= 1024.0;
+        unit_index = unit_index.saturating_add(1);
     }
-    if u == 0 {
-        format!("{:.0} {}", v, UNITS[0])
+    if unit_index == 0 {
+        format!("{value:.0} {}", UNITS[0])
     } else {
-        format!("{:.1} {}", v, UNITS[u])
+        // `unit_index` was only ever incremented while `< UNITS.len() - 1`.
+        format!("{value:.1} {}", UNITS.get(unit_index).unwrap_or(&""))
     }
 }
 
@@ -92,6 +106,7 @@ pub fn rate(bytes_per_sec: f64) -> String {
 /// assert_eq!(timecode(75), "1:15");
 /// assert_eq!(timecode(3661), "1:01:01");
 /// ```
+#[must_use]
 pub fn timecode(total_secs: u64) -> String {
     let h = total_secs / 3600;
     let m = (total_secs % 3600) / 60;
@@ -104,6 +119,7 @@ pub fn timecode(total_secs: u64) -> String {
 }
 
 /// Alias for [`timecode`] — some call sites read better as "duration".
+#[must_use]
 pub fn duration(total_secs: u64) -> String {
     timecode(total_secs)
 }
@@ -127,34 +143,34 @@ const YEAR: i64 = 365 * DAY;
 /// assert_eq!(relative(90_000), "yesterday");
 /// assert_eq!(relative(3 * 86_400), "3 days ago");
 /// ```
+#[must_use]
 pub fn relative(secs_ago: i64) -> String {
-    let s = secs_ago;
-    if s < 45 {
+    if secs_ago < 45 {
         "just now".to_string()
-    } else if s < 90 {
+    } else if secs_ago < 90 {
         "1 min ago".to_string()
-    } else if s < HOUR {
-        format!("{} min ago", s / MINUTE)
-    } else if s < 90 * MINUTE {
+    } else if secs_ago < HOUR {
+        format!("{} min ago", secs_ago / MINUTE)
+    } else if secs_ago < 90 * MINUTE {
         "1 hr ago".to_string()
-    } else if s < DAY {
-        format!("{} hr ago", s / HOUR)
-    } else if s < 2 * DAY {
+    } else if secs_ago < DAY {
+        format!("{} hr ago", secs_ago / HOUR)
+    } else if secs_ago < 2 * DAY {
         "yesterday".to_string()
-    } else if s < WEEK {
-        format!("{} days ago", s / DAY)
-    } else if s < 2 * WEEK {
+    } else if secs_ago < WEEK {
+        format!("{} days ago", secs_ago / DAY)
+    } else if secs_ago < 2 * WEEK {
         "1 week ago".to_string()
-    } else if s < MONTH {
-        format!("{} weeks ago", s / WEEK)
-    } else if s < 2 * MONTH {
+    } else if secs_ago < MONTH {
+        format!("{} weeks ago", secs_ago / WEEK)
+    } else if secs_ago < 2 * MONTH {
         "1 month ago".to_string()
-    } else if s < YEAR {
-        format!("{} months ago", s / MONTH)
-    } else if s < 2 * YEAR {
+    } else if secs_ago < YEAR {
+        format!("{} months ago", secs_ago / MONTH)
+    } else if secs_ago < 2 * YEAR {
         "1 year ago".to_string()
     } else {
-        format!("{} years ago", s / YEAR)
+        format!("{} years ago", secs_ago / YEAR)
     }
 }
 
@@ -169,13 +185,21 @@ pub fn relative(secs_ago: i64) -> String {
 /// assert_eq!(compact_count(4_100_000), "4.1M");
 /// assert_eq!(compact_count(1_100_000_000), "1.1B");
 /// ```
+#[must_use]
 pub fn compact_count(n: u64) -> String {
+    // Display-only: rounded to one decimal place, so the precision `f64`
+    // drops above 2^52 never changes what's shown.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display value rounded to 1 decimal place; f64's precision loss is invisible at that rounding"
+    )]
+    let n_f64 = n as f64;
     if n >= 1_000_000_000 {
-        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+        format!("{:.1}B", n_f64 / 1_000_000_000.0)
     } else if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        format!("{:.1}M", n_f64 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        format!("{:.1}K", n_f64 / 1_000.0)
     } else {
         n.to_string()
     }
@@ -212,26 +236,32 @@ const WEEKDAYS_FULL: [&str; 7] = [
 /// Three-letter English month abbreviation for a **0-based** month index
 /// (`0` = Jan … `11` = Dec). The index wraps mod 12, so callers holding a
 /// 1-based month can pass `month - 1` without a bounds check.
+#[must_use]
 pub fn month_abbrev(index0: usize) -> &'static str {
-    MONTHS_ABBREV[index0 % 12]
+    // `% 12` is always in range, but the array length isn't tied to the
+    // literal `12` in the compiler's eyes, so make the fallback explicit.
+    MONTHS_ABBREV.get(index0 % 12).copied().unwrap_or("")
 }
 
 /// Full English month name for a **0-based** month index (`0` = January).
 /// Wraps mod 12.
+#[must_use]
 pub fn month_name(index0: usize) -> &'static str {
-    MONTHS_FULL[index0 % 12]
+    MONTHS_FULL.get(index0 % 12).copied().unwrap_or("")
 }
 
 /// Three-letter English weekday abbreviation for a **0-based** index where
 /// `0` = Sunday … `6` = Saturday. Wraps mod 7.
+#[must_use]
 pub fn weekday_abbrev(index0: usize) -> &'static str {
-    WEEKDAYS_ABBREV[index0 % 7]
+    WEEKDAYS_ABBREV.get(index0 % 7).copied().unwrap_or("")
 }
 
 /// Full English weekday name for a **0-based** index where `0` = Sunday.
 /// Wraps mod 7.
+#[must_use]
 pub fn weekday_name(index0: usize) -> &'static str {
-    WEEKDAYS_FULL[index0 % 7]
+    WEEKDAYS_FULL.get(index0 % 7).copied().unwrap_or("")
 }
 
 #[cfg(test)]

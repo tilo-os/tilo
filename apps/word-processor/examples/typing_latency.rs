@@ -20,12 +20,41 @@ use std::time::Instant;
 use ui::headless::Driver;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
+use word_processor::num::{f64_of_usize, u32_of_usize, usize_of_f64};
 use word_processor::{EditorDoc, open_document};
 
 /// One paragraph of ordinary prose, used to pad a document to a size.
 const PARAGRAPH: &str = "The rehearsal ran long and the doors opened late, so the \
 first half went out to a room that was still finding its seats. Nobody minded much. \
 By the interval the balcony had filled and the noise off it was the good kind.";
+
+/// `Duration::as_micros` returns `u128`; a keypress or a whole benchmark run
+/// never approaches `u64::MAX` microseconds (~584,942 years), so this
+/// saturates rather than truncates in practice.
+fn saturating_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+/// Microsecond timings measured here are always far below 2^53, so this
+/// conversion never loses precision in practice.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "microsecond timings never approach 2^53; lossless in practice"
+)]
+fn lossy_f64(value: u64) -> f64 {
+    value as f64
+}
+
+/// A microsecond count as milliseconds, for display.
+fn ms(us: u64) -> f64 {
+    lossy_f64(us) / 1000.0
+}
+
+/// The mean of `v`, `0` for an empty slice.
+fn avg(v: &[u64]) -> u64 {
+    let n = u64::try_from(v.len()).unwrap_or(u64::MAX).max(1);
+    v.iter().sum::<u64>().checked_div(n).unwrap_or(0)
+}
 
 /// A synthetic character-key press, built directly rather than through
 /// `Driver::key` — the paced-burst profile below needs the press alone, with
@@ -48,17 +77,17 @@ fn press(ch: char) -> WindowEvent {
 
 /// A document on disk with `paragraphs` paragraphs in it, opened the way a
 /// person's is: through `open_document`, decoded by the format's codec.
-fn document_with(paragraphs: usize) -> PathBuf {
+fn document_with(paragraphs: usize) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join("word-processor-typing-latency");
-    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("body-{paragraphs}.md"));
     let mut body = String::new();
     for _ in 0..paragraphs {
         body.push_str(PARAGRAPH);
         body.push_str("\n\n");
     }
-    std::fs::write(&path, &body).expect("the document is written");
-    path
+    std::fs::write(&path, &body)?;
+    Ok(path)
 }
 
 /// Nearest-rank percentile (NIST): the value at 1-indexed rank `ceil(p/100·n)`.
@@ -66,8 +95,23 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
     }
-    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
-    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+    let rank_f = (p / 100.0) * f64_of_usize(sorted.len());
+    let rank = usize_of_f64(rank_f.ceil());
+    let idx = rank.saturating_sub(1).min(sorted.len().saturating_sub(1));
+    sorted.get(idx).copied().unwrap_or(0)
+}
+
+/// Mean cost of each frame pass across every character typed, plus the wall
+/// time of the whole keypress — named rather than indexed so a per-pass total
+/// can't be transposed by an off-by-one.
+#[derive(Default)]
+struct PassTotals {
+    handle_event: u64,
+    sync: u64,
+    build_layout: u64,
+    apply_layout: u64,
+    draw: u64,
+    wall: u64,
 }
 
 /// Type `chars` characters into a document of `paragraphs` paragraphs, timing
@@ -79,9 +123,9 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 /// cost attributed to a character here is both `handle_event`s plus **one**
 /// frame's sync / layout / draw, taken from the driver's own per-pass
 /// profiler. That is what the app really spends before the glyph is on screen.
-fn type_and_time(paragraphs: usize, chars: usize) -> (Vec<u64>, [u64; 6]) {
-    let path = document_with(paragraphs);
-    let (state, wp, _fmt) = open_document(&path).expect("the document opens");
+fn type_and_time(paragraphs: usize, chars: usize) -> std::io::Result<(Vec<u64>, PassTotals)> {
+    let path = document_with(paragraphs)?;
+    let (state, wp, _fmt) = open_document(&path)?;
     let mut driver = Driver::new(state, Box::new(wp), (1200, 800));
 
     // Warm up the shaping caches so the first reading is not a cold-start
@@ -96,34 +140,38 @@ fn type_and_time(paragraphs: usize, chars: usize) -> (Vec<u64>, [u64; 6]) {
 
     driver.begin_profiling();
     let mut per_char = Vec::with_capacity(chars);
-    let mut passes = [0u64; 6];
+    let mut passes = PassTotals::default();
     for ch in text {
         driver.clear_profile_samples();
         let t = Instant::now();
         driver.key(&ch.to_string());
-        let wall = t.elapsed().as_micros() as u64;
+        let wall = saturating_u64(t.elapsed().as_micros());
         let frames = driver.take_profile_samples();
-        assert_eq!(
-            frames.len(),
-            2,
-            "a keypress should produce exactly the press and release frames",
-        );
+        if frames.len() != 2 {
+            return Err(std::io::Error::other(
+                "a keypress should produce exactly the press and release frames",
+            ));
+        }
         let events: u64 = frames.iter().map(|f| f.handle_event_us).sum();
-        let paint = frames[0].sync_us
-            + frames[0].build_layout_us
-            + frames[0].apply_layout_us
-            + frames[0].draw_us;
-        passes[0] += events;
-        passes[1] += frames[0].sync_us;
-        passes[2] += frames[0].build_layout_us;
-        passes[3] += frames[0].apply_layout_us;
-        passes[4] += frames[0].draw_us;
+        // The length check above guarantees a first frame; the fallback is
+        // never taken but keeps this free of a panicking index.
+        let first = frames.first().copied().unwrap_or_default();
+        let paint = first
+            .sync_us
+            .saturating_add(first.build_layout_us)
+            .saturating_add(first.apply_layout_us)
+            .saturating_add(first.draw_us);
+        passes.handle_event = passes.handle_event.saturating_add(events);
+        passes.sync = passes.sync.saturating_add(first.sync_us);
+        passes.build_layout = passes.build_layout.saturating_add(first.build_layout_us);
+        passes.apply_layout = passes.apply_layout.saturating_add(first.apply_layout_us);
+        passes.draw = passes.draw.saturating_add(first.draw_us);
         // Wall time for the whole keypress. It counts the second frame the
         // live app does not run, so it is an upper bound — but unlike the
         // pass sum it also counts what happens *between* passes, which
         // includes the undo commit. The truth is between the two columns.
-        passes[5] += wall;
-        per_char.push(events + paint);
+        passes.wall = passes.wall.saturating_add(wall);
+        per_char.push(events.saturating_add(paint));
     }
 
     // Prove the characters actually landed: a harness that measured an editor
@@ -135,18 +183,28 @@ fn type_and_time(paragraphs: usize, chars: usize) -> (Vec<u64>, [u64; 6]) {
         .iter()
         .map(|id| ed.text(&st.doc, id).unwrap_or_default().chars().count())
         .sum();
-    let expected = paragraphs * PARAGRAPH.chars().count() + "warmup".len() + chars;
-    assert!(
-        total >= expected,
-        "only {total} characters are in the document, expected at least \
-         {expected}: the harness typed into something that did not keep the text",
-    );
-
-    let n = per_char.len().max(1) as u64;
-    for p in &mut passes {
-        *p /= n;
+    let expected = paragraphs
+        .saturating_mul(PARAGRAPH.chars().count())
+        .saturating_add("warmup".len())
+        .saturating_add(chars);
+    if total < expected {
+        return Err(std::io::Error::other(format!(
+            "only {total} characters are in the document, expected at least \
+             {expected}: the harness typed into something that did not keep the text",
+        )));
     }
-    (per_char, passes)
+
+    let n = u64::try_from(per_char.len()).unwrap_or(u64::MAX).max(1);
+    let div = |x: u64| x.checked_div(n).unwrap_or(0);
+    passes = PassTotals {
+        handle_event: div(passes.handle_event),
+        sync: div(passes.sync),
+        build_layout: div(passes.build_layout),
+        apply_layout: div(passes.apply_layout),
+        draw: div(passes.draw),
+        wall: div(passes.wall),
+    };
+    Ok((per_char, passes))
 }
 
 /// Print the distribution of `per_char`, plus how the cost moves from the start
@@ -155,13 +213,13 @@ fn type_and_time(paragraphs: usize, chars: usize) -> (Vec<u64>, [u64; 6]) {
 fn report(label: &str, per_char: &[u64]) {
     let mut sorted = per_char.to_vec();
     sorted.sort_unstable();
-    let ms = |us: u64| us as f64 / 1000.0;
-    let mean = per_char.iter().sum::<u64>() / per_char.len().max(1) as u64;
+    let mean = avg(per_char);
 
     let quarter = per_char.len() / 4;
-    let first = &per_char[..quarter.max(1)];
-    let last = &per_char[per_char.len() - quarter.max(1)..];
-    let avg = |v: &[u64]| v.iter().sum::<u64>() / v.len().max(1) as u64;
+    let split = quarter.max(1);
+    let first = per_char.get(..split).unwrap_or(per_char);
+    let last_start = per_char.len().saturating_sub(split);
+    let last = per_char.get(last_start..).unwrap_or(per_char);
 
     // 60 fps: a character that costs more than one frame cannot be drawn
     // before the next one arrives at any ordinary typing speed.
@@ -178,9 +236,9 @@ fn report(label: &str, per_char: &[u64]) {
         ms(percentile(&sorted, 100.0)),
         ms(avg(first)),
         ms(avg(last)),
-        avg(last) as f64 / avg(first).max(1) as f64,
+        lossy_f64(avg(last)) / lossy_f64(avg(first).max(1)),
         over,
-        over as f64 * 100.0 / per_char.len() as f64,
+        f64_of_usize(over) * 100.0 / f64_of_usize(per_char.len()),
     );
 
     // Where the slow characters fall matters as much as how slow they are. A
@@ -191,11 +249,17 @@ fn report(label: &str, per_char: &[u64]) {
     let spikes: Vec<usize> = per_char
         .iter()
         .enumerate()
-        .filter(|&(_, &us)| us > p50 * 4)
+        .filter(|&(_, &us)| us > p50.saturating_mul(4))
         .map(|(i, _)| i)
         .collect();
     if !spikes.is_empty() {
-        let gaps: Vec<usize> = spikes.windows(2).map(|w| w[1] - w[0]).collect();
+        let gaps: Vec<usize> = spikes
+            .windows(2)
+            .map(|w| match w {
+                [a, b] => b.saturating_sub(*a),
+                _ => 0,
+            })
+            .collect();
         let shown: Vec<String> = spikes
             .iter()
             .take(12)
@@ -207,7 +271,7 @@ fn report(label: &str, per_char: &[u64]) {
             spikes.len(),
             shown.join(", #"),
             if spikes.len() > 12 { ", …" } else { "" },
-            &gaps[..gaps.len().min(11)],
+            gaps.get(..gaps.len().min(11)).unwrap_or(gaps.as_slice()),
         );
     }
 }
@@ -225,9 +289,13 @@ fn report(label: &str, per_char: &[u64]) {
 /// app runs one per *character* (winit coalesces the press/release redraws),
 /// so press-alone gives the real one-frame-per-character cadence; the release
 /// costs nothing since only a press carries text.
-fn paced_burst_profile(paragraphs: usize, chars: usize, per_second: f64) -> Vec<usize> {
-    let path = document_with(paragraphs);
-    let (state, wp, _fmt) = open_document(&path).expect("the document opens");
+fn paced_burst_profile(
+    paragraphs: usize,
+    chars: usize,
+    per_second: f64,
+) -> std::io::Result<Vec<usize>> {
+    let path = document_with(paragraphs)?;
+    let (state, wp, _fmt) = open_document(&path)?;
     let mut driver = Driver::new(state, Box::new(wp), (1200, 800));
     driver.type_text("warmup");
 
@@ -243,21 +311,29 @@ fn paced_burst_profile(paragraphs: usize, chars: usize, per_second: f64) -> Vec<
     for (i, ch) in text.into_iter().enumerate() {
         // The key is due at `i · interval`. If the editor is already past that,
         // the key is waiting and goes in immediately.
-        let due = interval.mul_f64(i as f64);
+        let due = interval.mul_f64(f64_of_usize(i));
         if let Some(wait) = due.checked_sub(start.elapsed()) {
             std::thread::sleep(wait);
         }
-        driver.send(press(ch));
+        driver.send(&press(ch));
         done_at.push(start.elapsed());
     }
 
-    let frames = (done_at.last().copied().unwrap_or_default().as_micros() / 16_667) as usize + 1;
+    let last_us = saturating_u64(done_at.last().copied().unwrap_or_default().as_micros());
+    let frames = usize::try_from(last_us / 16_667)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
     let mut per_frame = vec![0usize; frames];
     for t in done_at {
-        let f = ((t.as_micros() / 16_667) as usize).min(frames - 1);
-        per_frame[f] += 1;
+        let t_us = saturating_u64(t.as_micros());
+        let f = usize::try_from(t_us / 16_667)
+            .unwrap_or(usize::MAX)
+            .min(frames.saturating_sub(1));
+        if let Some(slot) = per_frame.get_mut(f) {
+            *slot = slot.saturating_add(1);
+        }
     }
-    per_frame
+    Ok(per_frame)
 }
 
 /// Print the burst profile as a run of counts, and say how bad the worst clump
@@ -273,7 +349,7 @@ fn report_bursts(label: &str, per_frame: &[usize], per_second: f64) {
          worst frame showed {worst} at once; {clumped} characters ({:.0}%) \
          arrived in a clump",
         per_frame.len(),
-        clumped as f64 * 100.0 / typed.max(1) as f64,
+        f64_of_usize(clumped) * 100.0 / f64_of_usize(typed.max(1)),
     );
     // The shape itself, so a burst is legible rather than summarised: one
     // column per display frame, capped at 9 so a clump reads at a glance.
@@ -281,7 +357,7 @@ fn report_bursts(label: &str, per_frame: &[usize], per_second: f64) {
         .iter()
         .map(|&n| match n {
             0 => '.',
-            n if n < 10 => char::from_digit(n as u32, 10).unwrap(),
+            n if n < 10 => char::from_digit(u32_of_usize(n), 10).unwrap_or('#'),
             _ => '#',
         })
         .collect();
@@ -290,14 +366,15 @@ fn report_bursts(label: &str, per_frame: &[usize], per_second: f64) {
     }
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     ui::i18n::I18nManager::init("en-US");
 
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| {
         args.iter()
             .position(|a| a == name)
-            .and_then(|i| args.get(i + 1))
+            .and_then(|i| i.checked_add(1))
+            .and_then(|i| args.get(i))
             .cloned()
     };
     let chars = arg("--chars")
@@ -310,29 +387,30 @@ fn main() {
          milliseconds\n"
     );
     for paragraphs in [0usize, 1, 4, 16] {
-        let (per_char, passes) = type_and_time(paragraphs, chars);
+        let (per_char, passes) = type_and_time(paragraphs, chars)?;
         report(&format!("{paragraphs} paragraph(s) of body"), &per_char);
-        let ms = |us: u64| us as f64 / 1000.0;
         println!(
             "{:>28}   mean per character: handle_event {:.2}  sync {:.2}  \
              build {:.2}  apply {:.2}  draw {:.2}  | whole keypress, wall {:.2}  (ms)",
             "",
-            ms(passes[0]),
-            ms(passes[1]),
-            ms(passes[2]),
-            ms(passes[3]),
-            ms(passes[4]),
-            ms(passes[5]),
+            ms(passes.handle_event),
+            ms(passes.sync),
+            ms(passes.build_layout),
+            ms(passes.apply_layout),
+            ms(passes.draw),
+            ms(passes.wall),
         );
     }
 
     println!("\ntyping at a person's pace: what reaches the screen, frame by frame\n");
     for paragraphs in [0usize, 4, 16] {
-        let per_frame = paced_burst_profile(paragraphs, chars.min(120), rate);
+        let per_frame = paced_burst_profile(paragraphs, chars.min(120), rate)?;
         report_bursts(
             &format!("{paragraphs} paragraph(s) of body"),
             &per_frame,
             rate,
         );
     }
+
+    Ok(())
 }

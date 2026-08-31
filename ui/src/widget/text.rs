@@ -75,6 +75,7 @@ impl Text {
     /// Supply one Fluent variable for the label's placeables. Chainable, so
     /// multiple variables can be set: `Text::new("greeting").with_arg("name",
     /// "Ada").with_arg("count", 3)`. Accepts numbers and strings.
+    #[must_use]
     pub fn with_arg(mut self, name: &str, value: impl Into<ArgValue>) -> Self {
         self.args.push((name.to_string(), value.into()));
         self
@@ -95,6 +96,7 @@ impl Text {
         }
     }
 
+    #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.style.size = size;
         self
@@ -102,6 +104,7 @@ impl Text {
 
     /// Apply a complete style in one operation. Measurement and painting use
     /// this same value, so leading, weight, face, and italic cannot drift.
+    #[must_use]
     pub fn with_style(mut self, style: TextStyle) -> Self {
         self.style = style;
         self.dirty = true;
@@ -111,10 +114,12 @@ impl Text {
     /// Resolve a semantic role from the active theme. This is the preferred
     /// application-level API: one role selects size, leading, weight, and face
     /// together and automatically reflects text/UI scaling in `theme`.
+    #[must_use]
     pub fn with_role(self, role: TextRole, theme: &Theme) -> Self {
         self.with_style(theme.tokens.typography.style(role))
     }
 
+    #[must_use]
     pub fn with_line_height(mut self, multiplier: f32) -> Self {
         self.style.line_height = multiplier.max(0.1);
         self.dirty = true;
@@ -123,18 +128,21 @@ impl Text {
 
     /// Enable TeX/Liang automatic hyphenation for this text block using a
     /// BCP-47 language tag such as `"en-US"` or `"de"`.
+    #[must_use]
     pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
         self.style = self.style.with_auto_hyphenation(language);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_weight(mut self, weight: TextWeight) -> Self {
         self.style.weight = weight;
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_italic(mut self, italic: bool) -> Self {
         self.style.italic = italic;
         self.dirty = true;
@@ -144,84 +152,98 @@ impl Text {
     /// Render this label in an explicit [`FontChoice`] instead of the
     /// default sans. Both measurement and draw shape use the same family,
     /// so a label previewing a font in its own face lays out correctly.
+    #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.style.family = family;
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_letter_spacing(mut self, px: f32) -> Self {
         self.style = self.style.with_letter_spacing(px);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_tracking(mut self, em: f32) -> Self {
         self.style = self.style.with_tracking(em);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_font_feature(mut self, tag: OpenTypeTag, value: u32) -> Self {
         self.style = self.style.with_font_feature(tag, value);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_kerning(mut self, enabled: bool) -> Self {
         self.style = self.style.with_kerning(enabled);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_discretionary_ligatures(mut self, enabled: bool) -> Self {
         self.style = self.style.with_discretionary_ligatures(enabled);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_small_caps(mut self, enabled: bool) -> Self {
         self.style = self.style.with_small_caps(enabled);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_numeric_style(mut self, numeric_style: NumericStyle) -> Self {
         self.style = self.style.with_numeric_style(numeric_style);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_font_variation(mut self, tag: OpenTypeTag, value: f32) -> Self {
         self.style = self.style.with_font_variation(tag, value);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_optical_sizing(mut self, optical_sizing: OpticalSizing) -> Self {
         self.style = self.style.with_optical_sizing(optical_sizing);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_align(mut self, align: ParagraphAlign) -> Self {
         self.style = self.style.with_align(align);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_balanced_wrap(mut self) -> Self {
         self.style = self.style.with_wrap_mode(TextWrapMode::Balance);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_hanging_punctuation(mut self, hanging: HangingPunctuation) -> Self {
         self.style = self.style.with_hanging_punctuation(hanging);
         self.dirty = true;
         self
     }
 
+    #[must_use]
     pub fn with_fragmentation(mut self, orphans: u8, widows: u8) -> Self {
         self.style = self.style.with_fragmentation(orphans, widows);
         self.dirty = true;
@@ -246,6 +268,12 @@ impl Text {
     /// the taffy tree. Mirrors
     /// [`crate::widget::TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
+        // Exact equality is the point — this is change detection for the
+        // paint cache, not a numerical comparison that needs a tolerance.
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact-change detection for the paint cache, not numerical comparison"
+        )]
         let size_changed =
             rect.width() != self.cache_rect.width() || rect.height() != self.cache_rect.height();
         self.rect = rect;
@@ -257,18 +285,21 @@ impl Text {
     /// Pass a Theme token (e.g. `theme.text_dim` or
     /// `theme.tokens.colors.semantic.danger`) so the choice still tracks
     /// the active theme.
+    #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
         self
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// Gate this widget behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -337,6 +368,12 @@ impl Widget for Text {
         );
         // Without this, scrolling a 1000-widget tree would invalidate every
         // cache every frame and the per-widget cache goes net-negative.
+        // Exact equality is the point — this is change detection for the
+        // paint cache, not a numerical comparison that needs a tolerance.
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact-change detection for the paint cache, not numerical comparison"
+        )]
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         if size_changed {
@@ -355,6 +392,10 @@ impl Widget for Text {
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
+            )]
             let max_width = self.rect.width() as f32;
             let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
@@ -370,7 +411,10 @@ impl Widget for Text {
         }
         let dx = self.rect.x0 - self.cache_rect.x0;
         let dy = self.rect.y0 - self.cache_rect.y0;
-        scene.append(&self.cached, Some(transform * Affine::translate((dx, dy))));
+        scene.append(
+            &self.cached,
+            Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
+        );
     }
 
     fn handle_event(

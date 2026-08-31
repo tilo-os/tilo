@@ -56,6 +56,10 @@ pub(crate) fn pg_config(profile: &crate::model::ConnectionProfile) -> Config {
 impl PostgresEngine {
     /// Open a real connection. A refused socket or a failed auth surfaces as
     /// the driver's own error string — never a fabricated success.
+    ///
+    /// # Errors
+    /// Returns the driver's error string if the TCP connection is refused or
+    /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let cfg = pg_config(profile);
         let client = cfg.connect(NoTls).map_err(|e| e.to_string())?;
@@ -64,6 +68,11 @@ impl PostgresEngine {
 
     /// Introspect every user schema (skipping `pg_catalog` /
     /// `information_schema`) into the shared [`DatabaseSchema`] shape.
+    ///
+    /// # Errors
+    /// Returns the driver's error string if any of the underlying catalog
+    /// queries (listing schemas/tables, or a table's columns, foreign keys
+    /// or indexes) fail.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let rows = self
             .client
@@ -247,6 +256,10 @@ impl PostgresEngine {
     /// names + whether the statement returns rows, then the text protocol to
     /// read the values. Falls back to a pure simple-query path for inputs the
     /// extended protocol rejects (e.g. multiple `;`-separated statements).
+    ///
+    /// # Errors
+    /// Returns the driver's error string if `sql` fails to execute, either
+    /// through the prepared-statement path or the simple-query fallback.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {

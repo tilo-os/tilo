@@ -110,6 +110,10 @@ impl AddDeviceHostScreen {
     /// The `initiator_pk` is the host's existing single-device
     /// identity public key — embedded in the payload so the pairer
     /// can address its reply.
+    ///
+    /// # Errors
+    /// Returns an error if the pairing payload cannot be constructed or
+    /// JSON-encoded.
     pub fn begin(
         &mut self,
         host_identity_round1: EnrolmentRound1,
@@ -147,6 +151,9 @@ impl AddDeviceHostScreen {
     /// Reproduce the 6-digit code from the JSON payload alone — used
     /// by the headline test to confirm a QR scanner that pasted the
     /// payload arrives at the same code.
+    ///
+    /// # Errors
+    /// Returns an error if the payload's nonce cannot be decoded.
     pub fn derive_code_from_payload(payload: &PairingPayload) -> Result<u32, IdentityFlowError> {
         let nonce = payload.nonce()?;
         Ok(derive_pairing_code(&nonce))
@@ -171,6 +178,11 @@ impl AddDeviceHostScreen {
     /// contribution which the pairer needs to finalise. The caller
     /// (the broker shim) is responsible for publishing that reply
     /// back onto the pairing channel.
+    ///
+    /// # Errors
+    /// Returns an error if there is no active handshake, the reply's MAC
+    /// is invalid, the session was already drained, or the underlying DKG
+    /// round fails.
     pub fn host_complete_dkg(
         &mut self,
         reply: EnrolmentRound2,
@@ -215,6 +227,10 @@ impl AddDeviceHostScreen {
     /// Pump one tick of the host-side handshake by polling the
     /// pairing handshake for the pairer's reply. Returns `true` iff
     /// the handshake completed this tick.
+    ///
+    /// # Errors
+    /// Returns an error if there is no active handshake, or if completing
+    /// the DKG round for a pending reply fails.
     pub fn poll_handshake(&mut self, hs: &PairingHandshake) -> Result<bool, IdentityFlowError> {
         let s = self
             .session
@@ -280,6 +296,131 @@ impl AddDeviceHostScreen {
             _ => ScreenOutcome::Stay,
         }
     }
+
+    /// Draws the QR code once a handshake is active, or a placeholder
+    /// panel + label before `begin` has been called.
+    fn draw_qr(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(qr) = self.qr.as_mut() else {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &self.qr_rect,
+            );
+            text_renderer.draw_text(
+                scene,
+                "(QR will appear after begin)",
+                12.0,
+                theme.tokens.colors.text_dim,
+                at(
+                    transform,
+                    self.qr_rect.x0 + 12.0,
+                    self.qr_rect.center().y - 6.0,
+                ),
+                None,
+            );
+            return;
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgb8(255, 255, 255),
+            None,
+            &self.qr_rect,
+        );
+        let total = modules_to_f64(qr.total_modules());
+        let module = self.qr_rect.width() / total;
+        let quiet_modules = qr.quiet_modules();
+        let quiet = modules_to_f64(quiet_modules) * module;
+        // The quiet zone runs around all four sides, so it is subtracted twice.
+        let visible = qr
+            .total_modules()
+            .saturating_sub(quiet_modules.saturating_mul(2));
+        for y in 0..visible {
+            for x in 0..visible {
+                if !qr.module(x, y) {
+                    continue;
+                }
+                let px = self.qr_rect.x0 + quiet + modules_to_f64(x) * module;
+                let py = self.qr_rect.y0 + quiet + modules_to_f64(y) * module;
+                let cell = Rect::new(px, py, px + module, py + module);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    Color::from_rgb8(0, 0, 0),
+                    None,
+                    &cell,
+                );
+            }
+        }
+    }
+
+    /// Draws the cancel button, hover-tinted per `self.cancel_hovered`.
+    fn draw_cancel_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let cancel_bg = if self.cancel_hovered {
+            theme.bg_hover
+        } else {
+            theme.tokens.colors.surfaces.base
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            cancel_bg,
+            None,
+            &RoundedRect::from_rect(self.cancel_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(self.cancel_rect, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Cancel",
+            13.0,
+            theme.tokens.colors.text_primary,
+            at(
+                transform,
+                self.cancel_rect.x0 + 16.0,
+                self.cancel_rect.y0 + (self.cancel_rect.height() - 13.0) / 2.0,
+            ),
+            None,
+        );
+    }
+}
+
+/// Composes `transform` with a translation to `(x, y)` for one draw call.
+/// `Affine::translate` composition is floating-point matrix math, not
+/// integer arithmetic — it cannot overflow or panic.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+)]
+fn at(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// Widens a QR module index/count to `f64` for pixel-space arithmetic.
+/// Clamped to `u32::MAX` — a QR code never has anywhere near four billion
+/// modules — so unlike a raw `as` cast this can never silently lose
+/// precision.
+fn modules_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 impl Widget for AddDeviceHostScreen {
@@ -362,56 +503,10 @@ impl Widget for AddDeviceHostScreen {
             "Pair another device",
             22.0,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
+            at(transform, card.x0 + pad, card.y0 + pad),
             None,
         );
-        // A placeholder white rect stands in when no handshake is active yet.
-        if let Some(qr) = self.qr.as_mut() {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                Color::from_rgb8(255, 255, 255),
-                None,
-                &self.qr_rect,
-            );
-            let total = qr.total_modules() as f64;
-            let module = self.qr_rect.width() / total;
-            let quiet = qr.quiet_modules() as f64 * module;
-            for y in 0..qr.total_modules() - 2 * qr.quiet_modules() {
-                for x in 0..qr.total_modules() - 2 * qr.quiet_modules() {
-                    if !qr.module(x, y) {
-                        continue;
-                    }
-                    let px = self.qr_rect.x0 + quiet + x as f64 * module;
-                    let py = self.qr_rect.y0 + quiet + y as f64 * module;
-                    let cell = Rect::new(px, py, px + module, py + module);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        Color::from_rgb8(0, 0, 0),
-                        None,
-                        &cell,
-                    );
-                }
-            }
-        } else {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &self.qr_rect,
-            );
-            text_renderer.draw_text(
-                scene,
-                "(QR will appear after begin)",
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((self.qr_rect.x0 + 12.0, self.qr_rect.center().y - 6.0)),
-                None,
-            );
-        }
+        self.draw_qr(scene, transform, text_renderer, theme);
         let code_label = self
             .pairing_code_display()
             .unwrap_or_else(|| "------".to_string());
@@ -420,7 +515,7 @@ impl Widget for AddDeviceHostScreen {
             &format!("Code: {code_label}"),
             18.0,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, self.qr_rect.y1 + 16.0)),
+            at(transform, card.x0 + pad, self.qr_rect.y1 + 16.0),
             None,
         );
         text_renderer.draw_text(
@@ -428,40 +523,10 @@ impl Widget for AddDeviceHostScreen {
             &self.status,
             13.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + pad, self.qr_rect.y1 + 48.0)),
+            at(transform, card.x0 + pad, self.qr_rect.y1 + 48.0),
             None,
         );
-        let cancel_bg = if self.cancel_hovered {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cancel_bg,
-            None,
-            &RoundedRect::from_rect(self.cancel_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.cancel_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Cancel",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    self.cancel_rect.x0 + 16.0,
-                    self.cancel_rect.y0 + (self.cancel_rect.height() - 13.0) / 2.0,
-                )),
-            None,
-        );
+        self.draw_cancel_button(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(

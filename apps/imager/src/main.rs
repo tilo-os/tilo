@@ -1,15 +1,15 @@
 //! Disk Imager — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default            — run the live winit event loop via `ui::App`,
-//!                          starting blank with a real `lsblk` drive probe.
-//!   * `--demo`           — run live but seed sample content (drives, a qOS
-//!                          image, recent history) for a walkthrough / review.
-//!   * `--shots PATH`     — render one offscreen frame to a PNG and exit.
-//!                          `--scenario NAME` picks which wizard station
-//!                          (defaults to `source`); `--viewport WxH` sizes it.
-//!   * `--shots-dir DIR`  — render *every* wizard scenario into `DIR` as
-//!                          `NN-name.png` (the screenshot gallery).
+//!   * default — run the live winit event loop via `ui::App`, starting blank
+//!     with a real `lsblk` drive probe.
+//!   * `--demo` — run live but seed sample content (drives, a qOS image,
+//!     recent history) for a walkthrough / review.
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit.
+//!     `--scenario NAME` picks which wizard station (defaults to `source`);
+//!     `--viewport WxH` sizes it.
+//!   * `--shots-dir DIR` — render *every* wizard scenario into `DIR` as
+//!     `NN-name.png` (the screenshot gallery).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -25,6 +25,18 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
 )]
 
 use std::collections::HashMap;
@@ -42,6 +54,10 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1180, 820);
 
+/// # Errors
+///
+/// Returns an error if a `--shots`/`--shots-dir` render fails: computing the
+/// offscreen layout for a scenario, or writing its PNG to disk.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -83,7 +99,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
         std::process::exit(ui::headless::run(
-            spec,
+            &spec,
             imager::app_root(),
             "dev.qos.imager",
         ));

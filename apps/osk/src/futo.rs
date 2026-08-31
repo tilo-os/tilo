@@ -103,25 +103,26 @@ impl SwipeModel for FutoSwipeModel {
         }
         // Bounding box of the on-screen letter keys → normalize the gesture
         // into the model's [0,1] layout space.
-        let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        let mut min_pt = Point::new(f64::MAX, f64::MAX);
+        let mut max_pt = Point::new(f64::MIN, f64::MIN);
         for (id, rect) in key_geom {
             if layout.key(*id).is_some_and(super::layout::Key::is_letter) {
-                minx = minx.min(rect.x0);
-                miny = miny.min(rect.y0);
-                maxx = maxx.max(rect.x1);
-                maxy = maxy.max(rect.y1);
+                min_pt.x = min_pt.x.min(rect.x0);
+                min_pt.y = min_pt.y.min(rect.y0);
+                max_pt.x = max_pt.x.max(rect.x1);
+                max_pt.y = max_pt.y.max(rect.y1);
             }
         }
-        if !(maxx > minx && maxy > miny) {
+        if !(max_pt.x > min_pt.x && max_pt.y > min_pt.y) {
             return Vec::new();
         }
-        let (w, h) = (maxx - minx, maxy - miny);
+        let (w, h) = (max_pt.x - min_pt.x, max_pt.y - min_pt.y);
         let mut xs = Vec::with_capacity(path.len());
         let mut ys = Vec::with_capacity(path.len());
         let mut ts = Vec::with_capacity(path.len());
         for (i, p) in path.iter().enumerate() {
-            xs.push((((p.x - minx) / w).clamp(0.0, 1.0)) as f32);
-            ys.push((((p.y - miny) / h).clamp(0.0, 1.0)) as f32);
+            xs.push((((p.x - min_pt.x) / w).clamp(0.0, 1.0)) as f32);
+            ys.push((((p.y - min_pt.y) / h).clamp(0.0, 1.0)) as f32);
             ts.push(i as f32 * 16.0);
         }
         let cands = self.engine.recognize(&xs, &ys, &ts, top_n as i32);

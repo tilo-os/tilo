@@ -12,6 +12,14 @@ use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub const STRIP_COOLDOWN_MS: u64 = 600;
 
+/// `-1`, `0`, or `1` for a wheel delta's sign (inverted, matching scroll
+/// convention: a positive delta pages backward). Never anything else, so
+/// this sidesteps the narrowing `f64 -> i32` cast and the negation
+/// entirely rather than relying on `-v.signum() as i32` to stay in range.
+fn wheel_sign(v: f64) -> i32 {
+    if v > 0.0 { -1 } else { i32::from(v < 0.0) }
+}
+
 pub struct StripView {
     strip_names: Vec<String>,
     active_index: usize,
@@ -25,7 +33,7 @@ impl StripView {
         let clamped = if strip_names.is_empty() {
             0
         } else {
-            active_index.min(strip_names.len() - 1)
+            active_index.min(strip_names.len().saturating_sub(1))
         };
         Self {
             strip_names,
@@ -51,11 +59,14 @@ impl StripView {
         {
             return false;
         }
-        let new_idx = self.active_index as i64 + i64::from(direction);
-        if new_idx < 0 || new_idx >= self.strip_names.len() as i64 {
+        let new_idx = i64::try_from(self.active_index)
+            .unwrap_or(i64::MAX)
+            .saturating_add(i64::from(direction));
+        let len = i64::try_from(self.strip_names.len()).unwrap_or(i64::MAX);
+        if new_idx < 0 || new_idx >= len {
             return false;
         }
-        self.active_index = new_idx as usize;
+        self.active_index = usize::try_from(new_idx).unwrap_or(self.active_index);
         self.last_paginate_ms = Some(now_ms);
         true
     }
@@ -117,8 +128,8 @@ impl Widget for StripView {
     ) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let sign = match delta {
-                MouseScrollDelta::LineDelta(_x, y) => -y.signum() as i32,
-                MouseScrollDelta::PixelDelta(pp) => -(pp.y.signum() as i32),
+                MouseScrollDelta::LineDelta(_x, y) => wheel_sign(f64::from(*y)),
+                MouseScrollDelta::PixelDelta(pp) => wheel_sign(pp.y),
             };
             if sign != 0 {
                 let now = Instant::now().duration_since(self.start);

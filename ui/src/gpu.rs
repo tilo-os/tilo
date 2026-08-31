@@ -146,10 +146,16 @@ impl RenderContext {
             device,
             queue,
         });
-        Some(self.devices.len() - 1)
+        Some(self.devices.len().saturating_sub(1))
     }
 
     /// A surface for `window`, rendered at `width` x `height`.
+    ///
+    /// # Errors
+    /// Returns [`CreateSurfaceError::Surface`] if wgpu cannot create a surface for
+    /// `window`, [`CreateSurfaceError::NoCompatibleDevice`] if no adapter can present
+    /// to it, or [`CreateSurfaceError::UnsupportedSurfaceFormat`] if the surface
+    /// offers neither `Rgba8Unorm` nor `Bgra8Unorm`.
     pub async fn create_surface<'w>(
         &mut self,
         window: impl Into<SurfaceTarget<'w>>,
@@ -165,7 +171,10 @@ impl RenderContext {
             .device(Some(&surface))
             .await
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
-        let handle = &self.devices[dev_id];
+        let handle = self
+            .devices
+            .get(dev_id)
+            .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         let capabilities = surface.get_capabilities(&handle.adapter);
         let format = capabilities
             .formats
@@ -200,7 +209,10 @@ impl RenderContext {
     /// # Panics
     /// If `width` or `height` is zero.
     pub fn resize_surface(&self, surface: &mut RenderSurface<'_>, width: u32, height: u32) {
-        let (texture, view) = create_targets(width, height, &self.devices[surface.dev_id].device);
+        let Some(handle) = self.devices.get(surface.dev_id) else {
+            return;
+        };
+        let (texture, view) = create_targets(width, height, &handle.device);
         surface.target_texture = texture;
         surface.target_view = view;
         surface.config.width = width;
@@ -218,8 +230,10 @@ impl RenderContext {
     }
 
     pub fn configure_surface(&self, surface: &RenderSurface<'_>) {
-        let device = &self.devices[surface.dev_id].device;
-        surface.surface.configure(device, &surface.config);
+        let Some(handle) = self.devices.get(surface.dev_id) else {
+            return;
+        };
+        surface.surface.configure(&handle.device, &surface.config);
     }
 }
 

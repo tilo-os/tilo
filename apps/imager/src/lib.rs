@@ -46,6 +46,18 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod actions;
 pub mod app;
@@ -90,83 +102,110 @@ pub const SHOT_SCENARIOS: &[&str] = &[
 /// step.
 pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
     use crate::doc::ImagerDoc;
-    use crate::model::{Action, JobPhase, Progress, Source, SourceKind, Step};
-
-    let iso_source = || Source {
-        kind: SourceKind::IsoFile,
-        path: "/home/user/Downloads/Fedora-Workstation-Live-42.iso".into(),
-        name: "Fedora-Workstation-Live-42.iso".into(),
-        size: 2_113_929_216,
-        label: "Fedora-WS-Live-42-1-1".into(),
-        installable: false,
-    };
 
     // The empty-drive scenario is the one case with no sample inventory: seed an
     // empty document so the honest "insert a drive" state renders.
     if scenario == "drive-empty" {
-        ImagerDoc::seed(doc, &[]);
-        ImagerDoc::set_source(doc, Some(&iso_source()));
-        ImagerDoc::set_selected(doc, None);
-        ImagerDoc::set_step(doc, Step::Drive);
-        ImagerDoc::set_status(doc, "No removable drives detected");
+        seed_scenario_drive_empty(doc);
         return;
     }
-
     // The Source step as the live app actually opens it: nothing browsed yet,
     // no release known to be on this machine. This is the state a real run
     // starts in, so it is the one worth looking at.
     if scenario == "source-empty" {
-        ImagerDoc::seed(doc, &[]);
-        ImagerDoc::set_step(doc, Step::Source);
+        seed_scenario_source_empty(doc);
         return;
     }
-
     // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
     // the guard active (the system disk locked, both acknowledgements visible).
     if scenario == "drive-internal" {
-        use crate::model::{TargetDrive, TargetKind, TargetPartition, sample_source};
-        let targets = vec![
-            crate::model::sample_targets().remove(0), // the USB stick
-            TargetDrive {
-                name: "nvme0n1".into(),
-                model: "Samsung SSD 990 PRO 1TB".into(),
-                size: 1_000_204_886_016,
-                kind: TargetKind::Nvme,
-                tran: Some("nvme".into()),
-                removable: false,
-                is_system: true, // the running OS boots from this disk
-                partitions: vec![
-                    TargetPartition {
-                        name: "nvme0n1p1".into(),
-                        size: 536_870_912,
-                        fstype: Some("vfat".into()),
-                        label: Some("EFI".into()),
-                    },
-                    TargetPartition {
-                        name: "nvme0n1p2".into(),
-                        size: 999_650_000_000,
-                        fstype: Some("btrfs".into()),
-                        label: Some("qos-root".into()),
-                    },
-                ],
-            },
-        ];
-        ImagerDoc::seed(doc, &targets);
-        ImagerDoc::set_source(doc, Some(&sample_source()));
-        ImagerDoc::set_selected(doc, None);
-        ImagerDoc::set_show_internal(doc, true);
-        ImagerDoc::set_step(doc, Step::Drive);
-        ImagerDoc::set_status(doc, "1 removable, 2 total");
+        seed_scenario_drive_internal(doc);
         return;
     }
 
     // Every other scenario builds on the demo document (sample drives + a qOS
     // image + recent history), then poses the wizard station on top.
     ImagerDoc::seed_demo(doc);
+    seed_scenario_common(doc, scenario);
+}
+
+/// The ISO source shared by the `drive-empty` and `drive` scenarios.
+fn demo_iso_source() -> crate::model::Source {
+    use crate::model::{Source, SourceKind};
+    Source {
+        kind: SourceKind::IsoFile,
+        path: "/home/user/Downloads/Fedora-Workstation-Live-42.iso".into(),
+        name: "Fedora-Workstation-Live-42.iso".into(),
+        size: 2_113_929_216,
+        label: "Fedora-WS-Live-42-1-1".into(),
+        installable: false,
+    }
+}
+
+fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
+    use crate::doc::ImagerDoc;
+    use crate::model::Step;
+    ImagerDoc::seed(doc, &[]);
+    ImagerDoc::set_source(doc, Some(&demo_iso_source()));
+    ImagerDoc::set_selected(doc, None);
+    ImagerDoc::set_step(doc, Step::Drive);
+    ImagerDoc::set_status(doc, "No removable drives detected");
+}
+
+fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
+    use crate::doc::ImagerDoc;
+    use crate::model::Step;
+    ImagerDoc::seed(doc, &[]);
+    ImagerDoc::set_step(doc, Step::Source);
+}
+
+fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
+    use crate::doc::ImagerDoc;
+    use crate::model::{Step, TargetDrive, TargetKind, TargetPartition, sample_source};
+    let targets = vec![
+        crate::model::sample_targets().remove(0), // the USB stick
+        TargetDrive {
+            name: "nvme0n1".into(),
+            model: "Samsung SSD 990 PRO 1TB".into(),
+            size: 1_000_204_886_016,
+            kind: TargetKind::Nvme,
+            tran: Some("nvme".into()),
+            removable: false,
+            is_system: true, // the running OS boots from this disk
+            partitions: vec![
+                TargetPartition {
+                    name: "nvme0n1p1".into(),
+                    size: 536_870_912,
+                    fstype: Some("vfat".into()),
+                    label: Some("EFI".into()),
+                },
+                TargetPartition {
+                    name: "nvme0n1p2".into(),
+                    size: 999_650_000_000,
+                    fstype: Some("btrfs".into()),
+                    label: Some("qos-root".into()),
+                },
+            ],
+        },
+    ];
+    ImagerDoc::seed(doc, &targets);
+    ImagerDoc::set_source(doc, Some(&sample_source()));
+    ImagerDoc::set_selected(doc, None);
+    ImagerDoc::set_show_internal(doc, true);
+    ImagerDoc::set_step(doc, Step::Drive);
+    ImagerDoc::set_status(doc, "1 removable, 2 total");
+}
+
+/// Pose the "drive", "customize", "confirm", "progress", "done" and
+/// "done-failed" stations (plus the "source"/unknown default) on top of the
+/// already-seeded demo document.
+fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
+    use crate::doc::ImagerDoc;
+    use crate::model::{Action, JobPhase, Progress, Step};
 
     match scenario {
         "drive" => {
-            ImagerDoc::set_source(doc, Some(&iso_source()));
+            ImagerDoc::set_source(doc, Some(&demo_iso_source()));
             ImagerDoc::set_selected(doc, Some(0)); // the USB stick
             ImagerDoc::set_step(doc, Step::Drive);
             ImagerDoc::set_status(doc, "1 removable, 2 total");

@@ -93,9 +93,9 @@ fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Cata
                     push_entry(&mut entries, &layout_name, None, &layout_description);
                     for (variant, description) in &variants {
                         let label = if description.is_empty() {
-                            format!("{} — {}", layout_description, variant)
+                            format!("{layout_description} — {variant}")
                         } else {
-                            format!("{} — {}", layout_description, description)
+                            format!("{layout_description} — {description}")
                         };
                         push_entry(&mut entries, &layout_name, Some(variant), &label);
                     }
@@ -112,7 +112,7 @@ fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Cata
 
     let mut seen = HashSet::new();
     entries.retain(|entry| seen.insert(entry.id.clone()));
-    entries.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    entries.sort_by_key(|entry| entry.label.to_lowercase());
     let counts = entries.iter().fold(HashMap::new(), |mut counts, entry| {
         *counts.entry(entry.label.clone()).or_insert(0usize) += 1;
         counts
@@ -173,11 +173,11 @@ mod tests {
 
     #[test]
     fn parses_base_layouts_and_variants_from_standard_shape() {
-        let xml = br#"<xkbConfigRegistry><layoutList><layout><configItem>
+        let xml = br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US)</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak</description>
-          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>"#;
+          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
         let mut reader = Reader::from_reader(&xml[..]);
         reader.config_mut().trim_text(true);
         let entries = parse_catalog(&mut reader).unwrap();

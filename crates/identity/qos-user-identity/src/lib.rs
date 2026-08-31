@@ -60,6 +60,18 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod canonical;
 pub mod cert;
@@ -85,7 +97,7 @@ pub use persist::{
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
-    sign_revocation_entry, verify_revocation_entry,
+    revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
 };
 
 use serde::{Deserialize, Serialize};

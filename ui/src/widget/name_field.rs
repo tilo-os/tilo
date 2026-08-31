@@ -33,6 +33,17 @@ use crate::richtext::RichTextLayout;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 
+/// Composes `base` with a translation for text placement. Affine
+/// composition is floating-point matrix multiply — it cannot overflow or
+/// panic the way integer arithmetic can.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 /// What a key did to the field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NameFieldOutcome {
@@ -113,6 +124,7 @@ impl NameField {
     }
 
     /// Builder: replace the dim prompt shown while the field is empty.
+    #[must_use]
     pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = placeholder.into();
         self
@@ -184,7 +196,8 @@ impl NameField {
             Key::Named(NamedKey::Escape) => NameFieldOutcome::Cancel,
             Key::Named(NamedKey::Backspace) => {
                 if let Some(grapheme) = self.buffer.graphemes(true).next_back() {
-                    self.buffer.truncate(self.buffer.len() - grapheme.len());
+                    self.buffer
+                        .truncate(self.buffer.len().saturating_sub(grapheme.len()));
                 }
                 NameFieldOutcome::Edited
             }
@@ -224,20 +237,8 @@ impl NameField {
         }
         let colors = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_focus,
-            None,
-            &shape,
-        );
+        Self::draw_chrome(scene, transform, colors, &shape);
+
         let shows_placeholder = self.buffer.is_empty() && self.preedit.is_empty();
         let (display, color) = if shows_placeholder {
             (self.placeholder.clone(), colors.text_dim)
@@ -247,40 +248,26 @@ impl NameField {
                 colors.text_primary,
             )
         };
-        let style = TextStyle::new(size).with_family(FontChoice::SansSerif);
-        let signature = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hash = DefaultHasher::new();
-            display.hash(&mut hash);
-            size.to_bits().hash(&mut hash);
-            self.buffer.len().hash(&mut hash);
-            self.preedit_cursor.hash(&mut hash);
-            hash.finish()
-        };
+        self.reshape_if_stale(tr, &display, size);
+
         let mut visual = self.visual.borrow_mut();
-        if visual.layout.is_none() || visual.signature != signature {
-            let mut layout =
-                RichTextLayout::shape_plain(&mut tr.font_system, &display, &style, None);
-            if !self.preedit.is_empty() {
-                layout.add_underline(self.buffer.len()..display.len());
-            }
-            visual.layout = Some(layout);
-            visual.signature = signature;
-        }
+        // Just-populated above (or already current) — but degrade to
+        // "paint the chrome only" instead of panicking if that invariant
+        // is ever wrong.
+        let Some(layout) = visual.layout.as_ref() else {
+            return;
+        };
 
         let preedit_at = self
             .preedit_cursor
-            .map(|(_, end)| end)
-            .unwrap_or(self.preedit.len())
+            .map_or(self.preedit.len(), |(_, end)| end)
             .min(self.preedit.len());
         let preedit_at = self.preedit.floor_char_boundary(preedit_at);
         let caret_byte = if shows_placeholder {
             0
         } else {
-            self.buffer.len() + preedit_at
+            self.buffer.len().saturating_add(preedit_at)
         };
-        let layout = visual.layout.as_ref().unwrap();
         let (caret_local_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
         let viewport_width = (rect.width() - 14.0).max(1.0);
         let scroll_x = if shows_placeholder {
@@ -308,10 +295,71 @@ impl NameField {
         tr.draw_rich(
             scene,
             layout,
-            transform * Affine::translate((origin.x, origin.y)),
+            translated(transform, origin.x, origin.y),
             color,
         );
         visual.caret = Some(caret);
+        Self::draw_caret_line(scene, transform, colors, caret);
+        scene.pop_layer();
+    }
+
+    /// The field's background fill and focus-ring stroke.
+    fn draw_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        colors: &crate::tokens::colors::Colors,
+        shape: &RoundedRect,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_focus,
+            None,
+            shape,
+        );
+    }
+
+    /// Re-shapes `display` into `self.visual` if the cached layout is
+    /// missing or stale (text, size, buffer length or preedit cursor
+    /// changed since the last shape).
+    fn reshape_if_stale(&self, tr: &mut TextRenderer, display: &str, size: f32) {
+        let style = TextStyle::new(size).with_family(FontChoice::SansSerif);
+        let signature = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hash = DefaultHasher::new();
+            display.hash(&mut hash);
+            size.to_bits().hash(&mut hash);
+            self.buffer.len().hash(&mut hash);
+            self.preedit_cursor.hash(&mut hash);
+            hash.finish()
+        };
+        let mut visual = self.visual.borrow_mut();
+        if visual.layout.is_none() || visual.signature != signature {
+            let mut layout =
+                RichTextLayout::shape_plain(&mut tr.font_system, display, &style, None);
+            if !self.preedit.is_empty() {
+                layout.add_underline(self.buffer.len()..display.len());
+            }
+            visual.layout = Some(layout);
+            visual.signature = signature;
+        }
+    }
+
+    /// The blinking-caret line, drawn over the shaped text.
+    fn draw_caret_line(
+        scene: &mut Scene,
+        transform: Affine,
+        colors: &crate::tokens::colors::Colors,
+        caret: Rect,
+    ) {
         scene.stroke(
             &Stroke::new(1.5),
             transform,
@@ -322,7 +370,6 @@ impl NameField {
                 Point::new(caret.x0, caret.y1),
             ),
         );
-        scene.pop_layer();
     }
 }
 
@@ -337,13 +384,13 @@ impl NameField {
 /// Shared by every history surface: a version name that ellipsises one way in the
 /// activity pane and another on the version strip reads as two different names.
 pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
+    const ELLIPSIS: &str = "\u{2026}";
     if budget <= 0.0 {
         return String::new();
     }
     if f64::from(tr.measure(s, size, None).0) <= budget {
         return s.to_string();
     }
-    const ELLIPSIS: &str = "\u{2026}";
     let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
     if ell_w > budget {
         return String::new();
@@ -352,12 +399,19 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     let mut lo = 0usize;
     let mut hi = s.chars().count();
     while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
+        // Never overflows: `hi - lo` can't underflow (loop invariant
+        // `lo < hi`), and `lo + (hi - lo)` is exactly `hi`, already a
+        // valid `usize`. `saturating_*` states that to the lint rather
+        // than relying on the invariant holding at every call site.
+        let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
         let candidate: String = s.chars().take(mid).collect();
         if f64::from(tr.measure(&candidate, size, None).0) <= inner {
             lo = mid;
         } else {
-            hi = mid - 1;
+            // `mid >= lo + 1 >= 1` whenever `lo < hi`, so this never
+            // underflows; `saturating_sub` keeps that true by construction
+            // rather than by the argument above.
+            hi = mid.saturating_sub(1);
         }
     }
     if lo == 0 {
@@ -371,13 +425,13 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
 /// Keep the **tail** of `s`. What a person is typing is at the end, so a field
 /// that has run out of room drops the beginning, not the caret.
 pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
+    const ELLIPSIS: &str = "\u{2026}";
     if budget <= 0.0 {
         return String::new();
     }
     if f64::from(tr.measure(s, size, None).0) <= budget {
         return s.to_string();
     }
-    const ELLIPSIS: &str = "\u{2026}";
     let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
     if ell_w > budget {
         return String::new();
@@ -386,14 +440,20 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
     let chars: Vec<char> = s.chars().collect();
     let mut take = 0usize;
     while take < chars.len() {
-        let candidate: String = chars[chars.len() - take - 1..].iter().collect();
+        // `take < chars.len()` (loop guard), so `take + 1 <= chars.len()`
+        // and this can't saturate in practice; written defensively so it
+        // degrades to "keep everything" instead of panicking if that
+        // invariant is ever wrong.
+        let start = chars.len().saturating_sub(take.saturating_add(1));
+        let candidate: String = chars.get(start..).unwrap_or(&[]).iter().collect();
         if f64::from(tr.measure(&candidate, size, None).0) > inner {
             break;
         }
-        take += 1;
+        take = take.saturating_add(1);
     }
     let mut out = ELLIPSIS.to_string();
-    out.extend(chars[chars.len() - take..].iter());
+    let start = chars.len().saturating_sub(take);
+    out.extend(chars.get(start..).unwrap_or(&[]).iter());
     out
 }
 

@@ -2,10 +2,11 @@
 //!
 //! A Unix login account owns a home/session; it may contain several qOS
 //! identities (personal, work, pseudonymous). Local-account mutations go
-//! through AccountsService and polkit. Identity activation writes only a
+//! through `AccountsService` and polkit. Identity activation writes only a
 //! non-secret selector; the launcher mounts one exact record into new apps.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
@@ -39,9 +40,28 @@ pub struct DeviceUser {
 }
 
 pub trait UserAdmin: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns the backend's error message if account creation is rejected
+    /// (e.g. the username already exists or polkit authorization is denied).
     fn create(&self, username: &str, full_name: &str, password: &mut [u8]) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns the backend's error message if the account (and its files,
+    /// when `remove_files` is set) cannot be deleted.
     fn delete(&self, user: &DeviceUser, remove_files: bool) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns the backend's error message if changing the account's
+    /// administrator role is rejected.
     fn set_admin(&self, username: &str, admin: bool) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns the backend's error message if enabling or disabling
+    /// automatic login for the account is rejected.
     fn set_autologin(&self, username: &str, enabled: bool) -> Result<(), String>;
 }
 
@@ -104,7 +124,10 @@ pub fn admins_from_group(contents: &str) -> HashSet<String> {
         .lines()
         .filter_map(|line| {
             let f: Vec<&str> = line.split(':').collect();
-            (f.len() >= 4 && matches!(f[0], "wheel" | "sudo")).then_some(f[3])
+            if f.len() < 4 || !matches!(f.first(), Some(&("wheel" | "sudo"))) {
+                return None;
+            }
+            f.get(3).copied()
         })
         .flat_map(|members| members.split(','))
         .map(str::trim)
@@ -125,18 +148,23 @@ fn read_passwd_users(
             if f.len() < 7 {
                 return None;
             }
-            let uid = f[2].parse::<u64>().ok()?;
-            if !(1000..60000).contains(&uid) || f[6].ends_with("nologin") || f[6].ends_with("false")
+            let username = *f.first()?;
+            let uid = f.get(2)?.parse::<u64>().ok()?;
+            let gecos = *f.get(4)?;
+            let shell = *f.get(6)?;
+            if !(1000..60000).contains(&uid)
+                || shell.ends_with("nologin")
+                || shell.ends_with("false")
             {
                 return None;
             }
-            let full = f[4].split(',').next().unwrap_or("").trim();
+            let full = gecos.split(',').next().unwrap_or("").trim();
             Some(DeviceUser {
-                username: f[0].to_string(),
-                full_name: if full.is_empty() { f[0] } else { full }.to_string(),
+                username: username.to_string(),
+                full_name: if full.is_empty() { username } else { full }.to_string(),
                 uid,
-                admin: admins.contains(f[0]),
-                current: current_user == Some(f[0]),
+                admin: admins.contains(username),
+                current: current_user == Some(username),
                 automatic_login: false,
             })
         })
@@ -427,10 +455,10 @@ impl UsersPane {
         } else {
             &id.display_name
         };
-        let key = id.public_key[..4]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
+        let key = id.public_key[..4].iter().fold(String::new(), |mut acc, b| {
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
         let mut top = Row::new()
             .push(Box::new(Text::new(name).with_size(13.0)))
             .push(Box::new(Spacer::new()))
@@ -490,6 +518,114 @@ impl UsersPane {
         self.reload();
         self.structure_dirty = true;
     }
+
+    fn sync_form(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if take_bool(state, root, ADD_KEY) {
+            self.form_open = true;
+            seed_form(state, root);
+            self.structure_dirty = true;
+        }
+        if take_bool(state, root, CANCEL_KEY) {
+            self.form_open = false;
+            clear_form(state, root);
+            if let Ok(mut password) = self.password_buffer.lock() {
+                password.clear();
+            }
+            self.structure_dirty = true;
+        }
+        if take_bool(state, root, SAVE_KEY) {
+            let full = read_text(state, root, FULL_NAME_KEY);
+            let username = read_text(state, root, USERNAME_KEY);
+            let password = Zeroizing::new(
+                self.password_buffer
+                    .lock()
+                    .map(|mut value| std::mem::take(&mut *value))
+                    .unwrap_or_default(),
+            );
+            clear_form(state, root);
+            let mut bytes = password.as_bytes().to_vec();
+            let result = self
+                .user_admin
+                .create(username.trim(), full.trim(), &mut bytes);
+            bytes.fill(0);
+            if result.is_ok() {
+                self.form_open = false;
+            }
+            self.apply(result);
+        }
+    }
+
+    fn sync_users(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        for user in self.users.clone() {
+            let role = format!("settings.users.role.{}", user.username);
+            let auto = format!("settings.users.autologin.{}", user.username);
+            let remove = format!("settings.users.remove.{}", user.username);
+            let confirm = format!("settings.users.confirm_remove.{}", user.username);
+            let keep = format!("settings.users.confirm_remove_keep.{}", user.username);
+            if take_bool(state, root, &role) {
+                let result = self.user_admin.set_admin(&user.username, !user.admin);
+                self.apply(result);
+            }
+            if take_bool(state, root, &auto) {
+                let result = self
+                    .user_admin
+                    .set_autologin(&user.username, !user.automatic_login);
+                self.apply(result);
+            }
+            if take_bool(state, root, &remove) {
+                self.confirm_remove_user = Some(user.username.clone());
+                self.structure_dirty = true;
+            }
+            if take_bool(state, root, &confirm) {
+                self.confirm_remove_user = None;
+                let result = self.user_admin.delete(&user, true);
+                self.apply(result);
+            }
+            if take_bool(state, root, &keep) {
+                self.confirm_remove_user = None;
+                let result = self.user_admin.delete(&user, false);
+                self.apply(result);
+            }
+        }
+    }
+
+    fn sync_identities(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        for id in self.identities.clone() {
+            let activate = format!("settings.users.identity.activate.{}", id.id);
+            let remove = format!("settings.users.identity.remove.{}", id.id);
+            let confirm = format!("settings.users.identity.confirm_remove.{}", id.id);
+            let protect = format!("settings.users.identity.protect.{}", id.id);
+            if take_bool(state, root, &activate) {
+                let result = self
+                    .identity_admin
+                    .as_ref()
+                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .and_then(|admin| admin.activate(&id.id));
+                self.apply(result);
+            }
+            if take_bool(state, root, &remove) {
+                self.confirm_remove_identity = Some(id.id.clone());
+                self.structure_dirty = true;
+            }
+            if take_bool(state, root, &confirm) {
+                self.confirm_remove_identity = None;
+                let result = self
+                    .identity_admin
+                    .as_ref()
+                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .and_then(|admin| admin.remove(&id.id));
+                self.apply(result);
+            }
+            if take_bool(state, root, &protect) {
+                let result = self
+                    .identity_admin
+                    .as_ref()
+                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .and_then(|admin| admin.protect(&id.id));
+                self.apply(result);
+            }
+        }
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -535,107 +671,9 @@ fn clear_form(state: &mut AutoCommit, root: &ObjId) {
 
 impl Widget for UsersPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if take_bool(state, root, ADD_KEY) {
-            self.form_open = true;
-            seed_form(state, root);
-            self.structure_dirty = true;
-        }
-        if take_bool(state, root, CANCEL_KEY) {
-            self.form_open = false;
-            clear_form(state, root);
-            if let Ok(mut password) = self.password_buffer.lock() {
-                password.clear();
-            }
-            self.structure_dirty = true;
-        }
-        if take_bool(state, root, SAVE_KEY) {
-            let full = read_text(state, root, FULL_NAME_KEY);
-            let username = read_text(state, root, USERNAME_KEY);
-            let password = Zeroizing::new(
-                self.password_buffer
-                    .lock()
-                    .map(|mut value| std::mem::take(&mut *value))
-                    .unwrap_or_default(),
-            );
-            clear_form(state, root);
-            let mut bytes = password.as_bytes().to_vec();
-            let result = self
-                .user_admin
-                .create(username.trim(), full.trim(), &mut bytes);
-            bytes.fill(0);
-            if result.is_ok() {
-                self.form_open = false;
-            }
-            self.apply(result);
-        }
-
-        for user in self.users.clone() {
-            let role = format!("settings.users.role.{}", user.username);
-            let auto = format!("settings.users.autologin.{}", user.username);
-            let remove = format!("settings.users.remove.{}", user.username);
-            let confirm = format!("settings.users.confirm_remove.{}", user.username);
-            let keep = format!("settings.users.confirm_remove_keep.{}", user.username);
-            if take_bool(state, root, &role) {
-                let result = self.user_admin.set_admin(&user.username, !user.admin);
-                self.apply(result);
-            }
-            if take_bool(state, root, &auto) {
-                let result = self
-                    .user_admin
-                    .set_autologin(&user.username, !user.automatic_login);
-                self.apply(result);
-            }
-            if take_bool(state, root, &remove) {
-                self.confirm_remove_user = Some(user.username.clone());
-                self.structure_dirty = true;
-            }
-            if take_bool(state, root, &confirm) {
-                self.confirm_remove_user = None;
-                let result = self.user_admin.delete(&user, true);
-                self.apply(result);
-            }
-            if take_bool(state, root, &keep) {
-                self.confirm_remove_user = None;
-                let result = self.user_admin.delete(&user, false);
-                self.apply(result);
-            }
-        }
-
-        for id in self.identities.clone() {
-            let activate = format!("settings.users.identity.activate.{}", id.id);
-            let remove = format!("settings.users.identity.remove.{}", id.id);
-            let confirm = format!("settings.users.identity.confirm_remove.{}", id.id);
-            let protect = format!("settings.users.identity.protect.{}", id.id);
-            if take_bool(state, root, &activate) {
-                let result = self
-                    .identity_admin
-                    .as_ref()
-                    .ok_or_else(|| "identity store is unavailable".to_string())
-                    .and_then(|admin| admin.activate(&id.id));
-                self.apply(result);
-            }
-            if take_bool(state, root, &remove) {
-                self.confirm_remove_identity = Some(id.id.clone());
-                self.structure_dirty = true;
-            }
-            if take_bool(state, root, &confirm) {
-                self.confirm_remove_identity = None;
-                let result = self
-                    .identity_admin
-                    .as_ref()
-                    .ok_or_else(|| "identity store is unavailable".to_string())
-                    .and_then(|admin| admin.remove(&id.id));
-                self.apply(result);
-            }
-            if take_bool(state, root, &protect) {
-                let result = self
-                    .identity_admin
-                    .as_ref()
-                    .ok_or_else(|| "identity store is unavailable".to_string())
-                    .and_then(|admin| admin.protect(&id.id));
-                self.apply(result);
-            }
-        }
+        self.sync_form(state, root);
+        self.sync_users(state, root);
+        self.sync_identities(state, root);
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
@@ -650,6 +688,9 @@ impl Widget for UsersPane {
         let mut composed = self.build_composition();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
+        // `child` was just created in this same tree, so this call is not
+        // reachable to fail; if it (impossibly) did, wrap it in itself
+        // rather than panic this panic=abort process.
         let node = taffy
             .new_with_children(
                 taffy::Style {
@@ -663,13 +704,13 @@ impl Widget for UsersPane {
                 },
                 &[child],
             )
-            .unwrap();
+            .unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

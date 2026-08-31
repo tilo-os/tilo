@@ -22,160 +22,166 @@ pub fn parse_typst(source: &str) -> ParseOutput {
 
 /// Canonical Typst math emitted after an actual structured edit.
 pub fn serialize_typst(expr: &MathExpr) -> String {
-    fn row(nodes: &Row, out: &mut String) {
-        for node in nodes {
-            match node {
-                Node::Char(ch) => out.push(*ch),
-                Node::Frac { num, den } => {
-                    out.push_str("frac(");
-                    row(num, out);
-                    out.push_str(", ");
-                    row(den, out);
-                    out.push(')');
-                }
-                Node::Sup { exp } => {
-                    out.push_str("^(");
-                    row(exp, out);
-                    out.push(')');
-                }
-                Node::Sub { sub } => {
-                    out.push_str("_(");
-                    row(sub, out);
-                    out.push(')');
-                }
-                Node::SubSup { sub, sup } => {
-                    out.push_str("_(");
-                    row(sub, out);
-                    out.push_str(")^(");
-                    row(sup, out);
-                    out.push(')');
-                }
-                Node::Sqrt { index, radicand } => {
-                    if let Some(index) = index {
-                        out.push_str("root(");
-                        row(index, out);
-                        out.push_str(", ");
-                    } else {
-                        out.push_str("sqrt(");
-                    }
-                    row(radicand, out);
-                    out.push(')');
-                }
-                Node::Paren { body } => {
-                    out.push('(');
-                    row(body, out);
-                    out.push(')');
-                }
-                Node::Delimited { open, close, body } => {
-                    if let [Node::Table { rows }] = body.as_slice() {
-                        let is_vector = *open == Some('(')
-                            && *close == Some(')')
-                            && rows.len() > 1
-                            && rows.iter().all(|cells| cells.len() == 1);
-                        let is_cases = *open == Some('{') && close.is_none();
-                        out.push_str(if is_vector {
-                            "vec("
-                        } else if is_cases {
-                            "cases("
-                        } else {
-                            "mat("
-                        });
-                        for (row_index, cells) in rows.iter().enumerate() {
-                            if row_index > 0 {
-                                out.push_str(if is_cases || is_vector { ", " } else { "; " });
-                            }
-                            for (cell_index, cell) in cells.iter().enumerate() {
-                                if cell_index > 0 {
-                                    out.push_str(if is_cases { " & " } else { ", " });
-                                }
-                                row(cell, out);
-                            }
-                        }
-                        out.push(')');
-                        continue;
-                    }
-                    let function = match (*open, *close) {
-                        (Some('|'), Some('|')) => Some("abs"),
-                        (Some('‖'), Some('‖')) => Some("norm"),
-                        (Some('⌊'), Some('⌋')) => Some("floor"),
-                        (Some('⌈'), Some('⌉')) => Some("ceil"),
-                        _ => None,
-                    };
-                    if let Some(function) = function {
-                        out.push_str(function);
-                        out.push('(');
-                        row(body, out);
-                        out.push(')');
-                    } else {
-                        if let Some(open) = open {
-                            out.push(*open);
-                        }
-                        row(body, out);
-                        if let Some(close) = close {
-                            out.push(*close);
-                        }
-                    }
-                }
-                Node::Func { name, arg } => {
-                    out.push_str(name);
-                    out.push('(');
-                    row(arg, out);
-                    out.push(')');
-                }
-                Node::Text(text) => {
-                    out.push('"');
-                    out.push_str(&text.replace('\\', r"\\").replace('"', r#"\""#));
-                    out.push('"');
-                }
-                Node::Accent { base, mark, .. } => {
-                    let function = match mark {
-                        'ˆ' | '^' => "hat",
-                        '˜' | '~' => "tilde",
-                        '→' | '←' => "arrow",
-                        '˙' => "dot",
-                        '¨' => "ddot",
-                        _ => "bar",
-                    };
-                    out.push_str(function);
-                    out.push('(');
-                    row(base, out);
-                    out.push(')');
-                }
-                Node::UnderOver { base, under, over } => {
-                    row(base, out);
-                    if let Some(under) = under {
-                        out.push_str("_(");
-                        row(under, out);
-                        out.push(')');
-                    }
-                    if let Some(over) = over {
-                        out.push_str("^(");
-                        row(over, out);
-                        out.push(')');
-                    }
-                }
-                Node::Table { rows } => {
-                    out.push_str("mat(");
-                    for (row_index, cells) in rows.iter().enumerate() {
-                        if row_index > 0 {
-                            out.push_str("; ");
-                        }
-                        for (cell_index, cell) in cells.iter().enumerate() {
-                            if cell_index > 0 {
-                                out.push_str(", ");
-                            }
-                            row(cell, out);
-                        }
-                    }
-                    out.push(')');
-                }
+    let mut out = String::new();
+    serialize_row(&expr.root, &mut out);
+    out
+}
+
+fn serialize_row(nodes: &Row, out: &mut String) {
+    for node in nodes {
+        serialize_node(node, out);
+    }
+}
+
+fn serialize_node(node: &Node, out: &mut String) {
+    match node {
+        Node::Char(ch) => out.push(*ch),
+        Node::Frac { num, den } => {
+            out.push_str("frac(");
+            serialize_row(num, out);
+            out.push_str(", ");
+            serialize_row(den, out);
+            out.push(')');
+        }
+        Node::Sup { exp } => {
+            out.push_str("^(");
+            serialize_row(exp, out);
+            out.push(')');
+        }
+        Node::Sub { sub } => {
+            out.push_str("_(");
+            serialize_row(sub, out);
+            out.push(')');
+        }
+        Node::SubSup { sub, sup } => {
+            out.push_str("_(");
+            serialize_row(sub, out);
+            out.push_str(")^(");
+            serialize_row(sup, out);
+            out.push(')');
+        }
+        Node::Sqrt { index, radicand } => {
+            if let Some(index) = index {
+                out.push_str("root(");
+                serialize_row(index, out);
+                out.push_str(", ");
+            } else {
+                out.push_str("sqrt(");
+            }
+            serialize_row(radicand, out);
+            out.push(')');
+        }
+        Node::Paren { body } => {
+            out.push('(');
+            serialize_row(body, out);
+            out.push(')');
+        }
+        Node::Delimited { open, close, body } => serialize_delimited(*open, *close, body, out),
+        Node::Func { name, arg } => {
+            out.push_str(name);
+            out.push('(');
+            serialize_row(arg, out);
+            out.push(')');
+        }
+        Node::Text(text) => {
+            out.push('"');
+            out.push_str(&text.replace('\\', r"\\").replace('"', r#"\""#));
+            out.push('"');
+        }
+        Node::Accent { base, mark, .. } => {
+            let function = match mark {
+                'ˆ' | '^' => "hat",
+                '˜' | '~' => "tilde",
+                '→' | '←' => "arrow",
+                '˙' => "dot",
+                '¨' => "ddot",
+                _ => "bar",
+            };
+            out.push_str(function);
+            out.push('(');
+            serialize_row(base, out);
+            out.push(')');
+        }
+        Node::UnderOver { base, under, over } => {
+            serialize_row(base, out);
+            if let Some(under) = under {
+                out.push_str("_(");
+                serialize_row(under, out);
+                out.push(')');
+            }
+            if let Some(over) = over {
+                out.push_str("^(");
+                serialize_row(over, out);
+                out.push(')');
             }
         }
+        Node::Table { rows } => {
+            out.push_str("mat(");
+            serialize_table_rows(rows, "; ", ", ", out);
+            out.push(')');
+        }
     }
+}
 
-    let mut out = String::new();
-    row(&expr.root, &mut out);
-    out
+/// A `Delimited` node whose sole child is a `Table` is one of Typst's
+/// bracketed constructors (`vec`, `cases`, `mat`) rather than a literal
+/// delimiter pair; everything else falls back to matching open/close glyphs
+/// or a named function (`abs`, `norm`, `floor`, `ceil`).
+fn serialize_delimited(open: Option<char>, close: Option<char>, body: &Row, out: &mut String) {
+    if let [Node::Table { rows }] = body.as_slice() {
+        let is_vector = open == Some('(')
+            && close == Some(')')
+            && rows.len() > 1
+            && rows.iter().all(|cells| cells.len() == 1);
+        let is_cases = open == Some('{') && close.is_none();
+        out.push_str(if is_vector {
+            "vec("
+        } else if is_cases {
+            "cases("
+        } else {
+            "mat("
+        });
+        let row_sep = if is_cases || is_vector { ", " } else { "; " };
+        let cell_sep = if is_cases { " & " } else { ", " };
+        serialize_table_rows(rows, row_sep, cell_sep, out);
+        out.push(')');
+        return;
+    }
+    let function = match (open, close) {
+        (Some('|'), Some('|')) => Some("abs"),
+        (Some('‖'), Some('‖')) => Some("norm"),
+        (Some('⌊'), Some('⌋')) => Some("floor"),
+        (Some('⌈'), Some('⌉')) => Some("ceil"),
+        _ => None,
+    };
+    if let Some(function) = function {
+        out.push_str(function);
+        out.push('(');
+        serialize_row(body, out);
+        out.push(')');
+    } else {
+        if let Some(open) = open {
+            out.push(open);
+        }
+        serialize_row(body, out);
+        if let Some(close) = close {
+            out.push(close);
+        }
+    }
+}
+
+fn serialize_table_rows(rows: &[Vec<Row>], row_sep: &str, cell_sep: &str, out: &mut String) {
+    for (row_index, cells) in rows.iter().enumerate() {
+        if row_index > 0 {
+            out.push_str(row_sep);
+        }
+        for (cell_index, cell) in cells.iter().enumerate() {
+            if cell_index > 0 {
+                out.push_str(cell_sep);
+            }
+            serialize_row(cell, out);
+        }
+    }
 }
 
 struct TypstParser {
@@ -196,11 +202,11 @@ impl TypstParser {
                 break;
             }
             if ch.is_whitespace() {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 continue;
             }
             if ch == '/' {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 let den = self.parse_operand();
                 let num = row.pop().map_or_else(Vec::new, |node| match node {
                     Node::Paren { body } | Node::Delimited { body, .. } => body,
@@ -211,7 +217,7 @@ impl TypstParser {
             }
             if ch == '^' || ch == '_' {
                 self.error("script has no base");
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 let _ = self.parse_operand();
                 continue;
             }
@@ -228,13 +234,13 @@ impl TypstParser {
         }
         match self.peek() {
             Some('(') => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 let body = self.parse_row(&[')']);
                 self.consume(')');
                 vec![Node::Paren { body }]
             }
             Some('[') => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 let body = self.parse_row(&[']']);
                 self.consume(']');
                 vec![Node::Delimited {
@@ -248,7 +254,7 @@ impl TypstParser {
                 let name = self.read_ident();
                 self.skip_space();
                 if self.peek() == Some('(') {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     self.parse_call(&name)
                 } else if let Some(symbol) = typst_symbol(&name) {
                     if is_large_operator(&name) {
@@ -267,7 +273,7 @@ impl TypstParser {
                 }
             }
             Some(ch) => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 vec![Node::Char(match ch {
                     '-' => '−',
                     '*' => '·',
@@ -325,8 +331,7 @@ impl TypstParser {
             "norm" => self.parse_delimited_call(Some('‖'), Some('‖')),
             "floor" => self.parse_delimited_call(Some('⌊'), Some('⌋')),
             "ceil" => self.parse_delimited_call(Some('⌈'), Some('⌉')),
-            "round" => self.parse_delimited_call(Some('('), Some(')')),
-            "lr" => self.parse_delimited_call(Some('('), Some(')')),
+            "round" | "lr" => self.parse_delimited_call(Some('('), Some(')')),
             "text" | "upright" | "op" => {
                 let body = self.parse_row(&[')']);
                 self.consume(')');
@@ -386,18 +391,22 @@ impl TypstParser {
         let mut rows = vec![vec![Vec::new()]];
         loop {
             let cell = self.parse_row(&[',', ';', ')']);
-            *rows.last_mut().unwrap().last_mut().unwrap() = cell;
+            if let Some(cell_slot) = rows.last_mut().and_then(|r| r.last_mut()) {
+                *cell_slot = cell;
+            }
             match self.peek() {
                 Some(',') => {
-                    self.pos += 1;
-                    rows.last_mut().unwrap().push(Vec::new());
+                    self.pos = self.pos.saturating_add(1);
+                    if let Some(last_row) = rows.last_mut() {
+                        last_row.push(Vec::new());
+                    }
                 }
                 Some(';') => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     rows.push(vec![Vec::new()]);
                 }
                 Some(')') => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     break;
                 }
                 None => {
@@ -422,7 +431,7 @@ impl TypstParser {
         loop {
             self.skip_space();
             if self.peek() == Some(')') {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 break;
             }
             if self.peek().is_none() {
@@ -435,14 +444,14 @@ impl TypstParser {
                 &[',', ';', ')']
             })];
             while aligned && self.peek() == Some('&') {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 row.push(self.parse_row(&['&', ',', ';', ')']));
             }
             rows.push(row);
             match self.peek() {
-                Some(',' | ';') => self.pos += 1,
+                Some(',' | ';') => self.pos = self.pos.saturating_add(1),
                 Some(')') => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     break;
                 }
                 None => {
@@ -472,12 +481,12 @@ impl TypstParser {
             Some(ch) if is_ident_start(ch) => self.parse_atom(),
             Some(ch) if ch.is_ascii_digit() => {
                 let mut row = Vec::new();
-                while self
-                    .peek()
-                    .is_some_and(|ch| ch.is_ascii_digit() || ch == '.')
-                {
-                    row.push(Node::Char(self.peek().unwrap()));
-                    self.pos += 1;
+                while let Some(ch) = self.peek() {
+                    if !(ch.is_ascii_digit() || ch == '.') {
+                        break;
+                    }
+                    row.push(Node::Char(ch));
+                    self.pos = self.pos.saturating_add(1);
                 }
                 row
             }
@@ -493,16 +502,16 @@ impl TypstParser {
             self.skip_space();
             match self.peek() {
                 Some('_') if sub.is_none() => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     sub = Some(self.parse_operand());
                 }
                 Some('^') if sup.is_none() => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     sup = Some(self.parse_operand());
                 }
                 Some('\'') => {
-                    self.pos += 1;
-                    primes += 1;
+                    self.pos = self.pos.saturating_add(1);
+                    primes = primes.saturating_add(1);
                 }
                 _ => break,
             }
@@ -522,7 +531,7 @@ impl TypstParser {
                 (Some(sub), Some(sup)) => Node::SubSup { sub, sup },
                 (Some(sub), None) => Node::Sub { sub },
                 (None, Some(exp)) => Node::Sup { exp },
-                _ => unreachable!(),
+                (None, None) => return,
             });
         }
     }
@@ -533,9 +542,13 @@ impl TypstParser {
             .peek()
             .is_some_and(|ch| ch.is_alphanumeric() || ch == '.' || ch == '-')
         {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
-        self.chars[start..self.pos].iter().collect()
+        self.chars
+            .get(start..self.pos)
+            .unwrap_or(&[])
+            .iter()
+            .collect()
     }
 
     fn parse_shorthand(&mut self) -> Option<char> {
@@ -552,7 +565,7 @@ impl TypstParser {
         ] {
             let chars: Vec<char> = source.chars().collect();
             if rest.starts_with(&chars) {
-                self.pos += chars.len();
+                self.pos = self.pos.saturating_add(chars.len());
                 return Some(symbol);
             }
         }
@@ -560,16 +573,18 @@ impl TypstParser {
     }
 
     fn read_string(&mut self) -> String {
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1);
         let mut out = String::new();
         while let Some(ch) = self.peek() {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             if ch == '"' {
                 break;
             }
-            if ch == '\\' && self.peek().is_some() {
-                out.push(self.peek().unwrap());
-                self.pos += 1;
+            if ch == '\\' {
+                if let Some(escaped) = self.peek() {
+                    out.push(escaped);
+                    self.pos = self.pos.saturating_add(1);
+                }
             } else {
                 out.push(ch);
             }
@@ -580,7 +595,7 @@ impl TypstParser {
     fn consume(&mut self, expected: char) {
         self.skip_space();
         if self.peek() == Some(expected) {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         } else {
             self.error(&format!("expected {expected}"));
         }
@@ -588,7 +603,7 @@ impl TypstParser {
 
     fn skip_space(&mut self) {
         while self.peek().is_some_and(char::is_whitespace) {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
     }
 
@@ -603,7 +618,10 @@ impl TypstParser {
 fn strip_math_wrapper(source: &str) -> &str {
     let source = source.trim();
     if source.len() >= 2 && source.starts_with('$') && source.ends_with('$') {
-        source[1..source.len() - 1].trim()
+        source
+            .get(1..source.len().saturating_sub(1))
+            .unwrap_or(source)
+            .trim()
     } else {
         source
     }

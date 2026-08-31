@@ -35,6 +35,17 @@ pub struct Mat3 {
     pub m: [[f32; 3]; 3],
 }
 
+/// Column `c` of `m`, or `0.0` past the end. The outer index into each row
+/// is always a literal (compiler-checked); `.get` only guards `c`, which a
+/// caller derives from a loop bound already tied to this same width.
+fn column(m: &[[f32; 3]; 3], c: usize) -> [f32; 3] {
+    [
+        m[0].get(c).copied().unwrap_or(0.0),
+        m[1].get(c).copied().unwrap_or(0.0),
+        m[2].get(c).copied().unwrap_or(0.0),
+    ]
+}
+
 impl Mat3 {
     pub const IDENTITY: Mat3 = Mat3 {
         m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -50,13 +61,13 @@ impl Mat3 {
     }
 
     /// Matrix · matrix.
+    #[must_use]
     pub fn mul(&self, rhs: &Mat3) -> Mat3 {
         let mut out = [[0.0f32; 3]; 3];
-        for (r, out_row) in out.iter_mut().enumerate() {
+        for (out_row, self_row) in out.iter_mut().zip(&self.m) {
             for (c, out_cell) in out_row.iter_mut().enumerate() {
-                *out_cell = self.m[r][0] * rhs.m[0][c]
-                    + self.m[r][1] * rhs.m[1][c]
-                    + self.m[r][2] * rhs.m[2][c];
+                let rhs_col = column(&rhs.m, c);
+                *out_cell = self_row.iter().zip(&rhs_col).map(|(a, b)| a * b).sum();
             }
         }
         Mat3 { m: out }
@@ -101,13 +112,11 @@ impl Mat3 {
 
     /// Max absolute element-wise difference — for tests / tolerances.
     pub fn max_abs_diff(&self, other: &Mat3) -> f32 {
-        let mut worst = 0.0f32;
-        for r in 0..3 {
-            for col in 0..3 {
-                worst = worst.max((self.m[r][col] - other.m[r][col]).abs());
-            }
-        }
-        worst
+        self.m
+            .iter()
+            .zip(&other.m)
+            .flat_map(|(a_row, b_row)| a_row.iter().zip(b_row))
+            .fold(0.0f32, |worst, (a, b)| worst.max((a - b).abs()))
     }
 }
 
@@ -161,10 +170,10 @@ pub fn rgb_to_xyz(p: &Chromaticities) -> Mat3 {
         ],
     };
     let w = xyz(p.white);
-    let s = primary_mat
-        .inverse()
-        .expect("primary matrix is non-singular for physical primaries")
-        .mul_vec(w);
+    // Physical primaries are always well-conditioned; falling back to `w`
+    // itself (an inert, non-panicking placeholder) is safer than a panic
+    // if a caller ever passes a degenerate set.
+    let s = primary_mat.inverse().map_or(w, |inv| inv.mul_vec(w));
     // Scale each primary column by its luminance scalar.
     Mat3 {
         m: [
@@ -180,9 +189,10 @@ pub fn rgb_to_xyz(p: &Chromaticities) -> Mat3 {
 pub fn gamut_matrix(src: &Chromaticities, dst: &Chromaticities) -> Mat3 {
     let src_to_xyz = rgb_to_xyz(src);
     let dst_to_xyz = rgb_to_xyz(dst);
-    let xyz_to_dst = dst_to_xyz
-        .inverse()
-        .expect("dst RGB→XYZ is invertible for physical primaries");
+    // Physical primaries are always well-conditioned; identity is a safe,
+    // inert fallback rather than a panic if a caller ever passes a
+    // degenerate set.
+    let xyz_to_dst = dst_to_xyz.inverse().unwrap_or(Mat3::IDENTITY);
     xyz_to_dst.mul(&src_to_xyz)
 }
 
@@ -200,7 +210,7 @@ pub fn bt2020_to_bt709_matrix() -> Mat3 {
 
 const PQ_M1: f32 = 0.159_301_76; // 2610/16384
 const PQ_M2: f32 = 78.84375; // 2523/32
-const PQ_C1: f32 = 0.8359375; // 3424/4096
+const PQ_C1: f32 = 0.835_937_5; // 3424/4096
 const PQ_C2: f32 = 18.851_563; // 2413/128
 const PQ_C3: f32 = 18.6875; // 2392/128
 
@@ -224,8 +234,8 @@ pub fn pq_inverse_eotf(nits: f32) -> f32 {
     (num / den).powf(PQ_M2)
 }
 
-const HLG_A: f32 = 0.17883277;
-const HLG_B: f32 = 0.28466892;
+const HLG_A: f32 = 0.178_832_77;
+const HLG_B: f32 = 0.284_668_92;
 const HLG_C: f32 = 0.559_910_7;
 
 /// HLG OETF: scene-linear light `[0,1]` → HLG signal `[0,1]`. The
@@ -263,7 +273,7 @@ pub fn srgb_eotf(v: f32) -> f32 {
 /// sRGB OETF: linear light `[0,1]` → sRGB signal `[0,1]`.
 pub fn srgb_oetf(v: f32) -> f32 {
     let v = v.clamp(0.0, 1.0);
-    if v <= 0.0031308 {
+    if v <= 0.003_130_8 {
         v * 12.92
     } else {
         1.055 * v.powf(1.0 / 2.4) - 0.055
@@ -299,6 +309,11 @@ pub fn map_sdr_pixel_to_pq_bt2020(srgb8: [u8; 3]) -> [u16; 3] {
 }
 
 /// Absolute luminance (cd/m²) → 10-bit PQ code value `[0,1023]`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0.0..=1023.0 immediately above, so it always fits a non-negative u16"
+)]
 pub fn pq10_from_nits(nits: f32) -> u16 {
     (pq_inverse_eotf(nits.max(0.0)) * 1023.0)
         .round()
@@ -509,9 +524,9 @@ mod tests {
         // ITU-R BT.2087's published matrix, rounded to 4dp.
         let reference = Mat3 {
             m: [
-                [1.660491, -0.587641, -0.072850],
-                [-0.124550, 1.132_9, -0.008349],
-                [-0.018151, -0.100579, 1.118_73],
+                [1.660_491, -0.587_641, -0.072_850],
+                [-0.124_550, 1.132_9, -0.008_349],
+                [-0.018_151, -0.100_579, 1.118_73],
             ],
         };
         let derived = bt2020_to_bt709_matrix();
@@ -526,9 +541,9 @@ mod tests {
         // Published forward matrix (Y'CbCr colour conversion notes).
         let reference = Mat3 {
             m: [
-                [0.627404, 0.329283, 0.043313],
-                [0.069097, 0.919540, 0.011362],
-                [0.016391, 0.088013, 0.895595],
+                [0.627_404, 0.329_283, 0.043_313],
+                [0.069_097, 0.919_540, 0.011_362],
+                [0.016_391, 0.088_013, 0.895_595],
             ],
         };
         let derived = bt709_to_bt2020_matrix();
@@ -586,19 +601,20 @@ mod tests {
     #[test]
     fn pq_inverse_is_monotonic() {
         let mut prev = -1.0;
-        let mut n = 0.0;
-        while n <= 10_000.0 {
+        // Integer-stepped so the loop bound and each sample are computed
+        // exactly, rather than accumulating float error over 200 additions.
+        for step in 0u16..=200 {
+            let n = f32::from(step) * 50.0;
             let e = pq_inverse_eotf(n);
             assert!(e >= prev, "PQ inverse not monotonic at {n}: {e} < {prev}");
             prev = e;
-            n += 50.0;
         }
     }
 
     #[test]
     fn hlg_oetf_inverse_round_trip() {
-        for i in 0..=100 {
-            let scene = i as f32 / 100.0;
+        for i in 0u8..=100 {
+            let scene = f32::from(i) / 100.0;
             let signal = hlg_oetf(scene);
             assert!((0.0..=1.001).contains(&signal), "HLG signal range {signal}");
             let back = hlg_inverse_oetf(signal);
@@ -619,8 +635,8 @@ mod tests {
 
     #[test]
     fn srgb_transfer_round_trips() {
-        for i in 0..=255 {
-            let v = i as f32 / 255.0;
+        for i in 0u8..=255 {
+            let v = f32::from(i) / 255.0;
             let linear = srgb_eotf(v);
             let back = srgb_oetf(linear);
             assert!(

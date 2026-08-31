@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -39,6 +39,16 @@ const MAX_FRAME_DT: f64 = 0.1;
 const CHIP_SIZE: f64 = 36.0;
 const CHIP_INSET: f64 = 12.0;
 const BACK_CHIP_WIDTH: f64 = 104.0;
+
+/// Narrows a screen-space `f64` (rect extent, alpha) to the `f32` taffy/
+/// vello layout math expects.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "on-screen layout coordinates and [0,1] alpha never approach f32::MAX; this narrowing is exact for every practical UI extent"
+)]
+fn to_f32(v: f64) -> f32 {
+    v as f32
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellMode {
@@ -187,31 +197,37 @@ impl NavShell {
     }
 
     /// Attach a genuine sidebar: `[ sidebar | overview | detail ]`.
+    #[must_use]
     pub fn with_sidebar(mut self, sidebar: Element) -> Self {
         self.sidebar = Some(sidebar);
         self
     }
 
+    #[must_use]
     pub fn with_breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = px;
         self
     }
 
+    #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
         self.sidebar_width = px;
         self
     }
 
+    #[must_use]
     pub fn with_overview_width(mut self, px: f64) -> Self {
         self.overview_width = px;
         self
     }
 
+    #[must_use]
     pub fn hide_toggle_when_docked(mut self) -> Self {
         self.hide_docked_toggle = true;
         self
     }
 
+    #[must_use]
     pub fn with_sidebar_collapsed(mut self) -> Self {
         self.sidebar_flap = FlapState::closed_by_default();
         self
@@ -612,8 +628,8 @@ impl NavShell {
             let _ = taffy.compute_layout_with_measure(
                 node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(rect.width() as f32),
-                    height: taffy::AvailableSpace::Definite(rect.height() as f32),
+                    width: taffy::AvailableSpace::Definite(to_f32(rect.width())),
+                    height: taffy::AvailableSpace::Definite(to_f32(rect.height())),
                 },
                 |known, available, node_id, _, _| {
                     if let Some(&ptr) = map.get(&node_id) {
@@ -713,8 +729,10 @@ impl NavShell {
                     "Back",
                     14.0,
                     theme.text_primary,
-                    transform
-                        * Affine::translate((glyph_box.x1 - 2.0, rect.y0 + CHIP_SIZE / 2.0 - 9.0)),
+                    transform.pre_translate(Vec2::new(
+                        glyph_box.x1 - 2.0,
+                        rect.y0 + CHIP_SIZE / 2.0 - 9.0,
+                    )),
                     None,
                 );
             }
@@ -849,7 +867,7 @@ impl Widget for NavShell {
         {
             // Scrim must sit between content and the drawer.
             if self.scrim_rect.width() > 0.0 {
-                let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
+                let alpha = to_f32(self.sidebar_flap.reveal() * 0.5);
                 let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
             }
@@ -893,7 +911,7 @@ impl Widget for NavShell {
         }
         if self.sidebar_visible() {
             if self.scrim_rect.width() > 0.0 {
-                let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
+                let alpha = to_f32(self.sidebar_flap.reveal() * 0.5);
                 let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
             }
@@ -997,69 +1015,15 @@ impl Widget for NavShell {
         if *handled {
             return;
         }
-
-        // Route via the inner tree; an open overlay drawer is topmost so it
-        // routes first. `d_node` is absent for a sidebar-plus-content shell
-        // but must not stop the sidebar/content panes from being routed to.
-        let (Some(taffy), Some(o_node)) = (self.inner_taffy.as_ref(), self.overview_node) else {
-            return;
-        };
-        let d_node = self.detail_node;
-        let sidebar_first =
-            self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay;
-
-        enum Which {
-            Sidebar,
-            Overview,
-            Detail,
-        }
-        let mut order: Vec<(Which, NodeId)> = Vec::new();
-        if sidebar_first && let Some(sn) = self.sidebar_node {
-            order.push((Which::Sidebar, sn));
-        }
-        // Front content pane first for narrow push; harmless order in wide.
-        match (self.pane, d_node) {
-            (NavPane::Detail, Some(dn)) => {
-                order.push((Which::Detail, dn));
-                order.push((Which::Overview, o_node));
-            }
-            (_, Some(dn)) => {
-                order.push((Which::Overview, o_node));
-                order.push((Which::Detail, dn));
-            }
-            (_, None) => order.push((Which::Overview, o_node)),
-        }
-        if !sidebar_first && let Some(sn) = self.sidebar_node {
-            order.push((Which::Sidebar, sn));
-        }
-
-        for (which, child_node) in order {
-            if *handled {
-                break;
-            }
-            let target: &mut dyn Widget = match which {
-                Which::Sidebar => match self.sidebar.as_mut() {
-                    Some(s) => s.as_mut(),
-                    None => continue,
-                },
-                Which::Overview => self.overview.as_mut(),
-                Which::Detail => match self.detail.as_mut() {
-                    Some(d) => d.as_mut(),
-                    None => continue,
-                },
-            };
-            target.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-        }
+        self.route_event_to_children(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+        );
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1124,6 +1088,89 @@ impl Widget for NavShell {
 }
 
 impl NavShell {
+    /// Routes `event` to child panes in front-to-back order: an open overlay
+    /// drawer is topmost so it routes first; otherwise the front content
+    /// pane (for narrow push) routes before the back one. `d_node` is absent
+    /// for a sidebar-plus-content shell but must not stop the sidebar/
+    /// overview panes from being routed to. Split out of `handle_event` to
+    /// keep that under the line cap.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards Widget::handle_event's own parameter list to route to the right \
+                  child pane; bundling it would mean bundling the trait method too"
+    )]
+    fn route_event_to_children(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+    ) {
+        enum Which {
+            Sidebar,
+            Overview,
+            Detail,
+        }
+
+        let (Some(taffy), Some(o_node)) = (self.inner_taffy.as_ref(), self.overview_node) else {
+            return;
+        };
+        let d_node = self.detail_node;
+        let sidebar_first =
+            self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay;
+
+        let mut order: Vec<(Which, NodeId)> = Vec::new();
+        if sidebar_first && let Some(sn) = self.sidebar_node {
+            order.push((Which::Sidebar, sn));
+        }
+        // Front content pane first for narrow push; harmless order in wide.
+        match (self.pane, d_node) {
+            (NavPane::Detail, Some(dn)) => {
+                order.push((Which::Detail, dn));
+                order.push((Which::Overview, o_node));
+            }
+            (_, Some(dn)) => {
+                order.push((Which::Overview, o_node));
+                order.push((Which::Detail, dn));
+            }
+            (_, None) => order.push((Which::Overview, o_node)),
+        }
+        if !sidebar_first && let Some(sn) = self.sidebar_node {
+            order.push((Which::Sidebar, sn));
+        }
+
+        for (which, child_node) in order {
+            if *handled {
+                break;
+            }
+            let target: &mut dyn Widget = match which {
+                Which::Sidebar => match self.sidebar.as_mut() {
+                    Some(s) => s.as_mut(),
+                    None => continue,
+                },
+                Which::Overview => self.overview.as_mut(),
+                Which::Detail => match self.detail.as_mut() {
+                    Some(d) => d.as_mut(),
+                    None => continue,
+                },
+            };
+            target.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+        }
+    }
+
     /// Scrim is painted inline between content and the drawer in each draw
     /// path instead, so its z-order is correct.
     fn draw_chrome_no_scrim(
@@ -1190,8 +1237,8 @@ mod tests {
             .compute_layout(
                 node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(w as f32),
-                    height: taffy::AvailableSpace::Definite(h as f32),
+                    width: taffy::AvailableSpace::Definite(to_f32(w)),
+                    height: taffy::AvailableSpace::Definite(to_f32(h)),
                 },
             )
             .unwrap();
@@ -1281,7 +1328,7 @@ mod tests {
             0.0,
             "and start at the window's left edge, not offset by a sidebar",
         );
-        assert!(!ns.is_detail_shown(), "there is no detail pane to push in",);
+        assert!(!ns.is_detail_shown(), "there is no detail pane to push in");
         assert_eq!(
             ns.detail_rect(),
             Rect::ZERO,
@@ -1808,7 +1855,7 @@ mod tests {
             ov.width() > 1.0,
             "wide side-by-side shows an overview column"
         );
-        let pt = Point::new((ov.x0 + ov.x1) / 2.0, (ov.y0 + ov.y1) / 2.0);
+        let pt = Point::new(ov.x0.midpoint(ov.x1), ov.y0.midpoint(ov.y1));
         let mut handled = false;
         dispatch(&mut ns, &cursor_at(pt), &mut handled);
         dispatch(&mut ns, &left_press(), &mut handled);

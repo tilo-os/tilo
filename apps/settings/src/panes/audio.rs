@@ -7,6 +7,7 @@
 //! - **Input level** forwards to the default *source* via `wpctl`
 //!   (`@DEFAULT_AUDIO_SOURCE@`) through [`InputControl`], sampled once on
 //!   construction so the slider rests at the mic's current gain.
+//!
 //! Notification delivery sounds live in Notifications. Collaboration event
 //! sounds are not offered here until the shell has a real consumer; Settings
 //! never persists a switch that nothing applies.
@@ -137,6 +138,9 @@ impl AudioRuntimeControl for NoopAudioRuntime {
 /// tiny extra seam; the production impl shells out to `wpctl`, tests inject
 /// a recorder.
 pub trait InputControl: Send + Sync {
+    /// # Errors
+    /// Returns the backend's error string when the `wpctl` call to set the
+    /// default source's gain fails (missing binary, no default source, …).
     fn set_input_volume(&self, pct: f32) -> Result<(), String>;
 }
 
@@ -270,8 +274,10 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
         };
         // Drop the trailing "[vol: …]" annotation.
         let mut name = name_part.trim().to_string();
-        if let Some(idx) = name.rfind('[') {
-            name = name[..idx].trim().to_string();
+        if let Some(idx) = name.rfind('[')
+            && let Some(head) = name.get(..idx)
+        {
+            name = head.trim().to_string();
         }
         if name.is_empty() {
             continue;
@@ -302,6 +308,9 @@ fn list_audio_devices() -> AudioDevices {
 /// Side-effect interface for switching the default audio device. Production
 /// runs `wpctl set-default <id>`; tests inject a recorder.
 pub trait DeviceControl: Send + Sync {
+    /// # Errors
+    /// Returns the backend's error string when `wpctl set-default` fails
+    /// (missing binary, unknown device id, …).
     fn set_default(&self, id: u32) -> Result<(), String>;
 }
 
@@ -347,6 +356,12 @@ fn get_source_volume() -> Option<f32> {
 }
 
 /// Audio pane widget.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent UI/session flag (advanced-panel toggle, dirty flag, \
+              last-value cache, test-only persistence switch) mutated at different times, not \
+              a state machine that bitflags or an enum would clarify"
+)]
 pub struct AudioPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
     input: Arc<dyn InputControl>,
@@ -508,7 +523,7 @@ impl AudioPane {
             structure_dirty: false,
             initial_volume: initial,
             initial_input,
-            initial_prefs: prefs.clone(),
+            initial_prefs: prefs,
             last_volume: initial,
             last_input: initial_input,
             last_muted: initial_state.muted,
@@ -580,6 +595,7 @@ impl AudioPane {
     /// Test / `--shots` builder: inject an enumerated device set and the
     /// [`DeviceControl`] recorder so the sink/source picker path is exercised
     /// without shelling out to `wpctl`.
+    #[must_use]
     pub fn with_devices(mut self, devices: AudioDevices, device: Arc<dyn DeviceControl>) -> Self {
         self.last_sink = devices.default_sink().map(str::to_string);
         self.last_source = devices.default_source().map(str::to_string);
@@ -593,6 +609,7 @@ impl AudioPane {
     /// exercised without touching `pw-dump` / `pw-metadata`. A static
     /// enumerator returns the same graph, so any hotplug re-enumeration is a
     /// no-op unless [`Self::with_hotplug`] scripts one.
+    #[must_use]
     pub fn with_graph(mut self, graph: AudioGraph, gctl: Arc<dyn GraphControl>) -> Self {
         self.enumerator = Arc::new(StaticEnumerator(graph.clone()));
         self.graph = graph;
@@ -600,6 +617,7 @@ impl AudioPane {
         self
     }
 
+    #[must_use]
     pub fn with_runtime(mut self, runtime: Arc<dyn AudioRuntimeControl>) -> Self {
         self.runtime_caps = runtime.capabilities();
         self.runtime = runtime;
@@ -609,6 +627,7 @@ impl AudioPane {
     /// Test builder: drive the hotplug path from a scripted enumerator with the
     /// throttle disabled, so every `sync` re-enumerates and a device/stream
     /// added to a later snapshot is picked up.
+    #[must_use]
     pub fn with_hotplug(mut self, enumerator: Arc<dyn AudioEnumerator>) -> Self {
         self.enumerator = enumerator;
         self.hotplug_interval = Duration::ZERO;
@@ -628,8 +647,41 @@ impl AudioPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // --- Output card: an optional device picker (only when more than one
-        //     sink exists), then volume + mute on the default sink.
+        let output = self.build_output_card();
+        let input = self.build_input_card();
+        let hardware = self.build_hardware_card();
+
+        // --- Applications card: one block per playback stream, with a picker
+        //     that routes just that app to a chosen sink, plus per-app volume +
+        //     mute. This is the per-application routing surface — the music app
+        //     to the headphones while the browser stays on the speakers.
+        let apps = self.streams_card(
+            "Applications",
+            &self.graph.playback_streams,
+            &self.devices.sinks,
+            "No applications are playing audio.",
+        );
+        // --- Recording card: the capture streams (which app is using the mic),
+        //     routed to a chosen source, with per-app level + mute.
+        let recording = self.streams_card(
+            "Recording",
+            &self.graph.record_streams,
+            &self.devices.sources,
+            "No applications are recording.",
+        );
+
+        let mut cards = vec![output, input];
+        if let Some(hardware) = hardware {
+            cards.push(hardware);
+        }
+        cards.extend([apps, recording]);
+        crate::widgets::cards(cards)
+    }
+
+    /// The "Output" card: an optional device picker (only when more than one
+    /// sink exists), then volume + mute on the default sink, plus balance /
+    /// mono / speaker-test controls the runtime reports support for.
+    fn build_output_card(&self) -> crate::widgets::El {
         let mut output_rows = Vec::new();
         if self.devices.sinks.len() >= 2 {
             let opts: Vec<String> = self.devices.sinks.iter().map(|d| d.name.clone()).collect();
@@ -698,9 +750,12 @@ impl AudioPane {
         if let Some(notice) = &self.runtime_notice {
             output_rows.push(caption(notice));
         }
-        let output = card("Output", rows(output_rows));
+        card("Output", rows(output_rows))
+    }
 
-        // --- Input card: an optional source picker, then the mic level.
+    /// The "Input" card: an optional source picker, then the mic level and
+    /// (when the runtime supports it) a bounded microphone meter test.
+    fn build_input_card(&self) -> crate::widgets::El {
         let mut input_rows = Vec::new();
         if self.devices.sources.len() >= 2 {
             let opts: Vec<String> = self
@@ -748,8 +803,13 @@ impl AudioPane {
             ));
             input_rows.push(caption("The test reads an eight-second level meter in memory. It never stores audio or routes the microphone to speakers."));
         }
-        let input = card("Input", rows(input_rows));
+        card("Input", rows(input_rows))
+    }
 
+    /// The "Device capabilities" card: per-hardware profile pickers (only for
+    /// devices reporting more than one selectable profile) plus each sink's
+    /// reported codec. `None` when there is nothing to show — no empty card.
+    fn build_hardware_card(&self) -> Option<crate::widgets::El> {
         let mut hardware_rows = Vec::new();
         for hw in &self.graph.hardware {
             let selectable: Vec<_> = hw.profiles.iter().filter(|p| p.available).collect();
@@ -760,8 +820,7 @@ impl AudioPane {
             let active = hw
                 .active_profile
                 .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-                .map(|p| p.description.as_str())
-                .unwrap_or("Choose a profile");
+                .map_or("Choose a profile", |p| p.description.as_str());
             hardware_rows.push(choice_row_described(
                 &hw.description,
                 "PipeWire device profile",
@@ -780,34 +839,7 @@ impl AudioPane {
                 ));
             }
         }
-        let hardware =
-            (!hardware_rows.is_empty()).then(|| card("Device capabilities", rows(hardware_rows)));
-
-        // --- Applications card: one block per playback stream, with a picker
-        //     that routes just that app to a chosen sink, plus per-app volume +
-        //     mute. This is the per-application routing surface — the music app
-        //     to the headphones while the browser stays on the speakers.
-        let apps = self.streams_card(
-            "Applications",
-            &self.graph.playback_streams,
-            &self.devices.sinks,
-            "No applications are playing audio.",
-        );
-        // --- Recording card: the capture streams (which app is using the mic),
-        //     routed to a chosen source, with per-app level + mute.
-        let recording = self.streams_card(
-            "Recording",
-            &self.graph.record_streams,
-            &self.devices.sources,
-            "No applications are recording.",
-        );
-
-        let mut cards = vec![output, input];
-        if let Some(hardware) = hardware {
-            cards.push(hardware);
-        }
-        cards.extend([apps, recording]);
-        crate::widgets::cards(cards)
+        (!hardware_rows.is_empty()).then(|| card("Device capabilities", rows(hardware_rows)))
     }
 
     /// Build one streams card (Applications or Recording). Each stream becomes
@@ -1003,14 +1035,10 @@ impl AudioPane {
             warn!(target: "qos::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
         }
     }
-}
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(AudioPane::new())
-}
-
-impl Widget for AudioPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    /// Advance the bounded speaker/mic diagnostics and re-enumerate the
+    /// `PipeWire` graph on the hotplug throttle.
+    fn tick_sessions_and_hotplug(&mut self) {
         if self
             .channel_test
             .as_mut()
@@ -1035,51 +1063,63 @@ impl Widget for AudioPane {
         // Re-read the PipeWire graph on the hotplug throttle so a device
         // plugged in or an app that just started playing appears live.
         self.poll_hotplug();
-        if self.needs_seed {
-            let _ = state.put(
-                root,
-                VOLUME_KEY,
-                automerge::ScalarValue::F64(f64::from(self.initial_volume)),
-            );
-            let _ = state.put(
-                root,
-                MUTED_KEY,
-                automerge::ScalarValue::Boolean(self.last_muted),
-            );
-            let _ = state.put(
-                root,
-                BALANCE_KEY,
-                automerge::ScalarValue::F64(f64::from(self.initial_prefs.balance.clamp(0.0, 1.0))),
-            );
-            let _ = state.put(root, MONO_KEY, self.initial_prefs.mono_output);
-            for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
-                let _ = state.put(root, key, false);
-            }
-            let _ = state.put(
-                root,
-                INPUT_VOLUME_KEY,
-                automerge::ScalarValue::F64(f64::from(self.initial_input)),
-            );
-            // Seed the device pickers with the current defaults so they rest
-            // on the active device.
-            if let Some(name) = self.devices.default_sink() {
-                let _ = state.put(root, OUTPUT_DEVICE_KEY, name);
-            }
-            if let Some(name) = self.devices.default_source() {
-                let _ = state.put(root, INPUT_DEVICE_KEY, name);
-            }
-            for hw in &self.graph.hardware {
-                if let Some(active) = hw
-                    .active_profile
-                    .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-                {
-                    let _ = state.put(root, device_profile_key(hw.id), active.description.clone());
-                    self.last_device_profile
-                        .insert(hw.id, active.description.clone());
-                }
-            }
-            self.needs_seed = false;
+    }
+
+    /// One-time seed of every CRDT key this pane owns, from the initial
+    /// backend/prefs snapshot taken at construction.
+    fn seed_state(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.needs_seed {
+            return;
         }
+        let _ = state.put(
+            root,
+            VOLUME_KEY,
+            automerge::ScalarValue::F64(f64::from(self.initial_volume)),
+        );
+        let _ = state.put(
+            root,
+            MUTED_KEY,
+            automerge::ScalarValue::Boolean(self.last_muted),
+        );
+        let _ = state.put(
+            root,
+            BALANCE_KEY,
+            automerge::ScalarValue::F64(f64::from(self.initial_prefs.balance.clamp(0.0, 1.0))),
+        );
+        let _ = state.put(root, MONO_KEY, self.initial_prefs.mono_output);
+        for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
+            let _ = state.put(root, key, false);
+        }
+        let _ = state.put(
+            root,
+            INPUT_VOLUME_KEY,
+            automerge::ScalarValue::F64(f64::from(self.initial_input)),
+        );
+        // Seed the device pickers with the current defaults so they rest
+        // on the active device.
+        if let Some(name) = self.devices.default_sink() {
+            let _ = state.put(root, OUTPUT_DEVICE_KEY, name);
+        }
+        if let Some(name) = self.devices.default_source() {
+            let _ = state.put(root, INPUT_DEVICE_KEY, name);
+        }
+        for hw in &self.graph.hardware {
+            if let Some(active) = hw
+                .active_profile
+                .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
+            {
+                let _ = state.put(root, device_profile_key(hw.id), active.description.clone());
+                self.last_device_profile
+                    .insert(hw.id, active.description.clone());
+            }
+        }
+        self.needs_seed = false;
+    }
+
+    /// Apply the output volume, input (mic) volume and mute toggles from the
+    /// CRDT to the dispatcher/`InputControl`, each guarded so a value at rest
+    /// doesn't re-fire.
+    fn apply_volume_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(new) = read_f64(state, root, VOLUME_KEY) {
             let new = new as f32;
             if (new - self.last_volume).abs() > 0.001 {
@@ -1122,6 +1162,11 @@ impl Widget for AudioPane {
                 }
             }
         }
+    }
+
+    /// Apply the balance slider and mono toggle from the CRDT, persisting the
+    /// preference (never touching the compositor's live session transform).
+    fn apply_balance_and_mono(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
             && (value - self.balance).abs() > 0.001
         {
@@ -1145,6 +1190,11 @@ impl Widget for AudioPane {
             });
             self.structure_dirty = true;
         }
+    }
+
+    /// Handle the advanced-panel toggle and the one-shot speaker/microphone
+    /// test buttons.
+    fn apply_diagnostics_requests(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if read_bool(state, root, ADVANCED_KEY) == Some(true) {
             let _ = state.put(root, ADVANCED_KEY, false);
             self.advanced = !self.advanced;
@@ -1175,7 +1225,7 @@ impl Widget for AudioPane {
                 }
                 Err(error) => {
                     self.runtime_notice =
-                        Some(format!("Could not test the {label} speaker: {error}"))
+                        Some(format!("Could not test the {label} speaker: {error}"));
                 }
             }
             self.structure_dirty = true;
@@ -1203,12 +1253,17 @@ impl Widget for AudioPane {
                     }
                     Err(error) => {
                         self.runtime_notice =
-                            Some(format!("Could not test the microphone: {error}"))
+                            Some(format!("Could not test the microphone: {error}"));
                     }
                 }
             }
             self.structure_dirty = true;
         }
+    }
+
+    /// Apply an output/input device picker selection, dispatching
+    /// `wpctl set-default` and persisting the preference.
+    fn apply_device_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Output-device (sink) selection → wpctl set-default, guarded so a
         // selection at rest doesn't re-fire.
         if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY)
@@ -1256,6 +1311,11 @@ impl Widget for AudioPane {
                 }
             }
         }
+    }
+
+    /// Seed and dispatch each per-application stream's route/volume/mute,
+    /// then apply any hardware device-profile picker change.
+    fn apply_streams_and_profiles(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Per-application streams: seed each stream's route/volume/mute keys
         // once, then apply any change through the graph control. Cloned out of
         // the graph so the seed/dispatch helpers can borrow `self` mutably.
@@ -1296,10 +1356,26 @@ impl Widget for AudioPane {
                     }
                     self.runtime_notice = Some(format!("Device profile could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed")
+                    warn!(target: "qos::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
                 }
             }
         }
+    }
+}
+
+pub fn build() -> Box<dyn Widget> {
+    Box::new(AudioPane::new())
+}
+
+impl Widget for AudioPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.tick_sessions_and_hotplug();
+        self.seed_state(state, root);
+        self.apply_volume_controls(state, root);
+        self.apply_balance_and_mono(state, root);
+        self.apply_diagnostics_requests(state, root);
+        self.apply_device_selection(state, root);
+        self.apply_streams_and_profiles(state, root);
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
@@ -1323,13 +1399,13 @@ impl Widget for AudioPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1721,7 +1797,7 @@ Video
         let _ = doc.put(&root, INPUT_VOLUME_KEY, automerge::ScalarValue::F64(0.40));
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent while at rest
-        let calls = input.calls.lock().unwrap();
+        let calls = input.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1, "one input dispatch per change: {calls:?}");
         assert!(
             (calls[0] - 40.0).abs() < 0.5,
@@ -1744,9 +1820,8 @@ Video
         calls: Mutex<Vec<String>>,
     }
     impl RecordingGraph {
-        fn push(&self, s: String) -> Result<(), String> {
+        fn push(&self, s: String) {
             self.calls.lock().unwrap().push(s);
-            Ok(())
         }
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
@@ -1754,25 +1829,32 @@ Video
     }
     impl GraphControl for RecordingGraph {
         fn set_default_sink(&self, id: u32) -> Result<(), String> {
-            self.push(format!("default_sink({id})"))
+            self.push(format!("default_sink({id})"));
+            Ok(())
         }
         fn set_default_source(&self, id: u32) -> Result<(), String> {
-            self.push(format!("default_source({id})"))
+            self.push(format!("default_source({id})"));
+            Ok(())
         }
         fn route_stream(&self, stream: u32, serial: u32) -> Result<(), String> {
-            self.push(format!("route({stream},{serial})"))
+            self.push(format!("route({stream},{serial})"));
+            Ok(())
         }
         fn unroute_stream(&self, stream: u32) -> Result<(), String> {
-            self.push(format!("unroute({stream})"))
+            self.push(format!("unroute({stream})"));
+            Ok(())
         }
         fn set_node_volume(&self, id: u32, v: f32) -> Result<(), String> {
-            self.push(format!("volume({id},{v:.2})"))
+            self.push(format!("volume({id},{v:.2})"));
+            Ok(())
         }
         fn set_node_mute(&self, id: u32, m: bool) -> Result<(), String> {
-            self.push(format!("mute({id},{m})"))
+            self.push(format!("mute({id},{m})"));
+            Ok(())
         }
         fn set_device_profile(&self, id: u32, profile: u32) -> Result<(), String> {
-            self.push(format!("profile({id},{profile})"))
+            self.push(format!("profile({id},{profile})"));
+            Ok(())
         }
     }
 

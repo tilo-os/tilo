@@ -11,6 +11,16 @@
 //! cargo test -p quick-desktop --test control_socket_test -- --ignored
 //! ```
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -34,8 +44,9 @@ fn spawn_with_control() -> (Child, PathBuf) {
         .join("quick-desktop");
     assert!(
         binary.exists(),
-        "expected the compositor binary at {binary:?}; \
-         run `cargo build -p quick-desktop` before this test"
+        "expected the compositor binary at {}; \
+         run `cargo build -p quick-desktop` before this test",
+        binary.display()
     );
 
     let mut child = Command::new(&binary)
@@ -58,7 +69,8 @@ fn spawn_with_control() -> (Child, PathBuf) {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return, // EOF — child exited.
+                // EOF (child exited) or a read error both end the drain.
+                Ok(0) | Err(_) => return,
                 Ok(_) => {
                     if !signalled && line.contains("test_control listening on") {
                         let _ = tx.send(());
@@ -66,7 +78,6 @@ fn spawn_with_control() -> (Child, PathBuf) {
                     }
                     // Keep draining so the pipe never fills.
                 }
-                Err(_) => return,
             }
         }
     });
@@ -82,9 +93,8 @@ fn spawn_with_control() -> (Child, PathBuf) {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return,
+                Ok(0) | Err(_) => return,
                 Ok(_) => {}
-                Err(_) => return,
             }
         }
     });
@@ -93,6 +103,7 @@ fn spawn_with_control() -> (Child, PathBuf) {
         (child, socket_path)
     } else {
         let _ = child.kill();
+        let _ = child.wait();
         panic!(
             "timed out waiting for `test_control listening on` \
              line on the compositor's stderr"

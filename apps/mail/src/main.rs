@@ -15,6 +15,18 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
@@ -23,6 +35,12 @@ fn scenario(args: &LaunchArgs) -> &str {
     args.scenario.as_deref().unwrap_or("wide")
 }
 
+// The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
+// genuinely can fail, so the alias is fallible even where this one isn't.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(mail::app_root_scenario(scenario(args)))
 }
@@ -33,7 +51,7 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.mail", mail::app_root)
+        &LaunchSpec::new("dev.qos.mail", mail::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "wide",
@@ -50,5 +68,5 @@ pub fn main() {
             ])
             .shot_viewport(shot_viewport)
             .configure_app(|app| mail::actions::register(app.action_registry_mut())),
-    )
+    );
 }

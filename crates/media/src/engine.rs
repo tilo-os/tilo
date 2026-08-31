@@ -589,7 +589,12 @@ impl SynthState {
         self.prefetch = match source.open_reader() {
             Ok(reader) => {
                 let total = source.byte_len();
-                Some(Prefetcher::spawn(reader, total, 256 * 1024, 64 * 1024).progress())
+                // Spawning the prefetch thread can fail; hydration progress is
+                // an optional readout, so a failure here leaves it unreported
+                // rather than failing the open.
+                Prefetcher::spawn(reader, total, 256 * 1024, 64 * 1024)
+                    .ok()
+                    .map(|p| p.progress())
             }
             Err(_) => None,
         };

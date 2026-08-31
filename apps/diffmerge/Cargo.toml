@@ -2,6 +2,8 @@
 name = "diffmerge"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "diffmerge"
@@ -17,7 +19,6 @@ qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 uuid.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -26,7 +27,7 @@ similar = "2.6"
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
-# chosen path is delivered back over a channel (see `app::portal`). An app
+# chosen path is delivered back over a channel from `ui::portal`. An app
 # never draws its own file picker (HIG §5).
 
 [lints]

@@ -31,6 +31,11 @@ pub struct LogindManager {
 
 impl LogindManager {
     /// Connect to the system bus and build the `Manager` proxy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system bus is unreachable or the `Manager` proxy cannot be
+    /// built.
     pub async fn connect() -> zbus::Result<Self> {
         let conn = Connection::system().await?;
         Self::with_connection(&conn).await
@@ -38,6 +43,10 @@ impl LogindManager {
 
     /// Build the proxy on an existing connection (lets the compositor share one system-bus
     /// connection across logind + `UPower`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `Manager` proxy cannot be built on `conn`.
     pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
         let proxy = zbus::Proxy::new(conn, DEST, PATH, IFACE).await?;
         Ok(Self { proxy })
@@ -50,6 +59,10 @@ impl LogindManager {
 
     /// `Manager.CanSuspend()` → `"yes"` / `"no"` / `"na"` / `"challenge"`. Used to decide whether
     /// a suspend request is even worth issuing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `CanSuspend` call fails.
     pub async fn can_suspend(&self) -> zbus::Result<String> {
         self.proxy.call("CanSuspend", &()).await
     }
@@ -58,6 +71,11 @@ impl LogindManager {
     /// means "do it without a polkit prompt" (the session user is authorized). The real,
     /// irreversible-looking call; the caller must have consulted policy and the inhibitor
     /// registry first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `Suspend` call fails (e.g. refused by policykit, or logind is
+    /// unreachable).
     pub async fn suspend(&self, interactive: bool) -> zbus::Result<()> {
         self.proxy.call("Suspend", &(interactive)).await
     }
@@ -68,6 +86,11 @@ impl LogindManager {
     /// * `mode` — `"block"` (veto) or `"delay"` (up to `InhibitDelayMaxSec`, for cleanup before proceeding).
     ///
     /// The returned [`LogindInhibitor`] holds the fd open; drop it to release.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `Inhibit` call fails (e.g. an invalid `what`/`mode`, or logind
+    /// is unreachable).
     pub async fn inhibit(
         &self,
         what: &str,
@@ -84,6 +107,10 @@ impl LogindManager {
 
     /// `Manager.ListInhibitors()` → `(what, who, why, mode, uid, pid)` rows. Used by tests to
     /// prove an [`Self::inhibit`] lock actually landed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `ListInhibitors` call fails.
     #[allow(clippy::type_complexity)]
     pub async fn list_inhibitors(
         &self,
@@ -93,6 +120,10 @@ impl LogindManager {
 
     /// Subscribe to `PrepareForSleep(bool)` — `true` just before the system sleeps, `false` just
     /// after it resumes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if subscribing to the `PrepareForSleep` signal fails.
     pub async fn receive_prepare_for_sleep(
         &self,
     ) -> zbus::Result<zbus::proxy::SignalStream<'static>> {
@@ -102,6 +133,10 @@ impl LogindManager {
     /// Take the "delegate the lid switch and power key to us" *block* lock. With this held,
     /// logind stops acting on `HandleLidSwitch`/`HandlePowerKey` itself and leaves them to the
     /// compositor's policy. Keep the returned inhibitor alive for the session's lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying [`Self::inhibit`] call fails.
     pub async fn delegate_handled_keys(&self) -> zbus::Result<LogindInhibitor> {
         self.inhibit(
             "handle-lid-switch:handle-power-key:handle-suspend-key",

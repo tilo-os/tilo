@@ -8,6 +8,16 @@
 //! then one `tick_active_group_reconcile_for_tests` (mirroring production's
 //! per-frame [`Widget::update`]).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;
@@ -16,14 +26,13 @@ use shell::shell::state::{
     WorkspaceId, WorkspaceTree,
 };
 
+/// A strip and its two group ids, in layout order.
+type StripGroups = (StripId, [GroupId; 2]);
+
 /// Two strips, two groups per strip, one tab per group. Returns the tree
 /// plus `(strip_id, [group_id; 2])` per strip so callers can drive the
 /// reconciler without re-walking the structure.
-fn two_strip_two_group_tree() -> (
-    WorkspaceTree,
-    (StripId, [GroupId; 2]),
-    (StripId, [GroupId; 2]),
-) {
+fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
     let ws_id = WorkspaceId::new();
     let s0_id = StripId::new();
     let s1_id = StripId::new();

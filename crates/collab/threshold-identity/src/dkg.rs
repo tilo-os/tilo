@@ -34,6 +34,7 @@ use frost_ed25519::keys::dkg::{
 use frost_ed25519::keys::{KeyPackage, PublicKeyPackage};
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_bytes as serde_bytes_codec;
 
 use collab_types::Ed25519PublicKey;
 
@@ -51,7 +52,7 @@ pub struct EnrolmentRound1 {
     pub from_share_index: u16,
     /// Serialised `frost_ed25519::keys::dkg::round1::Package`, opaque to
     /// callers — round-tripped through frost-ed25519's own serializer.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub package_bytes: Vec<u8>,
 }
 
@@ -66,7 +67,7 @@ pub struct EnrolmentRound2 {
     /// 1-indexed share number of the intended recipient.
     pub to_share_index: u16,
     /// Serialised `frost_ed25519::keys::dkg::round2::Package`.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub package_bytes: Vec<u8>,
 }
 
@@ -119,6 +120,13 @@ impl DkgSession {
     /// (caller-chosen; the orchestrator ensures all participants pick
     /// distinct values in `1..=total`); `threshold` is `t` (1 ≤ t ≤ n);
     /// `total` is `n` (≥ 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::InvalidThresholdParameters`] if
+    /// `threshold` is `0`, `total` is `0`, or `threshold > total`, or
+    /// an error if the underlying FROST DKG round-1 step or
+    /// serialization fails.
     pub fn start<R: CryptoRng + RngCore>(
         share_index: u16,
         threshold: u16,
@@ -149,6 +157,14 @@ impl DkgSession {
     /// this device's round-2 messages, keyed by recipient share index.
     /// `others` must contain exactly one message from every OTHER
     /// participant (`total - 1` entries), none from `self.share_index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if called outside
+    /// `Round1Sent`, or if `others` contains an entry from this
+    /// device's own share index; otherwise propagates an error if
+    /// decoding a peer package or the underlying FROST round-2 step
+    /// fails.
     pub fn receive_round1(
         &mut self,
         others: &[EnrolmentRound1],
@@ -163,9 +179,7 @@ impl DkgSession {
                 public_key_package: dummy_public_key_package_placeholder()?,
             },
         );
-        let r1_secret = if let DkgPhase::Round1Sent { secret } = prev {
-            secret
-        } else {
+        let DkgPhase::Round1Sent { secret: r1_secret } = prev else {
             self.phase = prev;
             return Err(ThresholdError::DkgStateMisuse(
                 "receive_round1 called outside Round1Sent",
@@ -214,6 +228,14 @@ impl DkgSession {
     /// the protocol. Requires exactly one [`EnrolmentRound2`] per other
     /// participant addressed to `self.share_index`; extra or missing
     /// entries return `DkgStateMisuse`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if called outside
+    /// `Round2Sent`, if an entry in `others` is not addressed to this
+    /// device, or if an entry is from this device's own share index;
+    /// otherwise propagates an error if decoding a peer package or
+    /// the underlying FROST round-3 step fails.
     pub fn receive_round2(&mut self, others: &[EnrolmentRound2]) -> Result<(), ThresholdError> {
         let prev = std::mem::replace(
             &mut self.phase,
@@ -266,6 +288,12 @@ impl DkgSession {
     /// Drain the completed protocol and return `(SecretShare,
     /// group_public_key)`. Fails with `DkgStateMisuse` if not yet Complete;
     /// consumes the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::DkgStateMisuse`] if the session has
+    /// not yet reached `Complete`, or an error if the group verifying
+    /// key cannot be serialized (effectively unreachable).
     pub fn finish(self) -> Result<DkgOutcome, ThresholdError> {
         match self.phase {
             DkgPhase::Complete {
@@ -372,7 +400,9 @@ fn dummy_key_package_placeholder() -> Result<KeyPackage, ThresholdError> {
     use rand::SeedableRng;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([0xCDu8; 32]);
     let (mut shares, _pk) = generate_with_dealer(2, 2, IdentifierList::Default, &mut rng)?;
-    let (_, share) = shares.pop_first().expect("dealer always produces shares");
+    let (_, share) = shares
+        .pop_first()
+        .ok_or_else(|| ThresholdError::FrostInternal("dealer produced no shares".to_string()))?;
     Ok(share.try_into()?)
 }
 

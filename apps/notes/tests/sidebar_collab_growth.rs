@@ -5,6 +5,16 @@
 //! `sync → build_layout → compute → apply_layout → draw` cycle headless
 //! (no GPU — `draw_with_presence` just fills a vello Scene).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;
@@ -23,7 +33,12 @@ use vello::kurbo::{Affine, Point};
 /// Run a full layout pass (sync + build + compute + apply) — the part of
 /// the frame that sizes every widget's rects, including the sidebar's
 /// per-row `row_rects`.
-fn relayout(app: &mut NotesApp, state: &mut ui::State, theme: &Theme, tr: &mut TextRenderer) {
+fn relayout(
+    app: &mut NotesApp,
+    state: &mut ui::State,
+    theme: &Theme,
+    tr: &mut TextRenderer,
+) -> Result<(), String> {
     app.sync(&mut state.doc, &state.root);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -40,7 +55,7 @@ fn relayout(app: &mut NotesApp, state: &mut ui::State, theme: &Theme, tr: &mut T
             },
             &[child],
         )
-        .unwrap();
+        .map_err(|e| e.to_string())?;
     {
         let measure_map = node_map.clone();
         let trr = &mut *tr;
@@ -59,9 +74,10 @@ fn relayout(app: &mut NotesApp, state: &mut ui::State, theme: &Theme, tr: &mut T
                     }
                 },
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
+    Ok(())
 }
 
 fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
@@ -88,7 +104,7 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     let mut tr = TextRenderer::new();
 
     // Frame 1: full cycle so the sidebar lays out its welcome row(s).
-    relayout(&mut app, &mut state, &theme, &mut tr);
+    relayout(&mut app, &mut state, &theme, &mut tr).unwrap();
     draw(&mut app, &theme, &mut tr);
 
     // A remote peer adds a second page to the SHARED doc.
@@ -109,6 +125,6 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     draw(&mut app, &theme, &mut tr);
 
     // And after a proper relayout it renders both rows without panic.
-    relayout(&mut app, &mut state, &theme, &mut tr);
+    relayout(&mut app, &mut state, &theme, &mut tr).unwrap();
     draw(&mut app, &theme, &mut tr);
 }

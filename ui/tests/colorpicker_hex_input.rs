@@ -2,6 +2,16 @@
 //! Typing a valid `#rrggbb` updates `picker.color()`; invalid
 //! input is ignored without throwing the picker into a bad state.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
