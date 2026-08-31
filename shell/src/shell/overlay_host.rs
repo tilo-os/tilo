@@ -39,6 +39,8 @@ use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
+use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, PeerSyncOverlay};
+pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
@@ -254,9 +256,8 @@ pub struct ShellOverlayHost {
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<PeerSyncBridge>,
-    /// Hit rects of the connect prompt's buttons, published by
-    /// [`Self::draw_peer_sync`]. Empty when the prompt is not painted.
-    peer_sync_prompt_rects: Vec<(PeerSyncPromptButton, Rect)>,
+    /// Owns the invite/connect prompt state, painting, hit-testing and input.
+    peer_sync_overlay: PeerSyncOverlay,
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals. `None` until [`Self::with_chrome`]
     /// runs.
@@ -337,37 +338,6 @@ pub enum PeerSyncAction {
     /// ([`ShellOverlayHost::draw_peer_sync`]); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
-}
-
-/// A peer-sync operation the widget layer wants performed, handed to
-/// the closure installed by [`ShellOverlayHost::with_peer_sync_bridge`].
-/// Not the same type as [`PeerSyncAction`]: an action is what the user
-/// picked, a request is what the network is asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PeerSyncRequest {
-    /// Mint a signed invite to the active workspace. `Ok` carries the
-    /// token.
-    IssueInvite,
-    /// Same, remembering that whoever redeems it is called this. The
-    /// name does not travel inside the token itself.
-    IssueInviteFor(String),
-    /// Join the room a token names. `Ok` carries the room id.
-    AcceptInvite(String),
-}
-
-/// A button on the peer-sync card.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerSyncPromptButton {
-    /// Mint the invite for the name typed into the composer.
-    CreateInvite,
-    /// Submit whatever has been typed as an invite token.
-    Join,
-    /// Abandon the prompt.
-    Cancel,
-    /// Put the minted invite token on the system clipboard.
-    CopyToken,
-    /// Pull an invite token off the system clipboard into the prompt.
-    PasteToken,
 }
 
 /// Rows the palette asks the registry for, shared round-robin between the
@@ -497,178 +467,6 @@ fn f32_to_u8_saturating(v: f32) -> u8 {
 )]
 fn f64_floor_to_usize_saturating(v: f64) -> usize {
     v.floor() as usize
-}
-
-/// Shortens an invite token to fit one line: head and tail with the
-/// middle elided, so a person sees the field is holding a token (and
-/// that it changed) without six lines of base64. The fingerprint
-/// underneath, not this, is what's meant to be compared.
-fn elide_token(token: &str) -> String {
-    let chars: Vec<char> = token.chars().collect();
-    if chars.len() <= 20 {
-        return token.to_string();
-    }
-    let Some(head_chars) = chars.get(..10) else {
-        return token.to_string();
-    };
-    let tail_start = chars.len().saturating_sub(6);
-    let Some(tail_chars) = chars.get(tail_start..) else {
-        return token.to_string();
-    };
-    let head: String = head_chars.iter().collect();
-    let tail: String = tail_chars.iter().collect();
-    format!("{head}…{tail}")
-}
-
-/// The invite `token` carries, if it is one this machine will act on.
-/// Uses the real validator rather than a lenient parse, since an
-/// expired or unverifiable token is not an invite.
-fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> {
-    crate::network::invite::validate_invite_token(token.trim()).ok()
-}
-
-/// A short, comparable fingerprint of the inviter's machine: the last
-/// eight characters of their Iroh `EndpointId`, grouped in two so
-/// it can be read aloud (same grouping as
-/// `onboarding::MintedIdentity::grouped_fingerprint`).
-fn peer_fingerprint(peer_id: &str) -> String {
-    let chars: Vec<char> = peer_id.chars().collect();
-    let tail_start = chars.len().saturating_sub(8);
-    let tail: Vec<char> = chars
-        .get(tail_start..)
-        .map_or_else(Vec::new, <[char]>::to_vec);
-    if tail.len() <= 4 {
-        return tail.into_iter().collect();
-    }
-    let (a, b) = tail.split_at(4);
-    format!(
-        "{} {}",
-        a.iter().collect::<String>(),
-        b.iter().collect::<String>()
-    )
-}
-
-/// How long until `expiry_unix_seconds`, in units a person reads.
-/// Always rounded down, never up — a card that rounds "1 hour" past
-/// the actual expiry has lied at the only moment it mattered.
-fn time_until(expiry_unix_seconds: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let left = expiry_unix_seconds.saturating_sub(now);
-    match left {
-        0 => "moments".to_string(),
-        s if s < 120 => format!("{s} seconds"),
-        s if s < 5400 => format!("{} minutes", s / 60),
-        s if s < 172_800 => format!("{} hours", s / 3600),
-        s => format!("{} days", s / 86_400),
-    }
-}
-
-/// One person, drawn the way the collaborators panel draws them: an
-/// avatar chip, a name, and a line of state under it. Returns the y the
-/// row ends at. `named` distinguishes somebody from nobody: an unnamed
-/// invite gets the empty-seat ring rather than a monogram.
-#[allow(clippy::too_many_arguments)]
-fn draw_invite_person_row(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    who: &str,
-    sub: &str,
-    named: bool,
-) -> f64 {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let center = Point::new(rect.x0 + 16.0, rect.y0 + 18.0);
-    if named {
-        let initial = who
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_default();
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
-            Rect::new(
-                center.x - 16.0,
-                center.y - 16.0,
-                center.x + 16.0,
-                center.y + 16.0,
-            ),
-            &initial,
-            colors.accent[5],
-            theme,
-            text_renderer,
-        );
-    } else {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-            transform,
-            colors.border_white_10,
-            None,
-            &vello::kurbo::Circle::new(center, 16.0),
-        );
-    }
-    let text_x = center.x + 16.0 + 14.0;
-    let name_size = (tokens.typography.scale.sm).max(12.0);
-    let sub_size = (tokens.typography.scale.xs).max(10.0);
-    let who = text_renderer.elide_to_width(who, name_size, f64_to_f32_lossy(rect.x1 - text_x));
-    text_renderer.draw_text(
-        scene,
-        &who,
-        name_size,
-        colors.text_primary,
-        transform.pre_translate((text_x, rect.y0 + 2.0).into()),
-        None,
-    );
-    let sub = text_renderer.elide_to_width(sub, sub_size, f64_to_f32_lossy(rect.x1 - text_x));
-    text_renderer.draw_text(
-        scene,
-        &sub,
-        sub_size,
-        colors.text_dim,
-        transform.pre_translate((text_x, rect.y0 + 2.0 + f64::from(name_size) + 6.0).into()),
-        None,
-    );
-    rect.y0 + 2.0 + f64::from(name_size) + 6.0 + f64::from(sub_size)
-}
-
-#[allow(clippy::too_many_arguments)]
-/// The invite code, drawn full width and set large so it reads as a
-/// legible, copyable field rather than a caption.
-fn draw_invite_code(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    at: Point,
-    code: &str,
-    avail: f64,
-) -> f64 {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let size = tokens.typography.scale.lg.max(15.0);
-    let (_, fh) = text_renderer.measure(code, size, None);
-    let field = Rect::new(at.x, at.y, at.x + avail, at.y + f64::from(fh) + 20.0);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.surface_white_5,
-        None,
-        &RoundedRect::from_rect(field, f64::from(tokens.radii.md)),
-    );
-    text_renderer.draw_text(
-        scene,
-        code,
-        size,
-        colors.text_primary,
-        transform.pre_translate((field.x0 + 14.0, field.y0 + 10.0).into()),
-        None,
-    );
-    field.y1
 }
 
 /// Gap between two chips in the filter band.
@@ -1121,7 +919,7 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
-            peer_sync_prompt_rects: Vec::new(),
+            peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
@@ -1595,161 +1393,23 @@ impl ShellOverlayHost {
         }
         for action in actions {
             match action {
-                PeerSyncAction::IssueInvite => self.mint_invite(None, false),
-                PeerSyncAction::IssueInviteFor { name, copy } => self.mint_invite(Some(name), copy),
-                PeerSyncAction::PromptInvite => {
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        // A fresh field, nothing left over from the last
-                        // invite — a card still showing the previous token
-                        // would put a live bearer credential behind a
-                        // question about somebody else.
-                        st.peer_sync_invite_name = Some(String::new());
-                        st.peer_sync_connect_input = None;
-                        st.peer_sync_invite_token = None;
-                        st.peer_sync_invite_for = None;
-                        st.peer_sync_status = None;
-                        st.bump();
-                    }
+                PeerSyncAction::IssueInvite => {
+                    let request = self.peer_sync_overlay.issue_invite_request();
+                    self.run_peer_sync_request(request, false);
                 }
-                PeerSyncAction::PromptConnect => {
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        st.peer_sync_invite_name = None;
-                        st.peer_sync_connect_input = Some(String::new());
-                        st.peer_sync_status = Some("Paste or type the invite token".to_string());
-                        st.bump();
-                    }
+                PeerSyncAction::IssueInviteFor { name, copy } => {
+                    self.run_peer_sync_request(PeerSyncRequest::IssueInviteFor(name), copy);
                 }
+                PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
+                PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
             }
         }
     }
 
-    /// Mint a token, park it on the card, and say who it is for. `None`
-    /// invitee is a plain `/invite`, labelled as such rather than keeping
-    /// a stale name. The composer clears only on success, so a refused
-    /// invite can be retried without retyping the name.
-    fn mint_invite(&mut self, invitee: Option<String>, copy: bool) {
-        let request = match invitee.as_deref() {
-            Some(name) => PeerSyncRequest::IssueInviteFor(name.to_string()),
-            None => PeerSyncRequest::IssueInvite,
-        };
-        let outcome = self.peer_sync_call(request);
-        let minted = outcome.is_ok();
-        if let Some(chrome) = self.chrome.clone() {
-            let mut st = chrome.borrow_mut();
-            match outcome {
-                Ok(token) => {
-                    // Nothing. The card appearing, with the name and
-                    // the code on it, is the whole message — a status
-                    // line restating what the card already shows is one
-                    // more sentence to read and no more information.
-                    st.peer_sync_status = None;
-                    st.peer_sync_invite_token = Some(token);
-                    st.peer_sync_invite_for = invitee;
-                    st.peer_sync_invite_name = None;
-                }
-                Err(e) => {
-                    st.peer_sync_invite_token = None;
-                    st.peer_sync_invite_for = None;
-                    st.peer_sync_status = Some(format!("Invite failed: {e}"));
-                }
-            }
-            st.bump();
-        }
-        // Only after a mint that produced something. Copying on a
-        // failed invite would overwrite whatever the clipboard held and
-        // then report success for it.
-        if copy && minted {
-            self.copy_invite_token();
-        }
-    }
-
-    /// Mint the invite the composer has been filled in for. An empty
-    /// field is not an invite — minting anyway is how a peer ends up
-    /// named after a number instead of a person.
-    fn submit_invite_composer(&mut self) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let name = chrome.borrow().peer_sync_invite_name.clone();
-        let Some(name) = name else { return };
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            let mut st = chrome.borrow_mut();
-            st.peer_sync_status = Some("Say who this invite is for".to_string());
-            st.bump();
-            return;
-        }
-        self.mint_invite(Some(name), true);
-    }
-
-    /// Submit whatever is in the connect prompt as an invite token.
-    /// Closes on success; on failure stays open with the reason shown,
-    /// so a mistyped token can be corrected rather than retyped.
-    fn submit_connect_prompt(&self) {
-        let token = match self.chrome.as_ref() {
-            Some(chrome) => match chrome.borrow().peer_sync_connect_input.clone() {
-                Some(t) => t,
-                None => return,
-            },
-            None => return,
-        };
-        let outcome = self.peer_sync_call(PeerSyncRequest::AcceptInvite(token.trim().to_string()));
-        if let Some(chrome) = self.chrome.clone() {
-            let mut st = chrome.borrow_mut();
-            match outcome {
-                Ok(room) => {
-                    st.peer_sync_connect_input = None;
-                    st.peer_sync_status = Some(format!("Joined room {room}"));
-                }
-                Err(e) => {
-                    st.peer_sync_status = Some(format!("Refused: {e}"));
-                }
-            }
-            st.bump();
-        }
-    }
-
-    /// Put the minted invite token on the system clipboard — the same
-    /// `wl_data_device` selection a sandboxed app pastes from, via
-    /// `compositor::selection::install_host_clipboard`.
-    fn copy_invite_token(&self) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let token = chrome.borrow().peer_sync_invite_token.clone();
-        let Some(token) = token else { return };
-        ui::text_selection::clipboard_copy(&token);
-        let mut st = chrome.borrow_mut();
-        st.peer_sync_status = Some("Copied".to_string());
-        st.bump();
-    }
-
-    /// Pull an invite token off the clipboard, replacing the field rather
-    /// than appending. Whitespace stripped, since a token copied out of
-    /// a chat window arrives wrapped.
-    fn paste_invite_token(&self) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        if !self.connect_prompt_open() {
-            return;
-        }
-        let pasted = ui::text_selection::clipboard_paste()
-            .map(|s| s.split_whitespace().collect::<String>())
-            .filter(|s| !s.is_empty());
-        let mut st = chrome.borrow_mut();
-        match pasted {
-            Some(token) => {
-                st.peer_sync_connect_input = Some(token);
-                st.peer_sync_status = Some("Pasted — press Enter to join".to_string());
-            }
-            None => {
-                st.peer_sync_status = Some("Nothing on the clipboard to paste".to_string());
-            }
-        }
-        st.bump();
+    fn run_peer_sync_request(&mut self, request: PeerSyncRequest, copy_result: bool) {
+        let outcome = self.peer_sync_call(request.clone());
+        self.peer_sync_overlay
+            .finish_request(&request, outcome, copy_result);
     }
 
     /// Route one event to the peer-sync card, returning whether it was
@@ -1761,165 +1421,17 @@ impl ShellOverlayHost {
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
     ) -> bool {
-        let prompt_open = self.connect_prompt_open();
-        let composer_open = self.invite_composer_open();
-        // Ctrl (or Super, for muscle-memory-is-a-Mac users) turns `c`/`v`
-        // from token characters into copy/paste chords — checked before
-        // the plain-character branch, which would otherwise splice a
-        // literal "v" into the token being pasted over.
-        let mods = modifiers.state();
-        let chord = mods.control_key() || mods.super_key();
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => self.handle_peer_sync_key(logical_key, chord, prompt_open, composer_open),
-            WindowEvent::KeyboardInput { .. } => prompt_open || composer_open,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                let Some(p) = self.last_cursor else {
-                    return false;
-                };
-                for (which, rect) in self.peer_sync_prompt_rects.clone() {
-                    if rect.area() > 0.0 && rect.contains(p) {
-                        match which {
-                            PeerSyncPromptButton::CreateInvite => self.submit_invite_composer(),
-                            PeerSyncPromptButton::Join => self.submit_connect_prompt(),
-                            PeerSyncPromptButton::CopyToken => self.copy_invite_token(),
-                            PeerSyncPromptButton::PasteToken => self.paste_invite_token(),
-                            PeerSyncPromptButton::Cancel => {
-                                if let Some(chrome) = self.chrome.clone() {
-                                    let mut st = chrome.borrow_mut();
-                                    st.peer_sync_connect_input = None;
-                                    st.peer_sync_invite_name = None;
-                                    st.peer_sync_status = None;
-                                    st.bump();
-                                }
-                            }
-                        }
-                        return true;
-                    }
-                }
-                self.peer_sync_rect().contains(p)
-            }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseWheel { .. }
-            | WindowEvent::MouseInput { .. } => self
-                .last_cursor
-                .is_some_and(|p| self.peer_sync_rect().contains(p)),
-            _ => false,
+        let PeerSyncEventOutcome {
+            consumed,
+            request,
+            copy_result,
+        } = self
+            .peer_sync_overlay
+            .handle_event(event, modifiers, self.last_cursor);
+        if let Some(request) = request {
+            self.run_peer_sync_request(request, copy_result);
         }
-    }
-
-    /// The keyboard half of [`Self::handle_peer_sync_event`]: copy/paste
-    /// chords, escape-to-close, enter-to-submit, and raw text editing into
-    /// whichever field (connect token or invitee name) is focused.
-    fn handle_peer_sync_key(
-        &mut self,
-        logical_key: &Key,
-        chord: bool,
-        prompt_open: bool,
-        composer_open: bool,
-    ) -> bool {
-        match logical_key {
-            // Copy/paste first, or `Key::Character` below would
-            // swallow them as token text.
-            Key::Character(s) if chord && s.eq_ignore_ascii_case("c") => {
-                self.copy_invite_token();
-                true
-            }
-            Key::Character(s) if chord && s.eq_ignore_ascii_case("v") => {
-                self.paste_invite_token();
-                true
-            }
-            Key::Named(NamedKey::Escape) => {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.peer_sync_connect_input = None;
-                    st.peer_sync_invite_name = None;
-                    st.peer_sync_invite_token = None;
-                    st.peer_sync_invite_for = None;
-                    st.peer_sync_status = None;
-                    st.bump();
-                }
-                true
-            }
-            Key::Named(NamedKey::Enter) if composer_open => {
-                self.submit_invite_composer();
-                true
-            }
-            Key::Named(NamedKey::Enter) if prompt_open => {
-                self.submit_connect_prompt();
-                true
-            }
-            Key::Named(NamedKey::Backspace) if prompt_open || composer_open => {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    let field = if prompt_open {
-                        st.peer_sync_connect_input.as_mut()
-                    } else {
-                        st.peer_sync_invite_name.as_mut()
-                    };
-                    if let Some(buf) = field {
-                        buf.pop();
-                    }
-                    st.bump();
-                }
-                true
-            }
-            // `!chord` so a modified key the card has no meaning
-            // for is swallowed rather than typed into the token.
-            Key::Character(s) if (prompt_open || composer_open) && !chord => {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    let field = if prompt_open {
-                        st.peer_sync_connect_input.as_mut()
-                    } else {
-                        st.peer_sync_invite_name.as_mut()
-                    };
-                    if let Some(buf) = field {
-                        buf.push_str(s.as_str());
-                    }
-                    st.bump();
-                }
-                true
-            }
-            // `Key::Character` never carries a space.
-            Key::Named(NamedKey::Space) if composer_open && !chord => {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    if let Some(buf) = st.peer_sync_invite_name.as_mut() {
-                        buf.push(' ');
-                    }
-                    st.bump();
-                }
-                true
-            }
-            // Swallow anything else while the card owns the keyboard.
-            _ => prompt_open || composer_open,
-        }
-    }
-
-    /// Is the connect token prompt on screen?
-    fn connect_prompt_open(&self) -> bool {
-        self.chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().peer_sync_connect_input.is_some())
-    }
-
-    /// Is the card asking who is being invited?
-    fn invite_composer_open(&self) -> bool {
-        self.chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().peer_sync_invite_name.is_some())
+        consumed
     }
 
     /// Register the floating sidebar wheel as an absolutely-positioned
@@ -3521,19 +3033,20 @@ impl ShellOverlayHost {
     /// The peer-sync card's buttons, named `join` / `cancel` / `copy` /
     /// `paste`.
     pub fn peer_sync_prompt_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
-        self.peer_sync_prompt_rects
-            .iter()
-            .map(|(which, rect)| {
-                let name = match which {
-                    PeerSyncPromptButton::CreateInvite => "create",
-                    PeerSyncPromptButton::Join => "join",
-                    PeerSyncPromptButton::Cancel => "cancel",
-                    PeerSyncPromptButton::CopyToken => "copy",
-                    PeerSyncPromptButton::PasteToken => "paste",
-                };
-                (name, *rect)
-            })
-            .collect()
+        self.peer_sync_overlay.button_rects_for_tests()
+    }
+
+    pub fn peer_sync_snapshot(&self) -> PeerSyncSnapshot {
+        self.peer_sync_overlay.snapshot()
+    }
+
+    pub fn peer_sync_card_visible(&self) -> bool {
+        self.peer_sync_overlay.visible()
+    }
+
+    #[cfg(test)]
+    pub fn set_peer_sync_snapshot_for_tests(&mut self, snapshot: PeerSyncSnapshot) {
+        self.peer_sync_overlay.set_snapshot_for_tests(snapshot);
     }
 
     /// The collaborator dropdown's Invite / Join buttons, as painted last
@@ -5396,7 +4909,7 @@ impl ShellOverlayHost {
 
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
-        if self.peer_sync_card_visible() && self.handle_peer_sync_event(event, modifiers) {
+        if self.peer_sync_overlay.visible() && self.handle_peer_sync_event(event, modifiers) {
             *handled = true;
             return true;
         }
@@ -10766,41 +10279,6 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// Geometry of the peer-sync card — the token prompt and the
-    /// issued-invite readout share one surface, so one rect owns both
-    /// the paint and the hit-test.
-    fn peer_sync_rect(&self) -> Rect {
-        // Sized to what the card actually holds (name, status line,
-        // fingerprint), not to fill whatever width it's given.
-        let w = (self.rect.width() * 0.42).clamp(400.0, 520.0);
-        // Each face is as tall as what it has to say.
-        let h = if self.invite_composer_open() {
-            210.0_f64
-        } else if self.connect_prompt_open() {
-            220.0_f64
-        } else {
-            200.0_f64
-        };
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
-        Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
-    }
-
-    /// Should the peer-sync card be painted at all?
-    fn peer_sync_card_visible(&self) -> bool {
-        self.chrome.as_ref().is_some_and(|c| {
-            let st = c.borrow();
-            st.peer_sync_connect_input.is_some()
-                || st.peer_sync_invite_token.is_some()
-                || st.peer_sync_invite_name.is_some()
-        })
-    }
-
-    /// Paints the peer-sync card: who's being invited, the invite minted
-    /// for them, or the prompt asking for one. The ~900-char token is never
-    /// drawn — only who it's for and a fingerprint of the signing machine
-    /// for out-of-band comparison; a clipboard-less session still has the
-    /// whole token in `state_dump`.
     fn draw_peer_sync(
         &mut self,
         scene: &mut Scene,
@@ -10808,511 +10286,8 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.peer_sync_prompt_rects.clear();
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let (input, token, invite_name, invite_for, status) = Self::peer_sync_snapshot(&chrome);
-        if input.is_none() && token.is_none() && invite_name.is_none() {
-            return;
-        }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.peer_sync_rect();
-        Self::draw_peer_sync_card_background(scene, transform, theme, rect);
-
-        let pad = 20.0_f64;
-        let mut y = rect.y0 + pad;
-        let title_size = (tokens.typography.scale.base).max(14.0);
-        let body_size = (tokens.typography.scale.xs).max(10.0);
-        let name_size = (tokens.typography.scale.sm).max(12.0);
-        let avail = rect.width() - pad * 2.0;
-        let title = if invite_name.is_some() {
-            "Invite someone"
-        } else if input.is_some() {
-            "Join a workspace"
-        } else {
-            "Workspace invite"
-        };
-        text_renderer.draw_text(
-            scene,
-            title,
-            title_size,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-        );
-        y += f64::from(title_size) + 14.0;
-
-        let y = Self::draw_peer_sync_body(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            pad,
-            y,
-            body_size,
-            name_size,
-            avail,
-            invite_name.as_deref(),
-            token.as_deref(),
-            input.as_deref(),
-            invite_for.as_deref(),
-        );
-
-        if let Some(status) = status.as_deref() {
-            let status = text_renderer.elide_to_width(status, body_size, f64_to_f32_lossy(avail));
-            text_renderer.draw_text(
-                scene,
-                &status,
-                body_size,
-                colors.text_primary,
-                transform.pre_translate((rect.x0 + pad, y).into()),
-                None,
-            );
-        }
-
-        self.draw_peer_sync_buttons(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            pad,
-            body_size,
-            invite_name.is_some(),
-            input.is_some(),
-        );
-    }
-
-    /// The peer-sync card's flat translucent background.
-    fn draw_peer_sync_card_background(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            panel_surface(theme, MODAL_SURFACE_ALPHA),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &card,
-        );
-    }
-
-    /// The peer-sync fields off chrome state, cloned out so the borrow
-    /// drops before any painting starts.
-    fn peer_sync_snapshot(
-        chrome: &Chrome,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) {
-        let st = chrome.borrow();
-        (
-            st.peer_sync_connect_input.clone(),
-            st.peer_sync_invite_token.clone(),
-            st.peer_sync_invite_name.clone(),
-            st.peer_sync_invite_for.clone(),
-            st.peer_sync_status.clone(),
-        )
-    }
-
-    /// Dispatches to whichever half of the peer-sync flow is showing —
-    /// naming a fresh invite, one already minted, or one being received
-    /// — and returns the y position just below what it drew.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "layout state threaded straight through from draw_peer_sync, which already assembled it; bundling it would just move the sprawl into a struct nobody else needs"
-    )]
-    fn draw_peer_sync_body(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        y: f64,
-        body_size: f32,
-        name_size: f32,
-        avail: f64,
-        invite_name: Option<&str>,
-        token: Option<&str>,
-        input: Option<&str>,
-        invite_for: Option<&str>,
-    ) -> f64 {
-        if let Some(typed) = invite_name {
-            Self::draw_peer_sync_naming_step(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                pad,
-                y,
-                body_size,
-                name_size,
-                avail,
-                typed,
-            )
-        } else if let Some(token) = token {
-            Self::draw_peer_sync_invite_made(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                pad,
-                y,
-                avail,
-                token,
-                invite_for,
-            )
-        } else {
-            Self::draw_peer_sync_receiving(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                pad,
-                y,
-                body_size,
-                name_size,
-                avail,
-                input.unwrap_or(""),
-            )
-        }
-    }
-
-    /// "Invite someone": the name field for the person the invite is
-    /// being minted for. Returns the y position just below what it drew.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "layout state threaded straight through from draw_peer_sync, which already assembled it; bundling it would just move the sprawl into a struct nobody else needs"
-    )]
-    fn draw_peer_sync_naming_step(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        mut y: f64,
-        body_size: f32,
-        name_size: f32,
-        avail: f64,
-        typed: &str,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        // The question comes before the token: an invite minted
-        // with no answer is one the room can never attach a name to.
-        text_renderer.draw_text(
-            scene,
-            "Who are you inviting?",
-            body_size,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-        );
-        y += f64::from(body_size) + 8.0;
-
-        let field_h = 38.0_f64;
-        let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surface_white_5,
-            None,
-            &RoundedRect::from_rect(field, f64::from(tokens.radii.sm)),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.accent[5],
-            None,
-            &RoundedRect::from_rect(field, f64::from(tokens.radii.sm)),
-        );
-        let shown = text_renderer.elide_to_width(typed, name_size, f64_to_f32_lossy(avail - 40.0));
-        let (tw, th) = text_renderer.measure(&shown, name_size, None);
-        let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
-        if typed.is_empty() {
-            text_renderer.draw_text(
-                scene,
-                "Their name",
-                name_size,
-                colors.text_dim,
-                transform.pre_translate((field.x0 + 12.0, ty).into()),
-                None,
-            );
-        } else {
-            text_renderer.draw_text(
-                scene,
-                &shown,
-                name_size,
-                colors.text_primary,
-                transform.pre_translate((field.x0 + 12.0, ty).into()),
-                None,
-            );
-        }
-        // A caret, so the field reads as one that is taking keys
-        // rather than one waiting to be clicked into.
-        let caret_x = field.x0
-            + 12.0
-            + if typed.is_empty() {
-                0.0
-            } else {
-                f64::from(tw) + 2.0
-            };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5],
-            None,
-            &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
-        );
-        y = field.y1 + 12.0;
-
-        let note = text_renderer.elide_to_width(
-            "The room will call them this, beside their cursor.",
-            body_size,
-            f64_to_f32_lossy(avail),
-        );
-        text_renderer.draw_text(
-            scene,
-            &note,
-            body_size,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-        );
-        y += f64::from(body_size) + 10.0;
-        y
-    }
-
-    /// "The invite, made": the recipient row plus the invite code.
-    /// Returns the y position just below what it drew.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "layout state threaded straight through from draw_peer_sync, which already assembled it; bundling it would just move the sprawl into a struct nobody else needs"
-    )]
-    fn draw_peer_sync_invite_made(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        mut y: f64,
-        avail: f64,
-        token: &str,
-        invite_for: Option<&str>,
-    ) -> f64 {
-        let parsed = parse_invite(token);
-        let who = invite_for.unwrap_or("Anyone with this invite");
-        let sub = match parsed.as_ref() {
-            Some(t) => format!("Expires in {}", time_until(t.expiry_unix_seconds)),
-            None => String::new(),
-        };
-        y = draw_invite_person_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 44.0),
-            who,
-            &sub,
-            invite_for.is_some(),
-        );
-        y += 12.0;
-        if let Some(t) = parsed.as_ref() {
-            y = draw_invite_code(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Point::new(rect.x0 + pad, y),
-                &peer_fingerprint(&t.owner_peer_id),
-                avail,
-            );
-        }
-        y
-    }
-
-    /// "The receiving half": either the parsed incoming invite, or the
-    /// paste field's in-progress state. Returns the y position just
-    /// below what it drew.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "layout state threaded straight through from draw_peer_sync, which already assembled it; bundling it would just move the sprawl into a struct nobody else needs"
-    )]
-    fn draw_peer_sync_receiving(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        mut y: f64,
-        body_size: f32,
-        name_size: f32,
-        avail: f64,
-        typed: &str,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let parsed = parse_invite(typed);
-        if let Some(t) = parsed.as_ref() {
-            y = draw_invite_person_row(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 44.0),
-                "Invite received",
-                &format!("Expires in {}", time_until(t.expiry_unix_seconds)),
-                false,
-            );
-            y += 12.0;
-            y = draw_invite_code(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Point::new(rect.x0 + pad, y),
-                &peer_fingerprint(&t.owner_peer_id),
-                avail,
-            );
-        } else {
-            let line = if typed.is_empty() {
-                "Paste the invite they sent you.".to_string()
-            } else {
-                // Not a wall: enough to see that something is in
-                // the field and that it is growing, which is what a
-                // person typing one by hand needs. The reason it
-                // does not parse yet is the line underneath.
-                format!(
-                    "{} · {} characters",
-                    elide_token(typed),
-                    typed.chars().count()
-                )
-            };
-            let line = text_renderer.elide_to_width(&line, name_size, f64_to_f32_lossy(avail));
-            text_renderer.draw_text(
-                scene,
-                &line,
-                name_size,
-                if typed.is_empty() {
-                    colors.text_dim
-                } else {
-                    colors.text_primary
-                },
-                transform.pre_translate((rect.x0 + pad, y).into()),
-                None,
-            );
-            y += f64::from(name_size) + 8.0;
-            if !typed.is_empty() {
-                text_renderer.draw_text(
-                    scene,
-                    "Not a whole invite yet",
-                    body_size,
-                    colors.text_dim,
-                    transform.pre_translate((rect.x0 + pad, y).into()),
-                    None,
-                );
-                y += f64::from(body_size) + 8.0;
-            }
-        }
-        y
-    }
-
-    /// The bottom-right action row: Create/Cancel, Join/Cancel/Paste or
-    /// Copy, depending which half of the flow is showing.
-    fn draw_peer_sync_buttons(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        body_size: f32,
-        has_invite_name: bool,
-        has_input: bool,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let buttons: &[(&str, PeerSyncPromptButton)] = if has_invite_name {
-            &[
-                ("Create invite", PeerSyncPromptButton::CreateInvite),
-                ("Cancel", PeerSyncPromptButton::Cancel),
-            ]
-        } else if has_input {
-            &[
-                ("Join", PeerSyncPromptButton::Join),
-                ("Cancel", PeerSyncPromptButton::Cancel),
-                ("Paste", PeerSyncPromptButton::PasteToken),
-            ]
-        } else {
-            &[("Copy", PeerSyncPromptButton::CopyToken)]
-        };
-        let bh = 30.0_f64;
-        let by = rect.y1 - pad - bh;
-        let mut bx = rect.x1 - pad;
-        for (label, which) in buttons.iter().copied() {
-            let (tw, th) = text_renderer.measure(label, body_size, None);
-            let bw = f64::from(tw) + 26.0;
-            let brect = Rect::new(bx - bw, by, bx, by + bh);
-            let is_primary = matches!(
-                which,
-                PeerSyncPromptButton::Join
-                    | PeerSyncPromptButton::CopyToken
-                    | PeerSyncPromptButton::CreateInvite
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if is_primary {
-                    colors.accent[5]
-                } else {
-                    colors.surface_white_5
-                },
-                None,
-                &RoundedRect::from_rect(brect, bh / 2.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                label,
-                body_size,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        f64::midpoint(brect.x0, brect.x1) - f64::from(tw) / 2.0,
-                        f64::midpoint(brect.y0, brect.y1) - f64::from(th) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-            );
-            self.peer_sync_prompt_rects.push((which, brect));
-            bx = brect.x0 - 8.0;
-        }
+        self.peer_sync_overlay
+            .draw(self.rect, scene, transform, text_renderer, theme);
     }
 
     fn draw_search_banner(
@@ -14800,8 +13775,11 @@ mod palette_dispatch_tests {
     #[test]
     #[serial_test::serial(clipboard)]
     fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
-        let (mut h, chrome) = host_with_chrome();
-        chrome.borrow_mut().peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+        let (mut h, _) = host_with_chrome();
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            invite_token: Some(SAMPLE_TOKEN.to_string()),
+            ..PeerSyncSnapshot::default()
+        });
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
 
         assert!(
@@ -14816,9 +13794,8 @@ mod palette_dispatch_tests {
              gets to the other machine without being retyped"
         );
         assert!(
-            chrome
-                .borrow()
-                .peer_sync_status
+            h.peer_sync_snapshot()
+                .status
                 .as_deref()
                 .unwrap_or_default()
                 .to_lowercase()
@@ -14844,7 +13821,7 @@ mod palette_dispatch_tests {
             .push_peer_sync_request(PeerSyncAction::PromptInvite);
         h.pump_peer_sync();
         assert_eq!(
-            chrome.borrow().peer_sync_invite_name.as_deref(),
+            h.peer_sync_snapshot().invite_name.as_deref(),
             Some(""),
             "the composer opened with an empty field"
         );
@@ -14854,7 +13831,7 @@ mod palette_dispatch_tests {
             h.handle_peer_sync_event(&key_event(Key::Character(c.into())), none);
         }
         assert_eq!(
-            chrome.borrow().peer_sync_invite_name.as_deref(),
+            h.peer_sync_snapshot().invite_name.as_deref(),
             Some("Xaver"),
             "the field takes the name — the same keys that type a token"
         );
@@ -14864,17 +13841,17 @@ mod palette_dispatch_tests {
             "Enter belongs to the composer while it is up"
         );
         assert_eq!(
-            chrome.borrow().peer_sync_invite_token.as_deref(),
+            h.peer_sync_snapshot().invite_token.as_deref(),
             Some("token-for-Xaver"),
             "the name reached the request, so it can reach the room document"
         );
         assert_eq!(
-            chrome.borrow().peer_sync_invite_for.as_deref(),
+            h.peer_sync_snapshot().invite_for.as_deref(),
             Some("Xaver"),
             "and the card knows whose invite it is holding"
         );
         assert!(
-            chrome.borrow().peer_sync_invite_name.is_none(),
+            h.peer_sync_snapshot().invite_name.is_none(),
             "the question is answered, so the card has moved on from asking it"
         );
         assert_eq!(
@@ -14899,63 +13876,24 @@ mod palette_dispatch_tests {
         h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none);
 
         assert!(
-            chrome.borrow().peer_sync_invite_token.is_none(),
+            h.peer_sync_snapshot().invite_token.is_none(),
             "nothing was minted for nobody"
         );
         assert_eq!(
-            chrome.borrow().peer_sync_invite_name.as_deref(),
+            h.peer_sync_snapshot().invite_name.as_deref(),
             Some(""),
             "and the card is still asking"
-        );
-    }
-
-    /// A summary, not a transcript — pinned so the same machine reads the
-    /// same on both screens, and two machines don't collide into one.
-    #[test]
-    fn the_fingerprint_identifies_the_machine_that_signed_the_invite() {
-        let a = "12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvWx";
-        assert_eq!(peer_fingerprint(a), peer_fingerprint(a), "stable");
-        assert_eq!(
-            peer_fingerprint(a),
-            "QrSt UvWx",
-            "the tail of the peer id, in two groups — spaced the way \
-             `MintedIdentity::grouped_fingerprint` spaces its own"
-        );
-        assert_ne!(
-            peer_fingerprint(a),
-            peer_fingerprint("12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvAb"),
-            "two machines do not read the same"
-        );
-        // Short/odd inputs must not panic — a peer id is always longer,
-        // but the card must not be what takes the compositor down if one isn't.
-        assert_eq!(peer_fingerprint("abc"), "abc");
-        assert_eq!(peer_fingerprint(""), "");
-    }
-
-    /// The receiving side shows what it is holding without showing all
-    /// of it — enough that a person can see the field is not empty and
-    /// that it changed.
-    #[test]
-    fn a_token_is_elided_rather_than_spelled_out() {
-        let token = "e".repeat(900);
-        let shown = elide_token(&token);
-        assert!(
-            shown.chars().count() < 20,
-            "a summary, not six lines of base64: {shown}"
-        );
-        assert!(shown.contains('…'), "and it says there is more: {shown}");
-        assert_eq!(
-            elide_token("short-one"),
-            "short-one",
-            "something already short is left alone"
         );
     }
 
     #[test]
     #[serial_test::serial(clipboard)]
     fn ctrl_v_fills_the_connect_prompt_from_the_clipboard() {
-        let (mut h, chrome) = host_with_chrome();
-        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        let (mut h, _) = host_with_chrome();
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        });
         ui::text_selection::clipboard_copy(SAMPLE_TOKEN);
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
 
@@ -14965,7 +13903,7 @@ mod palette_dispatch_tests {
         );
 
         assert_eq!(
-            chrome.borrow().peer_sync_connect_input.as_deref(),
+            h.peer_sync_snapshot().connect_input.as_deref(),
             Some(SAMPLE_TOKEN),
             "pasting is the receiving half; without it the token still has \
              to be typed in by hand"
@@ -14977,13 +13915,16 @@ mod palette_dispatch_tests {
     #[test]
     #[serial_test::serial(clipboard)]
     fn a_pasted_token_is_stripped_of_the_whitespace_it_travelled_with() {
-        let (mut h, chrome) = host_with_chrome();
-        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        let (mut h, _) = host_with_chrome();
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        });
         ui::text_selection::clipboard_copy(&format!("  {SAMPLE_TOKEN}\n"));
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         h.handle_peer_sync_event(&key_event(Key::Character("v".into())), ctrl);
         assert_eq!(
-            chrome.borrow().peer_sync_connect_input.as_deref(),
+            h.peer_sync_snapshot().connect_input.as_deref(),
             Some(SAMPLE_TOKEN)
         );
     }
@@ -14994,12 +13935,15 @@ mod palette_dispatch_tests {
     #[test]
     #[serial_test::serial(clipboard)]
     fn the_paste_chord_does_not_also_type_a_v() {
-        let (mut h, chrome) = host_with_chrome();
-        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        let (mut h, _) = host_with_chrome();
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        });
         ui::text_selection::clipboard_copy(SAMPLE_TOKEN);
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         h.handle_peer_sync_event(&key_event(Key::Character("v".into())), ctrl);
-        let got = chrome.borrow().peer_sync_connect_input.clone().unwrap();
+        let got = h.peer_sync_snapshot().connect_input.unwrap();
         assert!(
             !got.ends_with('v') || SAMPLE_TOKEN.ends_with('v'),
             "Ctrl+V pasted and typed: {got}"
@@ -15011,42 +13955,48 @@ mod palette_dispatch_tests {
     /// cost the prompt its ability to accept a token by hand.
     #[test]
     fn plain_characters_still_type_into_the_prompt() {
-        let (mut h, chrome) = host_with_chrome();
-        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        let (mut h, _) = host_with_chrome();
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        });
         let none = Modifiers::default();
         for c in ["a", "b", "c"] {
             h.handle_peer_sync_event(&key_event(Key::Character(c.into())), none);
         }
-        assert_eq!(
-            chrome.borrow().peer_sync_connect_input.as_deref(),
-            Some("abc")
-        );
+        assert_eq!(h.peer_sync_snapshot().connect_input.as_deref(), Some("abc"));
     }
 
     /// Every face of the card offers its gesture as a button too, for
     /// a user who reaches for the pointer.
     #[test]
     fn each_face_of_the_card_offers_its_own_gesture_as_a_button() {
-        let (mut h, chrome) = host_with_chrome();
+        let (mut h, _) = host_with_chrome();
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
-        chrome.borrow_mut().peer_sync_invite_name = Some("Xaver".to_string());
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            ..PeerSyncSnapshot::default()
+        });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
             names.contains(&"create"),
             "the face that asks who must offer a way to answer, got {names:?}"
         );
-        chrome.borrow_mut().peer_sync_invite_name = None;
-
-        chrome.borrow_mut().peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            invite_token: Some(SAMPLE_TOKEN.to_string()),
+            ..PeerSyncSnapshot::default()
+        });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
             names.contains(&"copy"),
             "the issuing side must offer Copy, got {names:?}"
         );
 
-        chrome.borrow_mut().peer_sync_invite_token = None;
-        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
             names.contains(&"paste"),
@@ -15057,7 +14007,10 @@ mod palette_dispatch_tests {
         // Half a token: what the field holds while typed by hand (a paste
         // arrives whole), exercising `elide_token` — a card that panicked
         // here would take the compositor with it.
-        chrome.borrow_mut().peer_sync_connect_input = Some("e".repeat(400));
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            connect_input: Some("e".repeat(400)),
+            ..PeerSyncSnapshot::default()
+        });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
             names.contains(&"join") && names.contains(&"paste"),
@@ -15223,11 +14176,14 @@ mod palette_dispatch_tests {
     /// lost the way out.
     #[test]
     fn escape_still_dismisses_the_card() {
-        let (mut h, chrome) = host_with_chrome();
-        chrome.borrow_mut().peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+        let (mut h, _) = host_with_chrome();
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            invite_token: Some(SAMPLE_TOKEN.to_string()),
+            ..PeerSyncSnapshot::default()
+        });
         let none = Modifiers::default();
         assert!(h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Escape)), none));
-        assert!(chrome.borrow().peer_sync_invite_token.is_none());
+        assert!(h.peer_sync_snapshot().invite_token.is_none());
     }
 }
 
