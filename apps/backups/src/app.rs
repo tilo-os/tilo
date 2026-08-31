@@ -27,9 +27,11 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget};
+use ui::widget::{
+    Button, ButtonFace, SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
+};
 use ui::{card_column_width, card_columns};
 
 use crate::actions::{self, BACKUPS_ACTION_TYPE};
@@ -3344,48 +3346,32 @@ impl BackupsApp {
         theme: &Theme,
         m: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let by = m.y1 - 56.0;
         let bh = 38.0;
         let confirm = Rect::new(m.x1 - 24.0 - 170.0, by, m.x1 - 24.0, by + bh);
-        let hovered = self.hover == Some(Hit::RestoreConfirm);
-        paint::fill_rrect(
+        Button::paint(
             scene,
             t,
-            confirm,
-            9.0,
-            if hovered {
-                theme.accent_hover
-            } else {
-                theme.accent_primary
-            },
-        );
-        paint::text_center(
-            scene,
             tr,
-            t,
-            "Restore selected",
-            14.0,
-            c.text_primary,
-            confirm.x0,
-            confirm.x1,
-            by + (bh - 14.0) / 2.0,
+            theme,
+            &ButtonFace::new(confirm, "Restore selected")
+                .primary()
+                .radius(9.0)
+                .weight(TextWeight::Regular)
+                .hovered(self.hover == Some(Hit::RestoreConfirm)),
         );
         self.hits.push((confirm, Hit::RestoreConfirm));
 
         let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + bh);
-        paint::fill_rrect(scene, t, cancel, 9.0, c.surfaces.raised);
-        paint::stroke_rrect(scene, t, cancel, 9.0, c.border_white_10, 1.0);
-        paint::text_center(
+        Button::paint(
             scene,
-            tr,
             t,
-            "Cancel",
-            14.0,
-            c.text_dim,
-            cancel.x0,
-            cancel.x1,
-            by + (bh - 14.0) / 2.0,
+            tr,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(9.0)
+                .weight(TextWeight::Regular)
+                .hovered(self.hover == Some(Hit::RestoreCancel)),
         );
         self.hits.push((cancel, Hit::RestoreCancel));
     }
@@ -4212,6 +4198,14 @@ mod tests {
             self.click(c);
         }
 
+        fn key(&mut self, key: &Key) {
+            let mut handled = false;
+            self.app
+                .handle_key(key, &mut self.state.doc, &self.state.root, &mut handled);
+            assert!(handled, "the restore keyboard action was handled");
+            self.draw();
+        }
+
         fn view(&self) -> View {
             BackupsDoc::view(&self.state.doc, &self.state.root)
         }
@@ -4259,6 +4253,51 @@ mod tests {
             f.has_hit(|h| matches!(h, Hit::FileRow(_))),
             "the restore browser lists the snapshot's indexed files"
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these rectangles are assembled from exact integer-valued constants"
+    )]
+    fn restore_footer_buttons_keep_layout_and_dispatch_policy() {
+        let mut f = Frame::demo();
+        f.click_hit(|h| matches!(h, Hit::Restore));
+
+        let confirm = f.rect_of(|h| matches!(h, Hit::RestoreConfirm));
+        let cancel = f.rect_of(|h| matches!(h, Hit::RestoreCancel));
+        assert_eq!(confirm.width(), 170.0);
+        assert_eq!(cancel.width(), 110.0);
+        assert_eq!(confirm.height(), 38.0);
+        assert_eq!(confirm.y0, cancel.y0);
+        assert_eq!(confirm.x0 - cancel.x1, 12.0);
+
+        f.click_hit(|h| matches!(h, Hit::RestoreCancel));
+        assert!(
+            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "Cancel closes without starting a restore"
+        );
+        assert!(f.app.toast.is_none());
+
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        f.click_hit(|h| matches!(h, Hit::RestoreConfirm));
+        assert!(
+            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "Restore selected closes the modal"
+        );
+        assert_eq!(
+            f.app.toast.as_ref().map(|(message, _)| message.as_str()),
+            Some("Restore started in the background")
+        );
+    }
+
+    #[test]
+    fn escape_still_cancels_the_restore_modal() {
+        let mut f = Frame::demo();
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        f.key(&Key::Named(NamedKey::Escape));
+        assert!(!BackupsDoc::restore_open(&f.state.doc, &f.state.root));
+        assert!(!f.has_hit(|hit| matches!(hit, Hit::RestoreConfirm | Hit::RestoreCancel)));
     }
 
     #[test]
