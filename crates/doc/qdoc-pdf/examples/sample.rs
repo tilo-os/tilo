@@ -24,12 +24,18 @@ fn block(kind: &str, text: &str, attrs: &[(&str, AttrVal)]) -> BlockView {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = std::env::args()
         .collect::<Vec<_>>()
         .windows(2)
-        .find(|w| w[0] == "--out")
-        .map_or_else(|| "target/docpdf-sample.pdf".into(), |w| w[1].clone());
+        // `windows(2)` guarantees exactly 2 elements per window, so both
+        // `.first()`/`.get(1)` are always `Some`; `.get()` just spells
+        // that out instead of indexing.
+        .find(|w| w.first().is_some_and(|first| first == "--out"))
+        .map_or_else(
+            || "target/docpdf-sample.pdf".into(),
+            |w| w.get(1).cloned().unwrap_or_default(),
+        );
 
     let mut blocks = vec![
         block(
@@ -90,7 +96,8 @@ fn main() {
         ..Default::default()
     };
 
-    let bytes = qdoc_pdf::render_pdf(&snap).expect("render");
-    std::fs::write(&out, &bytes).expect("write pdf");
+    let bytes = qdoc_pdf::render_pdf(&snap)?;
+    std::fs::write(&out, &bytes)?;
     println!("wrote {} bytes to {out}", bytes.len());
+    Ok(())
 }

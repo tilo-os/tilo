@@ -47,7 +47,15 @@ impl PdfWriter {
     }
 
     pub fn set(&mut self, id: ObjId, body: Vec<u8>) {
-        self.objects[id.0 - 1] = body;
+        // `id.0` is 1-based and every id this crate creates comes from
+        // `reserve` (which always grows `objects` to at least that
+        // length) — but `ObjId`'s field is public, so this degrades to a
+        // no-op on an out-of-range id instead of assuming the invariant.
+        if let Some(idx) = id.0.checked_sub(1)
+            && let Some(slot) = self.objects.get_mut(idx)
+        {
+            *slot = body;
+        }
     }
 
     /// Add a stream object: a dictionary `dict_extra` merged with `/Length`,
@@ -71,13 +79,15 @@ impl PdfWriter {
         let mut offsets = Vec::with_capacity(self.objects.len());
         for (i, body) in self.objects.iter().enumerate() {
             offsets.push(out.len());
-            let _ = writeln!(out, "{} 0 obj", i + 1);
+            // Object numbers are 1-based; bounded by how many objects one
+            // document has, nowhere near `usize::MAX`.
+            let _ = writeln!(out, "{} 0 obj", i.saturating_add(1));
             out.extend_from_slice(body);
             out.extend_from_slice(b"\nendobj\n");
         }
 
         let xref_pos = out.len();
-        let count = self.objects.len() + 1; // +1 for the free object 0
+        let count = self.objects.len().saturating_add(1); // +1 for the free object 0
         let _ = write!(out, "xref\n0 {count}\n");
         out.extend_from_slice(b"0000000000 65535 f \n");
         for off in &offsets {
@@ -105,7 +115,9 @@ pub fn flate(data: &[u8]) -> Vec<u8> {
 /// replaced with `?` so the content stream stays well-formed (see
 /// [`to_winansi`]). Backslash and parentheses are escaped per the spec.
 pub fn escape_pdf_text(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() + 8);
+    // A capacity hint only; bounded by the document text's byte length,
+    // nowhere near `usize::MAX`.
+    let mut out = Vec::with_capacity(s.len().saturating_add(8));
     for b in to_winansi(s) {
         match b {
             b'\\' => out.extend_from_slice(b"\\\\"),
@@ -143,7 +155,13 @@ pub fn to_winansi(s: &str) -> Vec<u8> {
                 // 0x80..=0x9F in CP-1252 are mostly undefined / handled above;
                 // pass through Latin-1 range only.
                 if (0x20..=0x7E).contains(&cp) || (0xA0..=0xFF).contains(&cp) {
-                    cp as u8
+                    // Both arms above bound `cp` to `0xFF` or less, so this always fits `u8`.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "cp is bounded to 0x20..=0x7E or 0xA0..=0xFF just above, so it always fits u8"
+                    )]
+                    let byte = cp as u8;
+                    byte
                 } else if cp == 0x09 {
                     b' ' // tab → space
                 } else {

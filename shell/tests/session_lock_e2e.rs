@@ -129,7 +129,9 @@ fn is_locked(stream: &mut UnixStream) -> bool {
 }
 
 fn poll_until_locked(stream: &mut UnixStream, want: bool, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     loop {
         if is_locked(stream) == want {
             return true;
