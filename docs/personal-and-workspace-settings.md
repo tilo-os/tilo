@@ -45,6 +45,22 @@ The personal Settings pane therefore contains one ordinary chooser per file
 type. Workspace Settings contains two explicitly labelled columns:
 “Workspace choice” and “Your choice”. It does not repeat the personal picker.
 
+## Collaboration and authority
+
+Workspace Settings never constructs a shareable URL from a stable workspace
+identifier. Its General pane opens the signed invite composer, where the owner
+chooses a recipient role and receives a one-hour token binding the room,
+inviter address, role, expiry, and device identity. A guest copy shows this
+control disabled because a locally generated token would not be authoritative.
+
+The same rule applies to every collaborative setting: the local tree must be
+the room's pinned governance authority and the acting person must hold live
+administration authority. Member role controls offer Viewer, Commenter, and
+Editor only. They cannot create or transfer structural ownership, edit the
+acting administrator's own membership, or remove the owner. A role change or
+removal proves authority once and applies atomically, so revoking one of a
+delegated administrator's capabilities cannot strand a half-applied edit.
+
 ## Storage
 
 The first storage overview uses existing runtime boundaries rather than trying
