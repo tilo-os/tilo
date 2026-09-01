@@ -469,6 +469,7 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
                 | Role::Switch
                 | Role::Tab
                 | Role::MenuItem
+                | Role::ListItem
                 | Role::Link
         )
     {
