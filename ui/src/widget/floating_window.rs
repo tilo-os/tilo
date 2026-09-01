@@ -11,10 +11,11 @@
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -29,6 +30,11 @@ pub const TITLE_BAR_HEIGHT: f64 = 38.0;
 pub const RESIZE_GRIP: f64 = 8.0;
 pub const MIN_WIDTH: f64 = 280.0;
 pub const MIN_HEIGHT: f64 = 200.0;
+const OPEN_MOTION: Duration = Duration::from_millis(210);
+const SOURCE_HANDOFF_MOTION: Duration = Duration::from_millis(360);
+const SQUISH_SETTLE: Duration = Duration::from_millis(150);
+const OVERLAY_CHROME_HOLD: Duration = Duration::from_millis(1_050);
+const OVERLAY_CHROME_FADE: Duration = Duration::from_millis(160);
 
 /// No top edge / top corner — the title bar owns the top of the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +77,41 @@ pub struct FloatingWindow<C: Widget> {
     content_node: Option<NodeId>,
     /// Used on first placement, before any user resize.
     initial_size: (f64, f64),
+    /// Motion is deliberately paint-only: hit testing stays stable while the
+    /// soft shell surface catches up with a quick drag.
+    opened_at: Option<Instant>,
+    /// Optional source pixels this window visually emerges from. Geometry and
+    /// hit testing stay at `rect`; this is presentation-only continuity for
+    /// screenshot/PiP selection handoffs.
+    spawn_from: Option<Rect>,
+    /// Deterministic visual-harness override. Production leaves this `None`
+    /// and follows `opened_at`; a pinned PNG must not drift merely because a
+    /// software render took longer than the complete handoff animation.
+    source_handoff_progress_override: Option<f64>,
+    squish: f64,
+    squish_axis: Vec2,
+    last_motion_at: Option<Instant>,
+    /// Dialogs are modal; desktop PiP/live-activity surfaces are not.
+    modal: bool,
+    /// Shell-owned mirrors opt into a close affordance. App-owned surfaces
+    /// can keep supplying their own controls.
+    closable: bool,
+    /// PiP payloads keep their pixels edge-to-edge and place small controls
+    /// over the image. Dialog-like floats reserve a conventional title row.
+    overlay_chrome: bool,
+    /// Media and capture PiP preserve their source shape through every resize
+    /// instead of trading useful pixels for letterboxing after the first drag.
+    aspect_ratio: Option<f64>,
+    /// Overlay controls are present for discovery on landing, then yield the
+    /// pixels until pointer proximity asks for them again.
+    overlay_chrome_hovered: bool,
+    overlay_chrome_changed_at: Option<Instant>,
+    overlay_chrome_from_alpha: f64,
+    /// The theme from the latest layout build. Floating content is laid out
+    /// outside the host's taffy tree, so it must retain the same theme instead
+    /// of silently measuring with dark-mode metrics during light/high-contrast
+    /// rendering or while a drag triggers a local relayout.
+    layout_theme: Theme,
 }
 
 impl<C: Widget> FloatingWindow<C> {
@@ -88,30 +129,62 @@ impl<C: Widget> FloatingWindow<C> {
             content_taffy: None,
             content_node: None,
             initial_size: (560.0, 460.0),
+            opened_at: None,
+            spawn_from: None,
+            source_handoff_progress_override: None,
+            squish: 0.0,
+            squish_axis: Vec2::ZERO,
+            last_motion_at: None,
+            modal: true,
+            closable: false,
+            overlay_chrome: false,
+            aspect_ratio: None,
+            overlay_chrome_hovered: false,
+            overlay_chrome_changed_at: None,
+            overlay_chrome_from_alpha: 1.0,
+            layout_theme: Theme::dark(),
         }
     }
 
     /// Closing clears the placement so the next open re-centres.
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
+        if open && !self.open {
+            self.opened_at = Some(Instant::now());
+            self.reset_overlay_chrome_presence();
+        }
         self.open = open;
         if !open {
             self.placed = false;
+            self.source_handoff_progress_override = None;
         }
         self
     }
 
     /// Non-builder form of [`Self::open`].
     pub fn set_open(&mut self, open: bool) {
+        if open && !self.open {
+            self.opened_at = Some(Instant::now());
+            self.reset_overlay_chrome_presence();
+        }
         self.open = open;
         if !open {
             self.placed = false;
+            self.source_handoff_progress_override = None;
         }
     }
 
     #[must_use]
     pub fn with_initial_size(mut self, w: f64, h: f64) -> Self {
         self.initial_size = (w, h);
+        self
+    }
+
+    /// Make the first presentation frame occupy the selected source rect,
+    /// then morph into the final floating-window geometry.
+    #[must_use]
+    pub fn spawn_from(mut self, source: Option<Rect>) -> Self {
+        self.spawn_from = source.filter(|rect| rect.width() > 1.0 && rect.height() > 1.0);
         self
     }
 
@@ -123,6 +196,17 @@ impl<C: Widget> FloatingWindow<C> {
         self.rect
     }
 
+    /// Pin the selection-to-surface handoff at a deterministic point for
+    /// visual inspection. Production presentation remains elapsed-time based;
+    /// the shell shot harness uses this immediately before painting because a
+    /// software-rendered PNG can take longer than the complete animation.
+    pub fn set_source_handoff_progress(&mut self, permille: u16) {
+        if self.spawn_from.is_none() {
+            return;
+        }
+        self.source_handoff_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+    }
+
     /// Host can suppress hover-driven work while dragging.
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
@@ -130,6 +214,123 @@ impl<C: Widget> FloatingWindow<C> {
 
     pub fn content_mut(&mut self) -> &mut C {
         &mut self.content
+    }
+
+    pub fn set_content(&mut self, content: C) {
+        self.content = content;
+        self.content_taffy = None;
+        self.content_node = None;
+    }
+
+    #[must_use]
+    pub fn modal(mut self, modal: bool) -> Self {
+        self.modal = modal;
+        self
+    }
+
+    #[must_use]
+    pub fn closable(mut self, closable: bool) -> Self {
+        self.closable = closable;
+        self
+    }
+
+    /// Draw the drag/title/close controls as small translucent affordances
+    /// over edge-to-edge content. Intended for media and captured-region PiP,
+    /// where permanently sacrificing a title row makes the payload needlessly
+    /// small. The complete top strip remains a generous drag target.
+    #[must_use]
+    pub fn overlay_chrome(mut self, overlay: bool) -> Self {
+        self.overlay_chrome = overlay;
+        self
+    }
+
+    /// Lock interactive resizing to a finite positive content aspect ratio.
+    /// This is opt-in so ordinary floating dialogs remain freely resizable.
+    #[must_use]
+    pub fn with_aspect_ratio(mut self, aspect_ratio: f64) -> Self {
+        self.aspect_ratio = aspect_ratio
+            .is_finite()
+            .then_some(aspect_ratio)
+            .filter(|v| *v > 0.0);
+        self
+    }
+
+    fn reset_overlay_chrome_presence(&mut self) {
+        self.overlay_chrome_hovered = false;
+        self.overlay_chrome_changed_at = None;
+        self.overlay_chrome_from_alpha = 1.0;
+    }
+
+    fn overlay_chrome_alpha_at(&self, now: Instant, reduce_motion: bool) -> f64 {
+        if !self.overlay_chrome {
+            return 1.0;
+        }
+        let opened_at = self.opened_at.unwrap_or(now);
+        let open_elapsed = now.saturating_duration_since(opened_at);
+        if let Some(changed_at) = self.overlay_chrome_changed_at {
+            let target = if self.overlay_chrome_hovered {
+                1.0
+            } else {
+                0.0
+            };
+            if reduce_motion {
+                return target;
+            }
+            let t = (now.saturating_duration_since(changed_at).as_secs_f64()
+                / OVERLAY_CHROME_FADE.as_secs_f64())
+            .clamp(0.0, 1.0);
+            let eased = t * t * (3.0 - 2.0 * t);
+            return self.overlay_chrome_from_alpha
+                + (target - self.overlay_chrome_from_alpha) * eased;
+        }
+        if self.overlay_chrome_hovered || open_elapsed <= OVERLAY_CHROME_HOLD {
+            return 1.0;
+        }
+        if reduce_motion {
+            return 0.0;
+        }
+        let t = (open_elapsed
+            .saturating_sub(OVERLAY_CHROME_HOLD)
+            .as_secs_f64()
+            / OVERLAY_CHROME_FADE.as_secs_f64())
+        .clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    }
+
+    fn set_overlay_chrome_hovered(&mut self, hovered: bool, now: Instant) {
+        if !self.overlay_chrome || hovered == self.overlay_chrome_hovered {
+            return;
+        }
+        let current = self.overlay_chrome_alpha_at(now, false);
+        self.overlay_chrome_hovered = hovered;
+        let still_in_discovery_hold = !hovered
+            && self
+                .opened_at
+                .is_some_and(|opened| now.saturating_duration_since(opened) < OVERLAY_CHROME_HOLD);
+        if still_in_discovery_hold {
+            self.overlay_chrome_changed_at = None;
+            self.overlay_chrome_from_alpha = 1.0;
+        } else {
+            self.overlay_chrome_changed_at = Some(now);
+            self.overlay_chrome_from_alpha = current;
+        }
+    }
+
+    /// Update proximity without forwarding an event into the PiP payload.
+    /// The shell calls this for every mirror, including the one the pointer
+    /// just left, so hidden chrome can genuinely fade instead of sticking.
+    pub fn update_pointer_position(&mut self, point: Point) {
+        self.last_cursor = point;
+        self.update_pointer_presence(point);
+    }
+
+    /// Presence-only variant used while a drag owns the pointer. It must not
+    /// replace the previous motion sample before squish velocity is measured.
+    pub fn update_pointer_presence(&mut self, point: Point) {
+        self.set_overlay_chrome_hovered(
+            self.rect.contains(point) || self.drag.is_some(),
+            Instant::now(),
+        );
     }
 
     /// Centres on first placement, then clamps on every call so a window
@@ -152,7 +353,26 @@ impl<C: Widget> FloatingWindow<C> {
         self.clamp_into_bounds();
     }
 
+    /// Place a newly opened non-modal surface at a shell-chosen origin rather
+    /// than always centering it. Subsequent layout calls preserve the result.
+    pub fn place_at_within(&mut self, bounds: Rect, origin: Point) {
+        self.bounds = bounds;
+        let (mut w, mut h) = self.initial_size;
+        w = w
+            .min(bounds.width() - 32.0)
+            .max(MIN_WIDTH.min(bounds.width()));
+        h = h
+            .min(bounds.height() - 32.0)
+            .max(MIN_HEIGHT.min(bounds.height()));
+        self.rect = Rect::from_origin_size(origin, vello::kurbo::Size::new(w, h));
+        self.placed = true;
+        self.clamp_into_bounds();
+    }
+
     fn content_area(&self) -> Rect {
+        if self.overlay_chrome {
+            return self.rect;
+        }
         Rect::new(
             self.rect.x0,
             self.rect.y0 + TITLE_BAR_HEIGHT,
@@ -167,8 +387,17 @@ impl<C: Widget> FloatingWindow<C> {
             return;
         }
         let r = self.rect;
-        let w = r.width().min(b.width()).max(MIN_WIDTH.min(b.width()));
-        let h = r.height().min(b.height()).max(MIN_HEIGHT.min(b.height()));
+        let (w, h) = if let Some(aspect) = self.aspect_ratio {
+            let max_w = b.width().min(b.height() * aspect);
+            let min_w = MIN_WIDTH.max(MIN_HEIGHT * aspect).min(max_w);
+            let w = r.width().clamp(min_w, max_w);
+            (w, w / aspect)
+        } else {
+            (
+                r.width().min(b.width()).max(MIN_WIDTH.min(b.width())),
+                r.height().min(b.height()).max(MIN_HEIGHT.min(b.height())),
+            )
+        };
         let mut x0 = r.x0.clamp(b.x0, (b.x1 - w).max(b.x0));
         let mut y0 = r.y0.clamp(b.y0, (b.y1 - h).max(b.y0));
         // Always keep ≥80px of the title bar horizontally reachable.
@@ -201,7 +430,27 @@ impl<C: Widget> FloatingWindow<C> {
         )
     }
 
+    fn close_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x1 - 34.0,
+            self.rect.y0 + 5.0,
+            self.rect.x1 - 6.0,
+            self.rect.y0 + 33.0,
+        )
+    }
+
     fn apply_drag(&mut self, drag: Drag, pt: Point) {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo point subtraction is bounded screen-space geometry"
+        )]
+        let delta = pt - self.last_cursor;
+        let speed = delta.hypot();
+        if speed > 0.25 {
+            self.squish = (speed / 34.0).clamp(0.0, 1.0);
+            self.squish_axis = delta;
+            self.last_motion_at = Some(Instant::now());
+        }
         match drag {
             Drag::Move { grab } => {
                 let w = self.rect.width();
@@ -228,10 +477,96 @@ impl<C: Widget> FloatingWindow<C> {
                         r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT);
                     }
                 }
+                if let Some(aspect) = self.aspect_ratio {
+                    let width_driven = matches!(edge, Edge::Right | Edge::Left)
+                        || (matches!(edge, Edge::BottomRight | Edge::BottomLeft)
+                            && dx.abs() >= (dy * aspect).abs());
+                    let min_w = MIN_WIDTH.max(MIN_HEIGHT * aspect);
+                    let width = if width_driven {
+                        r.width().max(min_w)
+                    } else {
+                        (r.height().max(MIN_HEIGHT) * aspect).max(min_w)
+                    };
+                    let height = width / aspect;
+                    if matches!(edge, Edge::Left | Edge::BottomLeft) {
+                        r.x0 = start.x1 - width;
+                        r.x1 = start.x1;
+                    } else {
+                        r.x0 = start.x0;
+                        r.x1 = start.x0 + width;
+                    }
+                    r.y0 = start.y0;
+                    r.y1 = start.y0 + height;
+                }
                 self.rect = r;
                 self.clamp_into_bounds();
             }
         }
+    }
+
+    /// Presentation transform plus eased source-handoff progress. The latter
+    /// lets content emerge from selected pixels before desktop chrome fades
+    /// in, avoiding a giant transient title/close affordance.
+    fn visual_transform(&mut self, transform: Affine, reduce_motion: bool) -> (Affine, f64) {
+        if reduce_motion {
+            self.squish = 0.0;
+            return (transform, 1.0);
+        }
+        let now = Instant::now();
+        let open_t = self.opened_at.map_or(1.0, |at| {
+            (now.saturating_duration_since(at).as_secs_f64() / OPEN_MOTION.as_secs_f64())
+                .clamp(0.0, 1.0)
+        });
+        if let Some(source) = self.spawn_from {
+            let handoff_t = self.source_handoff_progress_override.unwrap_or_else(|| {
+                self.opened_at.map_or(1.0, |at| {
+                    (now.saturating_duration_since(at).as_secs_f64()
+                        / SOURCE_HANDOFF_MOTION.as_secs_f64())
+                    .clamp(0.0, 1.0)
+                })
+            });
+            if handoff_t < 1.0 {
+                let p = handoff_t * handoff_t * (3.0 - 2.0 * handoff_t);
+                let current = lerp_rect(source, self.rect, p);
+                let sx = current.width() / self.rect.width().max(1.0);
+                let sy = current.height() / self.rect.height().max(1.0);
+                return (
+                    transform
+                        .pre_translate(current.center().to_vec2())
+                        .pre_scale_non_uniform(sx, sy)
+                        .pre_translate((-self.rect.center().x, -self.rect.center().y).into()),
+                    p,
+                );
+            }
+        }
+        // Ease-out-back, limited to a very small overshoot: a soft landing,
+        // not a bouncing dialog.
+        let u = open_t - 1.0;
+        let eased = 1.0 + 1.7 * u * u * u + 0.7 * u * u;
+        if let Some(last) = self.last_motion_at {
+            let settle =
+                now.saturating_duration_since(last).as_secs_f64() / SQUISH_SETTLE.as_secs_f64();
+            self.squish *= (1.0 - settle.clamp(0.0, 1.0)).powi(2);
+            if settle >= 1.0 {
+                self.squish = 0.0;
+                self.last_motion_at = None;
+            }
+        }
+        let horizontal = self.squish_axis.x.abs() >= self.squish_axis.y.abs();
+        let (sx, sy) = if horizontal {
+            (1.0 + self.squish * 0.018, 1.0 - self.squish * 0.010)
+        } else {
+            (1.0 - self.squish * 0.008, 1.0 + self.squish * 0.016)
+        };
+        let scale = 0.94 + 0.06 * eased;
+        let c = self.rect.center();
+        (
+            transform
+                .pre_translate((c.x, c.y + 10.0 * (1.0 - open_t)).into())
+                .pre_scale_non_uniform(scale * sx, scale * sy)
+                .pre_translate((-c.x, -c.y).into()),
+            1.0,
+        )
     }
 
     /// Isolated taffy tree, retained so events can route in. Mirrors
@@ -306,9 +641,10 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         // Occupies the whole viewport so it can clamp + paint anywhere.
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -336,7 +672,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         let bounds = self.bounds;
         self.layout_within(bounds);
         let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
+        let theme = self.layout_theme.clone();
         self.place_content(&theme, &mut tr);
     }
 
@@ -351,88 +687,233 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if !self.open {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.lg);
+        let pinned_handoff = self.source_handoff_progress_override.is_some();
+        let release_finished_handoff = self.source_handoff_progress_override == Some(1.0);
+        let (visual, spawn_progress) = self.visual_transform(transform, theme.reduce_motion);
+        // The selected pixels already have visual weight. Let the floating
+        // shadow grow as they leave the desktop instead of casting a huge
+        // final-window shadow on the first handoff frame.
+        let material_alpha = handoff_material_alpha(spawn_progress);
+        if material_alpha > 0.001 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                material_alpha as f32,
+                visual,
+                &self.rect.inflate(48.0, 48.0),
+            );
+            crate::surface::shadow(scene, visual, self.rect, 22.0, &theme.tokens.elevation.e4);
+            scene.pop_layer();
+        }
 
-        let shadow = Rect::new(
-            self.rect.x0 + 2.0,
-            self.rect.y0 + 4.0,
-            self.rect.x1 + 2.0,
-            self.rect.y1 + 6.0,
-        );
+        let body = crate::surface::soft_outline(self.rect);
         scene.fill(
             Fill::NonZero,
-            transform,
-            Color::from_rgba8(0, 0, 0, 90),
-            None,
-            &RoundedRect::from_rect(shadow, radius),
-        );
-
-        let body = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
+            visual,
+            theme
+                .tokens
+                .colors
+                .surfaces
+                .raised
+                .with_alpha_factor(material_alpha as f32),
             None,
             &body,
         );
         scene.stroke(
             &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
+            visual,
+            theme
+                .tokens
+                .colors
+                .border_standard
+                .with_alpha_factor(material_alpha as f32),
             None,
             &body,
         );
 
-        let title_band = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + TITLE_BAR_HEIGHT,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base.with_alpha_factor(0.6),
-            None,
-            &title_band,
-        );
-        let title_size = theme.tokens.typography.scale.base;
-        let tx = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
-        let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
-        text_renderer.draw_text(
-            scene,
-            &self.title,
-            title_size,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(tx, ty)),
-            None,
-        );
-
         let inner = self.content_area();
+        // During a selection → PiP handoff, the payload initially occupies
+        // the complete source-shaped surface. It yields the title band only
+        // as the object approaches its final placement.
+        let expanded_content = lerp_rect(self.rect, inner, spawn_progress);
+        let side_inset = 2.0 * spawn_progress;
+        let content_clip = Rect::new(
+            expanded_content.x0 + side_inset,
+            expanded_content.y0,
+            expanded_content.x1 - side_inset,
+            expanded_content.y1 - side_inset,
+        );
+        let content_visual = visual * map_rect(inner, expanded_content);
+        // The inner surface used to be clipped only to a rectangle. At the
+        // organic frame's inward-curving sides that let app pixels protrude
+        // beyond the decoration. Intersect the content box with the exact
+        // outer silhouette so chrome and payload can never disagree.
+        let clip_to_body = spawn_progress > 0.001;
+        if clip_to_body {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                visual,
+                &body,
+            );
+        }
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            transform,
-            &inner,
+            visual,
+            &content_clip,
         );
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw(scene, content_visual, text_renderer, theme, presence);
         scene.pop_layer();
+        if clip_to_body {
+            scene.pop_layer();
+        }
 
-        let g = Rect::new(
-            self.rect.x1 - 14.0,
-            self.rect.y1 - 14.0,
-            self.rect.x1 - 4.0,
-            self.rect.y1 - 4.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(g, 1.0),
-        );
+        // Chrome enters only in the landing half of the motion. The person
+        // first sees their selected pixels becoming one object; title,
+        // close, grip and resize affordance appear once they are useful.
+        let chrome_raw = ((spawn_progress - 0.42) / 0.58).clamp(0.0, 1.0);
+        let landing_alpha = chrome_raw * chrome_raw * (3.0 - 2.0 * chrome_raw);
+        let presence_alpha = if pinned_handoff {
+            // Deterministic handoff frames must show the same discoverable
+            // landing chrome regardless of slow software readback time.
+            1.0
+        } else {
+            self.overlay_chrome_alpha_at(Instant::now(), theme.reduce_motion)
+        };
+        let chrome_alpha = landing_alpha * presence_alpha;
+        if chrome_alpha > 0.001 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                chrome_alpha as f32,
+                visual,
+                &body,
+            );
+            if self.overlay_chrome {
+                // Capture PiP is primarily the selected pixels, not a tiny
+                // utility window. Keep the controls compact and legible over
+                // arbitrary light/dark imagery without reserving any layout.
+                let title_size = theme.tokens.typography.scale.sm;
+                let glyph_width = f64::from(title_size) * 0.56;
+                let estimated_title_width = (self
+                    .title
+                    .chars()
+                    .fold(20.0, |width, _| width + glyph_width))
+                .clamp(72.0, (self.rect.width() - 86.0).max(72.0));
+                let title_chip = Rect::new(
+                    self.rect.x0 + 8.0,
+                    self.rect.y0 + 7.0,
+                    self.rect.x0 + 8.0 + estimated_title_width,
+                    self.rect.y0 + 31.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    visual,
+                    theme.tokens.colors.surfaces.base.with_alpha_factor(
+                        if title_chip.contains(self.last_cursor) {
+                            0.94
+                        } else {
+                            0.86
+                        },
+                    ),
+                    None,
+                    &RoundedRect::from_rect(title_chip, 12.0),
+                );
+                let close_chip = Rect::new(
+                    self.rect.x1 - 34.0,
+                    self.rect.y0 + 7.0,
+                    self.rect.x1 - 8.0,
+                    self.rect.y0 + 33.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    visual,
+                    if close_chip.contains(self.last_cursor) {
+                        theme.tokens.colors.semantic.danger.with_alpha_factor(0.28)
+                    } else {
+                        theme.tokens.colors.surfaces.base.with_alpha_factor(0.86)
+                    },
+                    None,
+                    &RoundedRect::from_rect(close_chip, 13.0),
+                );
+            } else {
+                let title_band = Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1,
+                    self.rect.y0 + TITLE_BAR_HEIGHT,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    visual,
+                    theme.tokens.colors.surfaces.base.with_alpha_factor(0.55),
+                    None,
+                    &title_band,
+                );
+            }
+            crate::surface::floating_drag_grip(
+                scene,
+                visual,
+                self.rect,
+                theme.tokens.colors.text_dim,
+            );
+            let title_size = if self.overlay_chrome {
+                theme.tokens.typography.scale.sm
+            } else {
+                theme.tokens.typography.scale.base
+            };
+            let tx = self.rect.x0
+                + if self.overlay_chrome {
+                    18.0
+                } else {
+                    f64::from(theme.tokens.spacing.s4)
+                };
+            let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                &self.title,
+                title_size,
+                theme.tokens.colors.text_primary,
+                visual.pre_translate(Vec2::new(tx, ty)),
+                None,
+            );
+            if self.closable {
+                crate::icons::draw_icon(
+                    scene,
+                    visual,
+                    self.close_rect().inset(-6.0),
+                    crate::icons::Icon::X,
+                    if self.close_rect().contains(self.last_cursor) {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.tokens.colors.text_dim
+                    },
+                    1.5,
+                );
+            }
+            for offset in [0.0, 5.0, 10.0] {
+                scene.fill(
+                    Fill::NonZero,
+                    visual,
+                    theme.tokens.colors.text_dim.with_alpha_factor(0.52),
+                    None,
+                    &Circle::new(
+                        (self.rect.x1 - 6.0 - offset, self.rect.y1 - 6.0 - offset),
+                        1.4,
+                    ),
+                );
+            }
+            scene.pop_layer();
+        }
+        // A pinned 100% frame is exact for the visual harness, then yields to
+        // normal hover/idle behavior on the following frame.
+        if release_finished_handoff {
+            self.source_handoff_progress_override = None;
+        }
     }
 
     fn handle_event(
@@ -453,13 +934,16 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = pt;
                 if let Some(drag) = self.drag {
+                    self.update_pointer_presence(pt);
                     self.apply_drag(drag, pt);
-                    self.place_content(&Theme::dark(), &mut TextRenderer::new());
+                    self.last_cursor = pt;
+                    let theme = self.layout_theme.clone();
+                    self.place_content(&theme, &mut TextRenderer::new());
                     *handled = true;
                     return;
                 }
+                self.update_pointer_position(pt);
                 // A move outside must not reach the content (the modal
                 // boundary), but this arms embedded fields' hover flag.
                 if self.content_area().contains(pt) {
@@ -491,6 +975,15 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     *handled = true;
                     return;
                 }
+                if self.closable
+                    && self.close_rect().contains(pt)
+                    && (!self.overlay_chrome
+                        || self.overlay_chrome_alpha_at(Instant::now(), false) > 0.2)
+                {
+                    self.set_open(false);
+                    *handled = true;
+                    return;
+                }
                 if self.title_bar_rect().contains(pt) {
                     self.drag = Some(Drag::Move {
                         grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
@@ -499,9 +992,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     return;
                 }
                 if !self.rect.contains(pt) {
-                    // Outside the window and not on a resize grip: swallow
-                    // (modal) but don't close.
-                    *handled = true;
+                    // A desktop PiP is click-through outside its own shape;
+                    // dialogs retain the historical modal swallow.
+                    *handled = self.modal;
                     return;
                 }
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
@@ -513,6 +1006,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             } => {
                 if self.drag.is_some() {
                     self.drag = None;
+                    self.update_pointer_position(self.last_cursor);
                 }
                 *handled = true;
             }
@@ -549,7 +1043,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        if self.open { Some(self.rect) } else { None }
+        if self.open && self.modal {
+            Some(self.rect)
+        } else {
+            None
+        }
     }
 
     /// Without this the frame silently accepts a drag with no hover
@@ -586,12 +1084,182 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        if !self.open || !self.overlay_chrome {
+            return Vec::new();
+        }
+        vec![
+            ("floating.chrome".into(), self.title_bar_rect()),
+            ("floating.close".into(), self.close_rect()),
+            (
+                "floating.resize".into(),
+                Rect::new(
+                    self.rect.x1 - 24.0,
+                    self.rect.y1 - 24.0,
+                    self.rect.x1,
+                    self.rect.y1,
+                ),
+            ),
+        ]
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        let open_duration = if self.spawn_from.is_some() {
+            SOURCE_HANDOFF_MOTION
+        } else {
+            OPEN_MOTION
+        };
+        let own_motion = self.opened_at.is_some_and(|at| {
+            self.source_handoff_progress_override.is_none() && at.elapsed() < open_duration
+        }) || self
+            .last_motion_at
+            .is_some_and(|at| at.elapsed() < SQUISH_SETTLE);
+        let chrome_motion = self.overlay_chrome
+            && if let Some(changed_at) = self.overlay_chrome_changed_at {
+                changed_at.elapsed() < OVERLAY_CHROME_FADE
+            } else {
+                !self.overlay_chrome_hovered
+                    && self.opened_at.is_some_and(|opened| {
+                        opened.elapsed() < OVERLAY_CHROME_HOLD + OVERLAY_CHROME_FADE
+                    })
+            };
+        own_motion || chrome_motion || self.content.needs_animation_frame()
+    }
+}
+
+fn lerp_rect(from: Rect, to: Rect, t: f64) -> Rect {
+    Rect::new(
+        from.x0 + (to.x0 - from.x0) * t,
+        from.y0 + (to.y0 - from.y0) * t,
+        from.x1 + (to.x1 - from.x1) * t,
+        from.y1 + (to.y1 - from.y1) * t,
+    )
+}
+
+/// The selected pixels must be the complete first frame of a source handoff.
+/// Material grows in only after the object has visibly left its source, so a
+/// multi-region selection does not flash a union-sized slab or shadow behind
+/// otherwise disjoint areas.
+fn handoff_material_alpha(progress: f64) -> f64 {
+    let t = (progress / 0.58).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Affine that maps one axis-aligned rect onto another. Floating content is
+/// always laid out to a non-degenerate `content_area`, but keep the guard so a
+/// malformed host size degrades to identity rather than producing infinities.
+fn map_rect(from: Rect, to: Rect) -> Affine {
+    if from.width() <= f64::EPSILON || from.height() <= f64::EPSILON {
+        return Affine::IDENTITY;
+    }
+    Affine::translate(to.origin().to_vec2())
+        * Affine::scale_non_uniform(to.width() / from.width(), to.height() / from.height())
+        * Affine::translate(-from.origin().to_vec2())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use vello_encoding::DrawTag;
+
+    #[test]
+    fn source_handoff_interpolates_exact_endpoints() {
+        let source = Rect::new(80.0, 120.0, 680.0, 460.0);
+        let destination = Rect::new(900.0, 540.0, 1320.0, 800.0);
+        assert_eq!(lerp_rect(source, destination, 0.0), source);
+        assert_eq!(lerp_rect(source, destination, 1.0), destination);
+        assert_eq!(
+            lerp_rect(source, destination, 0.5),
+            Rect::new(490.0, 330.0, 1000.0, 630.0)
+        );
+    }
+
+    #[test]
+    fn source_handoff_content_fills_source_before_yielding_to_chrome() {
+        let content = Rect::new(900.0, 578.0, 1320.0, 800.0);
+        let complete_window = Rect::new(900.0, 540.0, 1320.0, 800.0);
+        let map = map_rect(content, complete_window);
+        assert_eq!(map * content.origin(), complete_window.origin());
+        assert_eq!(
+            map * Point::new(content.x1, content.y1),
+            Point::new(complete_window.x1, complete_window.y1)
+        );
+        assert_eq!(map_rect(content, content), Affine::IDENTITY);
+    }
+
+    #[test]
+    fn source_handoff_starts_without_a_union_slab_or_shadow() {
+        assert_eq!(handoff_material_alpha(0.0), 0.0);
+        assert!(handoff_material_alpha(0.2) > 0.0);
+        assert_eq!(handoff_material_alpha(1.0), 1.0);
+    }
+
+    #[test]
+    fn overlay_chrome_preserves_the_complete_pip_payload_area() {
+        let mut window = FloatingWindow::new("2 live areas", Probe::default())
+            .overlay_chrome(true)
+            .open(true);
+        window.rect = Rect::new(900.0, 540.0, 1320.0, 740.0);
+
+        assert_eq!(window.content_area(), window.rect);
+        assert_eq!(window.title_bar_rect().height(), TITLE_BAR_HEIGHT);
+        assert!(
+            window.title_bar_rect().contains(Point::new(1100.0, 550.0)),
+            "edge-to-edge content must retain a generous invisible drag target"
+        );
+    }
+
+    #[test]
+    fn deterministic_handoff_progress_is_ignored_without_a_source() {
+        let mut window = FloatingWindow::new("PiP", Probe::default()).open(true);
+        let opened_at = window.opened_at;
+        window.set_source_handoff_progress(500);
+        assert_eq!(window.opened_at, opened_at);
+        assert_eq!(window.source_handoff_progress_override, None);
+    }
+
+    #[test]
+    fn deterministic_handoff_progress_does_not_drift_with_wall_time() {
+        let source = Rect::new(80.0, 120.0, 680.0, 460.0);
+        let mut window = FloatingWindow::new("PiP", Probe::default())
+            .open(true)
+            .spawn_from(Some(source));
+        window.rect = Rect::new(900.0, 540.0, 1320.0, 800.0);
+        window.set_source_handoff_progress(500);
+
+        // `visual_transform` exposes its eased presentation progress. The
+        // override remains exact no matter how much real time the PNG render
+        // or debugger consumes after this call.
+        let (_, first) = window.visual_transform(Affine::IDENTITY, false);
+        std::thread::sleep(Duration::from_millis(12));
+        let (_, later) = window.visual_transform(Affine::IDENTITY, false);
+        assert!((first - 0.5).abs() < f64::EPSILON);
+        assert_eq!(later, first);
+        assert!(!Widget::needs_animation_frame(&window));
+    }
+
+    #[test]
+    fn shell_can_place_a_spawned_pip_without_recentering_it() {
+        let source = Rect::new(100.0, 100.0, 500.0, 400.0);
+        let mut window = FloatingWindow::new("PiP", Probe::default())
+            .open(true)
+            .with_initial_size(420.0, 260.0)
+            .spawn_from(Some(source));
+        window.place_at_within(
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+            Point::new(1164.0, 624.0),
+        );
+        assert_eq!(
+            window.window_rect(),
+            Rect::new(1164.0, 624.0, 1584.0, 884.0)
+        );
+        assert!(Widget::needs_animation_frame(&window));
+    }
 
     /// A leaf content widget that records forwarded events.
     #[derive(Default)]
@@ -757,6 +1425,8 @@ mod tests {
             (moved.y0 - (start.y0 + 40.0)).abs() < 2.0,
             "moved down by 40: {moved:?}"
         );
+        assert!(w.squish > 0.0, "drag velocity should deform the soft shell");
+        assert!(w.last_motion_at.is_some(), "settle animation is armed");
     }
 
     #[test]
@@ -779,6 +1449,50 @@ mod tests {
             grown.width()
         );
         assert!(grown.height() > start.height() + 40.0, "taller");
+    }
+
+    #[test]
+    fn pip_resize_preserves_its_source_aspect_ratio() {
+        let (mut w, _e) = laid_out(true);
+        w.aspect_ratio = Some(16.0 / 9.0);
+        let start = w.window_rect();
+        let corner = Point::new(start.x1, start.y1);
+        dispatch(&mut w, &cursor_at(corner));
+        dispatch(&mut w, &left_press());
+        dispatch(
+            &mut w,
+            &cursor_at(Point::new(corner.x + 80.0, corner.y + 12.0)),
+        );
+        dispatch(&mut w, &left_release());
+
+        let resized = w.window_rect();
+        assert!((resized.width() / resized.height() - 16.0 / 9.0).abs() < 0.001);
+        assert!(resized.width() > start.width());
+    }
+
+    #[test]
+    fn pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover() {
+        let (mut w, _e) = laid_out(true);
+        w.overlay_chrome = true;
+        let now = Instant::now();
+        w.opened_at = Some(now - OVERLAY_CHROME_HOLD - OVERLAY_CHROME_FADE);
+        assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
+
+        w.update_pointer_position(w.window_rect().center());
+        assert!(w.overlay_chrome_alpha_at(Instant::now(), false) < 0.05);
+        w.overlay_chrome_changed_at = Some(Instant::now() - OVERLAY_CHROME_FADE);
+        assert!(w.overlay_chrome_alpha_at(Instant::now(), false) > 0.99);
+
+        w.update_pointer_position(Point::new(-20.0, -20.0));
+        w.overlay_chrome_changed_at = Some(Instant::now() - OVERLAY_CHROME_FADE / 2);
+        let leaving = w.overlay_chrome_alpha_at(Instant::now(), false);
+        assert!((0.45..=0.55).contains(&leaving));
+        w.update_pointer_position(w.window_rect().center());
+        let interrupted = w.overlay_chrome_alpha_at(Instant::now(), false);
+        assert!(
+            (interrupted - leaving).abs() < 0.05,
+            "re-entering must continue from the current alpha, not jump"
+        );
     }
 
     #[test]
