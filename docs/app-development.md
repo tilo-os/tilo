@@ -742,6 +742,33 @@ path, while process-local fields bind an explicit typed handle. Reusable
 actions go through `ActionHost`, so a button, command palette entry, agent
 action, and undo history can invoke the same operation.
 
+### One driveability surface
+
+Every operation must be reachable through the resource/action catalogue. Use
+`Widget::resources` and `ActionSpec` for domain operations: name the current
+resource, publish document mutations as document actions, and publish I/O or
+presentation work as effect/view operations. The host sends this same live
+catalogue to Ctrl+K search, the `actions_enumerate` / `actions_invoke`
+automation socket, and agents; none of those consumers has an app-specific
+command path.
+
+Ordinary retained controls are projected into that catalogue automatically
+from the semantic tree. Buttons, tabs, links, toggles, tree rows, sliders, and
+editable fields therefore remain driveable while an app is being developed,
+including legacy controls that still activate through hit testing. Give every
+operable control a stable ID and a localized accessible name: the ID is its
+fresh invocation address and the name is what humans and agents search for.
+This projection is a completeness floor, not a substitute for domain actions:
+a domain action has durable resource identity, typed parameters, collaboration
+semantics, and a useful verb such as “Archive conversation” instead of the
+generic “Activate”.
+
+To verify the real external path, enumerate the running app through the test
+control socket, invoke the returned `(provider, id)` with `actions_invoke`, and
+assert the resulting document or effect. A successful invocation is never
+inferred from a stale snapshot: the shell re-resolves the address and checks
+its capability immediately before dispatch.
+
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
 the value. `TextInput::from_state` is a true two-way binding: every input edit
 updates the handle, and a mutation through any clone updates every bound input

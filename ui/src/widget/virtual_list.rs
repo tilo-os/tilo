@@ -1264,7 +1264,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_5,
+                crate::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.base, 13),
                 None,
                 &RoundedRect::from_rect(track, radius),
             );
