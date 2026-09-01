@@ -79,6 +79,7 @@ qos-dev add component profile-card --template form
 qos-dev add component project-tree --template tree
 qos-dev add component activity-list --template list
 qos-dev add component results-table --template table
+qos-dev add component article-body --template text
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -93,10 +94,10 @@ containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
 typed-props display, a typed-state form, a source-agnostic virtualized tree, a
-sparse variable-height list, or a model-backed table. The wizard reviews the
-resolved artifact before entering the same atomic publication path as the
-explicit commands. Scripts and CI should continue to use the fully specified
-subcommands.
+sparse variable-height list, a model-backed table, or advanced text. The wizard
+reviews the resolved artifact before entering the same atomic publication path
+as the explicit commands. Scripts and CI should continue to use the fully
+specified subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -205,6 +206,33 @@ inserts, removals, moves, and remote sorts. Its generated test exposes 100
 million logical rows from constant model storage, keeps the mounted semantic
 window below 40 rows, restores selection, measures a non-default row height,
 and independently activates a retained cell button.
+
+`add component article-body --template text` generates a small reusable
+boundary around the complete text-layout contract. `ArticleBodyProps` keeps
+the Fluent message and `TextStyle` together, with a readable default that
+enables kerning, tracking, line height, and automatic hyphenation. The ordinary
+`article_body` function returns a concrete `Text`, so app code can continue to
+use its normal state, accessibility, inspection, presence, and permission
+APIs.
+
+Two sibling constructors expose the less common paths without making ordinary
+text complicated:
+
+```rust
+let article = article_body_in_region("article", &props, polygon);
+let diagram_label = article_body_with_engine("label", &props, diagram_layout);
+```
+
+The first accepts any validated `TextFlowRegion` and uses the built-in
+`PolygonTextLayout` for concave or convex flow and exact clipping. The second
+accepts any `TextLayoutEngine`, replacing measurement and painting while
+retaining the standard `Text` widget lifecycle. Replace the generated
+`en-US` automatic hyphenation setting with the active content language, or use
+`TextStyle::with_hyphenator` for an application dictionary. The generated
+headless tests verify that both polygon and custom-engine layouts preserve
+static-text accessibility and that the custom engine participates in layout.
+The full style, hyphenation, flow-region, and engine contracts are documented
+under [Text layout and typography](#text-layout-and-typography).
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
