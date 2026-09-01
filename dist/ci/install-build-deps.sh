@@ -9,7 +9,7 @@ debian)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
-        git curl ca-certificates build-essential clang libclang-dev cmake \
+        curl ca-certificates build-essential clang libclang-dev cmake \
         pkg-config capnproto file dpkg-dev \
         libxkbcommon-dev libwayland-dev libseat-dev libinput-dev libudev-dev \
         libdrm-dev libgbm-dev libgl-dev libegl-dev libpipewire-0.3-dev \
@@ -19,7 +19,7 @@ debian)
     ;;
 fedora)
     dnf install -y \
-        git curl gcc gcc-c++ make clang clang-devel cmake perl \
+        curl gcc gcc-c++ make clang clang-devel cmake perl \
         pkgconf-pkg-config capnproto file rpm-build rpmlint \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
@@ -30,7 +30,7 @@ fedora)
     ;;
 arch)
     pacman -Syu --noconfirm \
-        git curl base-devel rustup clang cmake pkgconf capnproto file namcap \
+        curl base-devel rustup clang cmake pkgconf capnproto file namcap \
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa \
         pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3 \
         gstreamer gst-plugins-base-libs

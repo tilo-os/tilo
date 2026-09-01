@@ -8,7 +8,7 @@ url='https://code.podesta.ai/qos/qos'
 license=('AGPL-3.0-only')
 arch=('x86_64' 'aarch64')
 makedepends=(
-  'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto' 'git'
+  'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto'
   'libxkbcommon' 'wayland' 'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
   'pipewire' 'dbus' 'openssl' 'fontconfig' 'freetype2' 'harfbuzz' 'fuse3'
   'gstreamer' 'gst-plugins-base-libs'
