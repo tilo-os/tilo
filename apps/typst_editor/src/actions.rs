@@ -31,9 +31,7 @@
 //! is exported as an effect and local navigation/zoom as view operations.
 
 use automerge::AutoCommit;
-use qos_actions::{
-    ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, RetryPolicy,
-};
+use qos_actions::{ActionContract, ActionSpec, OperationKind, Resource, RetryPolicy};
 use serde::{Deserialize, Serialize};
 
 pub const OPERATION_TYPE: &str = "typst.operation";
@@ -56,13 +54,9 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) 
     let spec = ActionSpec::operation(id, label, kind, OPERATION_TYPE, &value)
         .expect("TypstOperation is always serializable");
     match value {
-        TypstOperation::Compile => spec
-            .execution(ExecutionMode::Background { cancellable: false })
-            .retry_policy(RetryPolicy::Idempotent),
+        TypstOperation::Compile => spec.retry_policy(RetryPolicy::Idempotent),
         TypstOperation::Save | TypstOperation::Open => spec.destructive(),
-        TypstOperation::ExportPdf => spec
-            .destructive()
-            .execution(ExecutionMode::Background { cancellable: false }),
+        TypstOperation::ExportPdf => spec.destructive(),
         TypstOperation::ZoomOut | TypstOperation::ZoomIn => {
             spec.with_contract(ActionContract::view())
         }
