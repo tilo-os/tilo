@@ -1,8 +1,8 @@
-//! Per-launch PipeWire graph for Windows compatibility capsules.
+//! Per-launch `PipeWire` graph for Windows compatibility capsules.
 //!
-//! A capsule must never receive the session PipeWire or Pulse socket: either
+//! A capsule must never receive the session `PipeWire` or Pulse socket: either
 //! one would make every source visible as well as the default sink.  Instead
-//! this module starts a tiny private PipeWire daemon for one launch.  Its only
+//! this module starts a tiny private `PipeWire` daemon for one launch.  Its only
 //! graph objects are Pulse tunnels deliberately created by qOS:
 //!
 //! * an output tunnel is always present, to the session's Pulse server;
@@ -150,10 +150,8 @@ fn prepare_config(config_root: &Path, uid: u32, microphone: bool) -> Result<(), 
     copy_base_config(config_root, "pipewire-pulse.conf")?;
     let pipewire_dropin = config_root.join("pipewire.conf.d/90-qos-windows-proxy.conf");
     let pulse_dropin = config_root.join("pipewire-pulse.conf.d/90-qos-windows-proxy.conf");
-    let pipewire_parent = pipewire_dropin.parent().expect("constant path has parent");
-    let pulse_parent = pulse_dropin.parent().expect("constant path has parent");
-    ensure_private_directory(pipewire_parent)?;
-    ensure_private_directory(pulse_parent)?;
+    ensure_private_directory(&config_root.join("pipewire.conf.d"))?;
+    ensure_private_directory(&config_root.join("pipewire-pulse.conf.d"))?;
 
     let host_pulse = format!("unix:/run/user/{uid}/pulse/native");
     write_private_file(
@@ -163,10 +161,7 @@ fn prepare_config(config_root: &Path, uid: u32, microphone: bool) -> Result<(), 
     // The base PipeWire Pulse configuration supplies the protocol server.  An
     // empty qOS-owned drop-in makes the private configuration directory
     // complete and gives upgrades a stable place for future Pulse policy.
-    write_private_file(
-        &pulse_dropin,
-        &pulse_dropin_contents(),
-    )?;
+    write_private_file(&pulse_dropin, pulse_dropin_contents())?;
     Ok(())
 }
 
@@ -205,6 +200,10 @@ fn pipewire_dropin_contents(host_pulse: &str, microphone: bool) -> String {
          \t}}\n  }}\n}}\n"
     );
     if microphone {
+        #[allow(
+            clippy::format_push_string,
+            reason = "the generated PipeWire fragment is bounded and this keeps it auditable"
+        )]
         contents.push_str(&format!(
             "{{ name = libpipewire-module-pulse-tunnel\n  args = {{\n\
              \ttunnel.mode = source\n\
@@ -254,12 +253,11 @@ fn check_socket_path(path: &Path) -> Result<(), AudioProxyError> {
 }
 
 fn wait_for_socket(path: &Path, child: &mut Child) -> Result<(), AudioProxyError> {
-    let deadline = Instant::now() + START_TIMEOUT;
+    let deadline = Instant::now()
+        .checked_add(START_TIMEOUT)
+        .ok_or_else(|| AudioProxyError::StartTimedOut(path.to_path_buf()))?;
     loop {
-        if fs::symlink_metadata(path)
-            .map(|metadata| metadata.file_type().is_socket())
-            .unwrap_or(false)
-        {
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket()) {
             return Ok(());
         }
         if let Some(status) = child.try_wait().map_err(AudioProxyError::Io)? {
