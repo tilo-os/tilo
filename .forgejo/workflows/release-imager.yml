@@ -1,0 +1,49 @@
+name: Build qOS Imager host downloads
+
+on:
+  push:
+    tags: ["imager-v*"]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: runner
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: apps/imager/packaging/package-host.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qos-imager-linux
+          path: |
+            dist/qos-imager/qos-imager-linux.tar.gz
+            dist/qos-imager/qos-imager-linux.tar.gz.sha256
+
+  windows:
+    runs-on: windows
+    steps:
+      - uses: actions/checkout@v4
+      - shell: powershell
+        run: apps/imager/packaging/package-host.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qos-imager-windows
+          path: |
+            dist/qos-imager/qos-imager-windows.zip
+            dist/qos-imager/qos-imager-windows.zip.sha256
+
+  macos:
+    runs-on: macos
+    steps:
+      - uses: actions/checkout@v4
+      - run: apps/imager/packaging/package-host.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qos-imager-macos
+          path: |
+            dist/qos-imager/qos-imager-macos.zip
+            dist/qos-imager/qos-imager-macos.zip.sha256

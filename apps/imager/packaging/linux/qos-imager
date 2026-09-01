@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+if [ "$(id -u)" -eq 0 ]; then
+  export QOS_IMAGER_ALLOW_WRITE=1
+  exec "$here/qos-imager-bin" "$@"
+fi
+command -v pkexec >/dev/null 2>&1 || {
+  printf 'qOS Imager needs polkit (pkexec) for raw removable-drive access.\n' >&2
+  exit 1
+}
+exec pkexec env \
+  DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" XAUTHORITY="${XAUTHORITY:-}" \
+  QOS_IMAGER_ALLOW_WRITE=1 "$here/qos-imager-bin" "$@"
+
