@@ -866,7 +866,7 @@ impl UpdatesPane {
                         Row::new()
                             .push(Box::new(Button::new(
                                 "settings.updates.restart",
-                                "\u{f0709}  Restart & update",
+                                "Restart & update",
                                 Some(RESTART_KEY),
                             )))
                             .push(Box::new(Spacer::new())),
@@ -950,7 +950,7 @@ impl UpdatesPane {
                     Row::new()
                         .push(Box::new(Button::new(
                             "settings.updates.check",
-                            "\u{f0450}  Check for updates",
+                            "Check for updates",
                             Some(CHECK_KEY),
                         )))
                         .push(Box::new(Spacer::new())),
@@ -1030,7 +1030,7 @@ impl UpdatesPane {
                 Row::new()
                     .push(Box::new(Button::new(
                         "settings.updates.firmware.refresh",
-                        "\u{f0450}  Check firmware",
+                        "Check firmware",
                         Some(FIRMWARE_REFRESH_KEY),
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1162,7 +1162,7 @@ impl UpdatesPane {
                         Row::new()
                             .push(Box::new(Button::new(
                                 "settings.updates.rollback",
-                                &format!("\u{f0450}  {button_label}"),
+                                button_label,
                                 Some(ROLLBACK_KEY),
                             )))
                             .push(Box::new(Spacer::new())),
@@ -1182,7 +1182,7 @@ impl UpdatesPane {
                         Row::new()
                             .push(Box::new(Button::new(
                                 "settings.updates.rollback.confirm",
-                                &format!("\u{f0709}  {confirm_label}"),
+                                confirm_label,
                                 Some(ROLLBACK_CONFIRM_KEY),
                             )))
                             .push(Box::new(Spacer::new())),

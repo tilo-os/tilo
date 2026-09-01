@@ -31,6 +31,8 @@
 //!   buffers, a `List` of line `Map`s each holding a `Text` and packed `attrs`;
 //! - `cursor` — the cursor's `x` / `y`;
 //! - `terminal_links` — OSC 8 hyperlink targets the program emitted;
+//! - `terminal_images` — content hashes and cell placements for terminal
+//!   graphics; immutable bytes ride the shared qdoc blob transport;
 //! - `terminal_title` — the OSC 0/2 window title the program set;
 //! - `terminal_pane_id` — a shared id that scopes collaboration *presence* (whose
 //!   caret is whose), not user data.
@@ -237,6 +239,7 @@ mod tests {
                 "cursor".to_string(),
                 "terminal_grid".to_string(),
                 "terminal_grid_alt".to_string(),
+                "terminal_images".to_string(),
                 "terminal_links".to_string(),
                 "terminal_pane_id".to_string(),
             ],

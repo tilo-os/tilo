@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -16,16 +16,86 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LifecycleAction {
+    Start,
     Restart,
     Suspend,
     Resume,
     Shutdown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EgressPurpose {
     Activation,
     WindowsUpdate,
+}
+
+impl EgressPurpose {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Activation => "Windows activation",
+            Self::WindowsUpdate => "Windows Update",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporaryEgressLease {
+    pub purpose: EgressPurpose,
+    pub expires_at_unix: u64,
+}
+
+impl TemporaryEgressLease {
+    #[must_use]
+    pub fn expiry_label(&self) -> String {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        if self.expires_at_unix <= now {
+            "Expired; refreshing status…".into()
+        } else {
+            let remaining = self.expires_at_unix - now;
+            format!("Expires in {}m {}s", remaining / 60, remaining % 60)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppliancePowerState {
+    Running,
+    Suspended,
+    Paused,
+    ShutDown,
+    #[default]
+    Unknown,
+}
+
+impl AppliancePowerState {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::Suspended => "Suspended",
+            Self::Paused => "Paused",
+            Self::ShutDown => "Shut down",
+            Self::Unknown => "Power state unavailable",
+        }
+    }
+
+    #[must_use]
+    pub const fn allows(self, action: LifecycleAction) -> bool {
+        matches!(
+            (self, action),
+            (
+                Self::Running,
+                LifecycleAction::Restart | LifecycleAction::Suspend | LifecycleAction::Shutdown
+            ) | (Self::Suspended | Self::Paused, LifecycleAction::Resume)
+                | (Self::ShutDown, LifecycleAction::Start)
+        )
+    }
 }
 
 impl EgressPurpose {
@@ -51,6 +121,7 @@ impl EgressPurpose {
 impl LifecycleAction {
     const fn argument(self) -> &'static str {
         match self {
+            Self::Start => "start",
             Self::Restart => "restart",
             Self::Suspend => "suspend",
             Self::Resume => "resume",
@@ -60,6 +131,7 @@ impl LifecycleAction {
 
     const fn complete_notice(self) -> &'static str {
         match self {
+            Self::Start => "Windows is starting.",
             Self::Restart => "Windows is restarting.",
             Self::Suspend => "Windows has been suspended.",
             Self::Resume => "Windows is resuming.",
@@ -101,6 +173,10 @@ pub struct ApplianceStatus {
     pub published_applications: usize,
     pub recovery_available: bool,
     #[serde(default)]
+    pub power_state: AppliancePowerState,
+    #[serde(default)]
+    pub temporary_egress: Option<TemporaryEgressLease>,
+    #[serde(default)]
     pub detail: Option<String>,
 }
 
@@ -115,6 +191,8 @@ impl ApplianceStatus {
             catalog_generation: 0,
             published_applications: 0,
             recovery_available: false,
+            power_state: AppliancePowerState::Unknown,
+            temporary_egress: None,
             detail: Some(detail.into()),
         }
     }
@@ -200,6 +278,7 @@ enum OwnerEvent {
     Recovery(Result<(), String>),
     Lifecycle(LifecycleAction, Result<(), String>),
     Egress(EgressPurpose, Result<(), String>),
+    EgressRevoked(Result<(), String>),
 }
 
 /// One narrow nonblocking owner-command queue. It never exposes a generic
@@ -307,6 +386,13 @@ impl ApplianceOwnerClient {
         if !self.status.is_provisioned() {
             return Err("Set up the Windows appliance before managing its power state.".into());
         }
+        if !self.status.power_state.allows(action) {
+            return Err(format!(
+                "{} is not available while Windows is {}.",
+                action.argument(),
+                self.status.power_state.label().to_ascii_lowercase()
+            ));
+        }
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
@@ -339,6 +425,9 @@ impl ApplianceOwnerClient {
         if !self.status.is_provisioned() {
             return Err("Set up the Windows appliance before connecting it temporarily.".into());
         }
+        if self.status.power_state != AppliancePowerState::Running {
+            return Err("Windows must be running before it can be connected temporarily.".into());
+        }
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
@@ -353,6 +442,36 @@ impl ApplianceOwnerClient {
                 })
                 .and_then(|output| success_output(&output));
             let _ = sender.send(OwnerEvent::Egress(purpose, result));
+        });
+        Ok(())
+    }
+
+    /// Revoke the active temporary egress lease early. The owner helper looks
+    /// it up from authoritative state, so no lease identifier reaches UI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another owner action is pending or no temporary
+    /// connection is active.
+    pub fn revoke_temporary_egress(&mut self) -> Result<(), String> {
+        if self.action_pending {
+            return Err("A Windows appliance action is already in progress.".into());
+        }
+        if self.status.temporary_egress.is_none() {
+            return Err("There is no active temporary Windows connection to revoke.".into());
+        }
+        self.action_pending = true;
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let result = Command::new("pkexec")
+                .arg(OWNER)
+                .arg("egress-revoke")
+                .output()
+                .map_err(|error| {
+                    format!("Could not start the standard authorisation prompt: {error}")
+                })
+                .and_then(|output| success_output(&output));
+            let _ = sender.send(OwnerEvent::EgressRevoked(result));
         });
         Ok(())
     }
@@ -434,7 +553,8 @@ impl ApplianceOwnerClient {
                 OwnerEvent::Imported(Err(error))
                 | OwnerEvent::Recovery(Err(error))
                 | OwnerEvent::Lifecycle(_, Err(error))
-                | OwnerEvent::Egress(_, Err(error)) => {
+                | OwnerEvent::Egress(_, Err(error))
+                | OwnerEvent::EgressRevoked(Err(error)) => {
                     self.action_pending = false;
                     self.action_result = Some(Err(error.clone()));
                     notice = Some(error);
@@ -452,6 +572,10 @@ impl ApplianceOwnerClient {
                         self.action_result = Some(Err(error.clone()));
                         notice = Some(error);
                     }
+                }
+                OwnerEvent::EgressRevoked(Ok(())) => {
+                    self.action_pending = false;
+                    notice = Some("The temporary Windows connection was revoked.".into());
                 }
             }
         }
@@ -522,6 +646,8 @@ mod tests {
         .unwrap();
         assert!(status.is_provisioned());
         assert_eq!(status.phase_label(), "Ready");
+        assert_eq!(status.power_state, AppliancePowerState::Unknown);
+        assert_eq!(status.temporary_egress, None);
         assert_eq!(
             status.next_step_label(),
             "Windows is ready for published applications"
@@ -543,6 +669,8 @@ mod tests {
             catalog_generation: 0,
             published_applications: 0,
             recovery_available: true,
+            power_state: AppliancePowerState::Running,
+            temporary_egress: None,
             detail: None,
         };
         assert_eq!(
@@ -562,6 +690,23 @@ mod tests {
             r#"{"schema_version":1,"configured":false,"phase":"not_provisioned","license":"unknown","catalog_generation":0,"published_applications":0,"recovery_available":false,"command":"cmd.exe"}"#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_temporary_egress_and_power_state_without_exposing_a_lease_id() {
+        let status: ApplianceStatus = serde_json::from_str(
+            r#"{"schema_version":1,"configured":true,"phase":"ready","license":"unlicensed","catalog_generation":4,"published_applications":2,"recovery_available":true,"power_state":"suspended","temporary_egress":{"purpose":"activation","expires_at_unix":4102444800}}"#,
+        )
+        .unwrap();
+        assert_eq!(status.power_state, AppliancePowerState::Suspended);
+        assert!(status.power_state.allows(LifecycleAction::Resume));
+        assert!(!status.power_state.allows(LifecycleAction::Shutdown));
+        assert!(AppliancePowerState::ShutDown.allows(LifecycleAction::Start));
+        assert!(AppliancePowerState::Paused.allows(LifecycleAction::Resume));
+        assert_eq!(
+            status.temporary_egress.as_ref().map(|lease| lease.purpose),
+            Some(EgressPurpose::Activation)
+        );
     }
 
     #[test]

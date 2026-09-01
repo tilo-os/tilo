@@ -32,7 +32,7 @@ use ui::theme::Theme;
 use ui::widget::{TextInput, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
-use crate::call::{CallState, OverlayDrag, SoundEngine};
+use crate::call::{CallState, SoundEngine};
 use crate::doc::ChatDoc;
 use crate::identity::LocalIdentity;
 use crate::media::MediaEngine;
@@ -255,7 +255,13 @@ pub(crate) enum Hit {
     CallMute,
     CallDeafen,
     CallAudioOnly,
-    /// Start/stop sharing this peer's screen (portal `ScreenCast`).
+    /// Internal start/stop seam for a restored or remote-mediated screen
+    /// share. The shipped call chrome does not expose it until production has
+    /// a real PipeWire capture producer.
+    #[allow(
+        dead_code,
+        reason = "kept for defensive stop handling and the tested screen-share transport seam"
+    )]
     CallShareScreen,
     CallExpand,
     CallLeave,
@@ -264,6 +270,108 @@ pub(crate) enum Hit {
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     Dismiss, // click on a scrim closes the top-most popover
+}
+
+/// One sampled motion value owns the call huddle's participant reveal. The
+/// panel silhouette, controls, hit regions, compositor presentation and native
+/// window allocation all read this same value, so a content-driven resize can
+/// never leave those layers a frame apart.
+#[derive(Debug)]
+pub(crate) struct CallChromeMotion {
+    transition: ui::Transition,
+    target_open: bool,
+    initialized: bool,
+    pub(crate) sampled: f32,
+    pub(crate) animating: bool,
+    /// Deterministic visual-review hook; production leaves this `None`.
+    pinned: Option<f32>,
+}
+
+impl Default for CallChromeMotion {
+    fn default() -> Self {
+        Self {
+            transition: ui::Transition::open(),
+            target_open: true,
+            initialized: false,
+            sampled: 1.0,
+            animating: false,
+            pinned: None,
+        }
+    }
+}
+
+impl CallChromeMotion {
+    pub(crate) fn reconcile(&mut self, open: bool, theme: &Theme) {
+        if let Some(value) = self.pinned {
+            self.sampled = value;
+            self.animating = false;
+            return;
+        }
+        if !self.initialized {
+            self.transition = if open {
+                ui::Transition::open()
+            } else {
+                ui::Transition::closed()
+            };
+            self.target_open = open;
+            self.initialized = true;
+        } else if open != self.target_open {
+            let spring = theme.tokens.motion.springs.subtle;
+            self.transition.set_open(
+                open,
+                if theme.reduce_motion {
+                    std::time::Duration::ZERO
+                } else {
+                    theme.tokens.motion.durations.base()
+                },
+                ui::Curve::Spring {
+                    stiffness: spring.stiffness,
+                    damping: spring.damping,
+                    mass: spring.mass,
+                },
+            );
+            self.target_open = open;
+        }
+        let now = std::time::Instant::now();
+        self.sampled = self.transition.value(now);
+        self.animating = self.transition.is_animating(now);
+    }
+
+    pub(crate) fn reset(&mut self) {
+        if self.pinned.is_none() {
+            self.initialized = false;
+            self.animating = false;
+        }
+    }
+
+    pub(crate) fn pin_for_visual_review(&mut self, value: f32) {
+        self.pinned = Some(value.clamp(0.0, 1.0));
+        self.sampled = self.pinned.unwrap_or(0.0);
+        self.animating = false;
+    }
+}
+
+#[cfg(test)]
+mod call_chrome_motion_tests {
+    use super::CallChromeMotion;
+
+    #[test]
+    fn reduced_motion_snaps_the_same_geometry_driver_to_its_target() {
+        let mut motion = CallChromeMotion::default();
+        motion.reconcile(true, &ui::theme::Theme::dark());
+        motion.reconcile(false, &ui::theme::Theme::dark().with_reduce_motion(true));
+        assert_eq!(motion.sampled, 0.0);
+        assert!(!motion.animating);
+    }
+
+    #[test]
+    fn visual_review_can_pin_a_true_mid_morph_geometry() {
+        let mut motion = CallChromeMotion::default();
+        motion.pin_for_visual_review(0.5);
+        motion.reconcile(false, &ui::theme::Theme::dark());
+        assert_eq!(motion.sampled, 0.5);
+        assert!(!motion.animating);
+    }
 }
 
 /// The whole app's mutable state.
@@ -341,7 +449,11 @@ pub struct ChatApp {
 
     // Call state.
     pub(crate) call: CallState,
-    pub(crate) overlay_drag: Option<OverlayDrag>,
+    pub(crate) call_chrome_motion: CallChromeMotion,
+    pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    /// Authoritative combined-output bounds supplied by the shell. Standalone
+    /// app/test hosts leave this empty and fall back to the app rect.
+    pub(crate) floating_surface_bounds: Rect,
 
     // Responsive flaps.
     pub(crate) left_flap: FlapState,
@@ -399,6 +511,10 @@ pub struct ChatApp {
     /// so Tab and assistive focus traverse the same controls a pointer can use.
     pub(crate) keyboard_target: Option<usize>,
     pub(crate) last_mouse: Point,
+    /// The live call control beneath the pointer. Kept as render-only state so
+    /// attached and shell-owned copies share the same hover treatment without
+    /// duplicating a second native-window control implementation.
+    pub(crate) call_hovered: Option<Hit>,
     relayout: bool,
     /// True while either flap is mid-slide — drives `needs_animation_frame`
     /// so the loop keeps ticking only during the transition, then idles.
@@ -541,7 +657,9 @@ impl ChatApp {
             rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
-            overlay_drag: None,
+            call_chrome_motion: CallChromeMotion::default(),
+            pending_floating: None,
+            floating_surface_bounds: Rect::ZERO,
             left_flap: FlapState::open_when_docked(),
             right_flap: FlapState::closed_by_default(),
             left_mode: FlapMode::Docked,
@@ -565,6 +683,7 @@ impl ChatApp {
             hits: Vec::new(),
             keyboard_target: None,
             last_mouse: Point::ZERO,
+            call_hovered: None,
             relayout: false,
             flap_animating: false,
             shot_starter: false,
@@ -782,6 +901,19 @@ impl ChatApp {
                 self.call.join("c_huddle");
                 self.call.expanded = true;
             }
+            "floating-call-attached"
+            | "floating-call"
+            | "floating-call-hover"
+            | "floating-call-returning"
+            | "floating-call-returned" => {
+                // The after-layout shot hook stages the production ownership
+                // edge once app-local coordinates are authoritative. All
+                // three frames use the real live huddle renderer.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call.join("c_huddle");
+                self.call.expanded = false;
+            }
             "share" => {
                 // The expanded call while screen-sharing: the featured screen
                 // tile fills the stage above the participant filmstrip, and the
@@ -868,6 +1000,86 @@ impl ChatApp {
                 self.call = CallState::default();
             }
         }
+    }
+
+    /// Headless visual-review hook for the real shell → app call handoff.
+    ///
+    /// This runs after layout so the same `FloatingPlacement` methods used by
+    /// pointer input and the `Suspended` host reply see authoritative app and
+    /// desktop coordinate spaces. The `returning` and `returned` frames land
+    /// on identical geometry on opposite sides of the ownership boundary.
+    #[doc(hidden)]
+    pub fn debug_stage_floating_call_for_shot(&mut self, scenario: &str) {
+        if !scenario.starts_with("floating-call") {
+            return;
+        }
+
+        if scenario == "floating-call-attached" {
+            self.call.placement.pin_handoff_for_visual_review(1_000);
+            return;
+        }
+
+        // A live drag seeds `preferred_size` from the current call tile before
+        // crossing the app edge. Derive this staged desktop rect the same way;
+        // hard-coding a different size would manufacture a return-time resize
+        // that the production pointer path never performs.
+        let detached_size = self.call_video_rect().size();
+        self.call.placement.set_preferred_size(detached_size);
+        let detached = Rect::from_origin_size(Point::new(760.0, 300.0), detached_size);
+        self.call.placement.detach_to_desktop(detached);
+        self.call.placement.set_desktop_transfer_covered(true);
+        self.call.placement.confirm_desktop_adoption();
+
+        if scenario == "floating-call-hover" {
+            self.call_hovered = Some(Hit::CallLeave);
+        }
+
+        if let Some(permille) = scenario
+            .strip_prefix("floating-call-collapse-")
+            .and_then(|value| value.parse::<u16>().ok())
+        {
+            self.call.participants_expanded = false;
+            self.call_chrome_motion
+                .pin_for_visual_review(1.0 - f32::from(permille.min(1_000)) / 1_000.0);
+        }
+
+        if matches!(
+            scenario,
+            "floating-call-returning" | "floating-call-returned"
+        ) {
+            let pointer = Point::new(detached.center().x, detached.y0 - 18.0);
+            self.call
+                .placement
+                .begin_drag(pointer, self.rect, self.desktop_floating_bounds());
+            let _ = self.call.placement.update_drag(
+                Point::new(720.0, 210.0),
+                self.rect,
+                self.desktop_floating_bounds(),
+            );
+        }
+
+        if scenario == "floating-call-returned" {
+            let id = format!("chat-call:{}", self.call.channel);
+            <Self as Widget>::on_floating_surface_host_message(
+                self,
+                &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+            );
+        }
+
+        // Make the screenshots on either side of shell ownership directly
+        // comparable: steady detached state is relaxed; both return frames
+        // show the same restrained midpoint deformation.
+        let handoff_phase = if matches!(
+            scenario,
+            "floating-call-returning" | "floating-call-returned"
+        ) {
+            500
+        } else {
+            1_000
+        };
+        self.call
+            .placement
+            .pin_handoff_for_visual_review(handoff_phase);
     }
 
     /// The live media pump: run once per frame while the engine is live. Pulls
@@ -1117,9 +1329,13 @@ impl ChatApp {
         true
     }
 
-    /// Whether this peer is currently sharing its screen — the shared-truth flag
-    /// the featured tile and the Share/Stop control key off. True only after the
+    /// Whether this peer is currently sharing its screen — the shared-truth
+    /// flag used by the featured tile and transport tests. True only after the
     /// portal granted a source (see [`Self::acquire_screen`]).
+    #[allow(
+        dead_code,
+        reason = "queried by transport tests while the production capture control is hidden"
+    )]
     pub(crate) fn sharing_screen(&self) -> bool {
         self.call.sharing
     }
@@ -1881,7 +2097,17 @@ impl ChatApp {
             // that leaves the rest of the overlay empty.
             self.overlay_host_rect()
         } else {
-            frac_rect(self.rect, HUDDLE_VIDEO) + self.call.overlay_offset
+            self.call
+                .placement
+                .rect(self.rect, self.desktop_floating_bounds())
+        }
+    }
+
+    pub(crate) fn desktop_floating_bounds(&self) -> Rect {
+        if self.floating_surface_bounds.area() > 0.0 {
+            self.floating_surface_bounds
+        } else {
+            self.rect
         }
     }
 
@@ -2171,16 +2397,28 @@ impl Widget for ChatApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        if !self.call.expanded {
+            let lower_chrome = self.huddle_attached_lower_chrome();
+            self.call
+                .placement
+                .set_preferred_size(frac_rect(self.rect, HUDDLE_VIDEO).size());
+            self.call
+                .placement
+                .set_attached_chrome([12.0, 40.0, 12.0, lower_chrome]);
+        }
         if let Some(vn) = self.video_node {
-            // Shift the video by the dragged overlay offset (huddle only; the
-            // expanded grid is anchored). The taffy node holds the fractional
-            // home; the origin adds the drag delta.
+            // The docked tile's taffy node retains its responsive fractional
+            // size, while the shared floating placement owns its actual
+            // origin. Offset the node's origin so its resolved local location
+            // lands exactly on that shared rect.
             let off = if self.call.expanded {
                 Point::new(self.rect.x0, self.rect.y0)
             } else {
+                let desired = self.call_video_rect();
+                let video_layout = taffy.layout(vn).copied().unwrap_or_default();
                 Point::new(
-                    self.rect.x0 + self.call.overlay_offset.x,
-                    self.rect.y0 + self.call.overlay_offset.y,
+                    desired.x0 - f64::from(video_layout.location.x),
+                    desired.y0 - f64::from(video_layout.location.y),
                 )
             };
             self.video.apply_layout(taffy, vn, off);
@@ -2197,6 +2435,7 @@ impl Widget for ChatApp {
     ) {
         // Resolve flap modes + advance their eased reveals for this frame.
         self.reconcile_flaps();
+        self.reconcile_huddle_motion(theme);
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;
@@ -2272,13 +2511,15 @@ impl Widget for ChatApp {
             }
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
-        } else if self.call.active {
-            self.draw_huddle_bg(scene, tf, tr, theme, &mut hits);
-            if host_has_frame {
-                self.video.draw(scene, tf, tr, theme, presence);
-            }
-            self.draw_host_camera_off(scene, tf, tr, theme);
-            self.draw_huddle_fg(scene, tf, tr, theme, &mut hits);
+        } else if self.call.active
+            && ((!self.call.placement.is_return_pending()
+                && matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::App { .. }
+                ))
+                || !self.call.placement.is_desktop_covered())
+        {
+            self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
         }
 
         // Top-most popovers.
@@ -2482,7 +2723,132 @@ impl Widget for ChatApp {
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
     fn needs_animation_frame(&self) -> bool {
-        self.flap_animating || self.overlay_drag.is_some() || !self.images.is_idle()
+        self.flap_animating
+            || self.call_chrome_motion.animating
+            || self.call.placement.is_dragging()
+            || self.call.placement.is_handoff_animating()
+            || !self.images.is_idle()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.call.placement.is_dragging()
+    }
+
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_floating.take()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if !self.call.active
+            || self.call.expanded
+            || (!self.call.placement.is_return_pending()
+                && !matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                ))
+        {
+            return;
+        }
+        let mut hits = Vec::new();
+        self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
+        self.hits.extend(hits);
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
+        let returning_to_app = self.call.placement.is_return_pending();
+        if !self.call.active
+            || self.call.expanded
+            || (!returning_to_app
+                && !matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                ))
+        {
+            return Vec::new();
+        }
+        vec![ui::floating_surface::FloatingSurfacePresentation {
+            id: format!("chat-call:{}", self.call.channel),
+            content_rect: self.call_video_rect(),
+            window_rect: self.huddle_panel().inflate(8.0, 8.0),
+            returning_to_app,
+        }]
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.call
+            .active
+            .then(|| format!("chat-call:{}", self.call.channel))
+            .into_iter()
+            .collect()
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        self.floating_surface_bounds = bounds;
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        let id = format!("chat-call:{}", self.call.channel);
+        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+            id: request_id,
+            content_rect,
+            transfer_covered,
+            coordinate_offset,
+            ..
+        } = message
+            && request_id == &id
+            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
+        {
+            self.call.placement.prepare_desktop_rect_with_offset(
+                rect,
+                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+            );
+            self.call
+                .placement
+                .set_desktop_transfer_covered(*transfer_covered);
+            return;
+        }
+        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+            id: request_id,
+            rect,
+        } = message
+            && request_id == &id
+            && ui::floating_surface::protocol_rect(*rect).is_ok()
+        {
+            self.call.placement.confirm_desktop_adoption();
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
+                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
+                if request_id == &id
+        ) {
+            let app = self.rect;
+            let desktop = self.desktop_floating_bounds();
+            self.call.placement.reattach_to_app(app, desktop);
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
+                if request_id == &id
+        ) {
+            self.call.placement.confirm_app_adoption(self.rect);
+        }
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2491,6 +2857,36 @@ impl Widget for ChatApp {
 }
 
 impl ChatApp {
+    /// The one rendering path for a docked or shell-presented huddle. The
+    /// shell calls this exact method after ownership transfer, so video,
+    /// participants, controls and hit regions remain live without duplication.
+    fn draw_live_huddle(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        // The app copy, transfer proxy and native shell surface all pass
+        // through this one presentation transform. Applying the handoff
+        // flourish in an ownership-specific caller made the first app-owned
+        // frame lose its soft deformation even though its geometry matched.
+        let transform = self.call.placement.presentation_transform(
+            transform,
+            self.huddle_panel(),
+            theme.reduce_motion,
+        );
+        self.draw_huddle_bg(scene, transform, text_renderer, theme, hits);
+        if self.video.latest_frame().is_some() {
+            self.video
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+        self.draw_host_camera_off(scene, transform, text_renderer, theme);
+        self.draw_huddle_fg(scene, transform, text_renderer, theme, hits);
+    }
+
     /// Flag a taffy rebuild (kept for parity; the video rect is now set in
     /// `apply_layout` so most state changes don't need it, but call expand
     /// still requests a clean relayout).

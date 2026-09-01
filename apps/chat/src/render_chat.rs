@@ -595,7 +595,7 @@ impl ChatApp {
                 side.x1 - 12.0,
                 side.y0 + 34.0,
             );
-            fill_round(scene, tf, pill, 9.0, c.surface_white_10);
+            fill_round(scene, tf, pill, 9.0, c.lift(0.72));
             fill_circle(
                 scene,
                 tf,
@@ -630,7 +630,7 @@ impl ChatApp {
             side.x0 + 118.0,
             header.y1 + 28.0,
         );
-        fill_round(scene, tf, add_cat, 7.0, c.surface_white_5);
+        fill_round(scene, tf, add_cat, 7.0, c.lift(0.35));
         label(
             scene,
             tr,
@@ -854,7 +854,7 @@ impl ChatApp {
             if self.call.deafened {
                 c.semantic.danger
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
@@ -887,7 +887,7 @@ impl ChatApp {
             if self.call.muted {
                 c.semantic.danger
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let mglyph = if self.call.muted { "🔇" } else { "🎤" };
@@ -1050,7 +1050,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         if ctx.is_active {
-            fill_round(scene, tf, ctx.row, 8.0, c.surface_white_10);
+            fill_round(scene, tf, ctx.row, 8.0, c.lift(0.72));
             let bar = Rect::new(ctx.side.x0, ctx.y + 6.0, ctx.side.x0 + 4.0, ctx.y + 26.0);
             fill_round(scene, tf, bar, 2.0, c.accent[5]);
         }
@@ -1367,7 +1367,7 @@ impl ChatApp {
         let (cbg, ctx) = if self.call.active {
             (c.accent[5], Color::WHITE)
         } else {
-            (c.surface_white_10, c.text_primary)
+            (c.lift(0.72), c.text_primary)
         };
         fill_round(scene, tf, call_btn, 8.0, cbg);
         let call_label = if self.call.active {
@@ -1399,7 +1399,7 @@ impl ChatApp {
             if mem_on {
                 c.accent[5].with_alpha_factor(0.22)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         label(
@@ -1498,7 +1498,7 @@ impl ChatApp {
                 h.x0 + 44.0,
                 h.center().y + 16.0,
             );
-            fill_round(scene, tf, btn, 8.0, c.surface_white_10);
+            fill_round(scene, tf, btn, 8.0, c.lift(0.72));
             label(
                 scene,
                 tr,
@@ -1549,14 +1549,21 @@ impl ChatApp {
             Color::from_rgba8(0, 0, 0, 80),
         );
         fill_round(scene, tf, panel, 12.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 12.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            panel,
+            12.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let mut y = panel.y0 + 6.0;
         for item in &menu.items {
             let r = Rect::new(panel.x0 + 5.0, y, panel.x1 - 5.0, y + item_h - 3.0);
             let hot = r.contains(self.last_mouse);
             if hot {
-                fill_round(scene, tf, r, 8.0, c.surface_white_10);
+                fill_round(scene, tf, r, 8.0, c.lift(0.72));
             }
             let col = if item.is_destructive() {
                 c.semantic.danger
@@ -1646,7 +1653,7 @@ impl ChatApp {
             .unwrap_or_default();
         let cx = area.center().x;
         let cy = area.y0 + (area.height() * 0.5).min(220.0);
-        fill_circle(scene, tf, Point::new(cx, cy), 30.0, c.surface_white_5);
+        fill_circle(scene, tf, Point::new(cx, cy), 30.0, c.lift(0.35));
         let (gw, gh) = tr.measure_weighted("#", 30.0, None, TextWeight::Bold);
         text(
             scene,
@@ -2136,7 +2143,7 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, save, Hit::EditSave);
         let cancel = Rect::new(save.x0 - 8.0 - 62.0, cy, save.x0 - 8.0, cy + 24.0);
-        fill_round(scene, tf, cancel, 7.0, c.surface_white_10);
+        fill_round(scene, tf, cancel, 7.0, c.lift(0.72));
         let (kw, kh) = tr.measure("Cancel", 12.5, None);
         text(
             scene,
@@ -2177,7 +2184,7 @@ impl ChatApp {
             let bg = if mine {
                 c.accent[5].with_alpha_factor(0.22)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             };
             fill_round(scene, tf, chip, 13.0, bg);
             if mine {
@@ -2205,7 +2212,7 @@ impl ChatApp {
         }
         // add-reaction affordance
         let add = Rect::new(x, y, x + 34.0, y + chip_h);
-        fill_round(scene, tf, add, 13.0, c.surface_white_5);
+        fill_round(scene, tf, add, 13.0, c.lift(0.35));
         let (aw, ah) = tr.measure("☺", 14.0, None);
         text(
             scene,
@@ -2255,7 +2262,7 @@ impl ChatApp {
             if open {
                 c.accent[5].with_alpha_factor(0.14)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         if open {
@@ -2396,7 +2403,7 @@ impl ChatApp {
         } else {
             fill_round(scene, tf, rect, 12.0, c.surfaces.raised);
             let dot = Point::new(rect.center().x, rect.center().y - 4.0);
-            fill_circle(scene, tf, dot, 12.0, c.surface_white_10);
+            fill_circle(scene, tf, dot, 12.0, c.lift(0.72));
             let (gw, gh) = tr.measure("🖼", 18.0, None);
             text(
                 scene,
@@ -2419,7 +2426,14 @@ impl ChatApp {
             12.0,
             Color::from_rgba8(0, 0, 0, 120),
         );
-        stroke_round(scene, tf, rect, 12.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            rect,
+            12.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         label(
             scene,
             tr,
@@ -2476,12 +2490,12 @@ impl ChatApp {
             tf,
             Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + th * 0.5),
             12.0,
-            c.surface_white_5,
+            c.lift(0.35),
         );
         // Centred play button.
         let cc = rect.center();
         fill_circle(scene, tf, cc, 25.0, Color::from_rgba8(0, 0, 0, 150));
-        fill_circle(scene, tf, cc, 24.0, c.surface_white_10);
+        fill_circle(scene, tf, cc, 24.0, c.lift(0.72));
         let (pw, ph) = tr.measure("▶", 20.0, None);
         text(
             scene,
@@ -2503,7 +2517,14 @@ impl ChatApp {
             12.0,
             Color::from_rgba8(0, 0, 0, 120),
         );
-        stroke_round(scene, tf, rect, 12.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            rect,
+            12.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         label(
             scene,
             tr,
@@ -2708,7 +2729,7 @@ impl ChatApp {
         rect: Rect,
     ) {
         let c = &theme.tokens.colors;
-        fill_round(scene, tf, rect, 14.0, c.surface_white_5);
+        fill_round(scene, tf, rect, 14.0, c.lift(0.35));
         stroke_round(scene, tf, rect, 14.0, c.border_standard, 1.0);
         label(
             scene,
@@ -2763,7 +2784,7 @@ impl ChatApp {
                 rect.x0 + 38.0,
                 rect.center().y + 14.0,
             );
-            fill_round(scene, tf, plus, 8.0, c.surface_white_10);
+            fill_round(scene, tf, plus, 8.0, c.lift(0.72));
             let (pw, ph) = tr.measure("+", 20.0, None);
             text(
                 scene,
@@ -2796,7 +2817,7 @@ impl ChatApp {
             if send_enabled {
                 c.accent[5]
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         let (sw, sh) = tr.measure("➤", 16.0, None);
@@ -2969,7 +2990,7 @@ impl ChatApp {
                 panel.y0 + 40.0,
             )
         };
-        fill_round(scene, tf, close, 8.0, c.surface_white_10);
+        fill_round(scene, tf, close, 8.0, c.lift(0.72));
         let close_label = if narrow_detail { "← Back" } else { "✕" };
         let (xw, xh) = tr.measure(close_label, 13.0, None);
         text(
@@ -3162,7 +3183,7 @@ impl ChatApp {
                 let lbl = format!("{} {}", r.emoji, r.count());
                 let (lw, _) = tr.measure(&lbl, 11.5, None);
                 let chip = Rect::new(x, yy, x + f64::from(lw) + 16.0, yy + 22.0);
-                fill_round(scene, tf, chip, 11.0, c.surface_white_5);
+                fill_round(scene, tf, chip, 11.0, c.lift(0.35));
                 label(
                     scene,
                     tr,
@@ -3278,7 +3299,7 @@ impl ChatApp {
             panel.x1 - 12.0,
             panel.y0 + 40.0,
         );
-        fill_round(scene, tf, close, 8.0, c.surface_white_10);
+        fill_round(scene, tf, close, 8.0, c.lift(0.72));
         let (xw, xh) = tr.measure("✕", 14.0, None);
         text(
             scene,
@@ -3401,7 +3422,14 @@ impl ChatApp {
             Color::from_rgba8(0, 0, 0, 70),
         );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            panel,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let head_h = 40.0;
         self.draw_attach_picker_header(scene, tf, tr, theme, panel, head_h);
@@ -3536,7 +3564,7 @@ impl ChatApp {
         for e in self.attach_entries.iter().take(max_rows) {
             let row = Rect::new(panel.x0 + 6.0, y, panel.x1 - 6.0, y + row_h - 6.0);
             if row.contains(self.last_mouse) {
-                fill_round(scene, tf, row, 10.0, c.surface_white_5);
+                fill_round(scene, tf, row, 10.0, c.lift(0.35));
             }
             let thumb = Rect::new(row.x0 + 6.0, row.y0 + 5.0, row.x0 + 62.0, row.y1 - 5.0);
             let key = e.key();
@@ -3576,7 +3604,14 @@ impl ChatApp {
                     None,
                 );
             }
-            stroke_round(scene, tf, thumb, 8.0, c.border_white_10, 1.0);
+            stroke_round(
+                scene,
+                tf,
+                thumb,
+                8.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.0,
+            );
             let name = truncate_to(tr, &e.name, 13.5, row.width() - 96.0);
             label(
                 scene,

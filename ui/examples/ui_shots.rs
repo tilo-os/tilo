@@ -11,6 +11,7 @@ registry::scenario_modules! {
     data_table, "data_table.rs", "virtualized data-table states";
     denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
     fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
+    floating_surface_shots, "floating_surface_shots.rs", "soft floating call and navigation surfaces";
     gallery_shots, "gallery_shots.rs", "dark and light component gallery";
     history_cases, "history_cases.rs", "history and collaboration cases";
     nav_shell_shots, "nav_shell_shots.rs", "navigation shell states";

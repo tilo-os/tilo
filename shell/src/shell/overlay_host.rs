@@ -10,11 +10,11 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use std::{collections::HashMap, sync::Arc};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{
     Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
     TaffyTree,
@@ -23,7 +23,7 @@ use vello::Scene;
 use vello::kurbo::RoundedRect;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
@@ -31,8 +31,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt,
-    PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
+    PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -110,6 +110,387 @@ fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
 type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+
+pub(crate) struct CaptureMirrorHandoffLayer {
+    pub rgba: std::sync::Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    /// Normalized position inside the selected source union.
+    pub source: Rect,
+    /// Normalized position inside the final Grid/Stack composition.
+    pub target: Rect,
+}
+
+struct CaptureMirrorLayer {
+    image: Image,
+    source: Rect,
+    target: Rect,
+}
+
+/// A compositor-fed image that always occupies its floating window's content
+/// box. The general `Image` widget is intrinsically sized; capture mirrors are
+/// viewport content and therefore need explicit fill semantics.
+struct CaptureMirrorImage {
+    image: Image,
+    /// Independently movable source regions. Keeping them separate lets a
+    /// Grid/Stack PiP pack itself during the flight without crossfading or
+    /// teleporting high-contrast pixels.
+    handoff_layers: Vec<CaptureMirrorLayer>,
+    /// Pinned stills use their receipt-scale preview as a calm launch proxy,
+    /// then resolve into the exact artifact as the surface becomes readable.
+    /// Multi-source live PiP uses spatial layer motion instead.
+    crossfade_handoff: bool,
+    /// Original pixel aspect for tall frozen documents. `Some` switches the
+    /// image from whole-artifact preview into a width-fitted scroll viewport
+    /// as the handoff lands.
+    document_aspect: Option<f64>,
+    document_scroll_y: f64,
+    handoff_started_at: Instant,
+    handoff_progress_override: Option<f64>,
+    rect: Rect,
+}
+
+impl CaptureMirrorImage {
+    fn new(image: Image, handoff_layers: Vec<CaptureMirrorHandoffLayer>) -> Self {
+        Self {
+            image,
+            handoff_layers: handoff_layers
+                .into_iter()
+                .map(|layer| CaptureMirrorLayer {
+                    image: Image::from_rgba(layer.rgba, layer.width, layer.height)
+                        .with_fit(ImageFit::Fill),
+                    source: layer.source,
+                    target: layer.target,
+                })
+                .collect(),
+            crossfade_handoff: false,
+            document_aspect: None,
+            document_scroll_y: 0.0,
+            handoff_started_at: Instant::now(),
+            handoff_progress_override: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    fn new_crossfade(image: Image, preview: Image, document_aspect: Option<f64>) -> Self {
+        Self {
+            image,
+            handoff_layers: vec![CaptureMirrorLayer {
+                image: preview,
+                source: Rect::new(0.0, 0.0, 1.0, 1.0),
+                target: Rect::new(0.0, 0.0, 1.0, 1.0),
+            }],
+            crossfade_handoff: true,
+            document_aspect,
+            document_scroll_y: 0.0,
+            handoff_started_at: Instant::now(),
+            handoff_progress_override: None,
+            rect: Rect::ZERO,
+        }
+    }
+
+    fn set_image(&mut self, image: Image) {
+        // Preserve `rect`: the frame payload changes continuously, but its
+        // layout does not. Replacing the whole widget here would zero its rect
+        // after every compositor readback.
+        self.image = image;
+    }
+
+    fn set_handoff_progress(&mut self, permille: u16) {
+        if !self.handoff_layers.is_empty() {
+            self.handoff_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+        }
+    }
+
+    fn handoff_mix(&self) -> f64 {
+        const HANDOFF_DURATION: Duration = Duration::from_millis(360);
+        let raw = self.handoff_progress_override.unwrap_or_else(|| {
+            (self.handoff_started_at.elapsed().as_secs_f64() / HANDOFF_DURATION.as_secs_f64())
+                .clamp(0.0, 1.0)
+        });
+        raw * raw * (3.0 - 2.0 * raw)
+    }
+
+    fn painted_image_rect(&mut self, mix: f64) -> Rect {
+        let Some(aspect) = self.document_aspect else {
+            return self.rect;
+        };
+        let raw = ((mix - 0.14) / 0.86).clamp(0.0, 1.0);
+        let unfold = raw * raw * (3.0 - 2.0 * raw);
+        let document_height = self.rect.width() / aspect.max(0.05);
+        let height = self.rect.height() + (document_height - self.rect.height()) * unfold;
+        let max_scroll = (height - self.rect.height()).max(0.0);
+        self.document_scroll_y = self.document_scroll_y.clamp(0.0, max_scroll);
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 - self.document_scroll_y,
+            self.rect.x1,
+            self.rect.y0 - self.document_scroll_y + height,
+        )
+    }
+
+    fn draw_document_scrollbar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        mix: f64,
+    ) {
+        let Some(aspect) = self.document_aspect else {
+            return;
+        };
+        let raw = ((mix - 0.58) / 0.42).clamp(0.0, 1.0);
+        let alpha = (raw * raw * (3.0 - 2.0 * raw) * 0.46) as f32;
+        if alpha <= 0.001 {
+            return;
+        }
+        let document_height = self.rect.width() / aspect.max(0.05);
+        let max_scroll = (document_height - self.rect.height()).max(0.0);
+        if max_scroll <= 0.0 {
+            return;
+        }
+        let rail = Rect::new(
+            self.rect.x1 - 5.0,
+            self.rect.y0 + 10.0,
+            self.rect.x1 - 2.0,
+            self.rect.y1 - 10.0,
+        );
+        let thumb_height =
+            (rail.height() * self.rect.height() / document_height).clamp(28.0, rail.height());
+        let travel = (rail.height() - thumb_height).max(0.0);
+        let y = rail.y0 + travel * (self.document_scroll_y / max_scroll);
+        let thumb = Rect::new(rail.x0, y, rail.x1, y + thumb_height);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.text_dim.with_alpha_factor(alpha),
+            None,
+            &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
+        );
+    }
+}
+
+impl Widget for CaptureMirrorImage {
+    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = match taffy.new_leaf(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            Err(error) => {
+                tracing::error!(%error, "capture mirror leaf allocation failed");
+                NodeId::from(0_u64)
+            }
+        };
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x + layout.size.width),
+            origin.y + f64::from(layout.location.y + layout.size.height),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _: &mut TextRenderer,
+        theme: &Theme,
+        _: &PresenceCtx,
+    ) {
+        let mix = self.handoff_mix();
+        if self.handoff_layers.is_empty() {
+            self.image.paint_at(scene, transform, self.rect);
+            return;
+        }
+        if self.crossfade_handoff {
+            let target = self.painted_image_rect(mix);
+            if mix >= 0.999 {
+                self.image.paint_at(scene, transform, target);
+                self.draw_document_scrollbar(scene, transform, theme, mix);
+                return;
+            }
+            self.handoff_layers[0]
+                .image
+                .paint_at(scene, transform, target);
+            if mix > 0.001 {
+                scene.push_layer(
+                    Fill::NonZero,
+                    BlendMode::default(),
+                    mix as f32,
+                    transform,
+                    &self.rect,
+                );
+                self.image.paint_at(scene, transform, target);
+                scene.pop_layer();
+            }
+            self.draw_document_scrollbar(scene, transform, theme, mix);
+            return;
+        }
+        if mix >= 0.999 {
+            self.image.paint_at(scene, transform, self.rect);
+            return;
+        }
+        for layer in &mut self.handoff_layers {
+            let normalized = lerp_normalized_rect(layer.source, layer.target, mix);
+            let target = Rect::new(
+                self.rect.x0 + normalized.x0 * self.rect.width(),
+                self.rect.y0 + normalized.y0 * self.rect.height(),
+                self.rect.x0 + normalized.x1 * self.rect.width(),
+                self.rect.y0 + normalized.y1 * self.rect.height(),
+            );
+            layer.image.paint_at(scene, transform, target);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _: &winit::event::Modifiers,
+        _: &mut AutoCommit,
+        _: &ObjId,
+        handled: &mut bool,
+        _: &mut Option<NodeId>,
+        _: NodeId,
+        _: &TaffyTree<()>,
+    ) {
+        let Some(aspect) = self.document_aspect else {
+            return;
+        };
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return;
+        };
+        let movement = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 54.0,
+            MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor.max(0.1),
+        };
+        let document_height = self.rect.width() / aspect.max(0.05);
+        let max_scroll = (document_height - self.rect.height()).max(0.0);
+        if max_scroll > 0.0 {
+            self.document_scroll_y = (self.document_scroll_y + movement).clamp(0.0, max_scroll);
+            *handled = true;
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "CaptureMirrorImage"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+fn capture_mirror_origin(
+    bounds: Rect,
+    source: Option<Rect>,
+    window_size: vello::kurbo::Size,
+) -> Point {
+    let top = bounds.y0 + 52.0;
+    let right = bounds.x1 - window_size.width - 16.0;
+    let bottom = bounds.y1 - window_size.height - 16.0;
+    let left = bounds.x0 + 16.0;
+    let candidates = [
+        Point::new(right, bottom),
+        Point::new(right, top),
+        Point::new(left, bottom),
+        Point::new(left, top),
+    ];
+    source.map_or(candidates[0], |source| {
+        candidates
+            .into_iter()
+            .enumerate()
+            .min_by(|(ai, a), (bi, b)| {
+                let a_rect = Rect::from_origin_size(*a, window_size);
+                let b_rect = Rect::from_origin_size(*b, window_size);
+                let a_overlap = a_rect.intersect(source).area().max(0.0);
+                let b_overlap = b_rect.intersect(source).area().max(0.0);
+                a_overlap.total_cmp(&b_overlap).then_with(|| ai.cmp(bi))
+            })
+            .map_or(candidates[0], |(_, origin)| origin)
+    })
+}
+
+/// Keep the ownership handoff meaningful when its source lives on the
+/// continuous desktop but wholly outside the physical output. Visible pixels
+/// are used exactly; off-screen pixels collapse to a small edge portal on the
+/// side where the source lives, so the resulting PiP arrives from its real
+/// virtual direction instead of popping in at the destination.
+fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
+    let source = source.filter(|rect| rect.is_finite() && rect.area() > 1.0)?;
+    let visible = source.intersect(bounds);
+    if visible.width() > 1.0 && visible.height() > 1.0 {
+        return Some(visible);
+    }
+
+    const PORTAL_WIDTH: f64 = 84.0;
+    const PORTAL_HEIGHT: f64 = 52.0;
+    const EDGE_INSET: f64 = 6.0;
+    const TOP_SAFE: f64 = 48.0;
+    let center = source.center();
+    let x = if center.x < bounds.x0 {
+        bounds.x0 + EDGE_INSET
+    } else if center.x > bounds.x1 {
+        bounds.x1 - EDGE_INSET - PORTAL_WIDTH
+    } else {
+        (center.x - PORTAL_WIDTH / 2.0).clamp(
+            bounds.x0 + EDGE_INSET,
+            bounds.x1 - EDGE_INSET - PORTAL_WIDTH,
+        )
+    };
+    let y = if center.y < bounds.y0 {
+        bounds.y0 + TOP_SAFE
+    } else if center.y > bounds.y1 {
+        bounds.y1 - EDGE_INSET - PORTAL_HEIGHT
+    } else {
+        (center.y - PORTAL_HEIGHT / 2.0)
+            .clamp(bounds.y0 + TOP_SAFE, bounds.y1 - EDGE_INSET - PORTAL_HEIGHT)
+    };
+    Some(Rect::new(x, y, x + PORTAL_WIDTH, y + PORTAL_HEIGHT))
+}
+
+fn lerp_normalized_rect(from: Rect, to: Rect, progress: f64) -> Rect {
+    Rect::new(
+        from.x0 + (to.x0 - from.x0) * progress,
+        from.y0 + (to.y0 - from.y0) * progress,
+        from.x1 + (to.x1 - from.x1) * progress,
+        from.y1 + (to.y1 - from.y1) * progress,
+    )
+}
+
+fn capture_mirror_initial_size(
+    viewport: Rect,
+    source_aspect: f64,
+    preferred: Option<vello::kurbo::Size>,
+) -> vello::kurbo::Size {
+    let requested_width = preferred.map_or(420.0, |size| size.width);
+    let width_cap = (viewport.width() * 0.44).clamp(300.0, 720.0);
+    let width = requested_width.min(width_cap).clamp(240.0, 720.0);
+    let aspect = preferred
+        .filter(|size| size.width > 1.0 && size.height > 1.0)
+        .map_or(source_aspect, |size| size.width / size.height)
+        .max(0.1);
+    let height_cap = (viewport.height() * 0.55).max(135.0);
+    let height = (width / aspect).clamp(135.0, 520.0).min(height_cap);
+    vello::kurbo::Size::new(width, height)
+}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -237,6 +618,10 @@ pub struct ShellOverlayHost {
     /// reconciler only latches the id without rebuilding, so hosts
     /// constructed around hand-made content keep it.
     content_built_for_ws: Option<u64>,
+    /// Whether `content` includes the first-use empty state. Crossing the
+    /// zero/one-window boundary requires a rebuild even though the strip set
+    /// itself did not change.
+    content_built_empty: Option<bool>,
     /// Per-strip last active-group id that
     /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
     /// focus-follow scroll is edge-triggered and doesn't fight a user who
@@ -338,6 +723,26 @@ pub struct ShellOverlayHost {
     /// Complete wireless projection picker, including controller, editor,
     /// animation, painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
+    /// Shared toolkit capture selector. The shell only hosts it and drains
+    /// semantic intents; compositor readback/encoding stays below this layer.
+    capture_studio: ui::widget::CaptureStudio,
+    capture_node: Option<NodeId>,
+    /// Native exact-pixel screenshot editor. It lives in the shared UI crate;
+    /// the shell supplies only artifact bytes and drains semantic commands.
+    screenshot_markup: Option<ui::widget::ScreenshotMarkup>,
+    screenshot_markup_node: Option<NodeId>,
+    /// Live arbitrary-region PiP windows. Pixels are refreshed by the
+    /// compositor capture executor; placement/input/chrome stay in the shared
+    /// widget layer so they behave exactly like other floating surfaces.
+    capture_mirrors: Vec<(String, FloatingWindow<CaptureMirrorImage>)>,
+    capture_mirror_nodes: Vec<NodeId>,
+    capture_mirrors_structure_dirty: bool,
+    closed_capture_mirrors: Vec<String>,
+    /// App-originated call/navigation/PiP detach requests waiting for the
+    /// compositor's floating-surface host. Requests bubble through the normal
+    /// widget tree instead of reaching into individual app implementations.
+    pending_floating_surfaces: Vec<ui::floating_surface::FloatingSurfaceRequest>,
+    pending_floating_surface_updates: Vec<(String, Rect)>,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -927,6 +1332,7 @@ impl ShellOverlayHost {
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
             content_built_for_ws: None,
+            content_built_empty: None,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
@@ -957,6 +1363,16 @@ impl ShellOverlayHost {
             followed_peer: None,
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
+            capture_studio: ui::widget::CaptureStudio::default(),
+            capture_node: None,
+            screenshot_markup: None,
+            screenshot_markup_node: None,
+            capture_mirrors: Vec::new(),
+            capture_mirror_nodes: Vec::new(),
+            capture_mirrors_structure_dirty: false,
+            closed_capture_mirrors: Vec::new(),
+            pending_floating_surfaces: Vec::new(),
+            pending_floating_surface_updates: Vec::new(),
         }
     }
 
@@ -1013,6 +1429,493 @@ impl ShellOverlayHost {
     /// compositor uses this to turn the frame encoder on only while needed.
     pub fn projection_capture_requested(&self) -> bool {
         self.projection_overlay.capture_requested()
+    }
+
+    /// Drained by the compositor after it has built a clean scene (the picker
+    /// closes before an intent is queued, so its chrome is never captured).
+    pub fn take_capture_intents(&mut self) -> Vec<ui::widget::CaptureIntent> {
+        let intents = self.capture_studio.take_intents();
+        if !self.capture_studio.is_open()
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            let mut state = chrome.borrow_mut();
+            if state.overlays.capture {
+                state.overlays.capture = false;
+                state.bump();
+            }
+        }
+        intents
+    }
+
+    /// Open the one trusted capture chooser from a shell shortcut or an app
+    /// request. Apps can choose the starting mode, but never bypass this
+    /// visible user-confirmation surface or supply their own target list.
+    pub fn open_capture_studio(&mut self, mode: ui::widget::CaptureMode) -> bool {
+        if self.capture_studio.is_recording_active() {
+            return false;
+        }
+        match mode {
+            ui::widget::CaptureMode::Screenshot => {
+                self.capture_studio.open();
+                self.capture_studio
+                    .set_mode(ui::widget::CaptureMode::Screenshot);
+            }
+            ui::widget::CaptureMode::Recording => self.capture_studio.open_recording_setup(),
+            ui::widget::CaptureMode::Pip => self.capture_studio.open_pip_setup(),
+        }
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.overlays.capture = true;
+            state.bump();
+        }
+        true
+    }
+
+    pub fn open_screenshot_markup(
+        &mut self,
+        rgba: Arc<[u8]>,
+        width: u32,
+        height: u32,
+        spawn_from: Option<Rect>,
+    ) {
+        self.screenshot_markup = Some(
+            ui::widget::ScreenshotMarkup::new(rgba, width, height).with_spawn_from(spawn_from),
+        );
+        self.screenshot_markup_node = None;
+        self.capture_mirrors_structure_dirty = true;
+    }
+
+    pub fn take_screenshot_markup_commands(&mut self) -> Vec<ui::widget::ScreenshotMarkupCommand> {
+        self.screenshot_markup
+            .as_mut()
+            .map_or_else(Vec::new, ui::widget::ScreenshotMarkup::take_commands)
+    }
+
+    pub fn close_screenshot_markup(&mut self) {
+        if self.screenshot_markup.take().is_some() {
+            self.screenshot_markup_node = None;
+            self.capture_mirrors_structure_dirty = true;
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn set_screenshot_markup_transition_progress(&mut self, permille: u16) {
+        if let Some(markup) = self.screenshot_markup.as_mut() {
+            markup.set_entrance_transition_progress(permille);
+        }
+    }
+
+    pub fn set_capture_recording_active(&mut self, active: bool) {
+        self.capture_studio.set_recording_active(active);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            if state.overlays.capture {
+                state.overlays.capture = false;
+                state.bump();
+            }
+        }
+    }
+
+    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
+        self.capture_studio
+            .set_recording_transition_progress(permille);
+    }
+
+    /// Freeze every newly-created capture PiP at a known source-handoff
+    /// phase. This is used by deterministic visual shots only; live windows
+    /// continue to derive progress from elapsed time.
+    pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
+        for (_, mirror) in &mut self.capture_mirrors {
+            mirror.set_source_handoff_progress(permille);
+            mirror.content_mut().set_handoff_progress(permille);
+        }
+    }
+
+    pub fn set_capture_recording_paused(&mut self, paused: bool) {
+        self.capture_studio.set_recording_paused(paused);
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
+        self.capture_studio
+            .set_recording_state_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
+        self.capture_studio
+            .set_recording_receipt_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_finished(&mut self) {
+        self.capture_studio.set_recording_finished();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn set_capture_screenshot_finished(
+        &mut self,
+        copied: bool,
+        width: u32,
+        height: u32,
+        preview: ui::widget::CapturePreview,
+    ) {
+        self.capture_studio
+            .set_screenshot_finished(copied, width, height, preview);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            if state.overlays.capture {
+                state.overlays.capture = false;
+            }
+            state.bump();
+        }
+    }
+
+    pub fn set_capture_screenshot_transition_progress(&mut self, permille: u16) {
+        self.capture_studio
+            .set_screenshot_transition_progress(permille);
+    }
+
+    pub fn set_capture_screenshot_pin_pending(&mut self, pending: bool) {
+        self.capture_studio.set_screenshot_pin_pending(pending);
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn set_capture_screenshot_pinned(&mut self) {
+        self.capture_studio.set_screenshot_pinned();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn set_capture_replay_active(&mut self, active: bool, audio: ui::widget::AudioCaptureMode) {
+        self.capture_studio.set_replay_active(active, audio);
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn set_capture_replay_buffered_seconds(&mut self, seconds: u8) {
+        self.capture_studio.set_replay_buffered_seconds(seconds);
+    }
+
+    pub fn set_capture_replay_saved(&mut self) {
+        self.capture_studio.set_replay_saved();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    pub fn set_capture_audio_available(&mut self, system: bool, microphone: bool) {
+        self.capture_studio.set_audio_available(system, microphone);
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+    }
+
+    /// Render selected live apps in their virtual strip coordinates, without
+    /// clipping them to the physical output. Used by the compositor's capture
+    /// executor for `FullApp` and `WholeStrip`; the normal screen scene remains
+    /// the source for visible-region/display captures.
+    pub fn draw_capture_targets(
+        &mut self,
+        target_ids: &[String],
+        extent: ui::widget::CaptureExtent,
+        complete_semantic_content: bool,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Vec<Rect> {
+        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        let mut rects = Vec::new();
+        for row in rows {
+            // SAFETY: the pointers reference boxed rows owned by `content`;
+            // this exclusive host borrow and sequential traversal prevent
+            // aliasing, matching the existing capture-target/read paths.
+            unsafe {
+                rects.extend((&mut *row).draw_capture_targets(
+                    target_ids,
+                    extent,
+                    complete_semantic_content,
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                ));
+            }
+        }
+        rects
+    }
+
+    /// Create or refresh a live captured-region PiP. Updating replaces only
+    /// the image payload; the window's user-controlled position and size stay
+    /// untouched across frames.
+    pub(crate) fn upsert_capture_mirror(
+        &mut self,
+        id: &str,
+        title: &str,
+        rgba: std::sync::Arc<[u8]>,
+        width: u32,
+        height: u32,
+        preferred_size: Option<vello::kurbo::Size>,
+        spawn_from: Option<Rect>,
+        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
+    ) {
+        let image = Image::from_rgba(rgba, width, height)
+            .with_fit(ImageFit::Contain)
+            .with_alt(format!("Live capture: {title}"));
+        self.upsert_capture_surface(
+            id,
+            title,
+            image,
+            width,
+            height,
+            preferred_size,
+            spawn_from,
+            handoff_layers,
+            None,
+            None,
+        );
+    }
+
+    /// Create a frozen screenshot reference. Unlike a PiP/live capture this is
+    /// inserted once and thereafter owned entirely by the surface host, so its
+    /// pixels cannot drift when the underlying application changes.
+    pub(crate) fn insert_pinned_capture(
+        &mut self,
+        id: &str,
+        title: &str,
+        rgba: std::sync::Arc<[u8]>,
+        width: u32,
+        height: u32,
+        spawn_from: Option<Rect>,
+        preview: ui::widget::CapturePreview,
+    ) {
+        let pixel_aspect = f64::from(width) / f64::from(height.max(1));
+        let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
+        let fit = if document_aspect.is_some() {
+            ImageFit::Fill
+        } else {
+            ImageFit::Contain
+        };
+        let image = Image::from_rgba(rgba, width, height)
+            .with_fit(fit)
+            .with_alt(format!("Pinned screenshot: {title}"));
+        let preview_rgba: Vec<u8> = preview
+            .pixels
+            .into_iter()
+            .flat_map(|pixel| pixel.into_iter())
+            .collect();
+        let preview_image = Image::from_rgba(
+            std::sync::Arc::from(preview_rgba),
+            u32::from(preview.columns.max(1)),
+            u32::from(preview.rows.max(1)),
+        )
+        .with_fit(ImageFit::Fill)
+        .with_alt(format!("Pinned screenshot preview: {title}"));
+        self.upsert_capture_surface(
+            id,
+            title,
+            image,
+            width,
+            height,
+            document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
+            spawn_from,
+            Vec::new(),
+            Some(preview_image),
+            document_aspect,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture image identity, geometry and one-shot handoff state are independent"
+    )]
+    fn upsert_capture_surface(
+        &mut self,
+        id: &str,
+        title: &str,
+        image: Image,
+        width: u32,
+        height: u32,
+        preferred_size: Option<vello::kurbo::Size>,
+        spawn_from: Option<Rect>,
+        handoff_layers: Vec<CaptureMirrorHandoffLayer>,
+        crossfade_preview: Option<Image>,
+        document_aspect: Option<f64>,
+    ) {
+        if let Some((_, window)) = self
+            .capture_mirrors
+            .iter_mut()
+            .find(|(mirror_id, _)| mirror_id == id)
+        {
+            window.content_mut().set_image(image);
+            return;
+        }
+        let aspect = f64::from(width) / f64::from(height.max(1));
+        let initial_size = capture_mirror_initial_size(self.rect, aspect, preferred_size);
+        let body_w = initial_size.width;
+        let body_h = initial_size.height;
+        let visible_spawn = visible_capture_spawn(self.rect, spawn_from);
+        let content = match crossfade_preview {
+            Some(preview) => CaptureMirrorImage::new_crossfade(image, preview, document_aspect),
+            None => CaptureMirrorImage::new(image, handoff_layers),
+        };
+        let mut window = FloatingWindow::new(title, content)
+            .open(true)
+            .modal(false)
+            .closable(true)
+            .overlay_chrome(true)
+            .with_initial_size(body_w, body_h)
+            .spawn_from(visible_spawn);
+        if document_aspect.is_none() {
+            window = window.with_aspect_ratio(aspect);
+        }
+
+        let window_size = vello::kurbo::Size::new(
+            body_w.max(ui::widget::MIN_WIDTH),
+            body_h.max(ui::widget::MIN_HEIGHT),
+        );
+        let origin = capture_mirror_origin(self.rect, visible_spawn, window_size);
+        window.place_at_within(self.rect, origin);
+        self.capture_mirrors.push((id.to_string(), window));
+        self.capture_mirrors_structure_dirty = true;
+    }
+
+    /// Paint capture-owned presentation surfaces as a distinct compositor
+    /// pass. Keeping mirrors and status chrome out of the ordinary desktop
+    /// scene prevents recursive PiP feedback and keeps the recording pill out
+    /// of the encoded video.
+    pub fn draw_capture_overlays(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.capture_studio.set_overlay_rect(self.rect);
+        for (_, mirror) in &mut self.capture_mirrors {
+            mirror.draw(scene, transform, text_renderer, theme, presence);
+        }
+        self.capture_studio
+            .draw_countdown_indicator(scene, transform, text_renderer, theme);
+        self.capture_studio
+            .draw_recording_indicator(scene, transform, text_renderer, theme);
+        if let Some(markup) = self.screenshot_markup.as_mut() {
+            markup.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.closed_capture_mirrors)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_mirror_count_for_tests(&self) -> usize {
+        self.capture_mirrors.len()
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Widget event-dispatch context plus the selected mirror node"
+    )]
+    fn route_capture_mirror_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let pointer = self.last_cursor.unwrap_or(Point::ZERO);
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            // Every PiP must observe pointer departure as well as arrival.
+            // Routing only to the surface under the new point leaves the old
+            // one's hover chrome permanently painted over its pixels.
+            for (_, mirror) in &mut self.capture_mirrors {
+                if mirror.wants_pointer_capture() {
+                    mirror.update_pointer_presence(pointer);
+                } else {
+                    mirror.update_pointer_position(pointer);
+                }
+            }
+        }
+        let Some(index) = self.capture_mirrors.iter().rposition(|(_, mirror)| {
+            mirror.wants_pointer_capture()
+                || (mirror.is_open() && mirror.window_rect().contains(pointer))
+        }) else {
+            return false;
+        };
+        let Some(node) = self.capture_mirror_nodes.get(index).copied() else {
+            return false;
+        };
+        let (_, mirror) = &mut self.capture_mirrors[index];
+        mirror.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node,
+            taffy,
+        );
+        let consumed = *handled || mirror.wants_pointer_capture();
+        if !mirror.is_open() {
+            let (id, _) = self.capture_mirrors.remove(index);
+            self.closed_capture_mirrors.push(id);
+            self.capture_mirrors_structure_dirty = true;
+        }
+        consumed
+    }
+
+    /// Drained by the compositor's floating-surface host after app updates.
+    /// The request keeps the app/region identity intact, so the shell can
+    /// continue presenting the real source rather than a copied mock panel.
+    pub fn take_floating_surface_requests(
+        &mut self,
+    ) -> Vec<ui::floating_surface::FloatingSurfaceRequest> {
+        std::mem::take(&mut self.pending_floating_surfaces)
+    }
+
+    pub fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        std::mem::take(&mut self.pending_floating_surface_updates)
+    }
+
+    pub fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.group_row_ptrs
+            .values()
+            .flat_map(|ptr| {
+                // SAFETY: stable Box<GroupRow> contract; this is a shared
+                // read and cannot race a workspace reconciliation sweep.
+                let row: &GroupRow = unsafe { &**ptr };
+                Widget::active_floating_surface_ids(row)
+            })
+            .collect()
+    }
+
+    pub fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable Box<GroupRow> contract as the request
+            // harvesters; the host owns exclusive access for dispatch.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            Widget::on_floating_surface_host_message(row, message);
+        }
     }
 
     /// Replace the QS action dispatcher. Tests use this to swap in a
@@ -1122,7 +2025,23 @@ impl ShellOverlayHost {
     /// new transition if the target changed. Returns *linear* progress —
     /// the draw path splits it into its own two-phase, smoothstep-eased
     /// animation, so this must stay linear.
-    fn tick_overview_transition(&mut self, target: f32) -> f32 {
+    fn tick_overview_transition(&mut self, target: f32, reduce_motion: bool) -> f32 {
+        if reduce_motion {
+            let changed = (target - self.overview_target).abs() > f32::EPSILON;
+            self.overview_target = target;
+            self.overview_t = target;
+            self.transition_from = target;
+            self.transition_started = None;
+            if changed {
+                self.overview_selection = if target > 0.5 {
+                    self.overview_here_index()
+                } else {
+                    None
+                };
+                self.overview_scroll_y = 0.0;
+            }
+            return target;
+        }
         if (target - self.overview_target).abs() > f32::EPSILON {
             self.transition_from = self.overview_t;
             self.overview_target = target;
@@ -1389,6 +2308,16 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
         self.content_built_for_ws = Some(ws_raw);
+        self.content_built_empty = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .all(|strip| strip.window_groups.is_empty())
+            })
+        });
         self
     }
 
@@ -1410,6 +2339,12 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.active.raw();
+            let active_empty = tree.active_workspace().is_some_and(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .all(|strip| strip.window_groups.is_empty())
+            });
             match self.content_built_for_ws {
                 // Hand-made test content: latch, never rebuild over it.
                 None => {
@@ -1417,7 +2352,11 @@ impl ShellOverlayHost {
                     self.content_built_for_ws = Some(active_raw);
                     return false;
                 }
-                Some(cur) if cur == active_raw && self.rows_cover_active_strips(&tree) => {
+                Some(cur)
+                    if cur == active_raw
+                        && self.content_built_empty == Some(active_empty)
+                        && self.rows_cover_active_strips(&tree) =>
+                {
                     return false;
                 }
                 Some(_) => {}
@@ -1432,6 +2371,12 @@ impl ShellOverlayHost {
         self.content = root;
         self.group_row_ptrs = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
+        self.content_built_empty = snapshot.active_workspace().map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .all(|strip| strip.window_groups.is_empty())
+        });
         // Per-strip memos of the old workspace die with its rows.
         self.last_scrolled_active_group.clear();
         true
@@ -3067,6 +4012,34 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Consume the empty workspace's semantic CTA and open a picker containing
+    /// only launchable applications. Pointer, keyboard and assistive-tech
+    /// activation all publish the same key through `ui::EmptyState`.
+    fn harvest_empty_workspace_open_app(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        let requested = matches!(
+            doc.get(root, crate::shell::EMPTY_WORKSPACE_OPEN_APP),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), ScalarValue::Boolean(true))
+        );
+        if !requested {
+            return false;
+        }
+        let _ = doc.put(root, crate::shell::EMPTY_WORKSPACE_OPEN_APP, false);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            state.search_scope = crate::shell::chrome_state::SearchScope::All;
+            state.bump();
+        }
+        self.active_kind_filter = app_kind_filter();
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        self.refresh_search_results(doc, root);
+        true
+    }
+
     /// Refreshes the palette's rows by fanning the query out to every
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; first-boot latency comes from the tantivy walker's initial pass.
@@ -3223,6 +4196,104 @@ impl ShellOverlayHost {
             }
         }
         candidates
+    }
+
+    /// Live app surfaces offered by the capture studio. The full virtual rect
+    /// is retained even when qOS's continuous strip has moved most of the app
+    /// past this monitor; only `visible_rect` is clipped to the output.
+    fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
+        let viewport = self.get_rect();
+        let mut targets = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable Box<GroupRow> contract as
+            // `group_hit_candidates` above.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in &row.groups {
+                let Some(_) = group.active_host() else {
+                    continue;
+                };
+                // A selectable app is the complete window group, including
+                // its tab decoration. This matches the exact scene painted by
+                // `GroupRow::draw_capture_targets` for App/Strip export.
+                let virtual_rect = group.get_rect();
+                if virtual_rect.area() <= 0.0 {
+                    continue;
+                }
+                let active = group.active_tab_id();
+                let Some(tab) = group.tabs().iter().find(|tab| tab.id == active) else {
+                    continue;
+                };
+                targets.push((
+                    group.focused,
+                    ui::widget::CaptureTarget {
+                        id: format!("group:{}:tab:{}", group.id, tab.id),
+                        title: tab.title.clone(),
+                        app_id: tab
+                            .app_kind
+                            .map_or_else(|| "app".into(), |kind| format!("{kind:?}")),
+                        visible_rect: virtual_rect.intersect(viewport),
+                        virtual_rect,
+                        complete_rect: group.complete_capture_rect(),
+                    },
+                ));
+            }
+        }
+        targets.sort_by_key(|(focused, _)| !*focused);
+        targets.into_iter().map(|(_, target)| target).collect()
+    }
+
+    /// Pull at most one freshly-emitted request from every strip. Individual
+    /// apps retain their own live call/navigation state; this queue only
+    /// transfers presentation ownership to the shell compositor.
+    fn harvest_floating_surface_requests(&mut self) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable `Box<GroupRow>` contract as
+            // `capture_targets`; update holds exclusive access to the host.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(request) = Widget::take_floating_surface_request(row) {
+                let already_queued = self
+                    .pending_floating_surfaces
+                    .iter()
+                    .any(|queued| queued.id == request.id);
+                if !already_queued {
+                    self.pending_floating_surfaces.push(request);
+                }
+            }
+        }
+    }
+
+    fn harvest_floating_surface_source_updates(&mut self) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable Box<GroupRow> contract as request harvest.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for update in Widget::take_floating_surface_source_updates(row) {
+                if let Some(existing) = self
+                    .pending_floating_surface_updates
+                    .iter_mut()
+                    .find(|(id, _)| id == &update.0)
+                {
+                    *existing = update;
+                } else {
+                    self.pending_floating_surface_updates.push(update);
+                }
+            }
+        }
+    }
+
+    /// Pull app-originated requests for the shared shell chooser. This is a
+    /// separate edge from a floating-surface handoff: selecting content is
+    /// still pending and remains wholly shell/user owned.
+    fn harvest_capture_studio_requests(&mut self) {
+        let mut requested = None;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable Box<GroupRow> contract as the floating
+            // surface harvester immediately above.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            requested = requested.or_else(|| Widget::take_capture_studio_request(row));
+        }
+        if let Some(mode) = requested {
+            let _ = self.open_capture_studio(mode);
+        }
     }
 
     /// The window group directly under `p`, via the click-focus
@@ -3781,6 +4852,10 @@ impl ShellOverlayHost {
                 }
                 "projection.open" => {
                     st.overlays.projection = true;
+                    true
+                }
+                "capture.open" => {
+                    st.overlays.capture = true;
                     true
                 }
                 // `search.open` is a no-op: the palette is already open
@@ -5038,10 +6113,22 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Win+P — wireless display picker. Super specifically, so an
-        // application's Ctrl+P remains Print. Handled before the
-        // general Super-letter switch below.
+        // Super+Shift+P is the fast path into live PiP selection. It must be
+        // checked before familiar Win+P so the shifted chord cannot briefly
+        // flash or toggle the projection sheet underneath the picker.
         if super_down
+            && shift_down
+            && let Key::Character(s) = logical_key
+            && s.eq_ignore_ascii_case("p")
+        {
+            let _ = self.open_capture_studio(ui::widget::CaptureMode::Pip);
+            *handled = true;
+            return true;
+        }
+        // Win+P — wireless display picker. Super specifically, so an
+        // application's Ctrl+P remains Print.
+        if super_down
+            && !shift_down
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("p")
             && let Some(chrome) = self.chrome.clone()
@@ -5049,6 +6136,31 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             st.overlays.projection = !st.overlays.projection;
             st.bump();
+            *handled = true;
+            return true;
+        }
+        if super_down
+            && shift_down
+            && let Key::Character(s) = logical_key
+            && s.eq_ignore_ascii_case("r")
+        {
+            if self.capture_studio.is_replay_active() {
+                // A warming buffer deliberately accepts no speculative save;
+                // the chord is still shell-owned and the pill keeps saying
+                // Buffering until a decodable tail exists.
+                let _ = self.capture_studio.save_recent_replay();
+            } else if !self.capture_studio.is_recording_active() {
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Recording);
+            }
+            *handled = true;
+            return true;
+        }
+        if super_down
+            && shift_down
+            && let Key::Character(s) = logical_key
+            && s.eq_ignore_ascii_case("s")
+        {
+            let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
             *handled = true;
             return true;
         }
@@ -5573,6 +6685,9 @@ impl ShellOverlayHost {
             return true;
         }
         let flags = self.overlay_flags();
+        if flags.capture && !self.capture_studio.is_open() {
+            self.capture_studio.open();
+        }
         if flags.room_activity && !self.room_activity.rect().contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
@@ -6593,10 +7708,15 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
+        self.harvest_empty_workspace_open_app(s, p);
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.sync(s, p);
         }
         self.palette.sync(s, p);
+        self.capture_studio.sync(s, p);
+        for (_, mirror) in &mut self.capture_mirrors {
+            mirror.sync(s, p);
+        }
     }
 
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
@@ -6614,7 +7734,15 @@ impl Widget for ShellOverlayHost {
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
         let content_dirty = self.content.update(doc, path);
+        self.harvest_floating_surface_requests();
+        self.harvest_floating_surface_source_updates();
+        self.harvest_capture_studio_requests();
         let palette_dirty = self.palette.update(doc, path);
+        let mirror_dirty = self
+            .capture_mirrors
+            .iter_mut()
+            .map(|(_, mirror)| mirror.update(doc, path))
+            .fold(false, |dirty, next| dirty || next);
         let sidebar_dirty = self.sidebar.as_mut().is_some_and(|w| w.update(doc, path));
         // The harvesters run after `content.update` so this frame's
         // gestures are visible to them, mirroring one-shot widget-side
@@ -6641,6 +7769,8 @@ impl Widget for ShellOverlayHost {
         // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
         self.mark_focused_group();
+        let capture_targets = self.capture_targets();
+        self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
@@ -6677,6 +7807,7 @@ impl Widget for ShellOverlayHost {
             || chrome_dirty
             || portal_dirty
             || picker_dirty
+            || mirror_dirty
             || follow_dirty
     }
 
@@ -6722,6 +7853,17 @@ impl Widget for ShellOverlayHost {
         }
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
+        let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+        self.capture_node = Some(capture_node);
+        self.screenshot_markup_node = self
+            .screenshot_markup
+            .as_mut()
+            .map(|markup| markup.build_layout(taffy, theme, node_map));
+        self.capture_mirror_nodes = self
+            .capture_mirrors
+            .iter_mut()
+            .map(|(_, mirror)| mirror.build_layout(taffy, theme, node_map))
+            .collect();
         // Override the widget's own narrow 360px default so the palette
         // reads as a centered modal sheet, not a top-right popover.
         // `taffy.style` can only fail for a `NodeId` foreign to this tree
@@ -6797,10 +7939,14 @@ impl Widget for ShellOverlayHost {
         });
         self.sidebar_node = sidebar_node;
 
-        let children: Vec<NodeId> = match sidebar_node {
-            Some(s) => vec![content_node, palette_node, s],
-            None => vec![content_node, palette_node],
+        let mut children: Vec<NodeId> = match sidebar_node {
+            Some(s) => vec![content_node, palette_node, s, capture_node],
+            None => vec![content_node, palette_node, capture_node],
         };
+        if let Some(markup_node) = self.screenshot_markup_node {
+            children.push(markup_node);
+        }
+        children.extend(self.capture_mirror_nodes.iter().copied());
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -6872,6 +8018,11 @@ impl Widget for ShellOverlayHost {
                 let row = &mut *ptr;
                 row.set_leading_inset(wheel_w);
                 row.set_output_spans(&settled_spans);
+                // App-owned call/navigation surfaces cross into this same
+                // combined-output coordinate space. Push the real boundary
+                // before child layout so both sides resolve one identical
+                // rect on the ownership-transfer frame.
+                Widget::set_floating_surface_bounds(row, self.rect);
             }
         }
         let Ok(children) = taffy.children(node) else {
@@ -6929,6 +8080,25 @@ impl Widget for ShellOverlayHost {
             };
             sidebar.apply_layout(taffy, *sidebar_child, Point::new(anchor_x, self.rect.y0));
         }
+        if let Some(capture_node) = self.capture_node {
+            self.capture_studio.apply_layout(
+                taffy,
+                capture_node,
+                Point::new(self.rect.x0, self.rect.y0),
+            );
+        }
+        if let (Some(markup), Some(markup_node)) =
+            (self.screenshot_markup.as_mut(), self.screenshot_markup_node)
+        {
+            markup.apply_layout(taffy, markup_node, Point::new(self.rect.x0, self.rect.y0));
+        }
+        for ((_, mirror), mirror_node) in self
+            .capture_mirrors
+            .iter_mut()
+            .zip(self.capture_mirror_nodes.iter().copied())
+        {
+            mirror.apply_layout(taffy, mirror_node, Point::new(self.rect.x0, self.rect.y0));
+        }
         self.publish_strip_viewport();
     }
 
@@ -6949,9 +8119,31 @@ impl Widget for ShellOverlayHost {
         // what it covers.
         let flags = self.overlay_flags();
         self.draw_desktop_layer(scene, transform, text_renderer, theme, presence);
+        // Detached app surfaces are presented by the shell after the window
+        // layer, but before shell chrome. The app still paints the live
+        // content and owns its controls; only presentation ownership changes.
+        // Keeping this as a second pass avoids a texture/snapshot hand-off and
+        // therefore preserves the exact frame across the detach boundary.
+        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        for row in rows {
+            // SAFETY: `group_row_ptrs` points into the boxed content tree
+            // owned by this host. Drawing is sequential and `&mut self`
+            // prevents another traversal from aliasing these rows.
+            unsafe {
+                (&mut *row).draw_floating_surfaces(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+            }
+        }
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
+        self.capture_studio
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(
@@ -7001,6 +8193,92 @@ impl Widget for ShellOverlayHost {
         // the original inline code hit a bare `return`.
         self.track_cursor_position(event, scale_factor);
 
+        if let (Some(markup), Some(markup_node)) =
+            (self.screenshot_markup.as_mut(), self.screenshot_markup_node)
+        {
+            markup.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                markup_node,
+                taffy,
+            );
+            // This is a real editing workspace, not a translucent status
+            // overlay: drawing and shortcuts must never leak to the app below.
+            *handled = true;
+            return;
+        }
+
+        if self.capture_studio.is_open() {
+            if let Some(capture_node) = self.capture_node {
+                self.capture_studio.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    capture_node,
+                    taffy,
+                );
+            }
+            if !self.capture_studio.is_open()
+                && let Some(chrome) = self.chrome.as_ref()
+            {
+                chrome.borrow_mut().overlays.capture = false;
+            }
+            // Source selection remains modal. Once recording begins the same
+            // widget becomes a tiny shell surface: only the pill itself owns
+            // pointer input, while apps remain fully interactive beneath it.
+            if *handled || self.capture_studio.modal_capture().is_some() {
+                return;
+            }
+        }
+
+        if self
+            .capture_mirrors
+            .iter()
+            .any(|(_, mirror)| mirror.wants_pointer_capture())
+            && self.route_capture_mirror_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            )
+        {
+            return;
+        }
+
+        // A drag that began inside an app keeps pointer ownership until its
+        // release, even after the surface has crossed outside the app/window.
+        // Route this before shell overlays so the boundary frame cannot steal
+        // the pointer and leave the live surface stranded or one event behind.
+        if self.content.wants_pointer_capture() {
+            if let Some(content_node) = self.content_node {
+                self.content.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    content_node,
+                    taffy,
+                );
+            }
+            return;
+        }
+
         if self.route_modal_absorbing_overlays(
             event,
             scale_factor,
@@ -7009,6 +8287,18 @@ impl Widget for ShellOverlayHost {
             path,
             handled,
             focus_target,
+        ) {
+            return;
+        }
+        if self.route_capture_mirror_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
         ) {
             return;
         }
@@ -7187,12 +8477,21 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_ref() {
             return vec![onboarding];
         }
-        let mut out: Vec<&dyn Widget> = Vec::with_capacity(3);
+        let mut out: Vec<&dyn Widget> = Vec::with_capacity(5 + self.capture_mirrors.len());
         out.push(self.content.as_ref());
         out.push(&self.palette);
         if let Some(s) = self.sidebar.as_ref() {
             out.push(s.as_ref());
         }
+        out.push(&self.capture_studio);
+        if let Some(markup) = self.screenshot_markup.as_ref() {
+            out.push(markup);
+        }
+        out.extend(
+            self.capture_mirrors
+                .iter()
+                .map(|(_, mirror)| mirror as &dyn Widget),
+        );
         out
     }
 
@@ -7200,12 +8499,22 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_mut() {
             return vec![onboarding];
         }
-        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(3);
+        let mut out: Vec<&mut (dyn Widget + '_)> =
+            Vec::with_capacity(5 + self.capture_mirrors.len());
         out.push(self.content.as_mut());
         out.push(&mut self.palette);
         if let Some(s) = self.sidebar.as_mut() {
             out.push(s.as_mut());
         }
+        out.push(&mut self.capture_studio);
+        if let Some(markup) = self.screenshot_markup.as_mut() {
+            out.push(markup);
+        }
+        out.extend(
+            self.capture_mirrors
+                .iter_mut()
+                .map(|(_, mirror)| mirror as &mut dyn Widget),
+        );
         out
     }
 
@@ -7219,6 +8528,19 @@ impl Widget for ShellOverlayHost {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.capture_studio.wants_pointer_capture()
+            || self
+                .screenshot_markup
+                .as_ref()
+                .is_some_and(Widget::wants_pointer_capture)
+            || self.content.wants_pointer_capture()
+            || self
+                .capture_mirrors
+                .iter()
+                .any(|(_, mirror)| mirror.wants_pointer_capture())
     }
 
     /// Bubbles structural-dirty flags up from the content tree (and
@@ -7245,11 +8567,27 @@ impl Widget for ShellOverlayHost {
             .as_mut()
             .is_some_and(|s| s.take_structure_dirty());
         let palette = std::mem::take(&mut self.palette_layout_dirty);
-        content | sidebar | palette | resynced
+        let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
+        content | sidebar | palette | capture_mirrors | resynced
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.needs_animation_frame_at(Instant::now())
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        [
+            self.content.next_wake_deadline(),
+            self.sidebar
+                .as_ref()
+                .and_then(|sidebar| sidebar.next_wake_deadline()),
+            self.notification_stack
+                .as_ref()
+                .and_then(|stack| stack.next_wake_deadline()),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 }
 
@@ -7275,22 +8613,39 @@ impl ShellOverlayHost {
         let palette_in_flight = self.palette_transition.is_animating(now);
         let power_menu_in_flight = self.power_menu.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
+        let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
             .is_some_and(|s| s.needs_animation_frame());
+        let mirror_frame = self
+            .capture_mirrors
+            .iter()
+            .any(|(_, mirror)| mirror.needs_animation_frame());
+        let markup_frame = self
+            .screenshot_markup
+            .as_ref()
+            .is_some_and(Widget::needs_animation_frame);
+        let notification_frame = self
+            .notification_stack
+            .as_ref()
+            .is_some_and(Widget::needs_animation_frame);
         self.transition_started.is_some()
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
             || power_menu_in_flight
             || room_activity_in_flight
+            || capture_in_flight
             // The projection component includes both its transition and the
             // bounded worker-response frame pump in this signal.
             || projection_needs_frame
             || self.content.needs_animation_frame()
             || sidebar_frame
+            || mirror_frame
+            || markup_frame
+            || notification_frame
             // A reading landing after the open animation settles still
             // has to reach the screen.
             || self.qs_refresh.is_in_flight()
@@ -7795,7 +9150,7 @@ impl ShellOverlayHost {
         overview_open: bool,
     ) {
         let target = if overview_open { 1.0 } else { 0.0 };
-        let t = self.tick_overview_transition(target);
+        let t = self.tick_overview_transition(target, theme.reduce_motion);
         // The overview is a panel over the desk, not a place you travel
         // to: the desktop stays drawn and the scrim dims it as the panel
         // rises, the same enter/exit the ws-settings modal plays.
@@ -8070,7 +9425,11 @@ impl ShellOverlayHost {
         self.apply_quick_settings_readings();
         self.qs_transition.set_open(
             flags.quick_settings,
-            Duration::from_millis(QS_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(QS_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let now = Instant::now();
@@ -8165,7 +9524,11 @@ impl ShellOverlayHost {
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let palette_now = Instant::now();
@@ -8173,7 +9536,7 @@ impl ShellOverlayHost {
             let openness = self.palette_transition.value(palette_now);
             draw_scrim_at(scene, transform, self.rect, openness, theme);
             let (alpha, dy, scale) =
-                modal_transition_curve(&self.palette_transition, palette_now, 0.9);
+                modal_transition_curve(&self.palette_transition, palette_now, 0.96);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
             if in_flight {
@@ -8368,7 +9731,7 @@ impl ShellOverlayHost {
                 &rr,
             );
         } else if hover {
-            scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &rr);
+            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
         }
 
         let pad = 14.0_f64;
@@ -9008,13 +10371,7 @@ impl ShellOverlayHost {
         let add_hover = self.last_cursor.is_some_and(|c| add_rect.contains(c));
         let add_rr = RoundedRect::from_rect(add_rect, OVERVIEW_ROW_RADIUS_PX);
         if add_hover {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &add_rr,
-            );
+            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &add_rr);
         }
         let add_color = if add_hover { accent } else { colors.text_dim };
         let glyph = 18.0_f64;
@@ -9295,7 +10652,7 @@ impl ShellOverlayHost {
         }
 
         let chip_text_size = (tokens.typography.scale.xs).max(10.0);
-        let idle_fill = colors.surface_white_5;
+        let idle_fill = colors.lift(0.35);
         let active_fill = colors.accent[5];
         let active_text = colors.text_primary;
         let idle_text = colors.text_dim;
@@ -9405,14 +10762,14 @@ impl ShellOverlayHost {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &track_shape,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &track_shape,
         );
@@ -9678,7 +11035,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &RoundedRect::from_rect(clear, 10.0),
         );
@@ -9959,7 +11316,7 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let field = self.qs_password_field_rect();
         let field_shape = RoundedRect::from_rect(field, 10.0);
-        // Opaque, not the translucent `surface_white_5` wash the
+        // Opaque, not the former translucent surface wash the
         // popover's other cards use — that let the app underneath show
         // through the passphrase field.
         scene.fill(
@@ -9972,7 +11329,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &field_shape,
         );
@@ -10134,6 +11491,90 @@ impl ShellOverlayHost {
     /// Root power-profile geometry exposed for integration click routing tests.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
         QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
+    }
+}
+
+#[cfg(test)]
+mod empty_workspace_tests {
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::WorkspaceTree;
+    use taffy::AvailableSpace;
+
+    fn has_open_app_button(widget: &dyn Widget) -> bool {
+        if widget.accessibility().is_some_and(|node| {
+            node.children.iter().any(|child| {
+                child.role == ui::a11y::Role::Button && child.name.as_deref() == Some("Open an app")
+            })
+        }) {
+            return true;
+        }
+        widget.children().into_iter().any(has_open_app_button)
+    }
+
+    fn empty_state_rect(widget: &dyn Widget) -> Option<Rect> {
+        if widget.name() == "EmptyState" {
+            return Some(widget.get_rect());
+        }
+        widget.children().into_iter().find_map(empty_state_rect)
+    }
+
+    fn lay_out(host: &mut ShellOverlayHost, width: f32, height: f32) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let measure_map = node_map.clone();
+        let mut text = TextRenderer::new();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::Definite(height),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                        (*ptr).measure(known, available, &mut text)
+                    })
+                },
+            )
+            .expect("empty workspace layout");
+        host.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn bootstrap_default_exposes_an_accessible_open_app_action() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, _) = build_nirios_overlay_host_with_chrome(&tree);
+        lay_out(&mut host, 1600.0, 900.0);
+        assert!(
+            has_open_app_button(host.content.as_ref()),
+            "a real first boot needs a visible, accessible route out of its empty workspace"
+        );
+        let rect = empty_state_rect(host.content.as_ref()).expect("empty state is mounted");
+        assert!(
+            rect.width() >= 320.0 && rect.height() >= 160.0,
+            "the first-use affordance needs visible canvas space, rect={rect:?}"
+        );
+    }
+
+    #[test]
+    fn empty_workspace_action_opens_the_applications_palette() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_OPEN_APP, true);
+
+        host.sync(&mut doc, &root);
+
+        assert!(host.palette_visible(), "the CTA opens the global palette");
+        assert_eq!(
+            chrome.borrow().search_scope,
+            crate::shell::chrome_state::SearchScope::All
+        );
+        assert_eq!(host.active_kind_filter, app_kind_filter());
+        assert_eq!(host.palette.query(), "", "the picker starts ready to type");
     }
 }
 
@@ -10524,7 +11965,7 @@ mod overview_transition_tests {
     fn idle_holds_zero_until_target_changes() {
         let mut h = host();
         for _ in 0..5 {
-            let t = h.tick_overview_transition(0.0);
+            let t = h.tick_overview_transition(0.0, false);
             assert_eq!(t, 0.0);
         }
     }
@@ -10532,14 +11973,14 @@ mod overview_transition_tests {
     #[test]
     fn target_change_latches_transition_and_completes() {
         let mut h = host();
-        h.tick_overview_transition(1.0);
+        h.tick_overview_transition(1.0, false);
         assert!(h.transition_started.is_some(), "should latch transition");
         assert_eq!(h.overview_target, 1.0);
         // Past the full duration, value settles exactly at the target.
         std::thread::sleep(std::time::Duration::from_millis(
             OVERVIEW_TRANSITION_MS + 30,
         ));
-        let t = h.tick_overview_transition(1.0);
+        let t = h.tick_overview_transition(1.0, false);
         assert!((t - 1.0).abs() < f32::EPSILON);
         assert!(h.transition_started.is_none(), "transition should clear");
     }
@@ -10549,14 +11990,14 @@ mod overview_transition_tests {
         // Flip target mid-fade; `transition_from` should capture the
         // current `overview_t`, not 0, so the reverse starts from there.
         let mut h = host();
-        h.tick_overview_transition(1.0);
+        h.tick_overview_transition(1.0, false);
         std::thread::sleep(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2));
-        let t_mid = h.tick_overview_transition(1.0);
+        let t_mid = h.tick_overview_transition(1.0, false);
         assert!(
             t_mid > 0.0 && t_mid < 1.0,
             "mid-flight t should be between 0 and 1, got {t_mid}"
         );
-        h.tick_overview_transition(0.0);
+        h.tick_overview_transition(0.0, false);
         assert!(
             (h.transition_from - t_mid).abs() < 0.01,
             "reverse should start from current alpha, got from={} t_mid={}",
@@ -10564,6 +12005,15 @@ mod overview_transition_tests {
             t_mid
         );
         assert_eq!(h.overview_target, 0.0);
+    }
+
+    #[test]
+    fn reduced_motion_snaps_overview_to_each_target() {
+        let mut h = host();
+        assert_eq!(h.tick_overview_transition(1.0, true), 1.0);
+        assert!(h.transition_started.is_none());
+        assert_eq!(h.tick_overview_transition(0.0, true), 0.0);
+        assert!(h.transition_started.is_none());
     }
 }
 
@@ -12473,6 +13923,136 @@ mod tests {
     use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
+    #[test]
+    fn pip_placement_avoids_its_source_and_keeps_edge_margin() {
+        let bounds = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        let size = vello::kurbo::Size::new(420.0, 200.0);
+        let bottom_right_source = Rect::new(900.0, 400.0, 1580.0, 880.0);
+        let origin = capture_mirror_origin(bounds, Some(bottom_right_source), size);
+        let placed = Rect::from_origin_size(origin, size);
+        assert_eq!(placed.x1, 1584.0);
+        assert_eq!(
+            placed.y0, 52.0,
+            "top-right should beat an obscured bottom-right"
+        );
+        assert_eq!(placed.intersect(bottom_right_source).area(), 0.0);
+
+        let default = capture_mirror_origin(bounds, None, size);
+        assert_eq!(default, Point::new(1164.0, 684.0));
+    }
+
+    #[test]
+    fn offscreen_pip_source_enters_from_its_virtual_desktop_edge() {
+        let bounds = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+        let left =
+            visible_capture_spawn(bounds, Some(Rect::new(-1_200.0, 180.0, -200.0, 780.0))).unwrap();
+        assert_eq!(left.x0, 6.0);
+        assert!(left.y0 >= 48.0 && left.y1 <= 894.0);
+
+        let right =
+            visible_capture_spawn(bounds, Some(Rect::new(1_900.0, 120.0, 2_900.0, 720.0))).unwrap();
+        assert_eq!(right.x1, 1_594.0);
+
+        let partly_visible = Rect::new(1_500.0, 100.0, 1_900.0, 500.0);
+        assert_eq!(
+            visible_capture_spawn(bounds, Some(partly_visible)),
+            Some(Rect::new(1_500.0, 100.0, 1_600.0, 500.0))
+        );
+    }
+
+    #[test]
+    fn compact_pip_initial_size_preserves_aspect_without_dominating_viewport() {
+        let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let size = capture_mirror_initial_size(compact, 16.0 / 9.0, None);
+        assert_eq!(size.width, 352.0);
+        assert_eq!(size.height, 198.0);
+        assert!(size.width < compact.width() / 2.0);
+
+        let preferred =
+            capture_mirror_initial_size(compact, 1.0, Some(vello::kurbo::Size::new(480.0, 270.0)));
+        assert_eq!(preferred.width, 352.0);
+        assert_eq!(preferred.height, 198.0);
+    }
+
+    #[test]
+    fn tall_pinned_screenshot_uses_a_readable_scrollable_document_viewport() {
+        let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let size = capture_mirror_initial_size(
+            compact,
+            524.0 / 3_021.0,
+            Some(vello::kurbo::Size::new(340.0, 420.0)),
+        );
+        assert_eq!(size.width, 340.0);
+        assert_eq!(size.height, 330.0);
+
+        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8, 30, 40, 255]);
+        let image = Image::from_rgba(pixel.clone(), 1, 1).with_fit(ImageFit::Fill);
+        let preview = Image::from_rgba(pixel, 1, 1).with_fit(ImageFit::Fill);
+        let mut mirror = CaptureMirrorImage::new_crossfade(image, preview, Some(524.0 / 3_021.0));
+        mirror.rect = Rect::new(0.0, 0.0, 340.0, 300.0);
+        mirror.set_handoff_progress(1_000);
+        let mix = mirror.handoff_mix();
+        let painted = mirror.painted_image_rect(mix);
+        assert_eq!(painted.width(), 340.0);
+        assert!(painted.height() > 1_900.0, "full pixels fit the card width");
+
+        let event = WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        let mut state = AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        mirror.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            NodeId::from(0_u64),
+            &TaffyTree::new(),
+        );
+        assert!(handled);
+        assert_eq!(mirror.document_scroll_y, 54.0);
+    }
+
+    #[test]
+    fn rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout() {
+        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0_u8, 0, 0, 0]);
+        let target = Image::from_rgba(pixel.clone(), 1, 1);
+        let mut mirror = CaptureMirrorImage::new(
+            target,
+            vec![CaptureMirrorHandoffLayer {
+                rgba: pixel,
+                width: 1,
+                height: 1,
+                source: Rect::new(0.0, 0.0, 0.4, 0.5),
+                target: Rect::new(0.0, 0.0, 0.5, 1.0),
+            }],
+        );
+
+        mirror.set_handoff_progress(0);
+        assert_eq!(mirror.handoff_mix(), 0.0);
+        mirror.set_handoff_progress(400);
+        assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
+        mirror.set_handoff_progress(600);
+        assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
+        mirror.set_handoff_progress(1_000);
+        assert_eq!(mirror.handoff_mix(), 1.0);
+
+        assert_eq!(
+            lerp_normalized_rect(
+                Rect::new(0.0, 0.0, 0.4, 0.5),
+                Rect::new(0.0, 0.0, 0.5, 1.0),
+                0.0,
+            ),
+            Rect::new(0.0, 0.0, 0.4, 0.5)
+        );
+    }
+
     /// Recording mock content for the host's `content` slot. The palette
     /// test never reaches `content.handle_event`, but the WS-settings click
     /// test needs a real layout target so taffy can place the modal.
@@ -12675,6 +14255,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn super_shift_r_opens_recording_setup_then_saves_an_armed_replay() {
+        let mut h = build_harness();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+
+        assert!(pump(&mut h, &key_press(Key::Character("r".into())), chord));
+        assert!(h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host.capture_studio.mode(),
+            ui::widget::CaptureMode::Recording
+        );
+        assert!(h.chrome.borrow().overlays.capture);
+
+        h.host
+            .capture_studio
+            .set_replay_active(true, ui::widget::AudioCaptureMode::SystemAndMicrophone);
+        h.host.capture_studio.set_replay_buffered_seconds(30);
+        assert!(pump(&mut h, &key_press(Key::Character("R".into())), chord));
+        let intent = h
+            .host
+            .take_capture_intents()
+            .pop()
+            .expect("the ready rolling buffer accepts the global save chord");
+        assert_eq!(
+            intent.replay_command,
+            Some(ui::widget::ReplayCommand::SaveRecent)
+        );
+        assert!(
+            h.host.capture_studio.is_replay_active(),
+            "saving from the keyboard must not disarm recent capture"
+        );
+    }
+
+    #[test]
+    fn super_shift_p_opens_pip_directly_without_toggling_projection() {
+        let mut h = build_harness();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+
+        assert!(pump(&mut h, &key_press(Key::Character("p".into())), chord));
+        assert!(h.host.capture_studio.is_open());
+        assert_eq!(h.host.capture_studio.mode(), ui::widget::CaptureMode::Pip);
+        assert!(h.chrome.borrow().overlays.capture);
+        assert!(
+            !h.chrome.borrow().overlays.projection,
+            "the PiP chord must not leak into familiar Win+P projection"
+        );
+    }
+
+    #[test]
+    fn capture_entry_always_uses_the_requested_mode_instead_of_the_previous_one() {
+        let mut h = build_harness();
+        assert!(h.host.open_capture_studio(ui::widget::CaptureMode::Pip));
+        assert_eq!(h.host.capture_studio.mode(), ui::widget::CaptureMode::Pip);
+
+        h.host.capture_studio.close();
+        assert!(
+            h.host
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+        assert_eq!(
+            h.host.capture_studio.mode(),
+            ui::widget::CaptureMode::Screenshot,
+            "Super+Shift+S and app requests must not reopen the last PiP mode"
+        );
+        assert!(h.chrome.borrow().overlays.capture);
+    }
     /// Escape dismisses a summoned wheel, and takes priority over the
     /// rest of the dismissal ladder because it is the most transient
     /// thing the shell puts up.

@@ -451,7 +451,11 @@ impl ProjectionOverlay {
         self.was_open = open;
         self.transition.set_open(
             open,
-            Duration::from_millis(OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let now = Instant::now();
@@ -661,7 +665,7 @@ impl ProjectionOverlay {
                 if selected {
                     colors.accent[5].with_alpha_factor(0.24)
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.35)
                 },
                 None,
                 &RoundedRect::from_rect(cell, 12.0),
@@ -818,7 +822,7 @@ impl ProjectionOverlay {
                 if i == 0 && self.controller.options.stream_policy.adaptive {
                     colors.accent[5].with_alpha_factor(0.24)
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.35)
                 },
                 None,
                 &RoundedRect::from_rect(chip, 9.0),
@@ -1011,7 +1015,7 @@ impl ProjectionOverlay {
                 if selected {
                     colors.accent[5].with_alpha_factor(0.18)
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.35)
                 },
                 None,
                 &RoundedRect::from_rect(row, 12.0),

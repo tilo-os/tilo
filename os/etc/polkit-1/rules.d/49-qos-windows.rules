@@ -10,6 +10,7 @@ polkit.addRule(function (action, subject) {
         "org.qos.windows.lifecycle": true,
         "org.qos.windows.egress-open": true,
         "org.qos.windows.egress-close": true,
+        "org.qos.windows.egress-revoke": true,
         "org.qos.windows.graphics-attach": true,
         "org.qos.windows.graphics-detach": true
     };

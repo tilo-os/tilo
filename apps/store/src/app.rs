@@ -142,9 +142,8 @@ pub struct StoreApp {
     active_filter: SourceFilter,
     /// Active category or `None` for "all categories".
     active_category: Option<String>,
-    /// Current search query. Persisted; the display is a placeholder
-    /// stub until we wire a real `TextInput` (kept a follow-up for
-    /// scope — the filter/chip pipeline is what proves the layout).
+    /// Current search query, persisted through the header's bound
+    /// [`TextInput`] and applied to the merged catalogue.
     query: String,
     /// Rolling status line the worker overwrites while an action
     /// runs. Surfaced transiently in the floating status bubble (see

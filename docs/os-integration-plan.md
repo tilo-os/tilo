@@ -13,6 +13,12 @@ SyncThing-mode = a workspace with no dedicated host (peers sync directly). Home-
 enterprise = the same workspace with its host being that machine. Everything downstream
 (permissions, per-app backend placement, admin console) keys off this.
 
+The executable device-role, unified replication-intent and deterministic
+multi-server placement foundation is documented in
+[`device-mesh.md`](device-mesh.md). It deliberately reuses collaboration ops,
+filesystem blobs and consented remote input; app serving/compute execution is a
+later worker implementation, not a new sync or identity stack.
+
 ## Phases (in build order; each = assess+test+integrate+prove the mapped work)
 
 1. **Workspace = unit-of-sync runtime (host + clients + durability).**

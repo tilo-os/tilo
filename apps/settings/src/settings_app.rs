@@ -195,7 +195,7 @@ impl SettingsApp {
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("settings.search")
                 .with_on_change_path(sidebar::SEARCH_KEY)
-                .with_placeholder("\u{f0349}  Search settings")
+                .with_placeholder("Search settings")
                 .with_font_size(13.0),
         )
     }
@@ -229,6 +229,7 @@ impl SettingsApp {
         match self.selected {
             Category::Network => panes::network::build(),
             Category::Bluetooth => panes::bluetooth::build(),
+            Category::DeviceMesh => panes::device_mesh::build(),
             Category::Sound => panes::sound::build(),
             Category::Displays => panes::display::build(),
             Category::MouseKeyboard => panes::mouse_keyboard::build(),
