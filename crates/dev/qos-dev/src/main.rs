@@ -26,7 +26,7 @@ struct Cli {
 enum Command {
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
-    /// Add a screen, headless scenario, or translation catalog to an app.
+    /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
     Locale(LocaleArgs),
@@ -466,6 +466,10 @@ enum ComponentTemplateArg {
     Display,
     /// Typed local state bound to labeled text and boolean controls.
     Form,
+    /// Source-agnostic virtualized tree with typed configuration.
+    Tree,
+    /// Source-agnostic sparse variable-height list with retained delegates.
+    List,
 }
 
 fn main() -> ExitCode {
@@ -631,6 +635,8 @@ fn run_add(args: AddArgs) -> Result<()> {
                 template: match template {
                     ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
                     ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
+                    ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
+                    ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
                 },
             },
             options,
@@ -992,6 +998,25 @@ mod tests {
         assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
         assert!(options.dry_run);
 
+        let tree_component = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "project-tree",
+            "--template",
+            "tree",
+        ])
+        .expect("tree component command");
+        assert!(matches!(
+            tree_component.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::Tree,
+                    ..
+                })
+            })
+        ));
+
         let locale = Cli::try_parse_from(["qos-dev", "add", "locale", "de-DE", "--force"])
             .expect("locale command");
         let Command::Add(AddArgs {
@@ -1007,6 +1032,29 @@ mod tests {
         let Command::Add(AddArgs { command: None }) = wizard.command else {
             panic!("expected interactive add command");
         };
+    }
+
+    #[test]
+    fn add_command_exposes_the_reusable_list_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "activity-list",
+            "--template",
+            "list",
+        ])
+        .expect("list component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::List,
+                    ..
+                })
+            })
+        ));
     }
 
     #[test]

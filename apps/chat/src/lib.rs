@@ -100,6 +100,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"narrow"` — collapse both flaps for the responsive overlay capture.
 /// * `"compact"` — medium window: channels docked, members summoned on demand.
 /// * `"starter"` — the real first-run empty workspace (no demo content).
+/// * `"people"` — the workspace People roster.
+/// * `"thread-narrow"` — a thread as a phone-width pushed detail view.
+/// * `"collaboration"` — the desktop thread plus active huddle state.
 /// * `"context"` — open a channel context menu.
 /// * `"attach"` — open the workspace file picker over the composer.
 /// * `"edit"` — show the shared inline editor on a sent message.

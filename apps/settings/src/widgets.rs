@@ -14,10 +14,10 @@ use ui::widget::{Badge, Button, Column, Container, Row, Spacer, Text, Widget};
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
 pub type El = Box<dyn Widget>;
 
-/// Vertical gap (logical px) between stacked cards in a panel. Slightly
-/// larger than the toolkit's default 12 px inter-child gap so each card
-/// reads as a distinct group with clear air around it.
-pub const CARD_GAP: f32 = 16.0;
+/// Vertical gap (logical px) between stacked cards in a panel. The page
+/// heading and this deliberate air do the grouping work, so card outlines do
+/// not have to carry every level of hierarchy.
+pub const CARD_GAP: f32 = 20.0;
 
 /// A fixed-height empty box used to inject deliberate vertical space.
 ///
@@ -54,6 +54,31 @@ pub fn cards(items: Vec<El>) -> El {
         }
     }
     Box::new(col)
+}
+
+/// The unboxed heading at the start of every settings destination.
+///
+/// A category is a real page, not merely the selected row in a navigation
+/// list. Keeping its identity in plain type (rather than another raised card)
+/// establishes where the person is while avoiding the old card-within-page
+/// treatment. The small "Settings" eyebrow also makes the shared shell's
+/// arrow unambiguous on a narrow content screen: it returns to the Settings
+/// list, not to a previous app/window.
+pub fn page_heading(title: &str, subtitle: &str) -> El {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new("SETTINGS").with_size(12.0).with_color(dim()),
+            ))
+            .push(vgap(5.0))
+            .push(Box::new(Text::new(title).with_size(24.0)))
+            .push(vgap(5.0))
+            .push(Box::new(
+                Text::new(subtitle).with_size(13.0).with_color(dim()),
+            )),
+    )
 }
 
 /// A titled "card": a heading line followed by a bordered, padded surface
@@ -106,14 +131,14 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
             .with_intrinsic_height()
             .push(Box::new(top))
             .push(Box::new(
-                Text::new(description).with_size(11.0).with_color(dim()),
+                Text::new(description).with_size(12.0).with_color(dim()),
             )),
     )
 }
 
 /// A dim helper-text line, for captions and "best-effort" notes.
 pub fn caption(text: &str) -> El {
-    Box::new(Text::new(text).with_size(11.0).with_color(dim()))
+    Box::new(Text::new(text).with_size(12.0).with_color(dim()))
 }
 
 /// Default width (logical px) a compact right-aligned control (dropdown,
@@ -205,7 +230,7 @@ fn dim() -> vello::peniko::Color {
 /// Vertical gap (logical px) between rows inside a single card. Smaller
 /// than [`CARD_GAP`] so rows feel related within a group while still
 /// having visible separation.
-pub const ROW_GAP: f32 = 10.0;
+pub const ROW_GAP: f32 = 12.0;
 
 /// A vertical stack of pre-built rows inside a column with intrinsic
 /// height — the standard body for a card.

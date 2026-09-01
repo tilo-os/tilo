@@ -235,6 +235,8 @@ fn settle_layout(
 /// can be reviewed offscreen:
 ///
 /// - `Some("drawer")` — open the narrow-mode page drawer.
+/// - `Some("first_note")` — a genuinely empty workspace, with the clear
+///   first-note action a new person sees before any sample content exists.
 /// - `Some("drag")` — begin dragging a sidebar row (floating ghost +
 ///   live reflow gap).
 /// - `Some("menu")` — open a page row's right-click context menu.
@@ -259,7 +261,9 @@ pub fn render_to_path(
     // don't collide, cleaned up on exit.
     let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
     storage::ensure_layout(&root)?;
-    seed_sample_workspace(&root)?;
+    if scenario != Some("first_note") {
+        seed_sample_workspace(&root)?;
+    }
 
     let mut app = NotesApp::spawn(root.clone())?;
 
