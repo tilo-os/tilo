@@ -100,6 +100,19 @@ pub struct OverlayFlags {
     pub projection: bool,
 }
 
+/// Device-local reduction of the active workspace's collaborative history.
+/// The history document remains authoritative; this is only the small piece
+/// of presentation state needed by passive chrome.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActivityGlance {
+    pub headline: Option<String>,
+    pub unread: usize,
+    /// Changes whenever a new latest entry is observed, even when the text is
+    /// coincidentally identical. The top bar uses it to restart its brief
+    /// transient reveal without stealing the user's selected center widget.
+    pub pulse: u64,
+}
+
 /// Seeded by which chord opened the palette: `Ctrl+K` →
 /// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
 /// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
@@ -281,6 +294,9 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Passive, private history awareness for the top bar. Never serialized
+    /// into or replicated with [`WorkspaceTree`].
+    pub activity_glance: ActivityGlance,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -381,6 +397,7 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
             revision: 0,
+            activity_glance: ActivityGlance::default(),
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id: crate::shell::state::local_user_id(),
@@ -538,6 +555,20 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Publish a compact history reduction. A semantic no-op deliberately
+    /// avoids bumping chrome revision, keeping the resting top bar cached.
+    pub fn publish_activity_glance(&mut self, headline: Option<String>, unread: usize, pulse: u64) {
+        let next = ActivityGlance {
+            headline,
+            unread,
+            pulse,
+        };
+        if self.activity_glance != next {
+            self.activity_glance = next;
+            self.bump();
+        }
     }
 
     /// Reveal one authoritative workspace-settings destination. All shell

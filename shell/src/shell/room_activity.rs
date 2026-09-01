@@ -14,7 +14,7 @@
 //! governance act with another one rather than rewinding it.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
@@ -25,7 +25,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{ArtifactKind, HistoryEntry, HistoryEntryId, HistoryFilter};
 use ui::{
-    ActivityTimeline, AuthorDirectory, GroupNameRequest, HistorySource, NamedRange, Theme, Widget,
+    ActivityDigest, ActivityTimeline, AuthorDirectory, GroupNameRequest, HistoryFacetIndex,
+    HistorySource, NamedRange, Theme, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -43,8 +44,39 @@ const SHEET_MAX_W: f64 = 560.0;
 const SHEET_MIN_W: f64 = 360.0;
 const FULL_BLEED_UNDER: f64 = 720.0;
 const SHEET_INSET: f64 = 16.0;
-const HEADER_H: f64 = 58.0;
+const HEADER_H: f64 = 76.0;
+const VIEW_ROW_H: f64 = 34.0;
 const CHIP_ROW_H: f64 = 30.0;
+const EXPLORER_LEFT_W: f64 = 180.0;
+const EXPLORER_DETAIL_W: f64 = 240.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActivityView {
+    /// Outcome-first summaries since this device's last completed visit.
+    #[default]
+    CatchUp,
+    /// Full granular history with grouping, filters, rename and revert.
+    Explore,
+}
+
+impl ActivityView {
+    const ALL: [Self; 2] = [Self::CatchUp, Self::Explore];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::CatchUp => "Catch up",
+            Self::Explore => "Explore",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum LensSelection {
+    #[default]
+    All,
+    App(String),
+    ResourceKind(String),
+}
 
 /// Compose `transform` with a translation to `(dx, dy)`. `Affine`'s `Mul`
 /// is pure `f64` matrix composition — it cannot overflow or panic — but
@@ -162,10 +194,26 @@ pub struct RoomActivityPane {
     author_rects: Vec<(Option<String>, Rect)>,
     room_name: String,
     total_entries: usize,
+    /// Outcome-first reduction of the currently scoped rows. The full
+    /// timeline remains the source of detail underneath it.
+    digest: ActivityDigest,
     /// Switching rooms moves no changes, so the heads check alone
     /// wouldn't notice — but it changes which rows are this room's.
     last_active: Option<u64>,
     now_override: Option<SystemTime>,
+    /// Per-workspace private frontier. This is deliberately a wall-clock
+    /// reduction rather than a document write: opening history must not
+    /// create collaborative history.
+    seen_at: HashMap<u64, SystemTime>,
+    catchup_since: SystemTime,
+    persistent_frontiers: bool,
+    view: ActivityView,
+    view_rects: Vec<(ActivityView, Rect)>,
+    brief_rects: Vec<(usize, Rect)>,
+    expanded_brief: Option<usize>,
+    facet_index: HistoryFacetIndex,
+    lens: LensSelection,
+    lens_rects: Vec<(LensSelection, Rect)>,
 }
 
 impl Default for RoomActivityPane {
@@ -205,9 +253,38 @@ impl RoomActivityPane {
             author_rects: Vec::new(),
             room_name: String::new(),
             total_entries: 0,
+            digest: ActivityDigest::default(),
             last_active: None,
             now_override: None,
+            seen_at: HashMap::new(),
+            catchup_since: SystemTime::UNIX_EPOCH,
+            persistent_frontiers: false,
+            view: ActivityView::default(),
+            view_rects: Vec::new(),
+            brief_rects: Vec::new(),
+            expanded_brief: None,
+            facet_index: HistoryFacetIndex::default(),
+            lens: LensSelection::default(),
+            lens_rects: Vec::new(),
         }
+    }
+
+    /// Production constructor. Tests use [`Self::new`] so ambient desktop
+    /// settings cannot make their unread counts order-dependent.
+    pub fn new_persistent() -> Self {
+        let mut pane = Self::new();
+        pane.persistent_frontiers = true;
+        let section = settings_store::load_section("history");
+        if let Some(frontiers) = section.get("seen_frontiers").and_then(|v| v.as_object()) {
+            for (workspace, value) in frontiers {
+                let (Ok(id), Some(seconds)) = (workspace.parse::<u64>(), value.as_u64()) else {
+                    continue;
+                };
+                pane.seen_at
+                    .insert(id, SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+            }
+        }
+        pane
     }
 
     /// Tests pin "now" so period windows don't depend on when the suite runs.
@@ -232,8 +309,101 @@ impl RoomActivityPane {
         self.timeline.visible_entry(i)
     }
 
+    pub fn digest(&self) -> &ActivityDigest {
+        &self.digest
+    }
+
+    /// Snapshot the previous private frontier before the catch-up surface is
+    /// shown. It advances only when the surface closes, so opening it cannot
+    /// erase the very summary the user came to read.
+    pub fn begin_view(&mut self, workspace: u64) {
+        self.catchup_since = self
+            .seen_at
+            .get(&workspace)
+            .copied()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        self.rebuild_digest_since_frontier();
+    }
+
+    pub fn finish_view(&mut self, workspace: u64) {
+        let Some(latest) = self
+            .timeline
+            .entries()
+            .iter()
+            .map(|entry| entry.timestamp)
+            .max()
+        else {
+            return;
+        };
+        self.seen_at.insert(workspace, latest);
+        self.catchup_since = latest;
+        self.rebuild_digest_since_frontier();
+        if self.persistent_frontiers {
+            self.persist_frontiers();
+        }
+    }
+
+    /// `(headline, unread, pulse)` consumed by passive chrome. `pulse` is a
+    /// stable projection of the newest content id, not a frame counter.
+    pub fn glance_signal(&self, workspace: u64) -> (Option<String>, usize, u64) {
+        let since = self
+            .seen_at
+            .get(&workspace)
+            .copied()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let unread = self
+            .timeline
+            .entries()
+            .iter()
+            .filter(|entry| entry.timestamp > since)
+            .count();
+        let latest = self
+            .timeline
+            .entries()
+            .iter()
+            .max_by_key(|entry| entry.timestamp);
+        let pulse = latest.map_or(0, |entry| {
+            let mut bytes = [0_u8; 8];
+            bytes.copy_from_slice(&entry.id.as_bytes()[..8]);
+            u64::from_le_bytes(bytes)
+        });
+        (self.digest.headline(), unread, pulse)
+    }
+
+    fn rebuild_digest_since_frontier(&mut self) {
+        self.digest = ActivityDigest::from_entries(self.timeline.entries(), self.catchup_since, 5);
+    }
+
+    fn persist_frontiers(&self) {
+        let mut frontiers = serde_json::Map::new();
+        for (workspace, time) in &self.seen_at {
+            let seconds = time
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            frontiers.insert(workspace.to_string(), serde_json::Value::from(seconds));
+        }
+        let mut section = serde_json::Map::new();
+        section.insert(
+            "seen_frontiers".to_string(),
+            serde_json::Value::Object(frontiers),
+        );
+        if let Err(error) = settings_store::update_section("history", section) {
+            tracing::warn!(%error, "could not persist history seen frontier");
+        }
+    }
+
     pub fn contributors(&self) -> &[String] {
         &self.contributors
+    }
+
+    pub fn view(&self) -> ActivityView {
+        self.view
+    }
+
+    pub fn set_view(&mut self, view: ActivityView) {
+        self.view = view;
+        self.expanded_brief = None;
     }
 
     pub fn period(&self) -> Period {
@@ -279,6 +449,11 @@ impl RoomActivityPane {
         };
         if let Some(a) = &self.author {
             filter.authors.push(a.clone());
+        }
+        match &self.lens {
+            LensSelection::All => {}
+            LensSelection::App(app) => filter.apps.push(app.clone()),
+            LensSelection::ResourceKind(kind) => filter.resource_kinds.push(kind.clone()),
         }
         self.timeline.set_filter(filter);
         self.timeline.set_time_range_label(match self.period {
@@ -371,6 +546,8 @@ impl RoomActivityPane {
             }
         }
         self.total_entries = rows.len();
+        self.facet_index = HistoryFacetIndex::from_entries(&rows);
+        self.digest = ActivityDigest::from_entries(&rows, self.catchup_since, 5);
 
         let mut seen: HashSet<String> = HashSet::new();
         self.contributors = rows
@@ -414,6 +591,8 @@ impl RoomActivityPane {
         let vw = viewport.width();
         let sheet_w = if vw < FULL_BLEED_UNDER {
             (vw - 2.0 * SHEET_INSET).max(0.0)
+        } else if self.view == ActivityView::Explore && vw >= 1_000.0 {
+            (vw - 2.0 * SHEET_INSET).min(1_100.0)
         } else {
             (vw * 0.34).clamp(SHEET_MIN_W, SHEET_MAX_W)
         };
@@ -425,23 +604,26 @@ impl RoomActivityPane {
 
         let rows_y0 = (self.sheet.y0 + self.chrome_height()).min(self.sheet.y1);
         let rows_y1 = (self.sheet.y1 - 8.0).max(rows_y0);
+        let three_panel = self.view == ActivityView::Explore && self.sheet.width() >= 900.0;
         self.timeline.set_rect(Rect::new(
-            self.sheet.x0 + 8.0,
+            self.sheet.x0 + 8.0 + if three_panel { EXPLORER_LEFT_W } else { 0.0 },
             rows_y0,
-            (self.sheet.x1 - 8.0).max(self.sheet.x0 + 8.0),
+            (self.sheet.x1 - 8.0 - if three_panel { EXPLORER_DETAIL_W } else { 0.0 })
+                .max(self.sheet.x0 + 8.0),
             rows_y1,
         ));
     }
 
     fn shows_chip_rows(&self) -> bool {
-        self.sheet.height() > HEADER_H + 2.0 * CHIP_ROW_H + 140.0
+        self.view == ActivityView::Explore
+            && self.sheet.height() > HEADER_H + VIEW_ROW_H + 2.0 * CHIP_ROW_H + 140.0
     }
 
     fn chrome_height(&self) -> f64 {
         if self.shows_chip_rows() {
-            HEADER_H + 2.0 * CHIP_ROW_H
+            HEADER_H + VIEW_ROW_H + 2.0 * CHIP_ROW_H
         } else {
-            HEADER_H
+            HEADER_H + VIEW_ROW_H
         }
     }
 
@@ -475,18 +657,300 @@ impl RoomActivityPane {
 
         self.draw_title_and_subtitle(scene, transform, tr, theme);
         self.draw_scope_chips(scene, transform, tr, theme);
+        self.draw_view_tabs(scene, transform, tr, theme);
 
         self.period_rects.clear();
         self.author_rects.clear();
         if self.shows_chip_rows() {
             self.draw_filter_chip_rows(scene, transform, tr, theme);
         }
-
-        self.timeline.draw(scene, transform, tr, theme, presence);
+        match self.view {
+            ActivityView::CatchUp => self.draw_catch_up(scene, transform, tr, theme),
+            ActivityView::Explore => {
+                self.draw_explorer_sidebars(scene, transform, tr, theme);
+                self.timeline.draw(scene, transform, tr, theme, presence);
+            }
+        }
     }
 
-    /// Paint the sheet's title ("Room activity" / "Workspace activity")
-    /// and its one-line subtitle.
+    fn draw_explorer_sidebars(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.lens_rects.clear();
+        if self.sheet.width() < 900.0 {
+            return;
+        }
+        let top = self.sheet.y0 + self.chrome_height();
+        let bottom = self.sheet.y1 - 8.0;
+        let left = Rect::new(
+            self.sheet.x0 + 8.0,
+            top,
+            self.sheet.x0 + EXPLORER_LEFT_W,
+            bottom,
+        );
+        let right = Rect::new(
+            self.sheet.x1 - EXPLORER_DETAIL_W,
+            top,
+            self.sheet.x1 - 8.0,
+            bottom,
+        );
+        for rect in [left, right] {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surface_white_5,
+                None,
+                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            );
+        }
+        let size = theme.tokens.typography.scale.sm;
+        tr.draw_text_weighted(
+            scene,
+            "Browse by",
+            size,
+            theme.tokens.colors.text_primary,
+            at(transform, left.x0 + 12.0, left.y0 + 12.0),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        let mut y = left.y0 + 38.0;
+        self.draw_lens_row(
+            scene,
+            transform,
+            tr,
+            theme,
+            &LensSelection::All,
+            "Everything",
+            &mut y,
+            left,
+        );
+        let apps: Vec<(String, usize)> = self
+            .facet_index
+            .apps
+            .iter()
+            .map(|(label, count)| (label.clone(), *count))
+            .collect();
+        for (label, count) in apps.into_iter().take(4) {
+            let lens = LensSelection::App(label.clone());
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &lens,
+                &format!("{label}  {count}"),
+                &mut y,
+                left,
+            );
+        }
+        let kinds: Vec<(String, usize)> = self
+            .facet_index
+            .resource_kinds
+            .iter()
+            .map(|(label, count)| (label.clone(), *count))
+            .collect();
+        for (label, count) in kinds.into_iter().take(4) {
+            let lens = LensSelection::ResourceKind(label.clone());
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &lens,
+                &format!("{label}  {count}"),
+                &mut y,
+                left,
+            );
+        }
+
+        tr.draw_text_weighted(
+            scene,
+            "Provenance",
+            size,
+            theme.tokens.colors.text_primary,
+            at(transform, right.x0 + 12.0, right.y0 + 12.0),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        if let Some(entry) = self.timeline.visible_entry(0) {
+            let width = (right.width() - 24.0).max(0.0) as f32;
+            tr.draw_text(
+                scene,
+                &entry.summary,
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(transform, right.x0 + 12.0, right.y0 + 40.0),
+                Some(width),
+            );
+            let context = entry.context.as_ref();
+            let app = context
+                .and_then(|value| value.app.as_ref())
+                .map_or("Legacy / direct edit", |app| app.label.as_str());
+            let resource = context
+                .and_then(|value| value.resource.as_ref())
+                .map_or("No resource declared", |resource| resource.label.as_str());
+            let detail = format!("{}\n{}\n{}", entry.author.name, app, resource);
+            tr.draw_text(
+                scene,
+                &detail,
+                size,
+                theme.tokens.colors.text_dim,
+                at(transform, right.x0 + 12.0, right.y0 + 88.0),
+                Some(width),
+            );
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "small immediate-mode explorer row"
+    )]
+    fn draw_lens_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lens: &LensSelection,
+        label: &str,
+        y: &mut f64,
+        bounds: Rect,
+    ) {
+        let rect = Rect::new(bounds.x0 + 6.0, *y, bounds.x1 - 6.0, *y + 28.0);
+        if self.lens == *lens {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &RoundedRect::from_rect(rect, 6.0),
+            );
+        }
+        tr.draw_text(
+            scene,
+            label,
+            theme.tokens.typography.scale.sm,
+            if self.lens == *lens {
+                theme.tokens.colors.text_primary
+            } else {
+                theme.tokens.colors.text_dim
+            },
+            at(transform, rect.x0 + 8.0, rect.y0 + 6.0),
+            Some((rect.width() - 16.0).max(0.0) as f32),
+        );
+        self.lens_rects.push((lens.clone(), rect));
+        *y += 32.0;
+    }
+
+    fn draw_view_tabs(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let y = self.sheet.y0 + HEADER_H + 4.0;
+        let items: Vec<(ActivityView, String)> = ActivityView::ALL
+            .iter()
+            .map(|view| (*view, view.label().to_string()))
+            .collect();
+        let selected = self.view;
+        self.view_rects = draw_chip_row(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + 26.0),
+            &items,
+            |view| *view == selected,
+        );
+    }
+
+    fn draw_catch_up(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.brief_rects.clear();
+        let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
+        let x0 = self.sheet.x0 + 12.0;
+        let x1 = self.sheet.x1 - 12.0;
+        if self.digest.briefs.is_empty() {
+            tr.draw_text(
+                scene,
+                "You're caught up",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_dim,
+                at(transform, x0 + 4.0, y + 12.0),
+                Some((x1 - x0 - 8.0).max(0.0) as f32),
+            );
+            return;
+        }
+        for (index, brief) in self.digest.briefs.iter().enumerate() {
+            let expanded = self.expanded_brief == Some(index);
+            let height = if expanded { 112.0 } else { 70.0 };
+            if y + height > self.sheet.y1 - 10.0 {
+                break;
+            }
+            let rect = Rect::new(x0, y, x1, y + height);
+            self.brief_rects.push((index, rect));
+            let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surface_white_5,
+                None,
+                &card,
+            );
+            let width = (rect.width() - 24.0).max(0.0) as f32;
+            tr.draw_text_weighted(
+                scene,
+                &brief.title,
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(transform, rect.x0 + 12.0, rect.y0 + 10.0),
+                Some(width),
+                ui::text_render::TextWeight::Medium,
+            );
+            tr.draw_text(
+                scene,
+                &brief.detail,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                at(transform, rect.x0 + 12.0, rect.y0 + 34.0),
+                Some(width),
+            );
+            if expanded {
+                let mut provenance = brief.apps.join(", ");
+                if !brief.resources.is_empty() {
+                    if !provenance.is_empty() {
+                        provenance.push_str(" · ");
+                    }
+                    provenance.push_str(&brief.resources.join(", "));
+                }
+                if provenance.is_empty() {
+                    provenance = format!("{} underlying changes", brief.changes);
+                }
+                tr.draw_text(
+                    scene,
+                    &provenance,
+                    theme.tokens.typography.scale.sm,
+                    theme.tokens.colors.text_dim,
+                    at(transform, rect.x0 + 12.0, rect.y0 + 76.0),
+                    Some(width),
+                );
+            }
+            y += height + 8.0;
+        }
+    }
+
+    /// Paint the sheet's title, factual scope/count, and latest outcome.
     fn draw_title_and_subtitle(
         &self,
         scene: &mut Scene,
@@ -510,6 +974,11 @@ impl RoomActivityPane {
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
+        let people = if self.digest.people == 1 {
+            "1 person".to_string()
+        } else {
+            format!("{} people", self.digest.people)
+        };
         let subtitle = match self.scope {
             RoomScope::ThisRoom => {
                 let room = if self.room_name.is_empty() {
@@ -517,14 +986,11 @@ impl RoomActivityPane {
                 } else {
                     self.room_name.as_str()
                 };
-                format!(
-                    "{room} \u{00b7} {} changes to this workspace, its people and its permissions",
-                    self.total_entries
-                )
+                format!("{room} \u{00b7} {} changes by {people}", self.total_entries)
             }
             RoomScope::AllWorkspaces => format!(
-                "Every workspace on this machine \u{00b7} {} changes",
-                self.total_entries
+                "Every workspace on this machine \u{00b7} {} changes by {people}",
+                self.total_entries,
             ),
         };
         #[allow(
@@ -540,6 +1006,17 @@ impl RoomActivityPane {
             at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 32.0),
             Some(wrap_width),
         );
+        if let Some(headline) = self.digest.headline() {
+            let latest = format!("Latest \u{00b7} {headline}");
+            tr.draw_text(
+                scene,
+                &latest,
+                sub_size,
+                colors.text_primary,
+                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 51.0),
+                Some(wrap_width),
+            );
+        }
     }
 
     /// Paint the "This room" / "All workspaces" scope pills and record
@@ -612,7 +1089,7 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let y = self.sheet.y0 + HEADER_H;
+        let y = self.sheet.y0 + HEADER_H + VIEW_ROW_H;
         let periods: Vec<(Period, String)> = Period::ALL
             .iter()
             .map(|p| (*p, p.label().to_string()))
@@ -684,6 +1161,41 @@ impl RoomActivityPane {
                         reverted: false,
                         named: false,
                     };
+                }
+            }
+            for (view, rect) in self.view_rects.clone() {
+                if rect.contains(p) {
+                    self.set_view(view);
+                    return RoomActivityOutcome {
+                        handled: true,
+                        reverted: false,
+                        named: false,
+                    };
+                }
+            }
+            if self.view == ActivityView::CatchUp {
+                for (index, rect) in self.brief_rects.clone() {
+                    if rect.contains(p) {
+                        self.expanded_brief = (self.expanded_brief != Some(index)).then_some(index);
+                        return RoomActivityOutcome {
+                            handled: true,
+                            reverted: false,
+                            named: false,
+                        };
+                    }
+                }
+            }
+            if self.view == ActivityView::Explore {
+                for (lens, rect) in self.lens_rects.clone() {
+                    if rect.contains(p) {
+                        self.lens = lens;
+                        self.reinstall_filter();
+                        return RoomActivityOutcome {
+                            handled: true,
+                            reverted: false,
+                            named: false,
+                        };
+                    }
                 }
             }
             for (period, rect) in self.period_rects.clone() {
@@ -1329,9 +1841,50 @@ mod tests {
 
     fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {
         let mut pane = RoomActivityPane::new();
+        // Legacy timeline tests exercise the granular surface explicitly;
+        // production opens on the outcome-first Catch up tab.
+        pane.set_view(ActivityView::Explore);
         pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(tree);
         pane
+    }
+
+    #[test]
+    fn catch_up_is_default_and_closing_advances_only_private_frontier() {
+        let (mut tree, workspace, _) = busy_room();
+        let before = tree.doc.get_heads();
+        let mut pane = RoomActivityPane::new();
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        assert_eq!(pane.view(), ActivityView::CatchUp);
+
+        let (_, unread_before, _) = pane.glance_signal(workspace.raw());
+        assert!(unread_before > 0);
+        pane.begin_view(workspace.raw());
+        assert!(!pane.digest().briefs.is_empty());
+        pane.finish_view(workspace.raw());
+        let (_, unread_after, _) = pane.glance_signal(workspace.raw());
+        assert_eq!(unread_after, 0);
+        assert_eq!(
+            tree.doc.get_heads(),
+            before,
+            "reading history is not a room edit"
+        );
+    }
+
+    #[test]
+    fn explore_expands_to_three_columns_only_when_the_viewport_can_hold_them() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = RoomActivityPane::new();
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        assert!(pane.sheet.width() >= 900.0);
+        assert!(pane.timeline.rect().width() < pane.sheet.width() - 400.0);
+
+        pane.layout(Rect::new(0.0, 0.0, 700.0, 900.0));
+        assert!(pane.sheet.width() < 900.0);
+        assert!(pane.timeline.rect().width() > pane.sheet.width() - 40.0);
     }
 
     #[test]
@@ -1830,6 +2383,7 @@ mod tests {
     #[test]
     fn a_short_viewport_drops_the_chip_rows_before_the_row_list() {
         let mut pane = RoomActivityPane::new();
+        pane.set_view(ActivityView::Explore);
         pane.layout(Rect::new(0.0, 0.0, 1280.0, 720.0));
         assert!(
             pane.shows_chip_rows(),
@@ -1863,6 +2417,15 @@ mod tests {
             "a peer who never wrote must not be listed: {:?}",
             pane.contributors()
         );
+    }
+
+    #[test]
+    fn activity_header_digest_reduces_the_same_scoped_rows() {
+        let (mut tree, _, _) = busy_room();
+        let pane = pane_over(&mut tree);
+        assert_eq!(pane.digest().total_changes, pane.entries().len());
+        assert!(!pane.digest().briefs.is_empty());
+        assert!(pane.digest().headline().is_some());
     }
 
     #[test]
