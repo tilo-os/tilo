@@ -32,6 +32,13 @@ grep -Fqx "QOS_SHELL=$result/bin/qos-shell" "$wrapper"
 grep -q -- '--firstboot' "$wrapper"
 
 launcher_elf=
+ldd_command=(ldd)
+if [[ $execution_arch == "$arch" ]] && ! command -v ldd >/dev/null 2>&1; then
+    # The minimal nixos/nix image omits glibc's ldd script. Run the canonical
+    # Nixpkgs tool without mutating the image profile; a failed tool lookup or
+    # invocation must fail verification instead of looking like clean output.
+    ldd_command=(nix shell nixpkgs#glibc.bin --command ldd)
+fi
 for installed in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
     directory=$(dirname "$installed")
     basename=$(basename "$installed")
@@ -53,7 +60,9 @@ for installed in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
         [[ $machine == 183 ]]
     fi
     if [[ $execution_arch == "$arch" ]]; then
-        if ldd "$elf" | tee /dev/stderr | grep -q 'not found'; then
+        ldd_output=$("${ldd_command[@]}" "$elf")
+        printf '%s\n' "$ldd_output" >&2
+        if grep -q 'not found' <<<"$ldd_output"; then
             echo "unresolved shared library in $installed" >&2
             exit 1
         fi
