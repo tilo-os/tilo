@@ -2,7 +2,9 @@
 //! person can name, collapse and restore to. History surfaces show
 //! **groups**, expanding to individual changes on demand.
 //!
-//! A boundary forms when: the author changed; the clock jumped more than
+//! An explicit action work-group (issue, task, agent run) forms the strongest
+//! automatic boundary and may span people, apps, and operation families. With
+//! no explicit group, a boundary forms when: the author changed; the clock jumped more than
 //! [`GroupingConfig::idle_gap`] (an unstamped change is not a gap —
 //! splitting on it would tear a session differently per peer); the op
 //! family changed (matching the timeline's filter chips); or the group hit
@@ -363,6 +365,45 @@ pub fn group_entries(
             children: Vec::new(),
         });
     }
+    // Explicit action work groups (issue/task/agent run) are authoritative
+    // across authors, apps, and op families. A user-named range wins wherever
+    // the two overlap; otherwise consecutive actions sharing the stable group
+    // id become one collapsed band without an LLM guessing boundaries.
+    let mut run_start = 0usize;
+    while run_start < entries.len() {
+        let Some(group) = entries
+            .get(run_start)
+            .and_then(|entry| entry.context.as_ref())
+            .and_then(|context| context.group.as_ref())
+        else {
+            run_start = run_start.saturating_add(1);
+            continue;
+        };
+        let mut run_end = run_start.saturating_add(1);
+        while entries
+            .get(run_end)
+            .and_then(|entry| entry.context.as_ref())
+            .and_then(|context| context.group.as_ref())
+            .is_some_and(|candidate| candidate.id == group.id)
+        {
+            run_end = run_end.saturating_add(1);
+        }
+        let overlaps_named = resolved
+            .iter()
+            .any(|named| run_start < named.end && run_end > named.start);
+        if !overlaps_named {
+            resolved.push(Placed {
+                id: format!("action-group:{}", group.id),
+                label: group.label.clone(),
+                named_by: None,
+                start: run_start,
+                end: run_end,
+                open: false,
+                children: Vec::new(),
+            });
+        }
+        run_start = run_end;
+    }
     // Outermost first at a given start, then by record id so two peers order
     // identically.
     resolved.sort_by(|a, b| {
@@ -638,6 +679,7 @@ mod tests {
             text_delta: Some((3, 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
@@ -966,6 +1008,32 @@ mod tests {
             "got {:?}",
             groups[0].subtitle(&entries)
         );
+    }
+
+    #[test]
+    fn explicit_work_group_collapses_across_people_and_action_families() {
+        let mut entries = vec![
+            entry(1, "Ada", 1000, OpClass::Splice),
+            entry(2, "Maren", 1010, OpClass::Comment),
+            entry(3, "Ada", 1020, OpClass::EditMeta),
+        ];
+        for entry in &mut entries {
+            entry.context = Some(
+                qos_actions::ActionContext::for_resource(
+                    "Edit",
+                    "notes.note:launch",
+                    "notes.note",
+                    "Launch brief",
+                )
+                .with_group("issue:42", "Prepare launch brief", "issue"),
+            );
+        }
+
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name.as_deref(), Some("Prepare launch brief"));
+        assert_eq!(groups[0].authors.len(), 2);
+        assert_eq!(groups[0].families.len(), 2);
     }
 
     #[test]
