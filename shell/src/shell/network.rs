@@ -41,14 +41,16 @@ pub fn room_topic_id(room: RoomId) -> u64 {
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
-/// [`DEFAULT_KEYPAIR_PATH`] unless `QOS_PEER_KEY_PATH` names somewhere
-/// else. The override is what makes two sessions on one machine two
+/// The active collaboration identity tree unless `QOS_PEER_KEY_PATH` names
+/// somewhere else. Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
+/// host-installed sessions select an XDG-owned tree at process startup. The
+/// override is what makes two sessions on one machine two
 /// *peers*: the key is the shell's network identity, so two processes
 /// reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
     match std::env::var("QOS_PEER_KEY_PATH") {
         Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => std::path::PathBuf::from(DEFAULT_KEYPAIR_PATH),
+        _ => crate::firstboot::collaboration_identity_paths().device_privkey,
     }
 }
 
