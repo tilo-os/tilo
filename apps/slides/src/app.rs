@@ -1096,8 +1096,12 @@ impl SlidesApp {
     /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
     /// would double-record the undo boundary the host already records.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::SlidesAction) {
-        self.actions
-            .dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::SLIDES_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
+        );
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
