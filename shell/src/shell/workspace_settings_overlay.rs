@@ -180,7 +180,7 @@ impl WorkspaceSettingsOverlay {
     pub fn copy_rect_for(card: Rect) -> Rect {
         let body = Self::body_rect_for(card);
         let link_y = body.y0 + 202.0;
-        Rect::new(body.x1 - 88.0, link_y, body.x1 - 16.0, link_y + 34.0)
+        Rect::new(body.x1 - 148.0, link_y, body.x1 - 16.0, link_y + 34.0)
     }
 
     pub fn force_settled(&mut self) {
@@ -478,15 +478,8 @@ impl WorkspaceSettingsOverlay {
             active_name.as_str(),
             body_y,
         );
-        let invite_y = self.draw_ws_settings_invite_link(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            &tree,
-            body_y,
-        );
+        let invite_y =
+            self.draw_ws_settings_invite_link(scene, transform, text_renderer, theme, rect, body_y);
         let collab_y = invite_y + 72.0;
         Self::draw_ws_settings_collaborators(
             scene,
@@ -1042,12 +1035,11 @@ impl WorkspaceSettingsOverlay {
         editing
     }
 
-    /// Sharing card with the workspace's stable invitation URI.
+    /// Sharing card for minting a short-lived signed invitation.
     #[allow(
         clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the tree the invite \
-                  URL is derived from; matching every other draw_ws_settings_* helper \
-                  in this impl"
+        reason = "one positional argument per painted value; matching every other \
+                  draw_ws_settings_* helper in this impl"
     )]
     fn draw_ws_settings_invite_link(
         &self,
@@ -1056,7 +1048,6 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        tree: &WorkspaceTree,
         _body_y: f64,
     ) -> f64 {
         let tokens = &theme.tokens;
@@ -1068,7 +1059,7 @@ impl WorkspaceSettingsOverlay {
         let url_pill = Rect::new(
             sharing_card.x0 + 16.0,
             invite_y,
-            sharing_card.x1 - 16.0 - 80.0,
+            sharing_card.x1 - 16.0 - 140.0,
             invite_y + 34.0,
         );
         scene.fill(
@@ -1085,15 +1076,9 @@ impl WorkspaceSettingsOverlay {
             None,
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
-        // Mirrors WorkspaceSettings::invite_link's format so the URL is
-        // stable per workspace id.
-        let invite_url = tree.active_workspace().map_or_else(
-            || "quickdesktop://invite/0".to_string(),
-            |w| format!("quickdesktop://invite/{}", u64::from(w.id)),
-        );
         text_renderer.draw_text(
             scene,
-            &invite_url,
+            "Signed invite · expires in 24 hours",
             tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
@@ -1108,7 +1093,7 @@ impl WorkspaceSettingsOverlay {
         {
             "Copied"
         } else {
-            "Copy"
+            "Create & copy"
         };
         Button::paint(
             scene,
@@ -1188,9 +1173,9 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let helper = if compact {
-            "Secure join flow required."
+            "One person · 24-hour expiry."
         } else {
-            "Anyone with this link must still pass the workspace's secure join flow."
+            "Creates a signed, opaque invite for one person. It expires after 24 hours."
         };
         let helper = text_renderer.elide_to_width(
             helper,

@@ -114,12 +114,6 @@ impl WsTab {
     }
 }
 
-/// The workspace's invite URL, kept in one place so this and the
-/// compositor's inline copy can't drift.
-pub fn invite_link(ws: &Workspace) -> String {
-    format!("quickdesktop://invite/{}", u64::from(ws.id))
-}
-
 /// The `WorkspaceSettings` lens state.
 #[derive(Debug)]
 pub struct WorkspaceSettings {
@@ -170,10 +164,6 @@ impl WorkspaceSettings {
 
     pub fn remove_collaborator(&mut self, ws: &mut Workspace, collab_id: &str) {
         ws.collaborators.retain(|c| c.id != collab_id);
-    }
-
-    pub fn invite_link(&self, ws: &Workspace) -> String {
-        invite_link(ws)
     }
 
     // -----------------------------------------------------------------
@@ -1517,7 +1507,7 @@ pub fn draw_members_pane(
         pane_rect,
         Icon::Home,
         &format!("{roster_count} people share this workspace"),
-        "Roles set the baseline; specific exceptions remain visible in Privacy & Security.",
+        "Removing someone blocks future sync and edits; copies already downloaded stay with them.",
         if is_owner { "You manage" } else { "View only" },
         text_renderer,
         theme,
@@ -1537,7 +1527,7 @@ pub fn draw_members_pane(
             Icon::Shield,
             (
                 "No one else is in this workspace",
-                "Share the invite link from the General tab to add someone.",
+                "Create a signed invite from the General tab to add someone.",
             ),
             text_renderer,
             theme,
