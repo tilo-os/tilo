@@ -88,8 +88,16 @@ class Compositor:
     def enumerate_actions(self, query: str = "") -> dict:
         return self.answer({"op": "actions_enumerate", "query": query})
 
-    def invoke_action(self, provider: str, id_: str) -> dict:
-        return self.answer({"op": "actions_invoke", "provider": provider, "id": id_})
+    def invoke_action(self, provider: str, id_: str, args: dict | None = None) -> dict:
+        return self.answer(
+            {"op": "actions_invoke", "provider": provider, "id": id_, "args": args or {}}
+        )
+
+    def action_status(self, invocation_id: int) -> dict:
+        return self.answer({"op": "actions_status", "invocation_id": invocation_id})
+
+    def cancel_action(self, invocation_id: int) -> dict:
+        return self.answer({"op": "actions_cancel", "invocation_id": invocation_id})
 
     def state_dump(self) -> dict:
         resp = self.call({"op": "state_dump"})
@@ -132,8 +140,34 @@ TOOLS = [
             "properties": {
                 "provider": {"type": "string", "description": "Provider name from the descriptor."},
                 "id": {"type": "string", "description": "Action id from the descriptor."},
+                "args": {
+                    "type": "object",
+                    "description": (
+                        "Typed argument object matching the descriptor's params/schema. "
+                        "Use an empty object for a nullary action."
+                    ),
+                    "additionalProperties": True,
+                },
             },
             "required": ["provider", "id"],
+        },
+    },
+    {
+        "name": "qos_action_status",
+        "description": "Read the latest admitted/progress/terminal state and output for a broker invocation receipt id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"invocation_id": {"type": "integer", "minimum": 1}},
+            "required": ["invocation_id"],
+        },
+    },
+    {
+        "name": "qos_cancel_action",
+        "description": "Request cooperative cancellation of a cancellable broker invocation by receipt id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"invocation_id": {"type": "integer", "minimum": 1}},
+            "required": ["invocation_id"],
         },
     },
     {
@@ -161,7 +195,19 @@ def call_tool(comp: Compositor, name: str, args: dict) -> dict:
             provider, id_ = args.get("provider"), args.get("id")
             if not provider or not id_:
                 return _err("qos_invoke_action requires both 'provider' and 'id'.")
-            payload = comp.invoke_action(str(provider), str(id_))
+            action_args = args.get("args", {})
+            if not isinstance(action_args, dict):
+                return _err("qos_invoke_action 'args' must be an object.")
+            payload = comp.invoke_action(str(provider), str(id_), action_args)
+        elif name in ("qos_action_status", "qos_cancel_action"):
+            invocation_id = args.get("invocation_id")
+            if not isinstance(invocation_id, int) or isinstance(invocation_id, bool) or invocation_id < 1:
+                return _err(f"{name} requires a positive integer 'invocation_id'.")
+            payload = (
+                comp.action_status(invocation_id)
+                if name == "qos_action_status"
+                else comp.cancel_action(invocation_id)
+            )
         elif name == "qos_state_dump":
             payload = comp.state_dump()
         else:

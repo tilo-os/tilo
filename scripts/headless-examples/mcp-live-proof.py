@@ -9,7 +9,7 @@ path.
 What it checks, in order:
 
   1. `initialize` negotiates and names the server.
-  2. `tools/list` offers the three tools.
+  2. `tools/list` offers the five tools, including receipt status/cancel.
   3. `qos_enumerate_actions` returns the live surface through the shim.
   4. `qos_invoke_action` moves real state — read back with an
      independent `state_dump`, not from the tool's own reply.
@@ -171,8 +171,9 @@ def main() -> int:
         rpc(shim, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         reply = read_reply(shim, 2)
         names = sorted(t["name"] for t in reply["result"]["tools"]) if reply else []
-        check("all three tools are offered",
-              names == ["qos_enumerate_actions", "qos_invoke_action", "qos_state_dump"],
+        check("all five tools are offered",
+              names == ["qos_action_status", "qos_cancel_action", "qos_enumerate_actions",
+                        "qos_invoke_action", "qos_state_dump"],
               ", ".join(names))
 
         print("\n[3] enumerate through the shim")

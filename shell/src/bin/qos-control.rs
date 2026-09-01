@@ -67,6 +67,13 @@ enum Command {
     ActionsInvoke {
         provider: String,
         id: String,
+        args_json: Option<String>,
+    },
+    ActionsStatus {
+        invocation_id: u64,
+    },
+    ActionsCancel {
+        invocation_id: u64,
     },
     Raw {
         json: String,
@@ -222,7 +229,9 @@ fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
     let verb = iter.next().map(String::as_str).ok_or_else(|| {
-        ParseError::Usage("actions requires `list` or `invoke` (try --help)".to_string())
+        ParseError::Usage(
+            "actions requires `list`, `invoke`, `status`, or `cancel` (try --help)".to_string(),
+        )
     })?;
     match verb {
         "list" => {
@@ -250,13 +259,57 @@ fn parse_actions_command<'a>(
             let id = iter.next().ok_or_else(|| {
                 ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
             })?;
+            let mut args_json = None;
+            while let Some(flag) = iter.next() {
+                match flag.as_str() {
+                    "--args-json" => {
+                        let json = iter.next().ok_or_else(|| {
+                            ParseError::Usage("--args-json requires a JSON object".to_string())
+                        })?;
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(json).map_err(|error| {
+                                ParseError::Usage(format!("--args-json is not valid JSON: {error}"))
+                            })?;
+                        if !parsed.is_object() {
+                            return Err(ParseError::Usage(
+                                "--args-json must contain a JSON object".to_string(),
+                            ));
+                        }
+                        args_json = Some(json.clone());
+                    }
+                    other => {
+                        return Err(ParseError::Usage(format!(
+                            "actions invoke: unknown option `{other}`"
+                        )));
+                    }
+                }
+            }
             Ok(Command::ActionsInvoke {
                 provider: provider.clone(),
                 id: id.clone(),
+                args_json,
+            })
+        }
+        "status" | "cancel" => {
+            let raw = iter.next().ok_or_else(|| {
+                ParseError::Usage(format!("actions {verb} requires an invocation id"))
+            })?;
+            let invocation_id = raw.parse::<u64>().map_err(|_| {
+                ParseError::Usage(format!("actions {verb}: `{raw}` is not an invocation id"))
+            })?;
+            if iter.next().is_some() {
+                return Err(ParseError::Usage(format!(
+                    "actions {verb} accepts exactly one invocation id"
+                )));
+            }
+            Ok(if verb == "status" {
+                Command::ActionsStatus { invocation_id }
+            } else {
+                Command::ActionsCancel { invocation_id }
             })
         }
         other => Err(ParseError::Usage(format!(
-            "actions: unknown verb `{other}` (expected `list` or `invoke`)"
+            "actions: unknown verb `{other}` (expected `list`, `invoke`, `status`, or `cancel`)"
         ))),
     }
 }
@@ -351,8 +404,24 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
         }
-        Command::ActionsInvoke { provider, id } => {
-            json!({ "op": "actions_invoke", "provider": provider, "id": id })
+        Command::ActionsInvoke {
+            provider,
+            id,
+            args_json,
+        } => {
+            let args = args_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| ParseError::Usage(format!("invalid action arguments: {error}")))?
+                .unwrap_or_else(|| serde_json::json!({}));
+            json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args })
+        }
+        Command::ActionsStatus { invocation_id } => {
+            json!({ "op": "actions_status", "invocation_id": invocation_id })
+        }
+        Command::ActionsCancel { invocation_id } => {
+            json!({ "op": "actions_cancel", "invocation_id": invocation_id })
         }
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
@@ -501,20 +570,14 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             println!("{path}");
         }
         Command::ActionsList { json, .. } => return print_actions_list(response, *json),
-        Command::ActionsInvoke { .. } => {
-            // Echo what the address resolved to, so an operator can see
-            // *which* action ran rather than a bare "ok".
+        Command::ActionsInvoke { .. }
+        | Command::ActionsStatus { .. }
+        | Command::ActionsCancel { .. } => {
             let answer = response
                 .get("answer")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let title = answer.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let provider = answer
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let id = answer.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("invoked {provider}:{id}  {title}");
+            println!("{answer}");
         }
         Command::Click { .. }
         | Command::ClickAt { .. }
@@ -560,7 +623,10 @@ fn print_usage() {
          \x20 state-dump [--pretty]         dump workspace_tree + chrome as JSON\n\
          \x20 actions list [QUERY] [--json] list exported actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything)\n\
-         \x20 actions invoke PROVIDER ID    run one action by address, with no synthetic input\n\
+         \x20 actions invoke PROVIDER ID [--args-json OBJECT]\n\
+         \x20                               run one typed action without synthetic input\n\
+         \x20 actions status INVOCATION_ID   read latest broker state/output\n\
+         \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
     );
 }
@@ -787,6 +853,54 @@ mod tests {
     }
 
     #[test]
+    fn actions_invoke_accepts_a_typed_json_object() {
+        let inv = parse(&[
+            "actions",
+            "invoke",
+            "app-actions",
+            "peer-address",
+            "--args-json",
+            r#"{"count":2,"force":true}"#,
+        ])
+        .unwrap();
+        assert_eq!(
+            inv.command,
+            Command::ActionsInvoke {
+                provider: "app-actions".into(),
+                id: "peer-address".into(),
+                args_json: Some(r#"{"count":2,"force":true}"#.into()),
+            }
+        );
+    }
+
+    #[test]
+    fn actions_invoke_rejects_non_object_arguments() {
+        let error = parse(&[
+            "actions",
+            "invoke",
+            "app-actions",
+            "peer-address",
+            "--args-json",
+            "[]",
+        ])
+        .unwrap_err();
+        assert!(matches!(error, ParseError::Usage(_)));
+    }
+
+    #[test]
+    fn actions_status_and_cancel_parse_receipt_ids() {
+        assert_eq!(
+            parse(&["actions", "status", "42"]).unwrap().command,
+            Command::ActionsStatus { invocation_id: 42 }
+        );
+        assert_eq!(
+            parse(&["actions", "cancel", "42"]).unwrap().command,
+            Command::ActionsCancel { invocation_id: 42 }
+        );
+        assert!(parse(&["actions", "status", "not-a-number"]).is_err());
+    }
+
+    #[test]
     fn raw_parses_json_payload() {
         let inv = parse(&["raw", r#"{"op":"list_targets"}"#]).unwrap();
         assert_eq!(
@@ -925,6 +1039,39 @@ mod tests {
         // `pretty` is purely a print-time concern; the wire payload
         // never carries it (the compositor doesn't need to know).
         assert!(v.get("pretty").is_none());
+    }
+
+    #[test]
+    fn wire_action_invocation_preserves_structured_arguments() {
+        let json = command_to_wire(&Command::ActionsInvoke {
+            provider: "app-actions".into(),
+            id: "7-resource-action".into(),
+            args_json: Some(r#"{"resource":"notes.note:42","at":"2026-09-01T12:00:00Z"}"#.into()),
+        })
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["op"], "actions_invoke");
+        assert_eq!(value["args"]["resource"], "notes.note:42");
+        assert_eq!(value["args"]["at"], "2026-09-01T12:00:00Z");
+    }
+
+    #[test]
+    fn wire_action_status_and_cancel_preserve_the_broker_id() {
+        for (command, operation) in [
+            (
+                Command::ActionsStatus { invocation_id: 91 },
+                "actions_status",
+            ),
+            (
+                Command::ActionsCancel { invocation_id: 91 },
+                "actions_cancel",
+            ),
+        ] {
+            let value: serde_json::Value =
+                serde_json::from_str(&command_to_wire(&command).unwrap()).unwrap();
+            assert_eq!(value["op"], operation);
+            assert_eq!(value["invocation_id"], 91);
+        }
     }
 
     #[test]
