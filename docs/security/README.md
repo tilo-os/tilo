@@ -12,6 +12,7 @@ and collaboration fit together. Everything else here is detail hanging off it.
 | [boot-chain.md](boot-chain.md) | How the machine boots and what that buys. Owner-enrolled Secure Boot, the unified kernel image, the sealed root. | Touching `os/`, the kernel, or signing |
 | [rollback.md](rollback.md) | Bounded rollback: the last few generations may unseal, older ones may not. Operator view plus the contract the boot chain must satisfy. | Changing update or unlock behaviour |
 | [composefs-decision.md](composefs-decision.md) | Why qOS is on bootc's composefs backend rather than ostree, with the evidence. Records that formal stabilisation is unlikely soon and why waiting was the worse risk. | Questioning the backend choice |
+| [fuzzing.md](fuzzing.md) | Coverage-guided fuzz targets, CI cadence, and crash-handling policy for hostile package, collaboration, and identity inputs. | Adding an untrusted parser or triaging a fuzz finding |
 | [tinkering.md](tinkering.md) | How a power user gets root-shaped freedom without ambient root: work layers and capability leases. | Working on privilege or the app sandbox |
 | [defects.md](defects.md) | The as-built ledger. Every known defect with file:line, severity, and the check that catches a regression. Deliberately separate from the design. | Before claiming something works |
 
