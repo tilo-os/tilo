@@ -44,6 +44,7 @@ mod help_overlay;
 pub mod model;
 pub mod odp;
 mod overview_grid;
+pub mod pptx;
 mod presentation;
 pub mod render;
 pub mod search_provider;
