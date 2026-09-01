@@ -5,6 +5,7 @@
 # Split out of qos-install so the destructive block work is one testable unit:
 #
 #   qos-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
+#   qos-disk-encrypt prepare-partition <root-part> --efi <esp> [...]
 #   qos-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2]
 #   qos-disk-encrypt enrol    <luks-part> --reseal [--pin-file F]
 #   qos-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
@@ -67,11 +68,88 @@ teardown() {
   umount "$mnt/boot/efi" 2>/dev/null || true
   umount "$mnt/boot" 2>/dev/null || true
   umount "$mnt" 2>/dev/null || true
-  for p in $(parts_of "$disk"); do
+  for p in "$disk" $(parts_of "$disk"); do
     uuid="$(cryptsetup luksUUID "$p" 2>/dev/null || true)"
     [ -n "$uuid" ] || continue
     cryptsetup close "luks-$uuid" 2>/dev/null || true
   done
+}
+
+# Prepare an encrypted qOS root inside one explicitly-prepared partition while
+# preserving the surrounding partition table and shared ESP. Unlike `prepare`,
+# this command never invokes sfdisk, wipefs on the parent disk, or mkfs on ESP.
+cmd_prepare_partition() {
+  local part="" esp="" fs=btrfs mnt=/run/qos-install/target key=""
+  local part_parent esp_parent part_type esp_type esp_fs mountpoints signature_types
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --efi) esp="${2:-}"; shift 2 ;;
+      --filesystem) fs="${2:-}"; shift 2 ;;
+      --mnt) mnt="${2:-}"; shift 2 ;;
+      --key-file) key="${2:-}"; shift 2 ;;
+      -*) die "prepare-partition: unknown option $1" ;;
+      *) [ -z "$part" ] || die "prepare-partition: unexpected argument $1"; part="$1"; shift ;;
+    esac
+  done
+  [ -n "$part" ] && [ -n "$esp" ] || die "prepare-partition: missing root partition or --efi"
+  [ -n "$key" ] || key="$(default_key_file)"
+  case "$fs" in btrfs|ext4|xfs) : ;; *) die "prepare-partition: unsupported filesystem '$fs'" ;; esac
+  for t in blockdev cryptsetup wipefs blkid lsblk "mkfs.$fs"; do need "$t"; done
+  part="$(readlink -f "$part")"
+  esp="$(readlink -f "$esp")"
+  [ -b "$part" ] && [ "$(lsblk -dno TYPE "$part" 2>/dev/null)" = part ] \
+    || die "prepare-partition: $part is not a partition"
+  [ -b "$esp" ] && [ "$(lsblk -dno TYPE "$esp" 2>/dev/null)" = part ] \
+    || die "prepare-partition: $esp is not an EFI partition"
+  part_parent="$(lsblk -no PKNAME "$part" 2>/dev/null | head -1)"
+  esp_parent="$(lsblk -no PKNAME "$esp" 2>/dev/null | head -1)"
+  [ -n "$part_parent" ] && [ "$part_parent" = "$esp_parent" ] \
+    || die "prepare-partition: root and EFI partitions are not on the same disk"
+  part_type="$(lsblk -dno PARTTYPE "$part" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  esp_type="$(lsblk -dno PARTTYPE "$esp" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ "$part_type" = "${GUID_LINUX,,}" ] \
+    || die "prepare-partition: $part is not typed as a Linux filesystem partition"
+  [ "$esp_type" = "${GUID_ESP,,}" ] \
+    || die "prepare-partition: $esp is not an EFI System Partition"
+  esp_fs="$(blkid -s TYPE -o value "$esp" 2>/dev/null || true)"
+  [ "$esp_fs" = vfat ] || die "prepare-partition: $esp is not FAT"
+  [ "$(blockdev --getsize64 "$part")" -ge 34359738368 ] \
+    || die "prepare-partition: $part is smaller than 32 GiB"
+  mountpoints="$(lsblk -nro MOUNTPOINT "$part")" \
+    || die "prepare-partition: could not inspect $part mount state"
+  [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \
+    || die "prepare-partition: $part is mounted"
+  signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")" \
+    || die "prepare-partition: could not inspect signatures on $part"
+  [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
+    || die "prepare-partition: $part contains a signature; refusing to erase it"
+
+  teardown "$mnt" "$part"
+  trap 'teardown "$mnt" "$part"' ERR
+  install -d -m 0700 "$(dirname "$key")"
+  ( umask 0077; head -c 64 /dev/urandom > "$key" )
+  log "  formatting LUKS2 only on $part; preserving the shared ESP $esp"
+  cryptsetup luksFormat --type luks2 --batch-mode --key-file "$key" "$part"
+  local luks_uuid mapper root_fs_uuid
+  luks_uuid="$(cryptsetup luksUUID "$part")"
+  mapper="luks-$luks_uuid"
+  cryptsetup open --key-file "$key" "$part" "$mapper"
+  case "$fs" in
+    btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
+    ext4) mkfs.ext4 -q -F -L root "/dev/mapper/$mapper" ;;
+    xfs) mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
+  esac
+  root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
+  [ -n "$root_fs_uuid" ] || die "prepare-partition: could not read root UUID"
+  install -d -m 0700 "$mnt"
+  mount "/dev/mapper/$mapper" "$mnt"
+  chmod 0700 "$mnt"
+  find "$mnt" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  install -d -m 0755 "$mnt/boot/efi"
+  mount "$esp" "$mnt/boot/efi"
+  printf 'MNT=%s\nESP=%s\nLUKS_PART=%s\nLUKS_UUID=%s\nMAPPER=%s\nROOT_FS_UUID=%s\nKEY_FILE=%s\n' \
+    "$mnt" "$esp" "$part" "$luks_uuid" "$mapper" "$root_fs_uuid" "$key"
+  printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto\n' "$luks_uuid" "$luks_uuid"
 }
 
 cmd_prepare() {
@@ -407,6 +485,7 @@ cmd_teardown() {
 sub="${1:-}"; shift || true
 case "$sub" in
   prepare) cmd_prepare "$@" ;;
+  prepare-partition) cmd_prepare_partition "$@" ;;
   enrol|enroll) cmd_enrol "$@" ;;
   finish) cmd_finish "$@" ;;
   teardown) cmd_teardown "$@" ;;

@@ -1,11 +1,9 @@
 # Disk Imager — qOS application manifest.
 #
-# Hermetic in practice: `IMAGER_LIVE` gates an `lsblk` exec and the
-# raw-device write path is stat-only (the helper is never executed).
-#
-# Beyond the system read profile it needs, as consented capabilities:
-# read on the image library, and read+exec on the host bin dirs. No
-# block-device write until the write path is real.
+# The sandboxed qpkg uses the host file chooser and keeps destructive writing
+# behind the application's allow-gate; without a future narrow raw-device
+# portal it remains in simulation mode. The separately packaged Linux,
+# Windows, and macOS host downloads perform real privileged media writes.
 #
 # Pack and install:
 #
@@ -55,6 +53,7 @@ landlock   = "strict"
 mode = "off"
 
 [sandbox.portals]
+file-chooser = "via-host"
 
 [sandbox.services]
 collab = "optional@1"

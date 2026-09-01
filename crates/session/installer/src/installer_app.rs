@@ -61,7 +61,7 @@ use ui::widget::{Dropdown, Row, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
 use crate::disk_row::DiskRow;
-use crate::disks::{Disk, read_disks};
+use crate::disks::{Disk, DiskPartition, EFI_SYSTEM_GUID, LINUX_FILESYSTEM_GUID, read_disks};
 use crate::install::{InstallOptions, PowerAction};
 use crate::installer_network::{InstallerNetwork, NETWORK_WAKE_EVENT, NetworkPhase};
 use crate::keyboard_view::KeyboardView;
@@ -88,6 +88,9 @@ fn network_path(i: usize) -> String {
 /// Per-disk selection flag path: `installer.disk.<index>`.
 fn disk_path(i: usize) -> String {
     format!("installer.disk.{i}")
+}
+fn install_method_path(i: usize) -> String {
+    format!("installer.install_method.{i}")
 }
 /// Per-filesystem selection flag path: `installer.fs.<index>`.
 fn fs_path(i: usize) -> String {
@@ -124,6 +127,13 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
+pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallMethod {
+    Erase,
+    Alongside,
+}
 
 /// One-line explanation for each filesystem, shown under the chooser.
 fn fs_description(i: usize) -> &'static str {
@@ -589,6 +599,7 @@ pub struct InstallerApp {
     network: InstallerNetwork,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
+    install_method: InstallMethod,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
     /// Full-disk encryption (multi-factor LUKS) opt-in. Default `false`.
@@ -670,6 +681,7 @@ impl InstallerApp {
             network: InstallerNetwork::default(),
             disks,
             selected_disk: None,
+            install_method: InstallMethod::Erase,
             selected_fs: 0,
             encrypt: false,
             fido2: false,
@@ -740,6 +752,20 @@ impl InstallerApp {
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
         self.tz_open_for_shot = true;
+    }
+
+    /// Pose the Disk screen with the preserving dual-boot choice selected.
+    pub fn shot_alongside(&mut self) {
+        self.step = Step::Disk;
+        self.install_method = InstallMethod::Alongside;
+        self.selected_disk = Some(0);
+    }
+
+    /// Pose the final review for the preserving dual-boot path.
+    pub fn shot_alongside_review(&mut self) {
+        self.install_method = InstallMethod::Alongside;
+        self.selected_disk = Some(0);
+        self.step = Step::Review;
     }
 
     /// Seed a non-default keyboard layout (by display name) for a
@@ -839,7 +865,26 @@ impl InstallerApp {
         } else {
             (Zeroizing::new(String::new()), false)
         };
+        let (alongside_root, alongside_efi) = if self.install_method == InstallMethod::Alongside {
+            self.selected_disk_ref().map_or_else(
+                || (String::new(), String::new()),
+                |disk| {
+                    (
+                        disk.alongside_root()
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default(),
+                        disk.efi_partition()
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default(),
+                    )
+                },
+            )
+        } else {
+            (String::new(), String::new())
+        };
         InstallOptions {
+            alongside_root,
+            alongside_efi,
             filesystem: self.filesystem().to_string(),
             hostname: self.hostname.trim().to_string(),
             timezone: self.timezone.trim().to_string(),
@@ -903,6 +948,13 @@ impl InstallerApp {
                 let _ = state.put(root, p.as_str(), false);
             }
         }
+
+        for i in 0..INSTALL_METHOD_LABELS.len() {
+            let p = install_method_path(i);
+            if state.get(root, p.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, p.as_str(), false);
+            }
+        }
         for i in 0..self.network.snapshot.networks.len() {
             let p = network_path(i);
             if state.get(root, p.as_str()).ok().flatten().is_none() {
@@ -946,6 +998,19 @@ impl InstallerApp {
 
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
+        if self.step == Step::Disk && self.selected_disk_ref().is_some_and(|disk| disk.read_only) {
+            self.set_status("This disk is read-only and cannot be used for installation");
+            return;
+        }
+        if self.step == Step::Disk
+            && self.install_method == InstallMethod::Alongside
+            && !self
+                .selected_disk_ref()
+                .is_some_and(Disk::can_install_alongside)
+        {
+            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an existing EFI System Partition");
+            return;
+        }
         match validate_step(
             self.step,
             self.selected_disk,
@@ -1282,10 +1347,30 @@ impl InstallerApp {
 
         children.push(Box::new(Text::new("Install qOS").with_size(xl)));
         children.push(Box::new(
-            Text::new("Choose where to install. The selected disk will be completely erased.")
-                .with_size(sm)
-                .with_color(dim),
+            SegChoice::new(
+                INSTALL_METHOD_LABELS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                (0..INSTALL_METHOD_LABELS.len())
+                    .map(install_method_path)
+                    .collect(),
+                usize::from(self.install_method == InstallMethod::Alongside),
+            )
+            .with_test_id("install_method"),
         ));
+        let guidance = if self.install_method == InstallMethod::Erase {
+            "Erase disk deletes every partition and operating system on the selected disk."
+        } else {
+            "Alongside preserves existing partitions. For safety, qOS only uses an empty Linux partition (32 GiB+) you prepared beforehand; it never shrinks Windows or guesses that unknown data is disposable."
+        };
+        children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
+            if self.install_method == InstallMethod::Erase {
+                danger
+            } else {
+                dim
+            },
+        )));
         if self.disks.is_empty() {
             children.push(Box::new(
                 Text::new("No disks found — is this running on real hardware?")
@@ -1301,11 +1386,31 @@ impl InstallerApp {
                 )));
             }
         }
+        let read_only = self.selected_disk_ref().is_some_and(|disk| disk.read_only);
+        let unavailable = read_only
+            || (self.install_method == InstallMethod::Alongside
+                && !self
+                    .selected_disk_ref()
+                    .is_some_and(Disk::can_install_alongside));
+        if read_only {
+            children.push(Box::new(
+                Text::new("This disk is hardware or policy write-protected.")
+                    .with_size(sm)
+                    .with_color(danger),
+            ));
+        }
+        if unavailable
+            && self.selected_disk.is_some()
+            && !read_only
+            && self.install_method == InstallMethod::Alongside
+        {
+            children.push(Box::new(Text::new("No eligible prepared partition on this disk. Shrink the existing OS from its own disk manager, create an unformatted Linux partition, then refresh/restart the installer.").with_size(sm).with_color(danger)));
+        }
         children.push(nav_row(
             Step::Disk,
             NEXT_PATH,
             "Next",
-            self.selected_disk.is_none(),
+            self.selected_disk.is_none() || unavailable,
         ));
     }
 
@@ -1496,6 +1601,31 @@ impl InstallerApp {
             None => "<no disk>".to_string(),
         };
         children.push(summary_row(theme, "Disk", &disk_value));
+        children.push(summary_row(
+            theme,
+            "Install method",
+            if self.install_method == InstallMethod::Alongside {
+                "Alongside — preserve existing partitions"
+            } else {
+                "Erase the entire disk"
+            },
+        ));
+        if self.install_method == InstallMethod::Alongside
+            && let Some(disk) = self.selected_disk_ref()
+        {
+            children.push(summary_row(
+                theme,
+                "qOS root",
+                disk.alongside_root()
+                    .map_or("<missing>", |p| p.name.as_str()),
+            ));
+            children.push(summary_row(
+                theme,
+                "Shared EFI partition",
+                disk.efi_partition()
+                    .map_or("<missing>", |p| p.name.as_str()),
+            ));
+        }
         children.push(summary_row(theme, "Filesystem", self.filesystem()));
         children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
         children.push(summary_row(theme, "Hostname", self.hostname.trim()));
@@ -1513,10 +1643,15 @@ impl InstallerApp {
                 .with_color(dim),
         ));
 
+        let impact = if self.install_method == InstallMethod::Alongside {
+            format!(
+                "Only the prepared qOS root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+            )
+        } else {
+            format!("This will ERASE {dev} and all data on it.")
+        };
         children.push(Box::new(
-            Text::new(&format!("This will ERASE {dev} and all data on it."))
-                .with_size(base)
-                .with_color(danger),
+            Text::new(&impact).with_size(base).with_color(danger),
         ));
 
         // Encryption generates a recovery key shown ONCE during the
@@ -1715,11 +1850,46 @@ fn sample_disks() -> Vec<Disk> {
             name: "/dev/sda".to_string(),
             size: "238.5G".to_string(),
             model: "Samsung SSD 860 EVO".to_string(),
+            size_bytes: 256_000_000_000,
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: vec![
+                DiskPartition {
+                    name: "/dev/sda1".to_string(),
+                    size_bytes: 536_870_912,
+                    filesystem: "vfat".to_string(),
+                    label: "EFI".to_string(),
+                    mountpoint: String::new(),
+                    part_type: EFI_SYSTEM_GUID.to_string(),
+                },
+                DiskPartition {
+                    name: "/dev/sda2".to_string(),
+                    size_bytes: 160_000_000_000,
+                    filesystem: "ntfs".to_string(),
+                    label: "Windows".to_string(),
+                    mountpoint: String::new(),
+                    part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".to_string(),
+                },
+                DiskPartition {
+                    name: "/dev/sda3".to_string(),
+                    size_bytes: 64_000_000_000,
+                    filesystem: String::new(),
+                    label: String::new(),
+                    mountpoint: String::new(),
+                    part_type: LINUX_FILESYSTEM_GUID.to_string(),
+                },
+            ],
         },
         Disk {
             name: "/dev/nvme0n1".to_string(),
             size: "1T".to_string(),
             model: "WD Black SN770".to_string(),
+            size_bytes: 1_000_000_000_000,
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: Vec::new(),
         },
     ]
 }
@@ -1833,6 +2003,20 @@ impl InstallerApp {
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
                 self.selected_disk = Some(i);
+                self.status.clear();
+                self.dirty_structure = true;
+            }
+        }
+
+        for i in 0..INSTALL_METHOD_LABELS.len() {
+            let p = install_method_path(i);
+            if Self::read_flag(state, root, p.as_str()) {
+                let _ = state.put(root, p.as_str(), false);
+                self.install_method = if i == 1 {
+                    InstallMethod::Alongside
+                } else {
+                    InstallMethod::Erase
+                };
                 self.status.clear();
                 self.dirty_structure = true;
             }
@@ -2360,6 +2544,21 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.step, Step::Account);
         assert!(app.take_focus_reset(), "step change requests focus reset");
+    }
+
+    #[test]
+    fn read_only_disk_cannot_advance() {
+        let mut disks = sample();
+        disks[0].read_only = true;
+        let mut app = InstallerApp::with_disks(disks);
+        app.step = Step::Disk;
+        app.selected_disk = Some(0);
+        app.go_next();
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(
+            app.status,
+            "This disk is read-only and cannot be used for installation"
+        );
     }
 
     #[test]
