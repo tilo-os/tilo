@@ -78,8 +78,15 @@ jobs:
 
       - name: Require a real kernel FUSE environment
         run: |
-          test -c /dev/fuse
-          command -v fusermount3
+          if ! test -c /dev/fuse; then
+            ls -l /dev/fuse 2>&1 || true
+            echo "runner did not expose the FUSE character device" >&2
+            exit 1
+          fi
+          command -v fusermount3 || {
+            echo "qOS builder image does not contain fusermount3" >&2
+            exit 1
+          }
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/qos-session-lifecycle.sh
