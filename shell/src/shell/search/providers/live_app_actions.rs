@@ -123,21 +123,25 @@ impl SearchProvider for LiveAppActionsProvider {
                 } else {
                     continue;
                 };
-                let params = match action.input {
-                    PublishedInput::None => Vec::new(),
-                    PublishedInput::Text {
-                        wants_content: true,
-                        ..
-                    } => vec![ActionParam::required(
-                        "content",
-                        ParamType::Text,
-                        "Content supplied to the application action",
-                    )],
-                    PublishedInput::Text { .. } => vec![ActionParam::required(
-                        "argument",
-                        ParamType::Text,
-                        "Text supplied to the application action",
-                    )],
+                let params = if action.params.is_empty() {
+                    match action.input {
+                        PublishedInput::None => Vec::new(),
+                        PublishedInput::Text {
+                            wants_content: true,
+                            ..
+                        } => vec![ActionParam::required(
+                            "content",
+                            ParamType::Text,
+                            "Content supplied to the application action",
+                        )],
+                        PublishedInput::Text { .. } => vec![ActionParam::required(
+                            "argument",
+                            ParamType::Text,
+                            "Text supplied to the application action",
+                        )],
+                    }
+                } else {
+                    action.params.clone()
                 };
                 let broker = self.broker.clone();
                 let peer_id = surface.peer_id;
@@ -151,6 +155,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         ..
                     }
                 );
+                let typed_arguments = !action.params.is_empty();
                 results.push(SearchResult {
                     kind: ResourceKind::Action,
                     provider_id: PROVIDER_ID.to_string(),
@@ -162,7 +167,16 @@ impl SearchProvider for LiveAppActionsProvider {
                     score,
                     params,
                     on_open: std::rc::Rc::new(move |_doc, _root, _chrome, args| {
-                        let argument = if wants_content {
+                        let encoded_arguments = typed_arguments.then(|| {
+                            format!(
+                                "{}{}",
+                                qos_actions::ARGUMENTS_JSON_PREFIX,
+                                serde_json::Value::Object(args.to_json())
+                            )
+                        });
+                        let argument = if let Some(arguments) = encoded_arguments.as_deref() {
+                            Some(arguments)
+                        } else if wants_content {
                             args.text("content")
                         } else {
                             args.text("argument")

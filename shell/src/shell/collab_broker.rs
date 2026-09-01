@@ -428,9 +428,7 @@ impl AppActionBroker {
         argument: Option<&str>,
         actor: &str,
     ) -> Result<
-        std::sync::mpsc::Receiver<
-            crate::shell::collab_broker_capnp::InvocationCompletion,
-        >,
+        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
         String,
     > {
         self.state
@@ -504,9 +502,7 @@ impl BrokerHandle {
         argument: Option<&str>,
         actor: &str,
     ) -> Result<
-        std::sync::mpsc::Receiver<
-            crate::shell::collab_broker_capnp::InvocationCompletion,
-        >,
+        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
         String,
     > {
         self.fanout

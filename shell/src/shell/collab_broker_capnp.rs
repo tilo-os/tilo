@@ -249,6 +249,7 @@ pub struct PublishedAction {
     pub action_label: String,
     pub description: Option<String>,
     pub operation_kind: qos_actions::OperationKind,
+    pub params: Vec<qos_actions::ActionParam>,
     pub input: PublishedInput,
 }
 
@@ -389,9 +390,7 @@ impl CapnpBrokerState {
                 let action = surface
                     .actions
                     .iter()
-                    .find(|candidate| {
-                        candidate.resource == resource && candidate.action == action
-                    })
+                    .find(|candidate| candidate.resource == resource && candidate.action == action)
                     .cloned()?;
                 Some((surface, action))
             })
@@ -1102,6 +1101,18 @@ impl channel_handle::Server for CapnpChannelHandle {
                             return Err(capnp::Error::failed(format!(
                                 "unknown exported operation kind `{other}`"
                             )));
+                        }
+                    },
+                    params: {
+                        let json = row.get_params_json()?.to_str()?;
+                        if json.is_empty() {
+                            Vec::new()
+                        } else {
+                            serde_json::from_str(json).map_err(|error| {
+                                capnp::Error::failed(format!(
+                                    "invalid exported action parameters: {error}"
+                                ))
+                            })?
                         }
                     },
                     input,
@@ -2425,6 +2436,7 @@ mod tests {
                     action_label: "Reveal".into(),
                     description: None,
                     operation_kind: qos_actions::OperationKind::View,
+                    params: Vec::new(),
                     input: PublishedInput::None,
                 }],
             },

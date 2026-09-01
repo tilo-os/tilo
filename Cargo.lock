@@ -3146,6 +3146,7 @@ dependencies = [
  "runtime-dylib",
  "rusqlite",
  "serde",
+ "serde_json",
  "taffy",
  "ui",
  "uuid",

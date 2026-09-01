@@ -362,6 +362,48 @@ impl ActionSpec {
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
+        Self::typed_with_kind(
+            id,
+            label,
+            placeholder,
+            locus,
+            OperationKind::Document,
+            params,
+            build,
+        )
+    }
+
+    /// A typed effect or view operation. This is the non-document counterpart
+    /// to [`typed`](Self::typed), with the same strict multi-parameter binding.
+    pub fn typed_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        debug_assert!(kind != OperationKind::Document);
+        Self::typed_with_kind(
+            id,
+            label,
+            placeholder,
+            ExecutionLocus::ClientLocal,
+            kind,
+            params,
+            build,
+        )
+    }
+
+    fn typed_with_kind(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        kind: OperationKind,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
         let build: ArgsBuilder = Arc::new(build);
         let input = derive_input(&params, &build, placeholder.into());
         Self {
@@ -369,7 +411,7 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
-            kind: OperationKind::Document,
+            kind,
             input,
             params,
             build,
@@ -532,5 +574,65 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
     }
     for child in &resource.children {
         flatten_into(child, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct OpenPath {
+        path: String,
+    }
+
+    #[test]
+    fn non_document_operation_needs_no_fake_action_implementation() {
+        let spec = ActionSpec::operation(
+            "open",
+            "Open",
+            OperationKind::Effect,
+            "files.open",
+            &OpenPath {
+                path: "/tmp/report".into(),
+            },
+        )
+        .expect("effect payload encodes");
+        assert_eq!(spec.kind, OperationKind::Effect);
+        assert!(spec.params().is_empty());
+    }
+
+    #[test]
+    fn typed_view_binds_the_same_schema_it_advertises() {
+        let spec = ActionSpec::typed_operation(
+            "zoom",
+            "Zoom",
+            "factor",
+            OperationKind::View,
+            vec![ActionParam::required_owned(
+                "factor",
+                ParamType::Number,
+                "Zoom factor",
+            )],
+            |args| {
+                EncodedAction::encode_operation("view.zoom", &args.number("factor"))
+                    .expect("bound number encodes")
+            },
+        );
+        let supplied = serde_json::json!({"factor": 1.25});
+        let encoded = spec
+            .build_json(supplied.as_object().expect("object"))
+            .expect("declared number binds");
+        assert_eq!(spec.kind, OperationKind::View);
+        assert_eq!(encoded.type_id, "view.zoom");
+        assert!(
+            spec.build_json(
+                serde_json::json!({"factor": "large"})
+                    .as_object()
+                    .expect("object")
+            )
+            .is_err()
+        );
     }
 }

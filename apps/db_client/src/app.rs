@@ -33,11 +33,11 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
+use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{CodeEditor, FlapState, Language, SplitLayout, Widget};
-use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
@@ -438,22 +438,48 @@ impl Widget for DbClientApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("database", "database.workspace", "Database");
         root.actions.push(ActionSpec::prompted_operation(
-            "query", "Run SQL", "SQL query", "SELECT …", OperationKind::Effect,
+            "query",
+            "Run SQL",
+            "SQL query",
+            "SELECT …",
+            OperationKind::Effect,
             |sql| EncodedAction::encode_operation("db_client.query", &sql).expect("string payload"),
         ));
         for connection in &self.session.connections {
             let id = connection.id;
-            let mut resource = Resource::new(format!("connection:{id}"), "database.connection", connection.name.clone());
-            if let Ok(spec) = ActionSpec::operation("connect", "Connect", OperationKind::Effect, "db_client.connect", &id.to_string()) {
+            let mut resource = Resource::new(
+                format!("connection:{id}"),
+                "database.connection",
+                connection.name.clone(),
+            );
+            if let Ok(spec) = ActionSpec::operation(
+                "connect",
+                "Connect",
+                OperationKind::Effect,
+                "db_client.connect",
+                &id.to_string(),
+            ) {
                 resource.actions.push(spec);
             }
             if !self.demo {
                 let remove = crate::actions::remove_connection_action(id);
-                if let Ok(spec) = ActionSpec::immediate("remove", "Remove saved connection", crate::actions::DB_ACTION_TYPE, &remove) { resource.actions.push(spec); }
+                if let Ok(spec) = ActionSpec::immediate(
+                    "remove",
+                    "Remove saved connection",
+                    crate::actions::DB_ACTION_TYPE,
+                    &remove,
+                ) {
+                    resource.actions.push(spec);
+                }
                 resource.actions.push(ActionSpec::prompted(
-                    "rename", "Rename", "Connection name", &connection.name,
+                    "rename",
+                    "Rename",
+                    "Connection name",
+                    &connection.name,
                     qos_actions::ExecutionLocus::ClientLocal,
-                    move |name| crate::actions::encode(&crate::actions::rename_connection_action(id, name)),
+                    move |name| {
+                        crate::actions::encode(&crate::actions::rename_connection_action(id, name))
+                    },
                 ));
             }
             root.children.push(resource);
@@ -461,14 +487,28 @@ impl Widget for DbClientApp {
         vec![root]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
-        if kind != OperationKind::Effect { return Ok(false); }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
             "db_client.query" => self.session.run_query(&value),
             "db_client.connect" => {
                 let id = Uuid::parse_str(&value).map_err(|e| e.to_string())?;
-                let idx = self.session.connections.iter().position(|c| c.id == id).ok_or_else(|| "connection is no longer available".to_string())?;
+                let idx = self
+                    .session
+                    .connections
+                    .iter()
+                    .position(|c| c.id == id)
+                    .ok_or_else(|| "connection is no longer available".to_string())?;
                 self.session.select_connection(idx);
                 self.session.connect_active();
             }
