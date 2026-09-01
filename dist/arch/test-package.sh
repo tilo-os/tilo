@@ -15,9 +15,9 @@ else
     pacman -Syu --noconfirm file
 fi
 pacman -U --noconfirm "$@"
-"$repo_root/dist/verify-payload.sh" /
+QOS_LIBEXEC_DIR=/usr/lib/qos "$repo_root/dist/verify-payload.sh" /
 pacman -Q qos-session >/dev/null
 if (( expect_devel )); then
-    "$repo_root/dist/verify-devel-payload.sh" /
+    QOS_LIBEXEC_DIR=/usr/lib/qos "$repo_root/dist/verify-devel-payload.sh" /
     pacman -Q qos-session-devel >/dev/null
 fi
