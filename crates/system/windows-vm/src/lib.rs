@@ -53,8 +53,8 @@ pub use guest::{
 pub use https_guest::{
     DiscoveredApplication, DiscoveredUninstaller, GuestBridgeConfig, HttpsGuestBridge,
     InstallationOperationId, InstallationState, InstallationStatus, InstallerKind,
-    InstallerPackage, MAX_INSTALLER_BYTES, PreparedInstallation, PublicationResult,
-    StagedInstaller,
+    InstallerPackage, MAX_INSTALLER_BYTES, PreparedInstallation, PreparedUninstallation,
+    PublicationResult, StagedInstaller, UninstallationOperationId, UninstallationStatus,
 };
 pub use libvirt::{DomainState, LibvirtBackend, VmBackend, VmBackendError, render_domain_xml};
 pub use presentation::{ApplicationPresentation, RecoveryPresentation};

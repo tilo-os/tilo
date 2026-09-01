@@ -22,12 +22,19 @@ pub struct PublishedApplication {
     /// Stable opaque identifier minted by the guest bridge. It is not a path
     /// and cannot be used to ask Windows to run arbitrary input.
     pub id: String,
+    #[serde(rename = "displayName", alias = "display_name")]
     pub display_name: String,
     /// Allow-listed `RemoteApp` alias registered in the guest, never an executable path.
+    #[serde(rename = "remoteAppAlias", alias = "remote_app_alias")]
     pub remote_app_alias: String,
     /// Content hash of the icon returned separately by the guest bridge.
+    #[serde(rename = "iconSha256", alias = "icon_sha256")]
     pub icon_sha256: Option<String>,
     pub associations: Vec<Association>,
+    /// The guest has a safely typed, administrator-owned uninstall record.
+    /// No command or product code is exposed through the catalogue.
+    #[serde(default, rename = "uninstallAvailable", alias = "uninstall_available")]
+    pub uninstall_available: bool,
 }
 
 impl PublishedApplication {
@@ -166,6 +173,7 @@ mod tests {
                 kind: AssociationKind::Extension,
                 value: ".abc".to_string(),
             }],
+            uninstall_available: false,
         }
     }
 
@@ -177,6 +185,15 @@ mod tests {
             application.validate(),
             Err(CatalogError::InvalidIdentifier("RemoteApp alias"))
         );
+    }
+
+    #[test]
+    fn older_catalogues_default_to_no_safe_uninstaller() {
+        let application: PublishedApplication = serde_json::from_str(
+            r#"{"id":"example","displayName":"Example","remoteAppAlias":"qos-example","iconSha256":null,"associations":[]}"#,
+        )
+        .unwrap();
+        assert!(!application.uninstall_available);
     }
 
     #[test]
