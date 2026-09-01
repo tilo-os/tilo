@@ -47,7 +47,22 @@ cli = { path = "../cli" }
 # them). Features unify across a single cargo invocation, so an app
 # asking for a superset still resolves to this one copy; enabling it
 # here is what makes the standalone-built dylib useful on its own.
-ui = { path = "../../../ui", features = ["portal"] }
+ui = { path = "../../../ui", features = ["portal", "webview-adblock"] }
+# Heavy document engines used by shipped apps belong in the versioned runtime,
+# not in one qpkg. Re-exporting them gives rustc one ABI-matched provider for
+# Typst Editor's compile/render graph.
+typst = "0.14"
+typst-render = "0.14"
+typst-pdf = "0.14"
+typst-assets = { version = "0.14", features = ["fonts"] }
+tiny-skia = "0.11"
+comemo = "0.5"
+# Versioned live-service engines used by shipped apps. Keeping the codec and
+# stream resolver here avoids making Chat and Music carry private copies while
+# still loading them only when those apps call their feature-gated paths.
+qos-callstream = { path = "../../collab/qos-callstream" }
+rustypipe.workspace = true
+iroh.workspace = true
 
 [lints]
 workspace = true

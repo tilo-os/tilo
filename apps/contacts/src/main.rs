@@ -98,6 +98,9 @@ fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
     }
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.contacts", contacts::app_root)
