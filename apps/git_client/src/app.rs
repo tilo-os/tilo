@@ -791,22 +791,26 @@ impl GitClientApp {
     fn toggle_diff_layout(&mut self, doc: &mut AutoCommit) {
         self.settings.toggle_layout();
         self.diff_scroll = 0.0;
-        self.actions.dispatch(
+        let action = crate::actions::set_diff_layout_action(self.settings.diff_layout);
+        self.actions.dispatch_with_context(
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &crate::actions::set_diff_layout_action(self.settings.diff_layout),
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Git", "Git", &action),
         );
     }
 
     /// Flip diff syntax highlighting. Routed to by the app-bar `</>` pill.
     fn toggle_syntax_highlight(&mut self, doc: &mut AutoCommit) {
         self.settings.syntax_highlight = !self.settings.syntax_highlight;
-        self.actions.dispatch(
+        let action = crate::actions::GitClientAction::SetSyntaxHighlight {
+            on: self.settings.syntax_highlight,
+        };
+        self.actions.dispatch_with_context(
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &crate::actions::GitClientAction::SetSyntaxHighlight {
-                on: self.settings.syntax_highlight,
-            },
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Git", "Git", &action),
         );
     }
 

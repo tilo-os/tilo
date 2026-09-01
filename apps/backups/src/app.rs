@@ -215,10 +215,12 @@ impl BackupsApp {
         delta: i64,
     ) {
         let cur = BackupsDoc::retention(doc, root, field);
-        self.actions.dispatch(
+        let action = actions::bump_retention_action(field, cur, delta);
+        self.actions.dispatch_with_context(
             doc,
             BACKUPS_ACTION_TYPE,
-            &actions::bump_retention_action(field, cur, delta),
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Backups", "Backups", &action),
         );
     }
 
