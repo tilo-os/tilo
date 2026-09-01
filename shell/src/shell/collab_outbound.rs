@@ -22,28 +22,12 @@ use crate::shell::network::ShellNetwork;
 /// rather than a bare [`ShellNetwork`] so the routing decision can be
 /// tested against a recording sink instead of standing up Iroh.
 pub trait PeerPublishSink: Send + Sync {
-    fn app_crdt_incremental(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    );
-
-    fn app_crdt_signed(
+    fn app_document(
         &self,
         app_id: String,
         cluster_id: String,
         record_id: String,
         envelope: SignedOp,
-    );
-
-    fn app_crdt_snapshot(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
     );
 
     /// Republish typed presence independently of the local app transport.
@@ -54,34 +38,14 @@ pub trait PeerPublishSink: Send + Sync {
 }
 
 impl PeerPublishSink for ShellNetwork {
-    fn app_crdt_incremental(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        self.publish_app_crdt_incremental(app_id, cluster_id, record_id, data);
-    }
-
-    fn app_crdt_signed(
+    fn app_document(
         &self,
         app_id: String,
         cluster_id: String,
         record_id: String,
         envelope: SignedOp,
     ) {
-        self.publish_app_crdt_signed(app_id, cluster_id, record_id, envelope);
-    }
-
-    fn app_crdt_snapshot(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        self.publish_app_crdt_snapshot(app_id, cluster_id, record_id, data);
+        self.publish_document(app_id, cluster_id, record_id, envelope);
     }
 
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence) {
@@ -148,49 +112,17 @@ impl PeerPublisher {
         self.sink.is_some()
     }
 
-    /// Returns whether it reached the network, so a caller that wants
-    /// to assert delivery can.
-    pub fn document_incremental(&self, route: &CrdtRoute, data: Vec<u8>) -> bool {
-        let Some(sink) = self.ready(route, "document increment") else {
-            return false;
-        };
-        sink.app_crdt_incremental(
-            route.app_id.clone(),
-            route.cluster_id.clone(),
-            route.record_id.clone(),
-            data,
-        );
-        true
-    }
-
     /// The remote broker validates against its own channel state before
     /// showing it to anyone — publishing is not vouching.
     pub fn signed_document(&self, route: &CrdtRoute, envelope: SignedOp) -> bool {
         let Some(sink) = self.ready(route, "signed document") else {
             return false;
         };
-        sink.app_crdt_signed(
+        sink.app_document(
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.record_id.clone(),
             envelope,
-        );
-        true
-    }
-
-    /// Makes two *separately created* documents one document — sent in
-    /// reply to a peer's `Arrived`, never on a commit. Without it, deltas
-    /// refer to objects the receiver never saw: the peer's caret moves
-    /// over a blank page.
-    pub fn document_snapshot(&self, route: &CrdtRoute, data: Vec<u8>) -> bool {
-        let Some(sink) = self.ready(route, "document snapshot") else {
-            return false;
-        };
-        sink.app_crdt_snapshot(
-            route.app_id.clone(),
-            route.cluster_id.clone(),
-            route.record_id.clone(),
-            data,
         );
         true
     }
@@ -290,23 +222,11 @@ pub mod recording {
     /// What actually reached the wire, in order.
     #[derive(Debug, Clone, PartialEq)]
     pub enum Sent {
-        Incremental {
-            app_id: String,
-            cluster_id: String,
-            record_id: String,
-            data: Vec<u8>,
-        },
         Signed {
             app_id: String,
             cluster_id: String,
             record_id: String,
             payload: Vec<u8>,
-        },
-        Snapshot {
-            app_id: String,
-            cluster_id: String,
-            record_id: String,
-            data: Vec<u8>,
         },
         Presence {
             app_id: String,
@@ -347,22 +267,7 @@ pub mod recording {
     }
 
     impl PeerPublishSink for RecordingSink {
-        fn app_crdt_incremental(
-            &self,
-            app_id: String,
-            cluster_id: String,
-            record_id: String,
-            data: Vec<u8>,
-        ) {
-            self.sent.lock().unwrap().push(Sent::Incremental {
-                app_id,
-                cluster_id,
-                record_id,
-                data,
-            });
-        }
-
-        fn app_crdt_signed(
+        fn app_document(
             &self,
             app_id: String,
             cluster_id: String,
@@ -374,21 +279,6 @@ pub mod recording {
                 cluster_id,
                 record_id,
                 payload: envelope.payload,
-            });
-        }
-
-        fn app_crdt_snapshot(
-            &self,
-            app_id: String,
-            cluster_id: String,
-            record_id: String,
-            data: Vec<u8>,
-        ) {
-            self.sent.lock().unwrap().push(Sent::Snapshot {
-                app_id,
-                cluster_id,
-                record_id,
-                data,
             });
         }
 
@@ -427,54 +317,33 @@ mod tests {
         }
     }
 
+    fn document(payload: Vec<u8>) -> SignedOp {
+        SignedOp::new_unsigned(
+            payload,
+            ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        )
+    }
+
     #[test]
     fn record_scope_survives_onto_the_wire() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("notes", "11111111-1111-4111-8111-111111111111", "doc-7");
-        assert!(pubr.document_incremental(&route, vec![9, 9]));
+        assert!(pubr.signed_document(&route, document(vec![9, 9])));
         assert_eq!(
             sink.drain(),
-            vec![Sent::Incremental {
+            vec![Sent::Signed {
                 app_id: "notes".into(),
                 cluster_id: "11111111-1111-4111-8111-111111111111".into(),
                 record_id: "doc-7".into(),
-                data: vec![9, 9],
+                payload: vec![9, 9],
             }],
             "the wire must carry the same route the local fanout used, \
              record included",
-        );
-    }
-
-    #[test]
-    fn a_capnp_cluster_route_publishes_without_an_app_id() {
-        let (pubr, sink) = wired();
-        let route = CrdtRoute::from_channel_key("22222222-2222-4222-8222-222222222222");
-        assert!(pubr.document_incremental(&route, vec![1]));
-        assert_eq!(
-            sink.drain(),
-            vec![Sent::Incremental {
-                app_id: String::new(),
-                cluster_id: "22222222-2222-4222-8222-222222222222".into(),
-                record_id: String::new(),
-                data: vec![1],
-            }],
-        );
-    }
-
-    #[test]
-    fn a_capnp_record_channel_publishes_its_record() {
-        let (pubr, sink) = wired();
-        let route =
-            CrdtRoute::from_channel_key("33333333-3333-4333-8333-333333333333#record:letter");
-        assert!(pubr.document_incremental(&route, vec![2]));
-        assert_eq!(
-            sink.drain(),
-            vec![Sent::Incremental {
-                app_id: String::new(),
-                cluster_id: "33333333-3333-4333-8333-333333333333".into(),
-                record_id: "letter".into(),
-                data: vec![2],
-            }],
         );
     }
 
@@ -487,12 +356,8 @@ mod tests {
             CrdtRoute::record("notes", "", "doc"),
         ] {
             assert!(
-                !pubr.document_incremental(&route, vec![7]),
+                !pubr.signed_document(&route, document(vec![7])),
                 "route {route:?} addresses nobody and must not reach the wire",
-            );
-            assert!(
-                !pubr.document_snapshot(&route, vec![7]),
-                "route {route:?} addresses nobody, so no snapshot either",
             );
             assert!(
                 !pubr.presence(&route, presence()),
@@ -511,8 +376,7 @@ mod tests {
         let pubr = PeerPublisher::disabled();
         let route = CrdtRoute::record("notes", "44444444-4444-4444-8444-444444444444", "d");
         assert!(!pubr.is_wired());
-        assert!(!pubr.document_incremental(&route, vec![1]));
-        assert!(!pubr.document_snapshot(&route, vec![1]));
+        assert!(!pubr.signed_document(&route, document(vec![1])));
         assert!(!pubr.presence(&route, presence()));
         assert!(!pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 5, 3));
     }
@@ -527,22 +391,6 @@ mod tests {
             vec![Sent::Scrollback {
                 before_seq: 42,
                 max: 9
-            }],
-        );
-    }
-
-    #[test]
-    fn a_snapshot_carries_its_record_onto_the_wire() {
-        let (pubr, sink) = wired();
-        let route = CrdtRoute::record("words", "66666666-6666-4666-8666-666666666666", "letter");
-        assert!(pubr.document_snapshot(&route, vec![4, 2]));
-        assert_eq!(
-            sink.drain(),
-            vec![Sent::Snapshot {
-                app_id: "words".into(),
-                cluster_id: "66666666-6666-4666-8666-666666666666".into(),
-                record_id: "letter".into(),
-                data: vec![4, 2],
             }],
         );
     }
