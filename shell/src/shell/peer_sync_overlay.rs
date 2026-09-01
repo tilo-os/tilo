@@ -211,7 +211,7 @@ impl PeerSyncOverlay {
                 self.state.status = Some(format!("Could not resend: {error}"));
             }
             (PeerSyncRequest::CancelInvitation(_), Ok(PeerSyncResponse::Message(_))) => {
-                self.state.status = Some("Invite canceled".to_string())
+                self.state.status = Some("Invite canceled".to_string());
             }
             (PeerSyncRequest::CancelInvitation(_), Err(error)) => {
                 self.state.status = Some(format!("Could not cancel: {error}"));
@@ -266,7 +266,7 @@ impl PeerSyncOverlay {
                     return EventOutcome::ignored();
                 };
                 if let Some(button) = self.button_rects.iter().find_map(|(button, rect)| {
-                    (rect.area() > 0.0 && rect.contains(point)).then_some(button.clone())
+                    (rect.area() > 0.0 && rect.contains(point)).then_some(*button)
                 }) {
                     return self.activate(button);
                 }
@@ -554,7 +554,11 @@ impl PeerSyncOverlay {
         let total = self.state.pending_invitations.len();
         let end = self.pending_offset.saturating_add(3).min(total);
         let range = if total > 3 {
-            format!(" · {}–{} of {total} · scroll", self.pending_offset + 1, end)
+            format!(
+                " · {}–{} of {total} · scroll",
+                self.pending_offset.saturating_add(1),
+                end
+            )
         } else {
             String::new()
         };

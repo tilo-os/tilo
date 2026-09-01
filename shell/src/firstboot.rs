@@ -42,7 +42,7 @@ pub fn login_account_display_name() -> String {
             pwd.as_mut_ptr(),
             buffer.as_mut_ptr().cast(),
             buffer.len(),
-            &mut result,
+            std::ptr::addr_of_mut!(result),
         )
     };
     if status == 0 && !result.is_null() {
@@ -267,6 +267,12 @@ pub fn ensure_collaboration_identity(
 /// visibly associated with the already-authenticated Unix user. An existing
 /// identity record is used as-is: this compatibility path does not introduce
 /// another login, password, or storage migration.
+///
+/// # Errors
+///
+/// Returns an error if the identity directory cannot be created or its
+/// permissions set, or if the identity and its certified device key cannot be
+/// provisioned, loaded, verified, migrated, or saved.
 pub fn ensure_collaboration_identity_for_legacy_linux_host(
     identity_dir: &Path,
     paths: &IdentityPaths,
