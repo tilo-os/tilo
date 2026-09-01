@@ -100,6 +100,21 @@ enum AddCommand {
         /// Common component shape to scaffold.
         #[arg(long, value_enum, default_value = "display")]
         template: ComponentTemplateArg,
+        /// Also insert the first instance into this serialized graph screen.
+        #[arg(long)]
+        mount: Option<String>,
+        /// Stable mounted node id. Defaults to a unique component-name id.
+        #[arg(long, requires = "mount")]
+        id: Option<String>,
+        /// Mounted node parent. Defaults to root.
+        #[arg(long, requires = "mount")]
+        parent: Option<String>,
+        /// Mounted child position. Defaults to appending.
+        #[arg(long, requires = "mount")]
+        index: Option<usize>,
+        /// Mounted component props as one JSON object. Defaults to starter copy.
+        #[arg(long, requires = "mount")]
+        props: Option<String>,
         #[command(flatten)]
         options: AddOptions,
     },
@@ -678,21 +693,38 @@ fn run_add(args: AddArgs) -> Result<()> {
         AddCommand::Component {
             name,
             template,
+            mount,
+            id,
+            parent,
+            index,
+            props,
             options,
-        } => (
-            qos_dev::AddArtifact::Component {
-                name,
-                template: match template {
-                    ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
-                    ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
-                    ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
-                    ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
-                    ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
-                    ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
-                },
-            },
-            options,
-        ),
+        } => {
+            let template = match template {
+                ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
+                ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
+                ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
+                ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
+                ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
+                ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
+            };
+            let artifact = if let Some(screen) = mount {
+                if template != qos_dev::ComponentTemplate::Display {
+                    anyhow::bail!("--mount currently requires --template display");
+                }
+                let mut mount = qos_dev::ComponentMount::display(screen, &name);
+                mount.id = id;
+                mount.parent = parent.unwrap_or_else(|| "root".into());
+                mount.index = index;
+                if let Some(props) = props {
+                    mount.props = props;
+                }
+                qos_dev::AddArtifact::GraphComponent { name, mount }
+            } else {
+                qos_dev::AddArtifact::Component { name, template }
+            };
+            (artifact, options)
+        }
     };
     let start = options.app.map_or_else(std::env::current_dir, Ok)?;
     let outcome = qos_dev::add_app_artifact(qos_dev::AddRequest {
@@ -1096,6 +1128,7 @@ mod tests {
                     name,
                     template,
                     options,
+                    ..
                 }),
         }) = component.command
         else {
@@ -1140,6 +1173,51 @@ mod tests {
         let Command::Add(AddArgs { command: None }) = wizard.command else {
             panic!("expected interactive add command");
         };
+    }
+
+    #[test]
+    fn add_component_mount_options_are_explicit_and_scoped() {
+        let mounted = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "activity-card",
+            "--mount",
+            "main",
+            "--id",
+            "summary",
+            "--parent",
+            "content",
+            "--index",
+            "1",
+            "--props",
+            r#"{"title":"Recent","detail":"Ready"}"#,
+        ])
+        .expect("mounted component command");
+        assert!(matches!(
+            mounted.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    mount: Some(screen),
+                    id: Some(id),
+                    parent: Some(parent),
+                    index: Some(1),
+                    props: Some(_),
+                    ..
+                })
+            }) if screen == "main" && id == "summary" && parent == "content"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "add",
+                "component",
+                "activity-card",
+                "--parent",
+                "content",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
