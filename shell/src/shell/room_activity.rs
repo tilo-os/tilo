@@ -3519,6 +3519,9 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::ResourceType(k) => format!("every {k:?}"),
         Scope::ResourceInstance(_) => "one artifact".to_string(),
         Scope::FsPath(p) => p.clone(),
+        // Record authority intentionally has no path: it follows the file
+        // across rename/move and the stable id is not useful activity copy.
+        Scope::FsRecord(_) => "one shared file".to_string(),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => format!("network {h}"),
         Scope::Action { app, action } => format!("{app}:{action}"),

@@ -11648,6 +11648,10 @@ impl ShellOverlayHost {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact overview layout geometry is the behavior under test"
+)]
 mod overview_panel_tests {
     //! The overview is a switcher for rooms: which one you're in, who's in
     //! it, what leaves it, how to get to another. These pin geometry/data,
@@ -11928,6 +11932,10 @@ mod overview_panel_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact transition endpoints are the behavior under test"
+)]
 mod overview_transition_tests {
     use super::*;
     use ui::widget::Container;
@@ -13102,6 +13110,10 @@ mod two_workspace_host_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact modal curve endpoints are the behavior under test"
+)]
 mod modal_curve_tests {
     //! Guards the shared ease-out-cubic curve used by the workspace-settings
     //! modal and the command palette (`modal_transition_curve`, which both
@@ -13254,6 +13266,10 @@ mod modal_curve_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact overlay hit-test geometry is the behavior under test"
+)]
 mod overlay_event_absorb_tests {
     //! Pins the modal event-absorb gate: every pointer event over an open
     //! overlay must short-circuit rather than leak to the content widget
@@ -13905,6 +13921,10 @@ mod overlay_event_absorb_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic host geometry fixtures use exactly representable values"
+)]
 mod tests {
     //! Drives `host.handle_event` with real winit events, through the
     //! same path the live binary takes.
