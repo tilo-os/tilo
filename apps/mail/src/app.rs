@@ -188,6 +188,8 @@ pub struct MailApp {
     /// app only keeps polling the worker while a reply is outstanding (it fully
     /// idles otherwise instead of busy-looping).
     awaiting_engine: bool,
+    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    resource_refresh_result: Option<qos_actions::InvocationUpdate>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -273,6 +275,8 @@ impl MailApp {
             accounts_persist,
             connect_requested: false,
             awaiting_engine: false,
+            resource_refresh_invocation: None,
+            resource_refresh_result: None,
             last_auto_refresh_min: 0,
             toast_text: None,
             toast_deadline: None,
@@ -1369,6 +1373,13 @@ impl MailApp {
                             Some("Mail is up to date"),
                         );
                         settled = true;
+                        if let Some(invocation) = self.resource_refresh_invocation.take() {
+                            self.resource_refresh_result =
+                                Some(qos_actions::InvocationUpdate::Succeeded {
+                                    invocation,
+                                    output: qos_actions::ActionOutput::default(),
+                                });
+                        }
                     }
                     EngineEvent::Sent { wire_bytes } => {
                         st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
@@ -1407,6 +1418,18 @@ impl MailApp {
                             Some(&format!("{context}: {message}")),
                         );
                         settled = true;
+                        if let Some(invocation) = self.resource_refresh_invocation.take() {
+                            self.resource_refresh_result =
+                                Some(qos_actions::InvocationUpdate::Failed {
+                                    invocation,
+                                    error: qos_actions::ActionFailure {
+                                        code: "mail.refresh_failed".into(),
+                                        message: format!("{context}: {message}"),
+                                        details: None,
+                                        retryable: true,
+                                    },
+                                });
+                        }
                     }
                 }
             }
@@ -2597,6 +2620,51 @@ impl Widget for MailApp {
             }
         }
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::MAIL_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
+            return Err("a mail operation is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if !self.awaiting_engine {
+            return Err("mail refresh could not be queued".into());
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_refresh_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_refresh_result.take()
+        } else {
+            None
+        }
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
