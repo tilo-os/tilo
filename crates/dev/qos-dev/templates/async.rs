@@ -1,5 +1,5 @@
-use ui::widget::{Banner, Button, Column, Spinner, Text, Widget};
-use ui::{LatestTask, ModelView};
+use ui::widget::{Banner, Button, Spinner, Text, Widget};
+use ui::{LatestTask, ModelView, tokens::TextRole};
 
 enum LoadState {
     Idle,
@@ -50,15 +50,12 @@ pub fn app_root() -> Box<dyn Widget> {
                 LoadState::Idle => Box::new(Text::new("task-idle")),
                 LoadState::Loading => {
                     let cancel_task = body_task.clone();
-                    Box::new(
-                        Column::new()
-                            .push(Box::new(Spinner::new()))
-                            .push(Box::new(Text::new("task-loading")))
-                            .push(Box::new(
-                                Button::new("cancel-task", "task-cancel", None)
-                                    .on_click(move || cancel_task.cancel(LoadState::Idle)),
-                            )),
-                    )
+                    Box::new(ui::column![
+                        Spinner::new(),
+                        Text::new("task-loading"),
+                        Button::new("cancel-task", "task-cancel", None)
+                            .on_click(move || cancel_task.cancel(LoadState::Idle)),
+                    ])
                 }
                 LoadState::Ready(count) => Box::new(
                     Text::new("task-ready")
@@ -70,10 +67,9 @@ pub fn app_root() -> Box<dyn Widget> {
         },
     );
 
-    Box::new(
-        Column::new()
-            .push(Box::new(Text::new("task-title").with_size(28.0)))
-            .push(Box::new(run))
-            .push(Box::new(body)),
-    )
+    Box::new(ui::column![
+        Text::new("task-title").with_role(TextRole::Title),
+        run,
+        body,
+    ])
 }
