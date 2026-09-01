@@ -17,6 +17,7 @@ use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::service::published_vm_explanation;
 use crate::{
     CapsuleStore, CompatibilityService, HostSession, InstallationStatus, LaunchInput,
     LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramKind,
@@ -105,8 +106,8 @@ where
         self.store.installations().map_err(Into::into)
     }
 
-    fn vm_availability(&self) -> crate::VmAvailability {
-        self.service.vm_availability()
+    fn vm_inventory(&self) -> crate::VmInventory {
+        self.service.vm_inventory()
     }
 
     fn explain_entry(
@@ -177,6 +178,17 @@ where
                 capabilities,
                 now_unix: now_unix(),
             })
+            .map_err(Into::into)
+    }
+
+    fn launch_published_vm(
+        &self,
+        application: &crate::VmPublishedApplication,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+    ) -> Result<crate::LaunchReceipt, SessionError> {
+        self.service
+            .launch_published_vm(application, workspace_id, capabilities, now_unix())
             .map_err(Into::into)
     }
 
@@ -641,19 +653,34 @@ where
         }
         ProtocolRequest::LaunchVmFallback { entry_id, .. } => {
             if valid_id(&entry_id) && allowed_entry_ids.contains(&entry_id) {
-                let entry = managed
-                    .entries()?
+                if let Some(application) = managed
+                    .vm_inventory()
+                    .applications
                     .into_iter()
-                    .find(|entry| {
-                        entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
-                    })
-                    .ok_or(SessionError::UnknownEntry)?;
-                let capabilities = authority
-                    .capabilities_for(&handoff.workspace_id, &entry.app_id)
-                    .map_err(SessionError::Authority)?;
-                managed
-                    .launch_vm_fallback_entry(&entry, &handoff.workspace_id, capabilities)
-                    .map(|receipt| ProtocolResponse::Launched { receipt })
+                    .find(|application| application.entry_id == entry_id)
+                {
+                    let capabilities = authority
+                        .capabilities_for(&handoff.workspace_id, &application.app_id)
+                        .map_err(SessionError::Authority)?;
+                    managed
+                        .launch_published_vm(&application, &handoff.workspace_id, &capabilities)
+                        .map(|receipt| ProtocolResponse::Launched { receipt })
+                } else {
+                    let entry = managed
+                        .entries()?
+                        .into_iter()
+                        .find(|entry| {
+                            entry.entry_id == entry_id
+                                && entry.program.kind == ProgramKind::Application
+                        })
+                        .ok_or(SessionError::UnknownEntry)?;
+                    let capabilities = authority
+                        .capabilities_for(&handoff.workspace_id, &entry.app_id)
+                        .map_err(SessionError::Authority)?;
+                    managed
+                        .launch_vm_fallback_entry(&entry, &handoff.workspace_id, capabilities)
+                        .map(|receipt| ProtocolResponse::Launched { receipt })
+                }
             } else {
                 Err(SessionError::UnknownEntry)
             }
@@ -742,7 +769,8 @@ where
     let mut applications = Vec::new();
     // A list refresh reports real delegate readiness, but never wakes the
     // fallback appliance merely to draw a manager badge.
-    let vm_availability = managed.vm_availability();
+    let vm_inventory = managed.vm_inventory();
+    let vm_availability = vm_inventory.availability.clone();
     for entry in managed.entries()?.into_iter().filter(|entry| {
         allowed_entry_ids.contains(&entry.entry_id)
             && entry.program.kind == ProgramKind::Application
@@ -765,7 +793,7 @@ where
                 .publisher
                 .or(entry.query.store)
                 .unwrap_or_else(|| "Windows application".to_string()),
-            capsule_id: entry.capsule_id,
+            capsule_id: Some(entry.capsule_id),
             program_id: entry.program.id,
             explanation,
             vm_launch_available: vm_availability.available,
@@ -778,6 +806,28 @@ where
             audio_unavailable_reason: None,
             installation_status,
             remove_launcher_available: true,
+        });
+    }
+    for application in vm_inventory
+        .applications
+        .into_iter()
+        .filter(|application| allowed_entry_ids.contains(&application.entry_id))
+    {
+        applications.push(ManagedApplication {
+            id: application.entry_id,
+            app_id: application.app_id,
+            display_name: application.display_name,
+            publisher: "Managed Windows appliance".to_string(),
+            capsule_id: None,
+            program_id: application.published_application_id,
+            explanation: published_vm_explanation(&application.presentation),
+            vm_launch_available: vm_availability.available,
+            vm_unavailable_reason: (!vm_availability.available)
+                .then(|| vm_availability.detail.clone()),
+            audio_output_available: true,
+            audio_unavailable_reason: None,
+            installation_status: None,
+            remove_launcher_available: false,
         });
     }
     let authorized_capsules = authorized_capsules(managed, allowed_entry_ids)?;
