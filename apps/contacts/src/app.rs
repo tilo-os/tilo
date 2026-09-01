@@ -11,8 +11,10 @@
 //! list can be driven precisely; embedded [`TextInput`]s are positioned
 //! with `apply_layout_external` and routed events directly.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -36,7 +38,7 @@ use ui::theme::Theme;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
-    Link, TextInput, Widget,
+    Link, ModalDialog, Text, TextInput, Widget,
 };
 
 use crate::date;
@@ -341,6 +343,17 @@ enum Popup {
     ContextMenu { target: ContactId, anchor: Rect },
 }
 
+/// The live delete confirmation: the shared modal plus callback flags drained
+/// by the immediate-mode host after each event. The target remains in
+/// `ContactsApp::confirm_delete`, keeping the mutation gate separate from the
+/// presentation widget.
+struct DeleteDialog {
+    target: ContactId,
+    dialog: ModalDialog<Text>,
+    confirm: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
 /// Stable identifiers for the per-contact right-click context-menu items. The
 /// visible label for [`ContextAction::Favorite`] depends on the contact's
 /// current favorite state, so the menu is built per-contact at open time via
@@ -432,6 +445,10 @@ pub struct ContactsApp {
     popup: Option<Popup>,
     toast: Option<(String, Instant)>,
     confirm_delete: Option<ContactId>,
+    /// Built lazily while `confirm_delete` is armed and discarded when that
+    /// target resolves. `ModalDialog` owns the scrim, panel, buttons, Escape /
+    /// backdrop dismissal, focus trap, and accessible dialog role.
+    delete_dialog: Option<DeleteDialog>,
 
     /// Self-contained export selection modal: state, drawing and input routing.
     export_dialog: ExportDialog,
@@ -551,6 +568,7 @@ impl ContactsApp {
             popup: None,
             toast: None,
             confirm_delete: None,
+            delete_dialog: None,
             export_dialog: ExportDialog::new(),
             pending_switch: None,
             rect: Rect::ZERO,
@@ -899,6 +917,7 @@ impl ContactsApp {
             self.selected = self.visible_ids().first().copied();
         }
         self.confirm_delete = None;
+        self.delete_dialog = None;
         Self::persist();
         self.show_toast("Contact deleted");
         self.relayout = true;
@@ -1611,7 +1630,11 @@ impl ContactsApp {
             self.draw_unsaved_modal(scene, transform, tr, theme);
         }
         if let Some(id) = self.confirm_delete {
-            self.draw_confirm(scene, transform, tr, theme, id);
+            self.ensure_delete_dialog(id);
+            if let Some(confirm) = self.delete_dialog.as_mut() {
+                confirm.dialog.layout_in(self.rect, theme, tr);
+                confirm.dialog.draw(scene, transform, tr, theme, presence);
+            }
         }
         if let Some((msg, _)) = &self.toast {
             draw_toast(scene, transform, tr, theme, self.rect, msg);
@@ -2859,79 +2882,50 @@ impl ContactsApp {
         );
     }
 
-    fn draw_confirm(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        id: ContactId,
-    ) {
-        let c = &theme.tokens.colors;
-        // Scrim.
-        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
-        let (panel, del, cancel) = self.confirm_geometry();
-        menu_panel(scene, t, theme, panel);
+    /// Build the shared destructive confirmation for one contact. Callback
+    /// cells keep the widget presentation-only; the host still dispatches the
+    /// canonical Contacts action after the dialog resolves.
+    fn build_delete_dialog(&self, id: ContactId) -> DeleteDialog {
         let name = self
             .store
             .get(id)
             .map(super::model::Contact::display_name)
             .unwrap_or_default();
-        tr.draw_text_weighted(
-            scene,
-            "Delete contact?",
-            16.0,
-            c.text_primary,
-            t * Affine::translate((panel.x0 + 20.0, panel.y0 + 20.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text(
-            scene,
-            &format!("\u{201C}{name}\u{201D} will be removed from this address book."),
-            13.0,
-            c.text_dim,
-            t * Affine::translate((panel.x0 + 20.0, panel.y0 + 48.0)),
-            Some((panel.width() - 40.0) as f32),
-        );
-        let m = self.last_mouse;
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
+        let confirm = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let body = format!("\u{201C}{name}\u{201D} will be removed from this address book.");
+        let dialog = ModalDialog::new("Delete contact?", Text::new(&body).with_size(13.0))
+            .open(true)
+            .with_max_size(420.0, 190.0)
+            .with_destructive(true)
+            .primary_action("Delete", {
+                let confirm = Rc::clone(&confirm);
+                move || confirm.set(true)
+            })
+            .secondary_action("Cancel", {
+                let cancel = Rc::clone(&cancel);
+                move || cancel.set(true)
+            })
+            .on_dismiss({
+                let cancel = Rc::clone(&cancel);
+                move || cancel.set(true)
+            });
+        DeleteDialog {
+            target: id,
+            dialog,
+            confirm,
             cancel,
-            "Cancel",
-            false,
-            cancel.contains(m),
-            false,
-        );
-        // Destructive confirm — the shared danger face, so it gives the same
-        // hover feedback as every other button rather than reading as dead.
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(del, "Delete")
-                .style(ButtonStyle::Danger)
-                .radius(f64::from(theme.tokens.radii.md))
-                .text_size(14.0)
-                .weight(TextWeight::Semibold)
-                .hovered(del.contains(m)),
-        );
+        }
     }
 
-    fn confirm_geometry(&self) -> (Rect, Rect, Rect) {
-        let w = 380.0;
-        let h = 150.0;
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        let panel = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-        let by = panel.y1 - 48.0;
-        let del = Rect::new(panel.x1 - 20.0 - 96.0, by, panel.x1 - 20.0, by + 32.0);
-        let cancel = Rect::new(del.x0 - 8.0 - 88.0, by, del.x0 - 8.0, by + 32.0);
-        (panel, del, cancel)
+    fn ensure_delete_dialog(&mut self, id: ContactId) {
+        if self
+            .delete_dialog
+            .as_ref()
+            .is_none_or(|dialog| dialog.target != id)
+        {
+            self.delete_dialog = Some(self.build_delete_dialog(id));
+        }
     }
 }
 
@@ -3564,6 +3558,22 @@ impl Widget for ContactsApp {
         self.rect
     }
 
+    fn traps_focus(&self) -> bool {
+        self.confirm_delete.is_some()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.delete_dialog
+            .as_ref()
+            .and_then(|confirm| confirm.dialog.modal_capture())
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.delete_dialog
+            .as_ref()
+            .and_then(|confirm| confirm.dialog.accessibility())
+    }
+
     /// The pointing-hand cursor over the view-mode website hyperlink; every
     /// other region defers to the default arrow.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -3648,9 +3658,7 @@ impl ContactsApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        if (self.export_dialog.is_open()
-            || self.pending_switch.is_some()
-            || self.confirm_delete.is_some())
+        if (self.export_dialog.is_open() || self.pending_switch.is_some())
             && let WindowEvent::KeyboardInput { event: ke, .. } = event
         {
             if ke.state == ElementState::Pressed
@@ -3680,7 +3688,7 @@ impl ContactsApp {
             return true;
         }
         if self.confirm_delete.is_some() {
-            self.handle_confirm(event, state, handled);
+            self.route_delete_dialog_event(event, scale_factor, modifiers, state, path, handled);
             return true;
         }
         if self.popup.is_some() {
@@ -4619,34 +4627,50 @@ impl ContactsApp {
         // else: click outside dismisses (popup already taken).
     }
 
-    fn handle_confirm(&mut self, event: &WindowEvent, state: &mut AutoCommit, handled: &mut bool) {
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.dirty = true;
-        }
-        let press = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        );
-        if !press {
+    /// Route the open delete confirmation through `ModalDialog`. This retains
+    /// the existing explicit-button gate (ordinary keys do not confirm), while
+    /// shared handling supplies Escape, backdrop dismissal, and complete modal
+    /// event capture.
+    fn route_delete_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        let Some(id) = self.confirm_delete else {
             return;
+        };
+        self.ensure_delete_dialog(id);
+        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            let theme = Theme::dark();
+            let mut text_renderer = TextRenderer::new();
+            if let Some(confirm) = self.delete_dialog.as_mut() {
+                confirm
+                    .dialog
+                    .layout_in(self.rect, &theme, &mut text_renderer);
+            }
         }
-        *handled = true;
-        self.dirty = true;
-        let (_panel, del, cancel) = self.confirm_geometry();
-        let p = self.last_mouse;
-        if del.contains(p)
-            && let Some(id) = self.confirm_delete
-        {
+        let (confirm, cancel) = {
+            let Some(dialog) = self.delete_dialog.as_mut() else {
+                *handled = true;
+                return;
+            };
+            *handled = dialog
+                .dialog
+                .handle_detached(event, scale_factor, modifiers, state, path);
+            (dialog.confirm.replace(false), dialog.cancel.replace(false))
+        };
+        if confirm {
             self.delete_selected(state, id);
+        } else if cancel {
+            self.confirm_delete = None;
+            self.delete_dialog = None;
         }
-        // Any press inside the modal (delete already handled above, cancel
-        // or scrim) dismisses it.
-        self.confirm_delete = None;
-        let _ = cancel;
+        self.dirty = true;
+        *handled = true;
     }
 
     /// Open the per-contact right-click context menu if `p` lands on a row.
@@ -4843,6 +4867,7 @@ impl ContactsApp {
             self.pending_switch = None;
         } else if self.confirm_delete.is_some() {
             self.confirm_delete = None;
+            self.delete_dialog = None;
         } else if self.popup.is_some() {
             self.popup = None;
         } else if self.mode == Mode::Edit {
@@ -6024,7 +6049,14 @@ mod tests {
         let id = h.row_id(0);
         h.app.confirm_delete = Some(id);
         let before = ContactsDoc::list_contacts(&h.doc).len();
-        let (_panel, del, _cancel) = h.app.confirm_geometry();
+        h.relayout();
+        let del = h
+            .app
+            .delete_dialog
+            .as_ref()
+            .expect("draw builds the shared modal")
+            .dialog
+            .primary_rect();
         h.press_left(del.center());
         assert!(
             h.app.confirm_delete.is_none(),
@@ -6054,7 +6086,14 @@ mod tests {
         let expected =
             crate::actions::encode(&crate::actions::delete_contact_action(id.to_string()));
         h.app.confirm_delete = Some(id);
-        let (_panel, del, _cancel) = h.app.confirm_geometry();
+        h.relayout();
+        let del = h
+            .app
+            .delete_dialog
+            .as_ref()
+            .expect("draw builds the shared modal")
+            .dialog
+            .primary_rect();
         h.press_left(del.center());
         assert_eq!(
             h.app.last_dispatched(),
@@ -6645,6 +6684,31 @@ mod tests {
             "Escape dismisses the confirm modal"
         );
         assert!(h.app.store.get(id).is_some(), "nothing was deleted");
+    }
+
+    #[test]
+    fn delete_confirmation_is_shared_modal_and_cancel_is_non_destructive() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.row_id(0);
+        h.app.confirm_delete = Some(id);
+        h.relayout();
+
+        let dialog = &h.app.delete_dialog.as_ref().unwrap().dialog;
+        let access = dialog.accessibility().expect("modal accessibility node");
+        assert_eq!(access.role, ui::a11y::Role::Dialog);
+        assert!(access.state.modal, "assistive tech sees a blocking dialog");
+        assert!(h.app.traps_focus(), "keyboard focus cannot leave the modal");
+        let cancel = dialog.secondary_rect();
+
+        assert!(h.press_left(cancel.center()));
+        assert!(h.app.confirm_delete.is_none(), "Cancel closes the dialog");
+        assert!(h.app.store.get(id).is_some(), "Cancel never deletes");
+        assert!(
+            ContactsDoc::list_contacts(&h.doc)
+                .iter()
+                .any(|c| c.id == id),
+            "Cancel leaves the document untouched"
+        );
     }
 
     #[test]
