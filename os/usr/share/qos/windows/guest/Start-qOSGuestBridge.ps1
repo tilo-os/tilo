@@ -1,6 +1,6 @@
 <#
 The guest endpoint is intentionally small: catalog, health and preparation of
-one single-use RemoteApp credential. It is an HTTPS service bound only to the
+one single-use RemoteApp credential (or a focused SPICE presentation). It is an HTTPS service bound only to the
 non-forwarding qOS host-only network. Every request also needs a fresh HMAC
 over timestamp, nonce and body using the bootstrap key installed SYSTEM-only.
 
@@ -170,33 +170,38 @@ while ($listener.IsListening) {
                 $requestedPresentation = [string]$request.presentationBackend
                 if ([string]::IsNullOrWhiteSpace($requestedPresentation)) { $requestedPresentation = 'native_rail' }
                 if ($requestedPresentation -notin @('native_rail', 'native_rail_rds', 'native_rail_client_best_effort', 'app_focused_spice')) { throw 'unsupported presentation backend' }
-                # A unique short-lived account prevents password reuse between
-                # launches. RDS RemoteApp, not a hidden desktop, authorises the
-                # application surface. A scheduled deletion bounds a failed
-                # FreeRDP launch too.
-                $name = "qra$([Guid]::NewGuid().ToString('N').Substring(0, 16))"
-                $passwordBytes = [byte[]]::new(32)
-                # .NET Framework (and therefore Windows PowerShell 5.1 on
-                # supported Windows Server releases) has Create/GetBytes but
-                # not the newer static RandomNumberGenerator.Fill API.
-                $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-                try { $rng.GetBytes($passwordBytes) }
-                finally { $rng.Dispose() }
-                $password = [Convert]::ToBase64String($passwordBytes) + '!qA1'
-                $secure = ConvertTo-SecureString $password -AsPlainText -Force
-                New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires | Out-Null
-                Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $name
-                $when = (Get-Date).AddMinutes(10)
-                $taskName = "qOS-Remove-$name"
-                # ScheduledTasks takes a DateTime directly, avoiding
-                # schtasks.exe's locale-dependent /SD date syntax. Deleting
-                # the task as part of its own action prevents steady-state
-                # task-list growth after many RemoteApp sessions.
-                $cleanupCommand = "Remove-LocalUser -Name '$name' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false"
-                $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$cleanupCommand`""
-                $cleanupTrigger = New-ScheduledTaskTrigger -Once -At $when
-                $cleanupPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-                Register-ScheduledTask -TaskName $taskName -Action $cleanupAction -Trigger $cleanupTrigger -Principal $cleanupPrincipal -Force | Out-Null
+                # Native RAIL needs a one-use account because it connects to
+                # the guest RDP listener. Focused SPICE attaches to the
+                # singleton VM display instead; creating an account there
+                # would be unnecessary guest state and an accidental second
+                # access path.
+                $name = $null
+                $password = $null
+                if ($requestedPresentation -ne 'app_focused_spice') {
+                    $name = "qra$([Guid]::NewGuid().ToString('N').Substring(0, 16))"
+                    $passwordBytes = [byte[]]::new(32)
+                    # .NET Framework (and therefore Windows PowerShell 5.1 on
+                    # supported Windows Server releases) has Create/GetBytes but
+                    # not the newer static RandomNumberGenerator.Fill API.
+                    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+                    try { $rng.GetBytes($passwordBytes) }
+                    finally { $rng.Dispose() }
+                    $password = [Convert]::ToBase64String($passwordBytes) + '!qA1'
+                    $secure = ConvertTo-SecureString $password -AsPlainText -Force
+                    New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires | Out-Null
+                    Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $name
+                    $when = (Get-Date).AddMinutes(10)
+                    $taskName = "qOS-Remove-$name"
+                    # ScheduledTasks takes a DateTime directly, avoiding
+                    # schtasks.exe's locale-dependent /SD date syntax. Deleting
+                    # the task as part of its own action prevents steady-state
+                    # task-list growth after many RemoteApp sessions.
+                    $cleanupCommand = "Remove-LocalUser -Name '$name' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false"
+                    $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$cleanupCommand`""
+                    $cleanupTrigger = New-ScheduledTaskTrigger -Once -At $when
+                    $cleanupPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                    Register-ScheduledTask -TaskName $taskName -Action $cleanupAction -Trigger $cleanupTrigger -Principal $cleanupPrincipal -Force | Out-Null
+                }
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
                 $focus = $null
