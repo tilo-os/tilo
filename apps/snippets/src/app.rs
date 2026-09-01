@@ -1662,7 +1662,7 @@ impl SnippetsApp {
         if active {
             draw::fill_round(scene, t, row, theme.radii_md(), c.accent[5]);
         } else if row.contains(self.last_mouse) {
-            draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
+            draw::fill_round(scene, t, row, theme.radii_md(), c.lift(0.35));
         }
         let fg = if active { c.text_primary } else { c.neutral[7] };
         let x = row.x0 + pad + f64::from(indent) * 12.0;
@@ -2036,7 +2036,7 @@ impl SnippetsApp {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surfaces.raised);
             draw::stroke_round(scene, t, row, theme.radii_md(), 1.0, c.accent[5]);
         } else if row.contains(self.last_mouse) {
-            draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
+            draw::fill_round(scene, t, row, theme.radii_md(), c.lift(0.35));
         }
         let pad = 12.0;
         // Language sigil badge.

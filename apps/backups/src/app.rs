@@ -355,7 +355,15 @@ impl BackupsApp {
             self.rect.y0 + BAR_H,
         );
         paint::fill_rect(scene, t, bar, c.neutral[0]);
-        paint::hline(scene, t, bar.x0, bar.x1, bar.y1, c.border_white_10, 1.0);
+        paint::hline(
+            scene,
+            t,
+            bar.x0,
+            bar.x1,
+            bar.y1,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let cy = bar.y0 + BAR_H / 2.0;
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
@@ -442,7 +450,14 @@ impl BackupsApp {
             cy + TAB_H / 2.0,
         );
         paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
-        paint::stroke_rrect(scene, t, seg, 9.0, c.border_white_10, 1.0);
+        paint::stroke_rrect(
+            scene,
+            t,
+            seg,
+            9.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         // The active tab floats as an inset pill inside the raised track; the
         // whole strip is one shared segmented control. Abbreviate the labels
         // once the tabs get too tight so "Destinations"/"Schedules" don't
@@ -701,7 +716,14 @@ impl BackupsApp {
         // A translucent card when docked (matches the panel), a solid surface
         // when the drawer floats over content in overlay mode.
         if self.drawer.is_overlay() {
-            paint::card(scene, t, rail, 14.0, c.surfaces.raised, c.border_white_20);
+            paint::card(
+                scene,
+                t,
+                rail,
+                14.0,
+                c.surfaces.raised,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+            );
         } else {
             paint::card(
                 scene,
@@ -709,7 +731,7 @@ impl BackupsApp {
                 rail,
                 14.0,
                 c.surfaces.raised.with_alpha_factor(0.45),
-                c.border_white_10,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             );
         }
         let pad = 14.0;
@@ -750,7 +772,7 @@ impl BackupsApp {
             rail.x0 + pad,
             rail.x1 - pad,
             y,
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             1.0,
         );
         y += 14.0;
@@ -801,7 +823,7 @@ impl BackupsApp {
                 1.0,
             );
         } else if hovered {
-            paint::fill_rrect(scene, t, row, 9.0, c.surface_white_5);
+            paint::fill_rrect(scene, t, row, 9.0, c.lift(0.35));
         }
     }
 
@@ -953,7 +975,7 @@ impl BackupsApp {
         let h = 48.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
         if self.hover == Some(Hit::Dest(d.id.clone())) {
-            paint::fill_rrect(scene, t, row, 9.0, c.surface_white_5);
+            paint::fill_rrect(scene, t, row, 9.0, c.lift(0.35));
         }
         let ix = row.x0 + 18.0;
         Self::draw_dest_icon(
@@ -1052,7 +1074,14 @@ impl BackupsApp {
             let x0 = region.x0 + col as f64 * (tile_w + gap);
             let y0 = region.y0 + tile_row as f64 * (tile_h + gap);
             let tile = Rect::new(x0, y0, x0 + tile_w, y0 + tile_h);
-            paint::card(scene, t, tile, 12.0, c.surfaces.raised, c.border_white_10);
+            paint::card(
+                scene,
+                t,
+                tile,
+                12.0,
+                c.surfaces.raised,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            );
             // accent ticker on the left edge
             let tick = Rect::new(tile.x0, tile.y0 + 10.0, tile.x0 + 3.0, tile.y1 - 10.0);
             paint::fill_rrect(scene, t, tick, 1.5, *accent);
@@ -1142,7 +1171,7 @@ impl BackupsApp {
                         list.x0 + label_w,
                         list.x1,
                         y + 14.0,
-                        c.border_white_10,
+                        ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                         1.0,
                     );
                 }
@@ -1208,7 +1237,7 @@ impl BackupsApp {
                 1.0,
             );
         } else if hovered {
-            paint::fill_rrect(scene, t, row, 10.0, c.surface_white_5);
+            paint::fill_rrect(scene, t, row, 10.0, c.lift(0.35));
         } else {
             paint::fill_rrect(
                 scene,
@@ -1245,7 +1274,7 @@ impl BackupsApp {
                 theme.accent_primary,
                 theme.accent_primary.with_alpha_factor(0.18),
             ),
-            SnapType::Auto => (c.text_dim, c.surface_white_10),
+            SnapType::Auto => (c.text_dim, c.lift(0.72)),
         };
         px += paint::pill(scene, tr, t, px, cy, s.kind.label(), 11.0, tfg, tbg) + 6.0;
         let rc = Self::retention_color(theme, s.retention);
@@ -1417,7 +1446,7 @@ impl BackupsApp {
         let border = if sel {
             theme.accent_primary.with_alpha_factor(0.6)
         } else {
-            c.border_white_10
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
         };
         paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
         let ix = card.x0 + 34.0;
@@ -1621,7 +1650,7 @@ impl BackupsApp {
             region,
             14.0,
             c.surfaces.raised.with_alpha_factor(0.45),
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
         );
         paint::text_bold(
             scene,
@@ -1684,7 +1713,7 @@ impl BackupsApp {
                     region.x0 + 18.0,
                     region.x1 - 18.0,
                     ry + row_h,
-                    c.border_white_10,
+                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                     1.0,
                 );
             }
@@ -1970,7 +1999,7 @@ impl BackupsApp {
         let border = if sel {
             theme.accent_primary.with_alpha_factor(0.6)
         } else {
-            c.border_white_10
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
         };
         paint::card(scene, t, card, 16.0, c.surfaces.raised, border);
 
@@ -2163,7 +2192,7 @@ impl BackupsApp {
         let border = if sel {
             theme.accent_primary.with_alpha_factor(0.6)
         } else {
-            c.border_white_10
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
         };
         paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
         Self::draw_dest_card_compact_header(scene, t, tr, theme, card, d);
@@ -2391,7 +2420,14 @@ impl BackupsApp {
 
         let panel = Self::schedules_panel_rect(content, stacked);
         let c = &theme.tokens.colors;
-        paint::card(scene, t, panel, 16.0, c.surfaces.raised, c.border_white_10);
+        paint::card(
+            scene,
+            t,
+            panel,
+            16.0,
+            c.surfaces.raised,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
 
         let p = self.ui.policy;
         self.draw_schedules_editor_rows(scene, t, tr, theme, panel, p);
@@ -2604,7 +2640,7 @@ impl BackupsApp {
             side,
             16.0,
             c.surfaces.raised.with_alpha_factor(0.5),
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
         );
         paint::text_bold(
             scene,
@@ -2641,7 +2677,7 @@ impl BackupsApp {
             side.x0 + 16.0,
             side.x1 - 16.0,
             side.y0 + 150.0,
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             1.0,
         );
         paint::text(
@@ -2685,7 +2721,7 @@ impl BackupsApp {
             region,
             16.0,
             c.surfaces.raised.with_alpha_factor(0.4),
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
         );
         paint::text_bold(
             scene,
@@ -2782,7 +2818,14 @@ impl BackupsApp {
             c.neutral[2]
         };
         paint::fill_rrect(scene, t, b, 8.0, fill);
-        paint::stroke_rrect(scene, t, b, 8.0, c.border_white_10, 1.0);
+        paint::stroke_rrect(
+            scene,
+            t,
+            b,
+            8.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         paint::text_center(
             scene,
             tr,
@@ -2851,7 +2894,14 @@ impl BackupsApp {
             window.center().x + modal_w / 2.0,
             window.center().y + modal_h / 2.0,
         );
-        paint::card(scene, t, m, 18.0, c.surfaces.raised, c.border_white_20);
+        paint::card(
+            scene,
+            t,
+            m,
+            18.0,
+            c.surfaces.raised,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+        );
 
         let title = format!(
             "Restore  ·  {}  @  {} {}",
@@ -2926,7 +2976,7 @@ impl BackupsApp {
             tree,
             12.0,
             c.neutral[0].with_alpha_factor(0.5),
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
         );
         paint::text(
             scene,
@@ -2995,7 +3045,7 @@ impl BackupsApp {
                 theme.accent_primary.with_alpha_factor(0.18),
             );
         } else if self.hover == Some(Hit::FileRow(i)) {
-            paint::fill_rrect(scene, t, row, 7.0, c.surface_white_5);
+            paint::fill_rrect(scene, t, row, 7.0, c.lift(0.35));
         }
         let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
         let icol = if f.is_dir {
@@ -3080,7 +3130,7 @@ impl BackupsApp {
             opt.x0,
             opt.x1,
             opt.y1 - 40.0,
-            c.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             1.0,
         );
         paint::text(
@@ -3132,7 +3182,14 @@ impl BackupsApp {
                 c.neutral[2]
             },
         );
-        paint::stroke_rrect(scene, t, box_r, 5.0, c.border_white_10, 1.0);
+        paint::stroke_rrect(
+            scene,
+            t,
+            box_r,
+            5.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         if on {
             paint::poly(
                 scene,

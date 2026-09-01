@@ -742,7 +742,7 @@ impl PdfApp {
             scene.fill(
                 Fill::NonZero,
                 base,
-                c.surface_white_10,
+                c.lift(0.72),
                 None,
                 &RoundedRect::from_rect(item, f64::from(theme.tokens.radii.sm)),
             );
@@ -823,7 +823,7 @@ impl PdfApp {
             p.close_path();
             p
         };
-        scene.fill(Fill::NonZero, base, c.surface_white_10, None, &fold);
+        scene.fill(Fill::NonZero, base, c.lift(0.72), None, &fold);
         for i in 0..3 {
             let ly = g.y0 + 44.0 + f64::from(i) * 12.0;
             scene.stroke(
@@ -865,7 +865,7 @@ impl PdfApp {
         let shape = RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
         if hot {
-            scene.fill(Fill::NonZero, base, c.surface_white_10, None, &shape);
+            scene.fill(Fill::NonZero, base, c.lift(0.72), None, &shape);
         }
         // Folder glyph + label as a centred group.
         let label = "Open a PDF…";
@@ -1517,7 +1517,7 @@ impl PdfApp {
             scene.fill(
                 Fill::NonZero,
                 base,
-                theme.tokens.colors.surface_white_10,
+                theme.tokens.colors.lift(0.72),
                 None,
                 &shape,
             );
@@ -1641,7 +1641,7 @@ impl PdfApp {
             let fill = if active {
                 theme.accent_primary
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             };
             let txt = if active { Color::WHITE } else { theme.text_dim };
             scene.fill(
@@ -2081,7 +2081,7 @@ impl PdfApp {
         let (chip_label, chip_fill, chip_text) = if cm.resolved {
             ("Resolved", c.semantic.success, Color::WHITE)
         } else {
-            ("Resolve", c.surface_white_10, theme.text_dim)
+            ("Resolve", c.lift(0.72), theme.text_dim)
         };
         scene.fill(
             Fill::NonZero,
@@ -2305,7 +2305,7 @@ impl PdfApp {
                 scene.fill(
                     Fill::NonZero,
                     base,
-                    c.surface_white_5,
+                    c.lift(0.35),
                     None,
                     &RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.sm)),
                 );
@@ -2354,7 +2354,7 @@ impl PdfApp {
                 scene.fill(
                     Fill::NonZero,
                     base,
-                    theme.tokens.colors.surface_white_5,
+                    theme.tokens.colors.lift(0.35),
                     None,
                     &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)),
                 );
@@ -2736,7 +2736,7 @@ impl PdfApp {
         let fill = if arming {
             theme.accent_primary
         } else {
-            c.surface_white_10
+            c.lift(0.72)
         };
         scene.fill(
             Fill::NonZero,

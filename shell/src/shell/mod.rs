@@ -101,14 +101,19 @@ use ui::widget::context_menu::MenuItem;
 #[cfg(any(test, debug_assertions))]
 use ui::widget::toast::ToastStack;
 use ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
-    TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
-    context_menu::ContextMenu,
+    AppKind as UiKind, AppWidget, Column, Container, EmptyState, GroupRow, Stack, StripView,
+    TabDescriptor, TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
+    WorkspaceView, context_menu::ContextMenu,
 };
 
 use crate::shell::browser_stub::BrowserStubWidget;
 use crate::shell::editor_app::EditorApp;
 use crate::shell::global_search::GlobalSearch;
+
+/// Semantic action emitted by the production first-use empty workspace.
+/// The overlay host consumes it and opens the same Applications-filtered
+/// palette used by the new-window shortcut.
+pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 use crate::shell::notes_app::NotesApp;
 use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::tile::{
@@ -1072,6 +1077,22 @@ pub fn build_workspace_root(
         .with_horizontal_padding(0.0, 0.0)
         .push(workspace_view)
         .push(strip_view);
+
+    let workspace_is_empty = tree.active_workspace().is_some_and(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .all(|strip| strip.window_groups.is_empty())
+    });
+    if workspace_is_empty {
+        content_col = content_col.push(Box::new(
+            EmptyState::new("Start with an app")
+                .with_icon(ui::icons::Icon::LayoutGrid)
+                .with_message("Choose an app, or press Super+N.")
+                .with_action("Open an app")
+                .with_action_path(EMPTY_WORKSPACE_OPEN_APP),
+        ));
+    }
 
     // Per-strip raw pointers to the live `GroupRow` widgets, captured so
     // the host's per-frame `reconcile_active_group_off_closing` hook can

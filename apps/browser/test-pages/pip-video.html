@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PiP integration probe</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #11141b;
+      color: #f4f6fb;
+    }
+    main { width: min(86vw, 980px); }
+    h1 { margin: 0 0 16px; font-size: 24px; font-weight: 620; }
+    .stage {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid #303747;
+      border-radius: 20px;
+      background: #080a0f;
+      box-shadow: 0 24px 70px rgb(0 0 0 / 45%);
+    }
+    #primary {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+    }
+    #secondary {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      width: 120px;
+      height: 68px;
+      border: 2px solid rgb(255 255 255 / 65%);
+      border-radius: 10px;
+      object-fit: cover;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Live semantic-video selection</h1>
+    <div class="stage">
+      <video
+        id="primary"
+        aria-label="Sunset timelapse"
+        autoplay muted loop playsinline></video>
+      <video
+        id="secondary"
+        aria-label="Paused thumbnail"
+        muted playsinline></video>
+    </div>
+  </main>
+  <script>
+    function animatedStream(width, height) {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      let frame = 0;
+
+      function paint() {
+        const phase = frame++ / 120;
+        const horizon = height * (0.57 + Math.sin(phase) * 0.025);
+        const sky = context.createLinearGradient(0, 0, 0, horizon);
+        sky.addColorStop(0, "#182852");
+        sky.addColorStop(0.55, "#81547e");
+        sky.addColorStop(1, "#f49a68");
+        context.fillStyle = sky;
+        context.fillRect(0, 0, width, horizon);
+
+        const sunX = width * (0.72 + Math.sin(phase * 0.45) * 0.025);
+        const sunY = horizon * (0.70 + Math.cos(phase * 0.55) * 0.035);
+        const glow = context.createRadialGradient(sunX, sunY, 0, sunX, sunY, height * 0.18);
+        glow.addColorStop(0, "rgba(255, 244, 188, .95)");
+        glow.addColorStop(0.22, "rgba(255, 191, 111, .56)");
+        glow.addColorStop(1, "rgba(255, 150, 92, 0)");
+        context.fillStyle = glow;
+        context.fillRect(0, 0, width, horizon);
+
+        const sea = context.createLinearGradient(0, horizon, 0, height);
+        sea.addColorStop(0, "#283c62");
+        sea.addColorStop(1, "#0a1224");
+        context.fillStyle = sea;
+        context.fillRect(0, horizon, width, height - horizon);
+
+        context.strokeStyle = "rgba(255, 197, 132, .34)";
+        context.lineWidth = 2;
+        for (let y = horizon + 12; y < height; y += 20) {
+          context.beginPath();
+          for (let x = 0; x <= width; x += 12) {
+            const wave = y + Math.sin(x * 0.025 + phase * 4 + y * 0.08) * 3;
+            x === 0 ? context.moveTo(x, wave) : context.lineTo(x, wave);
+          }
+          context.stroke();
+        }
+
+        context.fillStyle = "rgba(12, 18, 30, .70)";
+        context.fillRect(0, height - 50, width, 50);
+        context.fillStyle = "rgba(255, 255, 255, .92)";
+        context.font = "600 22px system-ui, sans-serif";
+        context.fillText("LIVE · Canvas media stream", 24, height - 19);
+        requestAnimationFrame(paint);
+      }
+
+      paint();
+      return canvas.captureStream(30);
+    }
+
+    const primary = document.getElementById("primary");
+    primary.srcObject = animatedStream(960, 540);
+    primary.play();
+
+    const secondary = document.getElementById("secondary");
+    secondary.srcObject = animatedStream(240, 135);
+    // Deliberately do not play the competing thumbnail. The native picker must
+    // prefer the large, currently playing semantic media element.
+  </script>
+</body>
+</html>

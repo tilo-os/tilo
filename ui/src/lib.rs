@@ -60,6 +60,7 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
+pub mod floating_surface;
 pub mod format;
 pub mod fullscreen;
 pub mod gesture;
@@ -141,7 +142,7 @@ pub use collection_transition::{
 };
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
-pub use i18n::{ArgValue, I18nError, I18nManager};
+pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, ImageStore};
 pub use interaction::{InputModality, InteractionEnvironment, PointerPrecision};
 pub use local_state::{
@@ -171,8 +172,9 @@ pub use state::{
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
 pub use ui_graph::{
-    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiDocument, UiDocumentExt,
-    UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiComponentRequest, UiDocument,
+    UiDocumentExt, UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole,
+    UiTextSource,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{

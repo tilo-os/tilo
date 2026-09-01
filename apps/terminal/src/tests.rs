@@ -183,6 +183,61 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
     );
 }
 
+fn send_mouse_button_mods(
+    widget: &mut TerminalWidget,
+    doc: &mut AutoCommit,
+    button: winit::event::MouseButton,
+    state: winit::event::ElementState,
+    shift: bool,
+) {
+    use ui::widget::Widget;
+    use winit::event::{Modifiers, WindowEvent};
+    use winit::keyboard::ModifiersState;
+    let modifiers: Modifiers = if shift {
+        ModifiersState::SHIFT.into()
+    } else {
+        ModifiersState::empty().into()
+    };
+    let mut handled = false;
+    let mut focus = None;
+    let taffy = taffy::TaffyTree::<()>::new();
+    let ev = WindowEvent::MouseInput {
+        device_id: fake_device_id(),
+        state,
+        button,
+    };
+    widget.handle_event(
+        &ev,
+        1.0,
+        &modifiers,
+        doc,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus,
+        taffy::NodeId::new(0),
+        &taffy,
+    );
+}
+
+fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) {
+    use ui::widget::Widget;
+    use winit::event::{Modifiers, WindowEvent};
+    let mut handled = false;
+    let mut focus = None;
+    let taffy = taffy::TaffyTree::<()>::new();
+    widget.handle_event(
+        &WindowEvent::Focused(focused),
+        1.0,
+        &Modifiers::default(),
+        doc,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus,
+        taffy::NodeId::new(0),
+        &taffy,
+    );
+}
+
 fn send_key(
     widget: &mut TerminalWidget,
     doc: &mut AutoCommit,
@@ -377,6 +432,9 @@ fn test_terminal_performer_print() {
     let links_id = doc
         .put_object(ROOT, "terminal_links", ObjType::Map)
         .unwrap();
+    let images_id = doc
+        .put_object(ROOT, "terminal_images", ObjType::List)
+        .unwrap();
 
     let cursor_id = doc.put_object(ROOT, "cursor", ObjType::Map).unwrap();
     doc.put(&cursor_id, "x", 0u64).unwrap();
@@ -399,6 +457,7 @@ fn test_terminal_performer_print() {
             alt_grid_id,
             cursor_id,
             links_id,
+            images_id,
             main_line_ids: &mut line_ids,
             alt_line_ids: &mut alt_line_ids,
             alt_active: &mut alt_active,
@@ -1115,7 +1174,112 @@ fn dec_private_modes_toggle_cursor_and_bracketed_paste() {
     w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1000h\x1b[?1006h");
     assert!(
         w.modes().mouse_report && w.modes().mouse_sgr,
-        "mouse modes stubbed but tracked"
+        "mouse modes are tracked"
+    );
+    assert_eq!(w.modes().mouse_tracking, 1000);
+}
+
+#[test]
+fn sgr_mouse_tracking_forwards_click_release_and_button_motion() {
+    use winit::event::{ElementState, MouseButton};
+    let (mut w, rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1002h\x1b[?1006h");
+    let _ = drain_writes(&rx);
+
+    send_cursor_move(&mut w, &mut doc, 25.0, 65.0); // cell 3,4 (one-based)
+    send_mouse_button_mods(
+        &mut w,
+        &mut doc,
+        MouseButton::Left,
+        ElementState::Pressed,
+        false,
+    );
+    send_cursor_move(&mut w, &mut doc, 35.0, 65.0); // held motion to cell 4,4
+    send_mouse_button_mods(
+        &mut w,
+        &mut doc,
+        MouseButton::Left,
+        ElementState::Released,
+        false,
+    );
+
+    assert_eq!(
+        drain_writes(&rx),
+        b"\x1b[<0;3;4M\x1b[<32;4;4M\x1b[<0;4;4m",
+        "modern TUIs receive standard SGR button and drag reports"
+    );
+    assert!(
+        w.selection().is_none(),
+        "application mouse input is not also selected locally"
+    );
+}
+
+#[test]
+fn shift_overrides_application_mouse_tracking_for_local_selection() {
+    use winit::event::{ElementState, MouseButton};
+    let (mut w, rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1003h\x1b[?1006h");
+    let _ = drain_writes(&rx);
+    send_cursor_move(&mut w, &mut doc, 25.0, 65.0);
+    let _ = drain_writes(&rx); // ignore the requested all-motion hover report
+    send_mouse_button_mods(
+        &mut w,
+        &mut doc,
+        MouseButton::Left,
+        ElementState::Pressed,
+        true,
+    );
+
+    assert!(
+        w.selection().is_some(),
+        "Shift+drag remains the local selection escape hatch"
+    );
+    assert!(
+        drain_writes(&rx).is_empty(),
+        "Shift override sends no pointer event to the TUI"
+    );
+}
+
+#[test]
+fn focus_reporting_uses_xterm_focus_in_and_out_sequences() {
+    let (mut w, rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1004h");
+    let _ = drain_writes(&rx);
+    send_focus(&mut w, &mut doc, true);
+    send_focus(&mut w, &mut doc, false);
+    assert_eq!(drain_writes(&rx), b"\x1b[I\x1b[O");
+}
+
+#[test]
+fn accessibility_exposes_visible_terminal_output_and_focus() {
+    use ui::a11y::Role;
+    use ui::widget::Widget;
+    let (mut w, _rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 80.0), 10.0, 20.0);
+    w.feed(&mut doc, &automerge::ROOT, b"accessible output");
+    w.sync(&mut doc, &automerge::ROOT);
+    w.set_focus(true);
+
+    let node = w
+        .accessibility()
+        .expect("terminal has an assistive semantic node");
+    assert_eq!(node.role, Role::MultilineTextInput);
+    assert!(node.state.focusable && node.state.focused && node.state.multiline);
+    assert!(
+        node.value
+            .as_deref()
+            .unwrap_or_default()
+            .contains("accessible output")
+    );
+    assert!(
+        w.ime_cursor_rect().is_some(),
+        "focused terminal anchors the platform IME"
     );
 }
 
@@ -1345,6 +1509,41 @@ fn ctrl_arrow_sends_modified_csi_for_word_motion() {
         false,
     );
     assert_eq!(drain_writes(&rx), b"\x1b[1;2A", "Shift+Up = CSI 1;2A");
+}
+
+#[test]
+fn modified_backspace_uses_shell_compatible_word_deletion() {
+    use winit::keyboard::{Key, NamedKey};
+    let (mut w, rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+
+    send_key_mods(
+        &mut w,
+        &mut doc,
+        Key::Named(NamedKey::Backspace),
+        true,
+        false,
+        false,
+    );
+    assert_eq!(
+        drain_writes(&rx),
+        b"\x17",
+        "Ctrl+Backspace sends readline ^W"
+    );
+
+    send_key_mods(
+        &mut w,
+        &mut doc,
+        Key::Named(NamedKey::Backspace),
+        false,
+        false,
+        true,
+    );
+    assert_eq!(
+        drain_writes(&rx),
+        b"\x1b\x7f",
+        "Alt+Backspace sends Meta-DEL"
+    );
 }
 
 #[test]
@@ -1874,6 +2073,55 @@ fn two_peers_converge_on_terminal_grid_via_crdt() {
         a.grid_text(),
         b.grid_text(),
         "peers converge on the same terminal grid"
+    );
+}
+
+#[test]
+fn kitty_image_becomes_a_shared_content_addressed_placement_without_fake_rendering() {
+    use base64::Engine as _;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+        .unwrap();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+    let (mut host, rx) = build_test_widget();
+    let mut host_doc = AutoCommit::new();
+    host.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    host.feed(&mut host_doc, &automerge::ROOT, b"before ");
+    host.feed(
+        &mut host_doc,
+        &automerge::ROOT,
+        format!("\x1b_Ga=T,f=100,t=d,c=3,r=2,i=42;{encoded}\x1b\\after").as_bytes(),
+    );
+    host.sync(&mut host_doc, &automerge::ROOT);
+
+    assert!(
+        host.grid_text().contains("before after"),
+        "APC bytes never leak into ANSI text"
+    );
+    assert!(
+        drain_writes(&rx).is_empty(),
+        "no success response advertises rendering before it exists"
+    );
+    let [placement] = host.image_placements() else {
+        panic!("one placement expected: {:?}", host.image_placements());
+    };
+    assert_eq!(
+        (placement.columns, placement.rows, placement.protocol_id),
+        (3, 2, Some(42))
+    );
+    assert_eq!(
+        qdoc::blobstore::get(&placement.hash).as_deref(),
+        Some(png.as_slice())
+    );
+
+    let mut peer_doc = AutoCommit::load(&host_doc.save()).unwrap();
+    let (mut peer, _peer_rx) = build_test_widget();
+    peer.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    peer.sync(&mut peer_doc, &automerge::ROOT);
+    assert_eq!(
+        peer.image_placements(),
+        host.image_placements(),
+        "placement metadata converges through the terminal CRDT"
     );
 }
 

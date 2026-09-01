@@ -161,6 +161,9 @@ toast-toc-updated = Inhaltsverzeichnis aktualisiert ({ $n } { $n ->
 toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
 toast-style-deleted = Stil gelöscht
 toast-style-duplicated = Stil dupliziert
+toast-saved = Dokument gespeichert
+toast-save-failed = Dokument konnte nicht gespeichert werden
+toast-file-dialog-failed = Dateiauswahl konnte nicht geöffnet werden
 
 ## Outline / navigation pane
 outline-header = GLIEDERUNG

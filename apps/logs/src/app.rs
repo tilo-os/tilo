@@ -752,7 +752,7 @@ impl LogsApp {
         let pill_bg = if on {
             theme.accent_primary
         } else {
-            c.surface_white_5
+            c.lift(0.35)
         };
         fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
         if !on {
@@ -953,7 +953,7 @@ impl LogsApp {
             if active {
                 fill_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 235));
             } else {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, c.surface_white_5);
+                fill_round(scene, t, *chip, theme.tokens.radii.md, c.lift(0.35));
                 stroke_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 90), 1.0);
             }
             let tag = p.tag();
@@ -1294,7 +1294,7 @@ impl LogsApp {
                     theme.accent_primary,
                 );
             } else if is_hover {
-                fill_rect(scene, t, row, c.surface_white_5);
+                fill_rect(scene, t, row, c.lift(0.35));
             } else if pos % 2 == 1 {
                 fill_rect(scene, t, row, tint(Color::WHITE, 6));
             }
@@ -1643,11 +1643,7 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.cursor);
-        let bg = if hovered {
-            c.surface_white_10
-        } else {
-            c.surface_white_5
-        };
+        let bg = if hovered { c.lift(0.72) } else { c.lift(0.35) };
         fill_round(scene, t, rect, theme.tokens.radii.full, bg);
         stroke_round(
             scene,
@@ -2262,7 +2258,7 @@ impl LogsApp {
             let is_hover = irect.contains(self.cursor);
             let is_active = &active_val == val;
             if is_hover {
-                fill_rect(scene, transform, *irect, c.surface_white_10);
+                fill_rect(scene, transform, *irect, c.lift(0.72));
             } else if is_active {
                 fill_rect(scene, transform, *irect, tint(theme.accent_primary, 40));
             }

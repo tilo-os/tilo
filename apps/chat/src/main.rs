@@ -72,9 +72,15 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
     let mut app = chat::ChatApp::new_ephemeral();
-    app.seed_shot_scenario(args.scenario.as_deref().unwrap_or_default());
-    render_shot_to_png(app, args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT), out)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    let scenario = args.scenario.as_deref().unwrap_or_default();
+    app.seed_shot_scenario(scenario);
+    render_shot_to_png(
+        app,
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        out,
+        scenario,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 #[cfg(feature = "thin")]
@@ -110,6 +116,7 @@ fn render_shot_to_png(
     mut app: chat::ChatApp,
     viewport: (u32, u32),
     out: &std::path::Path,
+    scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
@@ -161,6 +168,8 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+    app.debug_stage_floating_call_for_shot(scenario);
+    let widget: &mut dyn Widget = &mut app;
 
     let mut scene = Scene::new();
     widget.draw_with_presence(
@@ -170,6 +179,13 @@ fn render_shot_to_png(
         &theme,
         &presence,
         &permission,
+    );
+    widget.draw_floating_surfaces(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
     );
 
     if let Some(parent) = out.parent() {
