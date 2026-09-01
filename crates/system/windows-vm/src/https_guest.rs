@@ -35,6 +35,10 @@ const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
 const MAX_SECRET_BYTES: usize = 128;
 const PIN_FILE: &str = "guest-bridge.sha256";
 const CERTIFICATE_FILE: &str = "guest-bridge.der";
+// `pin_directory` is shared with the owner-writable session state in the live
+// appliance.  Pins get their own private child so first enrollment never
+// changes the access mode of the state directory.
+const PINS_DIRECTORY: &str = "guest-bridge-pins";
 
 /// Root-owned bridge locations and the fixed host-only endpoint.  qOS's
 /// libvirt network reserves `192.168.251.2` for the singleton appliance; the
@@ -104,15 +108,37 @@ impl HttpsGuestBridge {
         format!("https://{}{}", self.config.endpoint, path)
     }
 
-    fn pinned_client(&self) -> Result<Client, AgentError> {
+    fn pins_directory(&self) -> PathBuf {
+        self.config.pin_directory.join(PINS_DIRECTORY)
+    }
+
+    fn enrolled_certificate(&self) -> Result<(Vec<u8>, String), AgentError> {
+        let pins_directory = self.pins_directory();
         let certificate = read_private_file(
-            &self.config.pin_directory.join(CERTIFICATE_FILE),
+            &pins_directory.join(CERTIFICATE_FILE),
             MAX_CERTIFICATE_BYTES,
         )?;
-        let expected = read_pin(&self.config.pin_directory.join(PIN_FILE))?;
-        if sha256_hex(&certificate) != expected {
+        let expected = read_pin(&pins_directory.join(PIN_FILE))?;
+        if !constant_time_eq(sha256_hex(&certificate).as_bytes(), expected.as_bytes()) {
             return Err(AgentError::Authentication);
         }
+        Ok((certificate, expected))
+    }
+
+    fn require_enrolled_certificate(&self, digest: &str) -> Result<(), AgentError> {
+        if !is_sha256(digest) {
+            return Err(AgentError::Authentication);
+        }
+        let (_, enrolled_digest) = self.enrolled_certificate()?;
+        if constant_time_eq(digest.as_bytes(), enrolled_digest.as_bytes()) {
+            Ok(())
+        } else {
+            Err(AgentError::Authentication)
+        }
+    }
+
+    fn pinned_client(&self) -> Result<Client, AgentError> {
+        let (certificate, _) = self.enrolled_certificate()?;
         let certificate = Certificate::from_der(&certificate)
             .map_err(|error| AgentError::Transport(format!("stored guest certificate: {error}")))?;
         Client::builder()
@@ -155,20 +181,16 @@ impl HttpsGuestBridge {
         let (body, response) = self.request_with(&client, "GET", "/v1/health", &[])?;
         self.verify_response(&response, &body)?;
         let health: WireHealth = deserialize(&body)?;
+        health.validate()?;
         let certificate = health.certificate_der()?;
-        let digest = sha256_hex(&certificate);
-        if digest != health.certificate_sha256.to_ascii_lowercase() {
-            return Err(AgentError::Authentication);
-        }
-        let pin_path = self.config.pin_directory.join(PIN_FILE);
+        let digest = health.certificate_digest()?;
+        let pins_directory = self.pins_directory();
+        let pin_path = pins_directory.join(PIN_FILE);
         if pin_path.exists() && read_pin(&pin_path)? != digest {
             return Err(AgentError::Authentication);
         }
         write_private_new_or_equal(&pin_path, digest.as_bytes())?;
-        write_private_new_or_equal(
-            &self.config.pin_directory.join(CERTIFICATE_FILE),
-            &certificate,
-        )?;
+        write_private_new_or_equal(&pins_directory.join(CERTIFICATE_FILE), &certificate)?;
         self.pinned_client()
     }
 
@@ -277,6 +299,7 @@ impl GuestAgent for HttpsGuestBridge {
         let body = self.request("GET", "/v1/health", &[])?;
         let health: WireHealth = deserialize(&body)?;
         health.validate()?;
+        self.require_enrolled_certificate(&health.certificate_digest()?)?;
         // The health request itself is mutually authenticated. The nonce is a
         // fresh opaque host session id; every later operation is again HMAC
         // authenticated, so a guest-side cookie is not a second authority.
@@ -312,6 +335,7 @@ impl GuestAgent for HttpsGuestBridge {
         let body = serde_json::to_vec(&request)
             .map_err(|error| AgentError::Transport(format!("launch request JSON: {error}")))?;
         let launch: WireLaunch = deserialize(&self.request("POST", "/v1/launch", &body)?)?;
+        self.require_enrolled_certificate(&launch.certificate_sha256)?;
         launch.into_guest_launch(application_id, self.config.presentation)
     }
 }
@@ -359,7 +383,7 @@ impl WireHealth {
         {
             return Err(AgentError::Authentication);
         }
-        self.certificate_der()?;
+        self.certificate_digest()?;
         if !matches!(
             self.presentation_backend.as_str(),
             "native_rail_rds" | "native_rail_client_best_effort" | "app_focused_spice"
@@ -379,6 +403,21 @@ impl WireHealth {
             ));
         }
         Ok(())
+    }
+
+    fn certificate_digest(&self) -> Result<String, AgentError> {
+        if !is_sha256(&self.certificate_sha256) {
+            return Err(AgentError::Authentication);
+        }
+        let digest = sha256_hex(&self.certificate_der()?);
+        if constant_time_eq(
+            digest.as_bytes(),
+            self.certificate_sha256.to_ascii_lowercase().as_bytes(),
+        ) {
+            Ok(digest)
+        } else {
+            Err(AgentError::Authentication)
+        }
     }
 
     fn agent_health(&self) -> Result<AgentHealth, AgentError> {
@@ -680,6 +719,76 @@ mod tests {
         fs::set_permissions(file.path(), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(!private_file_authorized(
             &fs::metadata(file.path()).unwrap()
+        ));
+    }
+
+    #[test]
+    fn enrollment_pins_do_not_change_shared_session_state_permissions() {
+        let session = tempfile::tempdir().unwrap();
+        let state = session.path().join("state.json");
+        fs::write(&state, b"{\"phase\":\"installing\"}").unwrap();
+        fs::set_permissions(session.path(), fs::Permissions::from_mode(0o770)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o660)).unwrap();
+
+        let pins = session.path().join(PINS_DIRECTORY);
+        let pin = vec![b'a'; 64];
+        write_private_new_or_equal(&pins.join(PIN_FILE), &pin).unwrap();
+        write_private_new_or_equal(&pins.join(CERTIFICATE_FILE), b"certificate").unwrap();
+
+        assert_eq!(fs::metadata(session.path()).unwrap().mode() & 0o777, 0o770);
+        assert_eq!(fs::read(&state).unwrap(), b"{\"phase\":\"installing\"}");
+        assert_eq!(fs::metadata(&pins).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(pins.join(PIN_FILE)).unwrap().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn health_and_launch_certificates_must_match_the_enrolled_der_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let secret = directory.path().join("bootstrap.secret");
+        fs::write(&secret, [9_u8; 32]).unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        let bridge = HttpsGuestBridge::new(GuestBridgeConfig {
+            endpoint: DEFAULT_ENDPOINT,
+            bootstrap_secret: secret,
+            pin_directory: directory.path().to_path_buf(),
+            presentation: ApplicationPresentation::AppFocusedSpice,
+        })
+        .unwrap();
+
+        let certificate = b"enrolled-certificate-der";
+        let digest = sha256_hex(certificate);
+        let pins = bridge.pins_directory();
+        write_private_new_or_equal(&pins.join(PIN_FILE), digest.as_bytes()).unwrap();
+        write_private_new_or_equal(&pins.join(CERTIFICATE_FILE), certificate).unwrap();
+
+        let mut health = WireHealth {
+            protocol_major: HOST_PROTOCOL_MAJOR,
+            certificate_sha256: digest.clone(),
+            certificate_der_base64: base64::engine::general_purpose::STANDARD.encode(certificate),
+            license: "licensed".to_string(),
+            catalog_generation: 1,
+            guest_boot_id: "boot-id".to_string(),
+            presentation_backend: "app_focused_spice".to_string(),
+            app_focused_spice_available: true,
+            app_focused_spice_unavailable_reason: None,
+        };
+        health.validate().unwrap();
+        bridge
+            .require_enrolled_certificate(&health.certificate_digest().unwrap())
+            .unwrap();
+        bridge.require_enrolled_certificate(&digest).unwrap();
+
+        health.certificate_sha256 = "a".repeat(64);
+        assert!(matches!(
+            health.certificate_digest(),
+            Err(AgentError::Authentication)
+        ));
+        assert!(matches!(
+            bridge.require_enrolled_certificate(&"b".repeat(64)),
+            Err(AgentError::Authentication)
         ));
     }
 }
