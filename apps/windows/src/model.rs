@@ -66,6 +66,7 @@ pub enum AppStatus {
     Running,
     NeedsAttention,
     Installing,
+    Uninstalling,
     Failed,
     Uninstalled,
 }
@@ -76,6 +77,7 @@ impl AppStatus {
             Self::Running => "Running",
             Self::NeedsAttention => "Needs attention",
             Self::Installing => "Installing",
+            Self::Uninstalling => "Uninstalling",
             Self::Failed => "Setup failed",
             Self::Uninstalled => "Uninstalled · data retained",
         }
@@ -111,6 +113,11 @@ pub struct WindowsApp {
     pub fallback_detail: String,
     pub launch_available: bool,
     pub launch_unavailable_reason: Option<String>,
+    /// Explicit presentation capability for opening a portal-selected file.
+    /// A Windows VM route alone is insufficient: focused SPICE has no file
+    /// bridge, while native RAIL does.
+    pub portal_file_open_available: bool,
+    pub portal_file_open_unavailable_reason: Option<String>,
     pub route_override_available: bool,
     pub route_override_unavailable_reason: Option<String>,
     pub can_retry_install: bool,
