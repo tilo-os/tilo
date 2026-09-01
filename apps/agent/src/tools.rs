@@ -254,7 +254,10 @@ fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
                                      `describe_operation`, keyed by the application's \
                                      parameter names. Use {} for a nullary operation. Values \
                                      retain their declared JSON types; never stringify numbers, \
-                                     booleans, arrays, objects or null."
+                                     booleans, arrays, objects or null. When the descriptor's \
+                                     confirmation policy is Confirm, also include `confirm: true`; \
+                                     for Phrase include `confirmation_phrase` with the exact phrase. \
+                                     Those two names are invocation metadata, not app parameters."
                             }
                         },
                         "required": ["operation", "arguments"],

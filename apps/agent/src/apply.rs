@@ -534,6 +534,35 @@ impl Editor {
         Ok((!delta.is_empty()).then_some(delta))
     }
 
+    /// Invoke typed arguments after the caller has verified the live
+    /// descriptor's confirmation policy. Keeping this separate from
+    /// [`invoke_json`](Self::invoke_json) makes an unconfirmed call fail closed
+    /// in the shared door even if a caller forgets its own policy check.
+    pub fn invoke_json_confirmed(
+        &mut self,
+        view: &View,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        registry: &ActionRegistry,
+    ) -> Result<Option<Vec<u8>>, DoorError> {
+        let resources = self.resources(view);
+        let mut transport = LocalTransport::new();
+        self.doc.set_actor(self.actor.clone());
+        let text_before = block_texts(&self.doc);
+        door::invoke_json_confirmed(
+            &mut self.doc,
+            &resources,
+            address,
+            arguments,
+            &self.actor.to_bytes(),
+            registry,
+            &mut transport,
+        )?;
+        self.stamp_authorship(&text_before);
+        let delta = self.doc.save_incremental();
+        Ok((!delta.is_empty()).then_some(delta))
+    }
+
     /// Mark whatever text this replica just added with the durable
     /// `author` mark, so the document itself records who wrote it. Read
     /// back by [`qdoc::author_runs`]. A mark rather than a block field
