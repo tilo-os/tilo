@@ -16,7 +16,16 @@
     clippy::unnecessary_literal_bound,
     reason = "app-local rendering geometry and Widget trait signatures"
 )]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::panic, reason = "test assertions"))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "test assertions"
+    )
+)]
 
 pub mod actions;
 pub mod app;
@@ -25,5 +34,9 @@ pub mod provider;
 
 pub use app::WindowsApp;
 
-pub fn app_root() -> Box<dyn ui::widget::Widget> { Box::new(WindowsApp::new_live()) }
-pub fn app_root_offline() -> Box<dyn ui::widget::Widget> { Box::new(WindowsApp::new_offline()) }
+pub fn app_root() -> Box<dyn ui::widget::Widget> {
+    Box::new(WindowsApp::new_live())
+}
+pub fn app_root_offline() -> Box<dyn ui::widget::Widget> {
+    Box::new(WindowsApp::new_offline())
+}
