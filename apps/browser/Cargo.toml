@@ -27,6 +27,7 @@ thin = ["dep:runtime-dylib"]
 # `webview-adblock` feature pulls in the filter-list → WebKit
 # content-blocker compiler for the built-in ad blocking.
 ui = { path = "../../ui", features = ["webview-adblock"] }
+qos-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread

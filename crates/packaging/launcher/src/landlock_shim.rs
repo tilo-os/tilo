@@ -15,9 +15,11 @@
 //! Landlock ruleset against the *sandbox-side* paths, calls
 //! `restrict_self()`, then `execvp`s the real app.
 //!
-//! Landlock is strictly additive: on any error (kernel too old, ruleset
-//! construction failed) it logs and still execs the app — bwrap +
-//! seccomp + netns remain in force. Never fail a launch on Landlock alone.
+//! qpkg applications require this layer.  An unsupported kernel, a partial
+//! ABI, or ruleset construction failure refuses the launch instead of quietly
+//! running an untrusted package with a weaker boundary than the UI promises.
+//! Bubblewrap, seccomp and the network namespace remain independent layers;
+//! they are not a reason to make this one optional by accident.
 
 use std::ffi::CString;
 use std::path::PathBuf;
@@ -58,6 +60,7 @@ pub struct ShimArgs {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ShimParseError {
     DanglingValue(String),
+    UnknownFlag(String),
     MissingSeparator,
     EmptyCommand,
 }
@@ -68,6 +71,7 @@ impl std::fmt::Display for ShimParseError {
             ShimParseError::DanglingValue(flag) => {
                 write!(f, "flag `{flag}` expects a path argument")
             }
+            ShimParseError::UnknownFlag(flag) => write!(f, "unknown sandbox flag `{flag}`"),
             ShimParseError::MissingSeparator => write!(f, "missing `--` separator"),
             ShimParseError::EmptyCommand => write!(f, "no command after `--`"),
         }
@@ -82,7 +86,9 @@ impl ShimArgs {
     /// Grammar:
     /// `[--ro <p>]* [--rw <p>]* [--net-restricted] [--no-landlock]
     ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
-    /// Unknown flags before `--` are silently skipped (forward-compat).
+    /// Unknown flags before `--` are rejected. The shim is a security-policy
+    /// parser, so version skew must fail closed rather than silently omitting a
+    /// restriction the parent believed it requested.
     ///
     /// # Errors
     ///
@@ -129,7 +135,7 @@ impl ShimArgs {
                     }
                     i = i.saturating_add(1);
                 }
-                _ => {}
+                _ => return Err(ShimParseError::UnknownFlag(arg.clone())),
             }
             i = i.saturating_add(1);
         }
@@ -312,6 +318,13 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         parsed.net_gate_port,
     );
 
+    if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
+        eprintln!(
+            "qos-sandbox-exec: refusing qpkg launch because the complete Landlock v4 policy is not enforced"
+        );
+        std::process::exit(126);
+    }
+
     exec_real_command(&parsed.command)
 }
 
@@ -410,6 +423,15 @@ mod tests {
     }
 
     #[test]
+    fn unknown_policy_flag_is_error_instead_of_a_silent_downgrade() {
+        let args = vec!["--future-restriction".into(), "--".into(), "/app".into()];
+        assert_eq!(
+            ShimArgs::parse(&args),
+            Err(ShimParseError::UnknownFlag("--future-restriction".into()))
+        );
+    }
+
+    #[test]
     fn empty_command_is_error() {
         let args = vec!["--".into()];
         assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::EmptyCommand));
@@ -426,5 +448,18 @@ mod tests {
         assert_eq!(plan[0].path, PathBuf::from("/usr"));
         assert_eq!(plan[1].path, PathBuf::from("/tmp/data"));
         assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
+    }
+
+    #[test]
+    fn ordinary_shim_invocations_require_landlock() {
+        let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).expect("parse");
+        assert!(!parsed.no_landlock);
+    }
+
+    #[test]
+    fn only_the_explicit_internal_relay_mode_skips_landlock() {
+        let parsed =
+            ShimArgs::parse(&["--no-landlock".into(), "--".into(), "/app".into()]).expect("parse");
+        assert!(parsed.no_landlock);
     }
 }
