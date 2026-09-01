@@ -459,6 +459,52 @@ impl WindowGroup {
         self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
 
+    /// Complete capture bounds for the active app, including this group's tab
+    /// decoration. `None` preserves the normal whole-window capture path.
+    pub fn complete_capture_rect(&self) -> Option<Rect> {
+        if self.maximized {
+            return None;
+        }
+        self.active_host()
+            .and_then(TileHost::complete_content_rect)
+            .map(|content| self.rect.union(content))
+    }
+
+    /// Paint a complete semantic app canvas with the same shared window card
+    /// and tab decoration as the live group, without changing live layout.
+    pub fn draw_complete_capture(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
+        if self.maximized {
+            return None;
+        }
+        let active_id = self.bar.active_id();
+        let opening_name = self
+            .bar
+            .tabs()
+            .iter()
+            .find(|tab| tab.id == active_id)
+            .map(|tab| tab.title.clone());
+        let host = self
+            .hosts
+            .iter_mut()
+            .find(|(id, _)| *id == active_id)
+            .map(|(_, host)| host)?;
+        let capture_rect = host.complete_content_rect()?;
+        self.bar.draw(scene, transform, tr, theme, presence);
+        if let Some(name) = opening_name.as_deref() {
+            host.set_opening_name(name);
+        }
+        host.set_focused(self.focused || self.search_active);
+        host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
+        Some(self.rect.union(capture_rect))
+    }
+
     /// Returns `(tab_id, release_point)` if the user released a drag
     /// outside the bar's own rect. The parent widget hit-tests the
     /// release point against sibling bars to find a target.
@@ -1568,6 +1614,61 @@ impl Widget for WindowGroup {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.active_host_mut()
+            .and_then(Widget::take_floating_surface_request)
+    }
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        self.active_host_mut()
+            .and_then(Widget::take_capture_studio_request)
+    }
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.take_floating_surface_source_updates())
+            .collect()
+    }
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for (_, host) in &mut self.hosts {
+            host.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        }
+    }
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        for (_, host) in &mut self.hosts {
+            host.set_floating_surface_bounds(bounds);
+        }
+    }
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| host.floating_surface_presentations())
+            .collect()
+    }
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| host.active_floating_surface_ids())
+            .collect()
+    }
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for (_, host) in &mut self.hosts {
+            host.on_floating_surface_host_message(message);
+        }
+    }
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -1585,6 +1686,9 @@ impl Widget for WindowGroup {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.resize_origin.is_some()
+            || self
+                .active_host()
+                .is_some_and(super::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
         // `fold`, not `any`: every child's flag must be drained even if

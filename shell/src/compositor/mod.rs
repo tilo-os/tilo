@@ -6,11 +6,15 @@
 //!
 //! Mode selection is a single `--mode <hosted|native>` (or `--mode=<...>`) flag; anything unrecognised, including the flag being absent, falls back to [`Mode::Native`].
 
+#[cfg(feature = "hdr-decode")]
+mod audio_capture;
 pub mod backend;
 pub mod bridge;
+pub mod capture;
 pub mod client_input;
 pub mod dev_env;
 pub mod drag_feedback;
+pub mod floating_service;
 pub mod foreign;
 pub mod frame;
 pub mod gpu_import;
@@ -22,6 +26,8 @@ pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
 pub mod metrics;
+#[cfg(feature = "hdr-decode")]
+mod mp4_recording;
 pub mod native;
 pub mod osk_service;
 pub mod output_globals;
