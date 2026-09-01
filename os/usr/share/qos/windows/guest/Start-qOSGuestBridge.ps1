@@ -318,6 +318,13 @@ function Get-ProgramExecutables() {
     return @($result)
 }
 
+function ConvertTo-SafeOptionalMetadata($value) {
+    if ($null -eq $value) { return $null }
+    $text = [regex]::Replace([string]$value, '[\x00-\x1f\x7f]', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    return $text.Substring(0, [Math]::Min(256, $text.Length))
+}
+
 function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
     $locations = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -329,7 +336,9 @@ function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
         if ([string]::IsNullOrWhiteSpace($location) -or [string]::IsNullOrWhiteSpace($name)) { continue }
         try { $resolved = [IO.Path]::GetFullPath($location).TrimEnd('\') + '\' } catch { continue }
         if (-not $candidatePath.StartsWith($resolved, [StringComparison]::OrdinalIgnoreCase)) { continue }
-        return @{ id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"; displayName = $name.Substring(0, [Math]::Min(256, $name.Length)); displayVersion = if ($null -eq $entry.DisplayVersion) { $null } else { ([string]$entry.DisplayVersion).Substring(0, [Math]::Min(256, ([string]$entry.DisplayVersion).Length)) }; publisher = if ($null -eq $entry.Publisher) { $null } else { ([string]$entry.Publisher).Substring(0, [Math]::Min(256, ([string]$entry.Publisher).Length)) } }
+        $safeName = ConvertTo-SafeOptionalMetadata $name
+        if ($null -eq $safeName) { continue }
+        return @{ id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"; displayName = $safeName; displayVersion = (ConvertTo-SafeOptionalMetadata $entry.DisplayVersion); publisher = (ConvertTo-SafeOptionalMetadata $entry.Publisher) }
     }
     return $null
 }
@@ -343,11 +352,11 @@ function Get-DiscoveredCandidates($operation) {
         $pathDigest = Get-TextDigest $path
         if ($before.Contains($pathDigest) -and $item.LastWriteTimeUtc -lt ([DateTimeOffset]::FromUnixTimeSeconds([Int64]$operation.startedAtUnix).UtcDateTime.AddMinutes(-1))) { continue }
         $version = $item.VersionInfo
-        $name = [string]$version.FileDescription
-        if ([string]::IsNullOrWhiteSpace($name)) { $name = [IO.Path]::GetFileNameWithoutExtension($path) }
-        $name = $name.Substring(0, [Math]::Min(256, $name.Length))
+        $name = ConvertTo-SafeOptionalMetadata $version.FileDescription
+        if ($null -eq $name) { $name = ConvertTo-SafeOptionalMetadata ([IO.Path]::GetFileNameWithoutExtension($path)) }
+        if ($null -eq $name) { continue }
         $candidateId = "candidate-$((Get-TextDigest "$($operation.operationId)|$path").Substring(0, 32))"
-        $candidates += @{ id = $candidateId; path = $path; displayName = $name; productName = if ([string]::IsNullOrWhiteSpace($version.ProductName)) { $null } else { ([string]$version.ProductName).Substring(0, [Math]::Min(256, ([string]$version.ProductName).Length)) }; publisher = if ([string]::IsNullOrWhiteSpace($version.CompanyName)) { $null } else { ([string]$version.CompanyName).Substring(0, [Math]::Min(256, ([string]$version.CompanyName).Length)) }; version = if ([string]::IsNullOrWhiteSpace($version.ProductVersion)) { $null } else { ([string]$version.ProductVersion).Substring(0, [Math]::Min(256, ([string]$version.ProductVersion).Length)) }; uninstall = Get-UninstallMetadata $path $operation.operationId }
+        $candidates += @{ id = $candidateId; path = $path; displayName = $name; productName = (ConvertTo-SafeOptionalMetadata $version.ProductName); publisher = (ConvertTo-SafeOptionalMetadata $version.CompanyName); version = (ConvertTo-SafeOptionalMetadata $version.ProductVersion); uninstall = (Get-UninstallMetadata $path $operation.operationId) }
         if ($candidates.Count -ge 512) { break }
     }
     return @($candidates | Sort-Object displayName, id)
