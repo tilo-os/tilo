@@ -409,6 +409,35 @@ impl CapsuleStore {
         Ok(PathBuf::from("drive_c/qos-installers").join(name))
     }
 
+    /// Reopen the exact installer retained by a portal-managed capsule for an
+    /// explicit VM escalation. Every directory is descriptor-anchored and the
+    /// leaf is opened with `O_NOFOLLOW`; the caller must still re-inspect and
+    /// digest-bind the bytes before streaming them to the guest.
+    pub(crate) fn open_retained_installer(
+        &self,
+        capsule_id: &str,
+        installation: &InstallationRecord,
+    ) -> Result<File, CapsuleError> {
+        validate_id("capsule id", capsule_id)?;
+        installation.validate()?;
+        if installation.installer_relative_path.parent()
+            != Some(Path::new("drive_c/qos-installers"))
+        {
+            return Err(CapsuleError::InvalidInstallation);
+        }
+        let name = installation
+            .installer_relative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(CapsuleError::InvalidInstallation)?;
+        let capsule = self.capsule_directory(capsule_id, false)?;
+        let data = Self::open_child_dir(&capsule, "data", false)?;
+        let prefix = Self::open_child_dir(&data, "prefix", false)?;
+        let drive_c = Self::open_child_dir(&prefix, "drive_c", false)?;
+        let installers = Self::open_child_dir(&drive_c, "qos-installers", false)?;
+        Ok(open_regular_nofollow(&installers, name)?)
+    }
+
     /// Find user-facing PE executables after setup without following symlinks
     /// or trusting generated command strings. The scan is intentionally
     /// bounded; a hostile installer cannot turn refresh into unbounded work.
