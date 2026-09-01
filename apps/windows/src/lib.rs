@@ -31,6 +31,7 @@ pub mod actions;
 pub mod app;
 pub mod model;
 pub mod provider;
+pub mod strings;
 
 pub use app::WindowsApp;
 

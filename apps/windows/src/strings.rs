@@ -1,0 +1,35 @@
+//! Fluent strings for the Windows compatibility manager.
+use std::cell::Cell;
+use ui::i18n::I18nManager;
+
+const EN_US: &str = include_str!("../locales/en-US.ftl");
+
+thread_local! { static LOADED: Cell<bool> = const { Cell::new(false) }; }
+
+/// Resolve a Windows Apps Fluent key, registering the bundled English fallback
+/// per render thread before lookup.
+pub fn t(key: &str) -> String {
+    LOADED.with(|loaded| {
+        if !loaded.replace(true) {
+            I18nManager::init("en-US");
+            I18nManager::add_resource("en-US", EN_US.to_string());
+        }
+    });
+    I18nManager::lookup(key, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::t;
+    #[test]
+    fn controls_resolve_from_the_bundle() {
+        for key in [
+            "windows-route-wine",
+            "windows-route-proton",
+            "windows-route-vm",
+            "windows-use-recommendation",
+        ] {
+            assert_ne!(t(key), key, "missing Fluent key: {key}");
+        }
+    }
+}
