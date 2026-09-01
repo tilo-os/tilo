@@ -1332,7 +1332,7 @@ impl Workspace {
     pub fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
         if current_owner == new_owner
             || self.owner.as_ref() != Some(current_owner)
-            || self.role_of(new_owner) != Some(CapRole::Admin)
+            || self.role_of(new_owner) != Some(CapRole::Owner)
         {
             return false;
         }
@@ -9074,12 +9074,12 @@ mod peer_window_merge_tests {
 
     #[test]
     fn replacing_owner_removes_the_previous_root_capability() {
-        let mut ws = Workspace::empty("Security review");
+        let mut ws = Workspace::new(WorkspaceId(0x5151), "Security review");
         ws.set_owner("alice");
         ws.set_owner("bob");
 
         assert_eq!(ws.owner.as_deref(), Some("bob"));
-        assert_eq!(ws.role_of(&"bob".to_string()), Some(CapRole::Admin));
+        assert_eq!(ws.role_of(&"bob".to_string()), Some(CapRole::Owner));
         assert_eq!(ws.role_of(&"alice".to_string()), None);
         assert_eq!(
             ws.capabilities
@@ -9123,6 +9123,6 @@ mod peer_window_merge_tests {
             .unwrap();
         assert_eq!(ws.owner.as_ref(), Some(&bob));
         assert_eq!(ws.role_of(&alice), None);
-        assert_eq!(ws.role_of(&bob), Some(CapRole::Admin));
+        assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
     }
 }
