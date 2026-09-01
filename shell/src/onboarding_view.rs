@@ -553,8 +553,9 @@ impl OnboardingView {
                 ))
                 .push(paragraph(DONE_BODY, theme))
                 .push(paragraph(
-                    "The desktop can open now. Device-to-device sharing starts after you sign \
-                     out and back in once.",
+                    "The desktop can open now. Device-to-device sharing stays off unless you \
+                     explicitly enable peer sync; after enabling it, sign out and back in once \
+                     to start the peer session.",
                     theme,
                 ))
                 .push(Box::new(Card::titled(
