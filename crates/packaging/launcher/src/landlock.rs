@@ -25,22 +25,62 @@
 //! not match the policy. The compositor solves this with an
 //! in-namespace shim exec; TODO to wire the same here.
 
+use std::os::fd::{AsFd, AsRawFd};
 use std::path::PathBuf;
 
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, BitFlags, PathBeneath, PathFd, RestrictionStatus, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetError, RulesetStatus,
+    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd,
+    RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetError, RulesetStatus,
 };
 
-/// Cap at V4 (network bind/connect control), same rationale as the
-/// compositor shim — best-effort drops anything the kernel can't honour.
-pub const TARGET_ABI: ABI = ABI::V4;
+/// qOS requires ABI 5 so device-node ioctls are policy-controlled. ABI 6 scope
+/// enforcement remains blocked on kernels that cannot attest the relevant
+/// Landlock errata; accepting a `PartiallyEnforced` result would be ambiguous.
+pub const TARGET_ABI: ABI = ABI::V5;
+pub const FS_ABI: ABI = TARGET_ABI;
 
 /// FS plan element. Pure type so `plan_from_manifest` is unit-testable.
 #[derive(Debug, Clone)]
 pub struct FsRule {
     pub path: PathBuf,
     pub access: BitFlags<AccessFs>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum LandlockBuildError {
+    #[error(transparent)]
+    Ruleset(#[from] RulesetError),
+    #[error("could not inspect an opened policy object: {0}")]
+    Inspect(#[from] std::io::Error),
+}
+
+/// Remove directory-only rights when a rule names one concrete file. The
+/// Landlock crate's best-effort mode otherwise drops these bits and reports a
+/// partial policy; hard-requirement mode correctly refuses the mismatch. Use
+/// `fstat` on the opened object so a path replacement cannot change the answer.
+///
+/// # Errors
+///
+/// Returns the operating-system error when the already-open policy object
+/// cannot be inspected with `fstat`.
+pub fn access_for_fd(
+    fd: &PathFd,
+    requested: BitFlags<AccessFs>,
+) -> std::io::Result<BitFlags<AccessFs>> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `stat` points to writable storage of the exact libc type and fd
+    // remains live for the syscall.
+    let rc = unsafe { libc::fstat(fd.as_fd().as_raw_fd(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful fstat initialized the structure.
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+        Ok(requested)
+    } else {
+        Ok(requested & AccessFs::from_file(FS_ABI))
+    }
 }
 
 /// Outcome enum mirroring the shim's, used for logging.
@@ -79,7 +119,7 @@ pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
 /// profile ([`crate::profile`]) and the app's own directory
 /// ([`crate::appdir`]). Paths are absolute and literal.
 pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
-    let abi = TARGET_ABI;
+    let abi = FS_ABI;
     let read = AccessFs::from_read(abi);
     let all = AccessFs::from_all(abi);
     let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
@@ -110,17 +150,19 @@ pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
 fn build_and_restrict(
     plan: &[FsRule],
     net_restricted: bool,
-) -> Result<RestrictionStatus, RulesetError> {
-    let abi = TARGET_ABI;
-    let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
+) -> Result<RestrictionStatus, LandlockBuildError> {
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(FS_ABI))?;
     if net_restricted {
-        ruleset = ruleset.handle_access(AccessNet::from_all(abi))?;
+        ruleset = ruleset.handle_access(AccessNet::from_all(ABI::V4))?;
     }
     let mut created = ruleset.create()?;
     for rule in plan {
         match PathFd::new(&rule.path) {
             Ok(fd) => {
-                created = created.add_rule(PathBeneath::new(fd, rule.access))?;
+                let access = access_for_fd(&fd, rule.access)?;
+                created = created.add_rule(PathBeneath::new(fd, access))?;
             }
             Err(e) => {
                 tracing::debug!(
@@ -130,7 +172,7 @@ fn build_and_restrict(
             }
         }
     }
-    created.restrict_self()
+    Ok(created.restrict_self()?)
 }
 
 /// Apply a plan and report the kernel's actual enforcement status.
@@ -168,7 +210,7 @@ mod tests {
         let rw = vec![];
         let plan = plan_from_paths(&ro, &rw);
         assert_eq!(plan.len(), 1);
-        let abi = TARGET_ABI;
+        let abi = FS_ABI;
         assert_eq!(plan[0].access, AccessFs::from_read(abi));
         assert!(!plan[0].access.contains(AccessFs::WriteFile));
     }
@@ -178,7 +220,7 @@ mod tests {
         let ro = vec![PathBuf::from("/a")];
         let rw = vec![PathBuf::from("/b")];
         let plan = plan_from_paths(&ro, &rw);
-        let abi = TARGET_ABI;
+        let abi = FS_ABI;
         let read_only_access = plan.iter().find(|r| r.path == *"/a").unwrap().access;
         let read_write_access = plan.iter().find(|r| r.path == *"/b").unwrap().access;
         assert!(
@@ -186,5 +228,16 @@ mod tests {
             "rw is superset of ro"
         );
         assert_eq!(read_write_access, AccessFs::from_all(abi));
+    }
+
+    #[test]
+    fn concrete_file_rules_never_request_directory_rights() {
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let fd = PathFd::new(temp.path()).expect("open temp file");
+        let access = access_for_fd(&fd, AccessFs::from_all(FS_ABI)).expect("fstat");
+        assert!(!access.contains(AccessFs::ReadDir));
+        assert!(!access.contains(AccessFs::MakeDir));
+        assert!(access.contains(AccessFs::ReadFile));
+        assert!(access.contains(AccessFs::IoctlDev));
     }
 }

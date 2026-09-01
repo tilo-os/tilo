@@ -172,8 +172,9 @@ pub use state::{
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
 pub use ui_graph::{
-    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiDocument, UiDocumentExt,
-    UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiComponentRequest, UiDocument,
+    UiDocumentExt, UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole,
+    UiTextSource,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{
@@ -262,7 +263,8 @@ pub use status_bubble::StatusBubble;
 pub use text_edit::{Edit, EditCore, Motion};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,
-    OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, TextRenderer, TextStyle,
+    OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout, TextFlowRegion,
+    TextFlowRegionError, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextStyle,
     TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
     configured_font_system,
 };
