@@ -24,6 +24,22 @@ or test harness:
 qos-dev test -- --nocapture
 ```
 
+Every app using the shared `LaunchSpec` runner also gets a standard responsive
+acceptance capture without app-specific argument parsing:
+
+```bash
+my-app --responsive-matrix target/responsive
+my-app --responsive-matrix target/responsive-expanded --pseudo-locale
+my-app --responsive-matrix target/responsive-large-type --text-scale 2
+```
+
+The matrix renders phone portrait (390×844), tablet (768×1024), laptop
+(1366×768), and large desktop (1920×1080) images from the same scenario. The
+pseudo locale lengthens translated strings and invalidates retained text layout,
+so reviewers see clipped labels and fixed-width assumptions before catalogs are
+complete. The text-scale pass exercises the supported 200% accessibility size.
+Pseudo-localization is a layout audit mode, not a language presented to users.
+
 `qos-dev check` is the copyable local/CI quality gate. It reports the complete
 structural `doctor` result, runs the app's Rust and generated accessibility
 tests, then executes every saved scenario in isolated state with accessibility
