@@ -94,8 +94,8 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      # Limit pressure on the shared runner pool while this branch is iterated.
-      max-parallel: 4
+      # Package builds are CPU-heavy and share the pool with main's checks.
+      max-parallel: 2
       matrix:
         include:
           - id: ubuntu-24.04
