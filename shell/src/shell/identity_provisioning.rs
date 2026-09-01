@@ -25,6 +25,61 @@ use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
 };
 
+/// Resolve the user-owned device-identity root used by a qOS desktop session
+/// installed on another Linux distribution.
+///
+/// XDG's data directory is the portable contract across Ubuntu, Fedora, Arch
+/// and other hosts. Relative values are rejected: turning one into an
+/// identity path using the compositor's working directory would make key
+/// placement depend on the display manager.
+pub fn host_identity_root(
+    xdg_data_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> io::Result<PathBuf> {
+    let base = match xdg_data_home.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => {
+            let home = home.filter(|value| !value.is_empty()).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "neither XDG_DATA_HOME nor HOME is set for this login",
+                )
+            })?;
+            PathBuf::from(home).join(".local/share")
+        }
+    };
+    if !base.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the host session data directory must be absolute",
+        ));
+    }
+    Ok(base.join("qos"))
+}
+
+/// Select the per-user identity tree for a host-installed desktop session.
+///
+/// Must run while process startup is still single-threaded. The environment
+/// variable is also inherited by launcher/broker children, keeping every
+/// identity consumer on the same tree. An explicit existing override remains
+/// available for hermetic development and tests.
+pub fn configure_host_identity_root() -> io::Result<PathBuf> {
+    let root = match std::env::var_os("QOS_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => host_identity_root(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))?,
+    };
+    if !root.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "QOS_IDENTITY_ROOT must be absolute",
+        ));
+    }
+    // SAFETY: `main` calls this before it starts the warm-up thread or any
+    // compositor/runtime worker. No other thread can read the environment.
+    unsafe { std::env::set_var("QOS_IDENTITY_ROOT", &root) };
+    Ok(root)
+}
+
 /// Writes public metadata to `$XDG_CONFIG_HOME/qos/identity/primary.json`
 /// (falling back to `$HOME/.config/...`) and imports its private share into
 /// the runtime identity provider before returning.
@@ -146,8 +201,12 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
         Ok(None) => true,
         Ok(Some(_)) => false,
         Err(e) => {
-            tracing::warn!("identity store load failed; treating as no identity present: {e}");
-            true
+            // A corrupt, unsafe, or unreadable record is not the same as no
+            // record. Entering creation here could overwrite the only copy of
+            // an existing identity; keep the desktop gated and let the normal
+            // validation path report the repairable error instead.
+            tracing::error!("identity store load failed; refusing to replace it: {e}");
+            false
         }
     }
 }
@@ -266,6 +325,36 @@ mod tests {
         assert!(needs_first_run_flow(&store));
         store.save(&fixture_record()).unwrap();
         assert!(!needs_first_run_flow(&store));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_existing_identity_is_never_treated_as_missing() {
+        let tmp = TmpDir::new("invalid-existing");
+        let path = tmp.0.join("primary.json");
+        fs::write(&path, b"not an identity").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let store = DiskIdentityStore::at(path);
+        assert!(!needs_first_run_flow(&store));
+    }
+
+    #[test]
+    fn host_identity_root_uses_the_xdg_data_contract() {
+        assert_eq!(
+            host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into())).unwrap(),
+            PathBuf::from("/home/alice/.data/qos")
+        );
+        assert_eq!(
+            host_identity_root(None, Some("/home/alice".into())).unwrap(),
+            PathBuf::from("/home/alice/.local/share/qos")
+        );
+    }
+
+    #[test]
+    fn host_identity_root_never_depends_on_the_working_directory() {
+        assert!(host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err());
+        assert!(host_identity_root(None, Some("relative".into())).is_err());
+        assert!(host_identity_root(None, None).is_err());
     }
 
     #[test]

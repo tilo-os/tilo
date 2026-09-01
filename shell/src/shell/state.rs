@@ -884,7 +884,7 @@ pub fn local_user_id() -> UserId {
     {
         return v;
     }
-    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+    if let Ok(bytes) = std::fs::read(crate::firstboot::collaboration_identity_paths().user_pubkey)
         && bytes.len() == 32
     {
         let mut key = [0u8; 32];

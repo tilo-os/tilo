@@ -846,6 +846,12 @@ impl FrameBuilder {
         self.rebuild_layout_tree();
     }
 
+    /// Replace desktop chrome with the reduced host-install identity OOBE.
+    pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.host.enable_host_desktop_onboarding(identity_dir);
+        self.rebuild_layout_tree();
+    }
+
     /// On-screen rectangle of the tile currently painting the foreign
     /// wayland surface `surface_id`, or `None` if no visible tile hosts it.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
