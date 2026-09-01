@@ -1766,6 +1766,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         binutils \
     && dnf clean all
 COPY os/dev/uki.sh /usr/local/bin/uki.sh
+COPY os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py
 
 FROM uki-tools AS uki
 # Set to the digest `bootc install` asked for, to close the seal in a second pass
