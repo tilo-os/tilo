@@ -11,120 +11,16 @@
 //! [`ActionParam`]s are checked by [`ActionArgs::bind`] before anything
 //! runs, so a bad call is a refusal rather than a partial mutation.
 
-use std::collections::BTreeMap;
-
 use automerge::{AutoCommit, ObjId};
+
+// The app protocol owns the action vocabulary. Re-exporting it here keeps the
+// shell's public action API stable while making catalogue, palette, app and
+// transport binding use the same types and validation rules.
+pub use qos_actions::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
 use super::{QueryArgs, ResourceKind, SearchRegistry, SearchResult};
-
-/// The type of one action parameter — deliberately small.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParamType {
-    Text,
-    Integer,
-    Boolean,
-}
-
-impl ParamType {
-    /// Wire spelling, and what an enumeration descriptor carries.
-    pub fn label(self) -> &'static str {
-        match self {
-            ParamType::Text => "text",
-            ParamType::Integer => "integer",
-            ParamType::Boolean => "boolean",
-        }
-    }
-}
-
-/// One typed parameter an action declares.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActionParam {
-    pub name: &'static str,
-    pub ty: ParamType,
-    /// Whether an invocation must supply it. An optional parameter's
-    /// default belongs to the action and is stated in `description`.
-    pub required: bool,
-    pub description: &'static str,
-}
-
-impl ActionParam {
-    pub const fn required(name: &'static str, ty: ParamType, description: &'static str) -> Self {
-        Self {
-            name,
-            ty,
-            required: true,
-            description,
-        }
-    }
-
-    pub const fn optional(name: &'static str, ty: ParamType, description: &'static str) -> Self {
-        Self {
-            name,
-            ty,
-            required: false,
-            description,
-        }
-    }
-}
-
-/// One bound argument value.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ArgValue {
-    Text(String),
-    Integer(i64),
-    Boolean(bool),
-}
-
-impl ArgValue {
-    fn ty(&self) -> ParamType {
-        match self {
-            ArgValue::Text(_) => ParamType::Text,
-            ArgValue::Integer(_) => ParamType::Integer,
-            ArgValue::Boolean(_) => ParamType::Boolean,
-        }
-    }
-}
-
-/// Why a set of arguments does not satisfy an action's parameters.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ArgError {
-    Missing {
-        name: String,
-    },
-    Unknown {
-        name: String,
-    },
-    WrongType {
-        name: String,
-        expected: ParamType,
-        got: ParamType,
-    },
-}
-
-impl std::fmt::Display for ArgError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ArgError::Missing { name } => {
-                write!(f, "required argument `{name}` was not supplied")
-            }
-            ArgError::Unknown { name } => {
-                write!(f, "`{name}` is not a parameter of this action")
-            }
-            ArgError::WrongType {
-                name,
-                expected,
-                got,
-            } => write!(
-                f,
-                "argument `{name}` must be {}, got {}",
-                expected.label(),
-                got.label()
-            ),
-        }
-    }
-}
 
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,90 +47,6 @@ impl std::fmt::Display for ActionError {
             ActionError::Arguments(e) => write!(f, "{e}"),
             ActionError::Refused(why) => write!(f, "{why}"),
         }
-    }
-}
-
-/// Arguments for one invocation, already checked. Buildable only through
-/// [`ActionArgs::bind`]/[`ActionArgs::none`], so holding one means every
-/// required parameter is present and typed.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ActionArgs {
-    values: BTreeMap<String, ArgValue>,
-}
-
-impl ActionArgs {
-    /// The empty argument set — what a nullary action is invoked with.
-    pub fn none() -> Self {
-        Self::default()
-    }
-
-    /// Check `supplied` against `params` and bind it. Fails on the first
-    /// problem rather than accumulating — a partial bind must never reach
-    /// an action.
-    ///
-    /// # Errors
-    ///
-    /// [`ArgError::Missing`] for a required param `supplied` never sets,
-    /// [`ArgError::Unknown`] for a supplied name `params` doesn't
-    /// declare, [`ArgError::WrongType`] when a supplied value's type
-    /// doesn't match the declared one.
-    pub fn bind(
-        params: &[ActionParam],
-        supplied: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<Self, ArgError> {
-        let mut values: BTreeMap<String, ArgValue> = BTreeMap::new();
-        for (name, value) in supplied {
-            let Some(param) = params.iter().find(|p| p.name == name) else {
-                // Refused rather than silently dropped, or the caller
-                // believes it asked for something it did not get.
-                return Err(ArgError::Unknown { name });
-            };
-            if value.ty() != param.ty {
-                return Err(ArgError::WrongType {
-                    name,
-                    expected: param.ty,
-                    got: value.ty(),
-                });
-            }
-            values.insert(name, value);
-        }
-        for param in params.iter().filter(|p| p.required) {
-            if !values.contains_key(param.name) {
-                return Err(ArgError::Missing {
-                    name: param.name.to_string(),
-                });
-            }
-        }
-        Ok(Self { values })
-    }
-
-    /// The text bound to `name`, if any.
-    pub fn text(&self, name: &str) -> Option<&str> {
-        match self.values.get(name) {
-            Some(ArgValue::Text(s)) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-
-    /// The integer bound to `name`, if any.
-    pub fn integer(&self, name: &str) -> Option<i64> {
-        match self.values.get(name) {
-            Some(ArgValue::Integer(i)) => Some(*i),
-            _ => None,
-        }
-    }
-
-    /// The boolean bound to `name`, if any.
-    pub fn boolean(&self, name: &str) -> Option<bool> {
-        match self.values.get(name) {
-            Some(ArgValue::Boolean(b)) => Some(*b),
-            _ => None,
-        }
-    }
-
-    /// Whether anything is bound.
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
     }
 }
 

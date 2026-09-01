@@ -1568,6 +1568,7 @@ dependencies = [
  "dirs 6.0.0",
  "png 0.18.1",
  "pollster",
+ "qos-actions",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde_json",
@@ -2517,6 +2518,7 @@ name = "containers"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "qos-actions",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3144,6 +3146,7 @@ dependencies = [
  "runtime-dylib",
  "rusqlite",
  "serde",
+ "serde_json",
  "taffy",
  "ui",
  "uuid",
@@ -3413,6 +3416,7 @@ dependencies = [
 name = "disks"
 version = "0.1.0"
 dependencies = [
+ "qos-actions",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4191,6 +4195,7 @@ dependencies = [
  "mime_guess",
  "open",
  "qdoc",
+ "qos-actions",
  "qos-user-identity",
  "runtime-dylib",
  "runtime-portal",
@@ -8115,6 +8120,7 @@ name = "logs"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "qos-actions",
  "runtime-dylib",
  "serde_json",
  "taffy",
@@ -8548,7 +8554,9 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "qos-actions",
  "runtime-dylib",
+ "serde_json",
  "sysinfo",
  "taffy",
  "ui",
@@ -9911,7 +9919,9 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
+ "qos-actions",
  "runtime-dylib",
+ "serde_json",
  "swipe",
  "taffy",
  "tempfile",
@@ -13396,6 +13406,7 @@ dependencies = [
  "postcard",
  "qcms",
  "qdoc",
+ "qos-actions",
  "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",
@@ -14001,6 +14012,7 @@ dependencies = [
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "hex",
+ "qos-actions",
  "registry-types",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -14519,6 +14531,7 @@ dependencies = [
  "crossbeam-channel",
  "libc",
  "portable-pty",
+ "qos-actions",
  "runtime-dylib",
  "serde_json",
  "serial_test",
@@ -15627,7 +15640,10 @@ dependencies = [
  "automerge",
  "comemo",
  "dirs 6.0.0",
+ "qos-actions",
  "runtime-dylib",
+ "serde",
+ "serde_json",
  "taffy",
  "tiny-skia",
  "typst",
@@ -16126,7 +16142,10 @@ dependencies = [
  "automerge",
  "collab-types",
  "media",
+ "qos-actions",
  "runtime-dylib",
+ "serde",
+ "serde_json",
  "taffy",
  "tracing",
  "ui",
@@ -16942,6 +16961,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "qos-actions",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",

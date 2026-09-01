@@ -114,7 +114,7 @@ impl RunError {
 }
 
 /// Optional knobs for `run_with`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent CLI-exposed launch knob (no_services, minimal_libs, \
@@ -180,6 +180,34 @@ pub struct RunOptions {
     /// A URI to open, forwarded as one opaque argv value. The caller must
     /// validate its scheme against the freshly-read installed manifest.
     pub open_uri: Option<String>,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            no_services: false,
+            runtime_root: None,
+            bwrap_bin: None,
+            minimal_libs: false,
+            // qpkg applications are untrusted by default.  A caller using the
+            // convenience constructor must not accidentally remove one of the
+            // kernel-enforced confinement layers.
+            landlock_enforce: true,
+            mode: LaunchMode::default(),
+            allow_missing_runtime: false,
+            allow_unsigned_runtime: false,
+            require_runtime_publisher: None,
+            wayland_socket: None,
+            render_node: None,
+            identity_host_path: None,
+            trusted_identities_host_path: None,
+            workspace_id: None,
+            capabilities_path: None,
+            app_id: None,
+            open_document: None,
+            open_uri: None,
+        }
+    }
 }
 
 fn gui_open_args(opts: &RunOptions) -> Vec<String> {
