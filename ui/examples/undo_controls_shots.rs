@@ -1,14 +1,14 @@
 //! Offscreen renders of the [`UndoButton`] pair in every availability state,
 //! in **both** light and dark, for self-inspection without opening a window.
 //!
-//! Drives the real pipeline (sync → build_layout → compute_layout →
-//! apply_layout → draw) over a real [`State`] whose history was built by real
+//! Drives the real pipeline (`sync` → `build_layout` → `compute_layout` →
+//! `apply_layout` → `draw`) over a real [`State`] whose history was built by real
 //! committed actions, and publishes the status through the same
 //! `State::undo_status` → `Widget::set_undo_status` route the host uses — so
 //! what is painted here is what a user sees.
 //!
-//! Run:  cargo run -p ui --example undo_controls_shots
-//! Out:  $UNDO_SHOTS_OUT (default /tmp/undo_controls_shots) —
+//! Run: `cargo run -p ui --example ui-shots -- undo_controls_shots`
+//! Out: `$UNDO_SHOTS_OUT` (default `/tmp/undo_controls_shots`) —
 //!       undo-{dark,light}-{empty,undoable,redoable,hovered}.png
 //!
 //!   * `empty`    — a fresh document: both controls dimmed and inert.
@@ -19,20 +19,20 @@
 //!     act (a control the host would never focus must never look focused).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use automerge::{transaction::Transactable, ObjType, ROOT};
+use automerge::{ObjType, ROOT, transaction::Transactable};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use ui::State;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::UserId;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Row, UndoButton, Widget};
-use ui::State;
 
 const WIDTH: u32 = 300;
 const HEIGHT: u32 = 64;
@@ -51,10 +51,19 @@ fn author() -> UserId {
 
 /// One real edit, committed as one action — so the history under test is a
 /// history, not a hand-built status struct.
-fn type_action(state: &mut State, text: &str) {
-    let obj = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
-    state.doc.splice_text(&obj, 0, 0, text).unwrap();
-    assert!(state.commit_action_authored(None, None, Some(author())));
+fn type_action(state: &mut State, text: &str) -> Result<(), String> {
+    let obj = state
+        .doc
+        .put_object(&ROOT, "body", ObjType::Text)
+        .map_err(|error| format!("cannot create body: {error}"))?;
+    state
+        .doc
+        .splice_text(&obj, 0, 0, text)
+        .map_err(|error| format!("cannot seed body: {error}"))?;
+    if !state.commit_action_authored(None, None, Some(author())) {
+        return Err("seed edit did not create an undo entry".to_owned());
+    }
+    Ok(())
 }
 
 fn cursor_at(p: Point) -> winit::event::WindowEvent {
@@ -64,14 +73,16 @@ fn cursor_at(p: Point) -> winit::event::WindowEvent {
     }
 }
 
-fn shoot(theme: &Theme, out: PathBuf, case: Case) {
+fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     let mut state = State::new();
     match case {
         Case::Empty => {}
-        Case::Undoable | Case::Hovered => type_action(&mut state, "hello"),
+        Case::Undoable | Case::Hovered => type_action(&mut state, "hello")?,
         Case::Redoable => {
-            type_action(&mut state, "hello");
-            state.undo_as(Some(&author()), None, None).unwrap();
+            type_action(&mut state, "hello")?;
+            if state.undo_as(Some(&author()), None, None).is_none() {
+                return Err("seed edit could not be undone".to_owned());
+            }
         }
     }
 
@@ -92,17 +103,16 @@ fn shoot(theme: &Theme, out: PathBuf, case: Case) {
         .compute_layout_with_measure(
             node,
             Size {
-                width: AvailableSpace::Definite(WIDTH as f32),
-                height: AvailableSpace::Definite(HEIGHT as f32),
+                width: AvailableSpace::Definite(300.0),
+                height: AvailableSpace::Definite(64.0),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
-        .unwrap();
+        .map_err(|error| format!("layout failed: {error}"))?;
     row.apply_layout(&taffy, node, Point::new(16.0, 16.0));
 
     // The host's publish: derive the status from the live history and hand it
@@ -113,7 +123,7 @@ fn shoot(theme: &Theme, out: PathBuf, case: Case) {
     }
     println!(
         "  {:>8}  can_undo={} can_redo={} undo={:?}",
-        out.file_stem().unwrap().to_string_lossy(),
+        out.display(),
         status.can_undo,
         status.can_redo,
         status.undo_summary
@@ -129,7 +139,7 @@ fn shoot(theme: &Theme, out: PathBuf, case: Case) {
             .filter(|&&p| unsafe { (*p).name() } == "UndoButton")
             .map(|&p| unsafe { (*p).get_rect() })
             .collect();
-        targets.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap());
+        targets.sort_by(|a, b| a.x0.total_cmp(&b.x0));
 
         // Pointer on the icon-only Undo — the real hover path.
         if let Some(first) = targets.first() {
@@ -163,15 +173,18 @@ fn shoot(theme: &Theme, out: PathBuf, case: Case) {
     row.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
+    Ok(())
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("UNDO_SHOTS_OUT").unwrap_or_else(|_| "/tmp/undo_controls_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        crate::registry::fatal(format_args!("cannot create {dir}: {error}"));
+    }
     let dir = PathBuf::from(dir);
 
     for (theme, tag) in [(Theme::dark(), "dark"), (Theme::light(), "light")] {
@@ -181,7 +194,10 @@ fn main() {
             (Case::Redoable, "redoable"),
             (Case::Hovered, "hovered"),
         ] {
-            shoot(&theme, dir.join(format!("undo-{tag}-{name}.png")), case);
+            let out = dir.join(format!("undo-{tag}-{name}.png"));
+            if let Err(error) = shoot(&theme, &out, case) {
+                crate::registry::fatal(format_args!("{}: {error}", out.display()));
+            }
         }
     }
 }
