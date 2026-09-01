@@ -1,6 +1,6 @@
 use ui::LocalState;
 use ui::tokens::TextRole;
-use ui::widget::{ModelView, QrWidget, Text, TextInput, Widget};
+use ui::widget::{ModelView, QrWidget, Text, TextInput, Widget, labeled_field};
 
 /// A complete IME input → typed state → generated visual output loop.
 pub fn app_root() -> Box<dyn Widget> {
@@ -18,14 +18,12 @@ pub fn app_root() -> Box<dyn Widget> {
     let input = TextInput::local()
         .with_initial_value(&payload.get())
         .with_id("qr-input")
-        .with_accessible_name("qr-input-label")
         .with_placeholder("qr-input-placeholder")
         .on_change(payload.text_sink());
 
     Box::new(ui::column![
         Text::new("qr-title").with_role(TextRole::Title),
-        Text::new("qr-input-label").with_role(TextRole::Label),
-        input,
+        labeled_field("qr-input-label", input),
         output,
     ])
 }
