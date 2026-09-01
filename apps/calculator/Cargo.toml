@@ -22,6 +22,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

@@ -2962,6 +2962,32 @@ impl BooksApp {
 }
 
 impl Widget for BooksApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::EbookOperation;
+        match operation {
+            EbookOperation::PreviousPage => self.on_prev_page(),
+            EbookOperation::NextPage => self.on_next_page(),
+            EbookOperation::ToggleContents => self.on_toggle_toc(),
+            EbookOperation::ToggleNotes => self.on_toggle_notes(),
+            EbookOperation::OpenSettings => self.on_open_settings(),
+            EbookOperation::OpenBook => self.request_open_via_portal(),
+        }
+        Ok(true)
+    }
+
     /// Publish the open book + its annotations so the host's Ctrl+K action
     /// palette scopes to them, via [`crate::actions`]'s
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl.

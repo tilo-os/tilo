@@ -41,8 +41,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::SheetsDoc;
@@ -53,6 +53,38 @@ use crate::settings::DocSettings;
 
 /// Registry `type_id` for every Sheets action.
 pub const SHEETS_ACTION_TYPE: &str = "sheets.action";
+pub const SHEETS_OPERATION_TYPE: &str = "sheets.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SheetsOperation {
+    ImportCsv,
+    ImportXlsx,
+    ImportOds,
+    ExportCsv,
+    ExportXlsx,
+    ExportOds,
+    OpenCommandPalette,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOperation>, String> {
+    if type_id != SHEETS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: SheetsOperation) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, SHEETS_OPERATION_TYPE, &value)
+        .expect("SheetsOperation is always serializable");
+    match value {
+        SheetsOperation::ExportCsv | SheetsOperation::ExportXlsx | SheetsOperation::ExportOds => {
+            spec.destructive()
+        }
+        _ => spec,
+    }
+}
 
 /// The fixed default currency used when an action reads stored cell formats out
 /// of the document. It only seeds a legacy bare `"currency"` format that carries
@@ -668,7 +700,7 @@ pub struct SheetsResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, SHEETS_ACTION_TYPE, action)
+    let spec = ActionSpec::immediate(id, label, SHEETS_ACTION_TYPE, action)
         // `ActionSpec`'s fields are private now that it carries typed
         // parameters; build the fallback through the constructor that
         // takes an already-encoded action.
@@ -680,6 +712,12 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
                 inert_encoded_action(),
             )
         })
+        .reversible();
+    if id.contains("delete") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// Build the resource tree Sheets currently has open: the workbook (always
@@ -688,6 +726,53 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 /// the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
+
+    for (id, label, kind, value) in [
+        (
+            "import-csv",
+            "Import CSV",
+            OperationKind::Effect,
+            SheetsOperation::ImportCsv,
+        ),
+        (
+            "import-xlsx",
+            "Import Excel workbook",
+            OperationKind::Effect,
+            SheetsOperation::ImportXlsx,
+        ),
+        (
+            "import-ods",
+            "Import OpenDocument spreadsheet",
+            OperationKind::Effect,
+            SheetsOperation::ImportOds,
+        ),
+        (
+            "export-csv",
+            "Export CSV",
+            OperationKind::Effect,
+            SheetsOperation::ExportCsv,
+        ),
+        (
+            "export-xlsx",
+            "Export Excel workbook",
+            OperationKind::Effect,
+            SheetsOperation::ExportXlsx,
+        ),
+        (
+            "export-ods",
+            "Export OpenDocument spreadsheet",
+            OperationKind::Effect,
+            SheetsOperation::ExportOds,
+        ),
+        (
+            "commands",
+            "Open command palette",
+            OperationKind::View,
+            SheetsOperation::OpenCommandPalette,
+        ),
+    ] {
+        workbook = workbook.with_action(operation(id, label, kind, value));
+    }
 
     // Workbook-level: create a new sheet. The default name is resolved from the
     // current sheet count at authoring time, so replay stays deterministic.
@@ -868,12 +953,17 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("New sheet");
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New sheet")), "{labels:?}");
+        palette.set_query("Rename sheet");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Rename sheet")),
             "{labels:?}"
         );
+        palette.set_query("Delete sheet");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete sheet")),
             "{labels:?}"

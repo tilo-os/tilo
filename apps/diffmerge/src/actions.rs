@@ -15,8 +15,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::MergeDoc;
@@ -24,6 +24,87 @@ use crate::model::{MergeHunk, MergeModel, Resolution};
 
 /// Registry `type_id` for every Diff action.
 pub const DIFFMERGE_ACTION_TYPE: &str = "diffmerge.action";
+pub const DIFFMERGE_OPERATION_TYPE: &str = "diffmerge.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffmergeOperation {
+    ShowDiff,
+    ShowMerge,
+    PreviousChange,
+    NextChange,
+    OpenFiles,
+    LoadSample,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<DiffmergeOperation>, String> {
+    if type_id != DIFFMERGE_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: DiffmergeOperation) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, DIFFMERGE_OPERATION_TYPE, &value)
+        .expect("DiffmergeOperation is always serializable");
+    match value {
+        DiffmergeOperation::ShowDiff | DiffmergeOperation::ShowMerge => {
+            spec.retry_policy(RetryPolicy::Idempotent)
+        }
+        DiffmergeOperation::PreviousChange | DiffmergeOperation::NextChange => spec,
+        DiffmergeOperation::OpenFiles => spec,
+        DiffmergeOperation::LoadSample => spec.destructive(),
+    }
+}
+
+fn workspace_operations() -> Resource {
+    let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
+    for (id, label, kind, value) in [
+        (
+            "show-diff",
+            "Show two-way diff",
+            OperationKind::View,
+            DiffmergeOperation::ShowDiff,
+        ),
+        (
+            "show-merge",
+            "Show three-way merge",
+            OperationKind::View,
+            DiffmergeOperation::ShowMerge,
+        ),
+        (
+            "previous-change",
+            "Previous change",
+            OperationKind::View,
+            DiffmergeOperation::PreviousChange,
+        ),
+        (
+            "next-change",
+            "Next change",
+            OperationKind::View,
+            DiffmergeOperation::NextChange,
+        ),
+        (
+            "open-files",
+            "Open files",
+            OperationKind::Effect,
+            DiffmergeOperation::OpenFiles,
+        ),
+        (
+            "load-sample",
+            "Load sample",
+            OperationKind::Effect,
+            DiffmergeOperation::LoadSample,
+        ),
+    ] {
+        root = root.with_action(operation(id, label, kind, value));
+    }
+    root
+}
 
 /// Which side a conflict/change hunk resolution takes. A strict subset of
 /// [`Resolution`] — only the user-selectable outcomes — so an action can never
@@ -249,6 +330,8 @@ fn immediate_choice(
     let action = resolve_hunk_action(hunk, choice, compose_choice(model, hunk, choice));
     ActionSpec::immediate(id, label, DIFFMERGE_ACTION_TYPE, &action)
         .expect("encode diffmerge action")
+        .reversible()
+        .retry_policy(RetryPolicy::Idempotent)
 }
 
 /// A short one-line preview of a hunk for the palette label.
@@ -274,6 +357,47 @@ fn hunk_preview(h: &MergeHunk) -> String {
 /// exported as an action.
 pub fn provide_resources(ctx: &MergeResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("diffmerge.merge", "diffmerge.merge", ctx.title.clone());
+
+    for (id, label, kind, value) in [
+        (
+            "show-diff",
+            "Show two-way diff",
+            OperationKind::View,
+            DiffmergeOperation::ShowDiff,
+        ),
+        (
+            "show-merge",
+            "Show three-way merge",
+            OperationKind::View,
+            DiffmergeOperation::ShowMerge,
+        ),
+        (
+            "previous-change",
+            "Previous change",
+            OperationKind::View,
+            DiffmergeOperation::PreviousChange,
+        ),
+        (
+            "next-change",
+            "Next change",
+            OperationKind::View,
+            DiffmergeOperation::NextChange,
+        ),
+        (
+            "open-files",
+            "Open files",
+            OperationKind::Effect,
+            DiffmergeOperation::OpenFiles,
+        ),
+        (
+            "load-sample",
+            "Load sample",
+            OperationKind::Effect,
+            DiffmergeOperation::LoadSample,
+        ),
+    ] {
+        root = root.with_action(operation(id, label, kind, value));
+    }
 
     // Merge-level: replace the whole shared merged buffer with typed text — the
     // merged-output edit. A future in-place editor dispatches the same action.
@@ -363,7 +487,7 @@ impl ResourceProvider for crate::app::DiffMergeApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.merge_resource_ctx() {
             Some(ctx) => provide_resources(&ctx, doc),
-            None => Vec::new(),
+            None => vec![workspace_operations()],
         }
     }
 }
@@ -439,11 +563,14 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("Take theirs");
         let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Take theirs")),
             "{labels:?}"
         );
+        palette.set_query("Replace merged output");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Replace merged output")),
             "{labels:?}"

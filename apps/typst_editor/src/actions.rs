@@ -31,7 +31,9 @@
 //! is exported as an effect and local navigation/zoom as view operations.
 
 use automerge::AutoCommit;
-use qos_actions::{ActionSpec, OperationKind, Resource};
+use qos_actions::{
+    ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, RetryPolicy,
+};
 use serde::{Deserialize, Serialize};
 
 pub const OPERATION_TYPE: &str = "typst.operation";
@@ -48,6 +50,27 @@ pub enum TypstOperation {
     ToggleProblems,
     ShowEditor,
     ShowPreview,
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, OPERATION_TYPE, &value)
+        .expect("TypstOperation is always serializable");
+    match value {
+        TypstOperation::Compile => spec
+            .execution(ExecutionMode::Background { cancellable: false })
+            .retry_policy(RetryPolicy::Idempotent),
+        TypstOperation::Save | TypstOperation::Open => spec.destructive(),
+        TypstOperation::ExportPdf => spec
+            .destructive()
+            .execution(ExecutionMode::Background { cancellable: false }),
+        TypstOperation::ZoomOut | TypstOperation::ZoomIn => {
+            spec.with_contract(ActionContract::view())
+        }
+        TypstOperation::ToggleProblems => spec.with_contract(ActionContract::view()),
+        TypstOperation::FitWidth | TypstOperation::ShowEditor | TypstOperation::ShowPreview => spec
+            .with_contract(ActionContract::view())
+            .retry_policy(RetryPolicy::Idempotent),
+    }
 }
 
 pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
@@ -114,9 +137,7 @@ pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
             TypstOperation::ShowPreview,
         ),
     ] {
-        if let Ok(operation) = ActionSpec::operation(id, label, kind, OPERATION_TYPE, &op) {
-            document = document.with_action(operation);
-        }
+        document = document.with_action(operation(id, label, kind, op));
     }
     vec![document]
 }
