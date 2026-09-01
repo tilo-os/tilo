@@ -425,6 +425,7 @@ mod tests {
                 password: Secret::new(b"secret".to_vec()),
                 remote_app_alias: self.alias_on_launch.clone(),
                 launch_nonce: "nonce".to_string(),
+                presentation: crate::ApplicationPresentation::NativeRail,
             })
         }
     }

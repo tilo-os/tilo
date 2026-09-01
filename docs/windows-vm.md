@@ -30,6 +30,14 @@ whole-guest SPICE/virt-viewer surface after the guest has focused the requested
 program; the qOS UI labels this as a whole-surface fallback, never as seamless
 windows. The full desktop remains a separate owner-authorised recovery surface.
 
+When the host selects `app_focused_spice`, the authenticated guest bridge
+requires an active console user, creates a one-shot interactive Scheduled Task
+for the allow-listed executable, and launches `Start-qOSFocusedApp.ps1` in that
+user's session. The helper temporarily stops that user's Explorer shell while
+the application is running, restores it on exit, and removes its job file and
+task. If Windows has no active console user, the bridge returns an explicit
+`no managed interactive session` error and qOS does not open an empty desktop.
+
 ## Guest setup (target operational flow)
 
 In the provisioning console, attach `qos-guest-tools.iso`, copy the example

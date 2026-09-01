@@ -13,6 +13,7 @@ PROVISION="$OS_ROOT/usr/libexec/qos-windows-provision"
 RECOVERY="$OS_ROOT/usr/libexec/qos-windows-recovery-console"
 INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
 BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
+FOCUSED="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSFocusedApp.ps1"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 fails=0
@@ -22,7 +23,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$INSTALL" "$BRIDGE"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$INSTALL" "$BRIDGE" "$FOCUSED"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -60,6 +61,9 @@ has "$BRIDGE" 'SHA256]::HashData($cert.RawData)' 'RDP and bridge certificate is 
 has "$BRIDGE" 'FixedTimeEquals' 'bridge compares authentication in constant time'
 has "$BRIDGE" 'replayed bridge nonce' 'bridge rejects nonce reuse'
 has "$BRIDGE" 'New-LocalUser' 'each launch receives a fresh account'
+has "$BRIDGE" 'Start-FocusedApplication' 'SPICE launch invokes the managed guest focus helper'
+has "$BRIDGE" 'no managed interactive session exists' 'SPICE fails honestly without a visible session'
+has "$BRIDGE" 'app_focused_spice' 'bridge has an explicit SPICE launch request'
 has "$BRIDGE" 'RandomNumberGenerator]::Create' 'launch password uses Windows PowerShell-compatible cryptographic RNG'
 has "$BRIDGE" 'New-ScheduledTaskTrigger -Once -At $when' 'credential cleanup avoids locale-dependent schtasks dates'
 has "$BRIDGE" 'qOS-Remove-' 'temporary launch accounts are reaped'
@@ -67,6 +71,9 @@ has "$BRIDGE" "LicenseStatus -eq 1" 'guest health reports real Windows activatio
 has "$CONTAINERFILE" 'qos-windows-vm-network.service' 'image wires network service'
 has "$CONTAINERFILE" 'qos-windows-provision' 'image wires provision tool'
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
+has "$PROVISION" 'Start-qOSFocusedApp.ps1' 'guest tools carry the focused-app helper'
+has "$FOCUSED" 'Stop-Process -Id' 'focused fallback suppresses Explorer while running'
+has "$FOCUSED" 'Start-Process -FilePath "$env:WINDIR\explorer.exe"' 'focused fallback restores Explorer'
 
 VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
 REMOTE_APP="$VM_ROOT/src/remote_app.rs"
