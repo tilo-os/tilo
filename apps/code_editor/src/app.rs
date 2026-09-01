@@ -243,6 +243,9 @@ pub struct CodeApp {
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
     portal_intent: Option<PortalIntent>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    pending_resource_file: Option<(qos_actions::InvocationId, ResourceFileOperation)>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
 
     /// A save that stopped because the file changed on disk. Holds the buffer
     /// it was for, so the user's choice applies to the right one.
@@ -274,6 +277,16 @@ pub enum PortalIntent {
     OpenFile,
     /// Give this buffer a path and write it there.
     SaveAs(TreeId),
+}
+
+#[derive(Clone, Debug)]
+enum ResourceFileOperation {
+    OpenFile(std::path::PathBuf),
+    OpenFolder(std::path::PathBuf),
+    Save {
+        node: TreeId,
+        path: Option<std::path::PathBuf>,
+    },
 }
 
 /// A save refused because the file moved on underneath us.
@@ -534,6 +547,9 @@ impl CodeApp {
             last_search_needle: String::new(),
             portal: None,
             portal_intent: None,
+            resource_invocation: None,
+            pending_resource_file: None,
+            resource_result: None,
             conflict: None,
             conflict_hover: Point::new(-1.0, -1.0),
             conflict_buttons: Vec::new(),
@@ -1424,13 +1440,22 @@ impl CodeApp {
         use ui::portal::PortalOutcome;
         let path = match outcome {
             PortalOutcome::Opened(p) => p,
-            PortalOutcome::Cancelled => return,
+            PortalOutcome::Cancelled => {
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("file selection cancelled".into()),
+                    });
+                }
+                return;
+            }
             PortalOutcome::Failed(e) => {
                 self.note(format!("File picker unavailable: {e}"), true);
+                self.finish_resource_file(Err(e));
                 return;
             }
         };
-        match intent {
+        let result = match intent {
             Some(PortalIntent::OpenFolder) => self.open_project_dir(&path),
             Some(PortalIntent::OpenFile) => self.open_disk_file(&path),
             Some(PortalIntent::SaveAs(node)) => {
@@ -1449,14 +1474,40 @@ impl CodeApp {
                 }
                 self.sidebar.set_project(&self.session.project);
                 let snapshot = doc.clone();
-                self.save_buffer(&snapshot, node, true);
+                if self.save_buffer(&snapshot, node, true) {
+                    Ok(())
+                } else {
+                    Err("file could not be saved".into())
+                }
             }
-            None => {}
-        }
+            None => Ok(()),
+        };
+        self.finish_resource_file(result);
+    }
+
+    fn finish_resource_file(&mut self, result: Result<(), String>) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.resource_result = Some(match result {
+            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+            Err(message) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "code_editor.io_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        });
     }
 
     /// Replace the project with the directory at `path`.
-    fn open_project_dir(&mut self, path: &std::path::Path) {
+    fn open_project_dir(&mut self, path: &std::path::Path) -> Result<(), String> {
         match Project::from_dir(path) {
             Ok(project) => {
                 let name = project.name.clone();
@@ -1470,19 +1521,24 @@ impl CodeApp {
                 self.reconcile_tabs();
                 self.refresh_palette_entries();
                 self.note(format!("Opened {name}"), false);
+                Ok(())
             }
-            Err(e) => self.note(format!("Could not open {}: {e}", path.display()), true),
+            Err(e) => {
+                let message = format!("Could not open {}: {e}", path.display());
+                self.note(&message, true);
+                Err(message)
+            }
         }
     }
 
     /// Open a real file into a tab, revealing it in the tree when it lives
     /// under the open project and adopting it as a one-file project when not.
-    fn open_disk_file(&mut self, path: &std::path::Path) {
+    fn open_disk_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let path = disk::canonical(path);
         if let Some(node) = self.session.project.reveal_path(&path) {
             self.sidebar.set_project(&self.session.project);
             self.open_node(node);
-            return;
+            return Ok(());
         }
         match Project::open_single_file(&path) {
             Ok((project, node)) => {
@@ -1492,8 +1548,13 @@ impl CodeApp {
                 self.reset_language_server();
                 self.open_node(node);
                 self.refresh_palette_entries();
+                Ok(())
             }
-            Err(e) => self.note(format!("Could not open {}: {e}", path.display()), true),
+            Err(e) => {
+                let message = format!("Could not open {}: {e}", path.display());
+                self.note(&message, true);
+                Err(message)
+            }
         }
     }
 
@@ -2412,7 +2473,7 @@ impl CodeApp {
             );
             return;
         };
-        self.open_disk_file(&path);
+        let _ = self.open_disk_file(&path);
         self.pending_jump = Some((line, col));
     }
 
@@ -3214,6 +3275,47 @@ impl Widget for CodeApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some((invocation, operation)) = self.pending_resource_file.take() {
+            self.notice = None;
+            let result = match operation {
+                ResourceFileOperation::OpenFile(path) => self.open_disk_file(&path),
+                ResourceFileOperation::OpenFolder(path) => self.open_project_dir(&path),
+                ResourceFileOperation::Save { node, path } => {
+                    if let Some(path) = path {
+                        let name = path.file_name().map_or_else(
+                            || "untitled".to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                        self.session.project.set_file_path(node, &path, &name);
+                        if let Some(buffer) = self.session.buffer_of_mut(node) {
+                            buffer.path = Some(path);
+                            buffer.name = name;
+                            buffer.stamp = None;
+                        }
+                    }
+                    if self.save_buffer(state, node, true) {
+                        Ok(())
+                    } else {
+                        Err("file could not be saved".into())
+                    }
+                }
+            };
+            self.resource_result = Some(match result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "code_editor.io_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
         if !self.seeded {
             self.seed_terminal();
             self.refresh_palette_entries();
@@ -3719,7 +3821,7 @@ impl Widget for CodeApp {
             }
             (
                 qos_actions::OperationKind::Effect,
-                crate::actions::CodeEditorOperation::Save { node },
+                crate::actions::CodeEditorOperation::Save { node, .. },
             ) => {
                 if !self.save_buffer(doc, node as TreeId, false) {
                     return Err("file could not be saved without user input".to_string());
@@ -3728,6 +3830,109 @@ impl Widget for CodeApp {
             _ => return Err("operation kind does not match Code operation".to_string()),
         }
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::CodeEditorOperation =
+            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        use crate::actions::CodeEditorOperation;
+        let resource = match operation {
+            CodeEditorOperation::OpenFile { path: Some(path) } => {
+                Some(ResourceFileOperation::OpenFile(path.into()))
+            }
+            CodeEditorOperation::OpenFolder { path: Some(path) } => {
+                Some(ResourceFileOperation::OpenFolder(path.into()))
+            }
+            CodeEditorOperation::Save { node, path: None }
+                if self
+                    .session
+                    .buffer_of(node as TreeId)
+                    .and_then(|b| b.path.as_ref())
+                    .is_none() =>
+            {
+                self.request_save_as(node as TreeId);
+                None
+            }
+            CodeEditorOperation::Save { node, path } => Some(ResourceFileOperation::Save {
+                node: node as TreeId,
+                path: path.map(Into::into),
+            }),
+            CodeEditorOperation::OpenFile { path: None } => {
+                self.request_open_file();
+                None
+            }
+            CodeEditorOperation::OpenFolder { path: None } => {
+                self.request_open_folder();
+                None
+            }
+            other => {
+                return self
+                    .invoke_resource_operation_v2(
+                        kind,
+                        type_id,
+                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
+                        doc,
+                        path,
+                    )
+                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        };
+        self.notice = None;
+        if let Some(resource) = resource {
+            self.pending_resource_file = Some((invocation, resource));
+        } else {
+            self.resource_invocation = Some(invocation);
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .pending_resource_file
+                .as_ref()
+                .is_some_and(|(id, _)| *id == invocation)
+        {
+            self.pending_resource_file = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("cancelled before file I/O".into()),
+            });
+        }
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.portal = None;
+            self.portal_intent = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            });
+        }
+        self.resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+            .then(|| self.resource_result.take())
+            .flatten()
     }
 
     /// Fold the open buffers and revealed project files into the unified Ctrl+K
@@ -3809,6 +4014,34 @@ impl Widget for CodeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_open_is_accepted_then_reports_the_exact_failure() {
+        let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
+            path: Some("/definitely/missing/qos-code-file".into()),
+        })
+        .unwrap();
+        let started = Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::CODE_EDITOR_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
 
     #[test]
     fn new_app_opens_main_rs() {
