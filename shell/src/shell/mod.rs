@@ -93,11 +93,14 @@ pub mod workspace_history;
 pub mod workspace_settings;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
+#[cfg(any(test, debug_assertions))]
+use ui::widget::context_menu::MenuItem;
+#[cfg(any(test, debug_assertions))]
+use ui::widget::toast::ToastStack;
 use ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
-    context_menu::{ContextMenu, MenuItem},
-    toast::ToastStack,
+    context_menu::ContextMenu,
 };
 
 use crate::shell::browser_stub::BrowserStubWidget;
@@ -138,6 +141,7 @@ pub struct Shell {
     /// Hidden unless `search_visible`.
     search: GlobalSearch,
     ws_settings: WorkspaceSettings,
+    #[cfg(any(test, debug_assertions))]
     toasts: ToastStack,
     ctx_menu: ContextMenu,
 
@@ -184,6 +188,7 @@ impl Shell {
             sidebar: SidebarWheel::new(),
             search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
+            #[cfg(any(test, debug_assertions))]
             toasts: ToastStack::new(),
             ctx_menu: ContextMenu::new(),
             overview_visible: false,
@@ -690,6 +695,7 @@ impl Shell {
     /// at `position`. Extracted so the production right-click path (wired
     /// alongside the compositor's pointer-event layer in a later task) and
     /// the test-only simulator share the same item-construction code.
+    #[cfg(any(test, debug_assertions))]
     fn open_default_tile_context_menu(&mut self, position: [f32; 2]) {
         // Rebuild from scratch so repeated right-clicks don't accumulate
         // items from earlier menus (e.g. if a follow-up task adds a
@@ -1144,6 +1150,9 @@ pub fn build_nirios_overlay_host_with_records(
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
+    for room in tree.rooms() {
+        launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
+    }
 
     let (root, group_row_ptrs) = build_workspace_root(&tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
