@@ -20,16 +20,17 @@
 //!   It is the factor no hardware failure can take away, so every other one
 //!   is layered on top of it;
 //! * with `--pin`, the secret on the **second stdin line** (after the account
-//!   password, never on the command line) becomes a **TPM2+PIN** keyslot
-//!   where there is a TPM, and an ordinary passphrase keyslot where there is
-//!   not — so a TPM-less machine unlocks with something short to type;
+//!   password, never on the command line) becomes a **TPM2+PIN** keyslot only
+//!   when Secure Boot and kernel lockdown prove a verified-boot boundary, and
+//!   an ordinary passphrase keyslot otherwise;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
-//! Encryption does **not** require a TPM. With TPM2, `--pin` becomes the
-//! single startup PIN bound to that TPM; without TPM2 it becomes the normal
-//! disk-unlock passphrase. The privileged backend also enforces both flags so
-//! an older or malformed UI fails closed instead of installing plaintext.
+//! Encryption does **not** require a TPM. With verified TPM2 boot, `--pin`
+//! becomes the single startup PIN bound to that TPM; otherwise it becomes the
+//! normal disk-unlock passphrase. The privileged backend independently checks
+//! this boundary and enforces both flags, so an older or malformed UI fails
+//! closed instead of installing plaintext or weakening the credential policy.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
@@ -91,8 +92,8 @@ pub struct InstallOptions {
     /// variant; the flag is then omitted.
     pub keyvariant: String,
     /// Mandatory unlock secret, sent as the second stdin line rather than on
-    /// argv. It becomes a TPM2+PIN keyslot on a machine with a TPM, and the
-    /// boot passphrase on one without. The backend rejects an empty value.
+    /// argv. It becomes a TPM2+PIN keyslot only with verified TPM2 boot, and
+    /// the boot passphrase otherwise. The backend rejects an empty value.
     pub pin: Zeroizing<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
     /// meaningful alongside mandatory LUKS encryption; maps to `--fido2`. A token must
