@@ -1,4 +1,4 @@
-use ui::widget::{Button, Row, Text, TreeNode, TreeView, Widget};
+use ui::widget::{Button, Text, TreeNode, TreeView, Widget};
 
 /// A stable-id hierarchy with expansion, keyboard navigation, selection,
 /// accessibility, virtualization, reordering hooks, and structural motion.
@@ -33,17 +33,16 @@ pub fn app_root() -> Box<dyn Widget> {
             .multi_select(true)
             .with_row_delegate(|model, id, _depth| {
                 let label = model.find(id).map_or("", |node| node.label.as_str());
-                Box::new(
-                    Row::new().push(Box::new(Text::new(label))).push(Box::new(
-                        Button::new(
-                            &format!("more-{id}"),
-                            "tree-row-action",
-                            Some("tree-row-action-requested"),
-                        )
-                        .with_click_value(id.to_string())
-                        .fit_content(32.0),
-                    )),
-                )
+                Box::new(ui::row![
+                    Text::new(label),
+                    Button::new(
+                        &format!("more-{id}"),
+                        "tree-row-action",
+                        Some("tree-row-action-requested"),
+                    )
+                    .with_click_value(id.to_string())
+                    .fit_content(32.0),
+                ])
             })
             .reorderable()
             .with_viewport(280.0, 36.0)
