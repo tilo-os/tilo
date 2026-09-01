@@ -3926,9 +3926,16 @@ impl ShellOverlayHost {
             tree.active.raw()
         };
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
+        let focus = self.room_activity.digest().briefs.first().map(|brief| {
+            crate::shell::chrome_state::ActivityFocus {
+                author: brief.authors.first().map(|author| author.name.clone()),
+                group_id: brief.group_id.clone(),
+                entry_id: None,
+            }
+        });
         chrome
             .borrow_mut()
-            .publish_activity_glance(headline, unread, pulse);
+            .publish_activity_glance(headline, unread, pulse, focus);
     }
 
     /// The room-activity sheet, for tests and for the shots driver.
