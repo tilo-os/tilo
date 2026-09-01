@@ -11417,6 +11417,7 @@ name = "qos-rollback"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "base64 0.22.1",
  "clap",
  "hex",
