@@ -42,6 +42,13 @@ use std::path::PathBuf;
 #[cfg(feature = "decode")]
 pub const FIXTURE_FPS: f64 = 30.0;
 
+/// Dimensions of the compact tracked fixture.
+#[cfg(feature = "decode")]
+pub const FIXTURE_WIDTH: u32 = 320;
+
+#[cfg(feature = "decode")]
+pub const FIXTURE_HEIGHT: u32 = 180;
+
 /// One frame interval, milliseconds. A seek that lands within this of its
 /// target landed on the right picture.
 #[cfg(feature = "decode")]
@@ -58,11 +65,12 @@ pub const FRAME_MS: u64 = 33;
 #[cfg(feature = "decode")]
 pub const FIXTURE_GOP_MS: u64 = 8_333;
 
-/// The fixture clip: 1080p H.264 in MP4, 30fps, 57.2s, 1717 frames.
+/// The fixture clip: tracked 320x180 H.264/AAC in MP4, 30fps, 48s, 1440
+/// frames. `fixtures/generate-h264-aac.sh` reproduces its codec and timeline
+/// contract without relying on developer-local demo artifacts.
 #[cfg(feature = "decode")]
 pub fn fixture_path() -> PathBuf {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.claude/demo-artifacts/qos-demo-57s.mp4");
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac-48s.mp4");
     // Resolve the `..` segments: a `file://` URI keeps them verbatim and not
     // every source element normalises them.
     p.canonicalize().unwrap_or(p)
@@ -122,15 +130,9 @@ pub fn has_hardware_h264() -> bool {
 
 /// The presentation timestamp of the fixture's **first** decoded picture.
 ///
-/// This clip's video track does not start at zero: its first buffer carries a
-/// PTS of 66.67ms (two frames), an offset the container's edit list hides from
-/// `ffprobe` but which `GStreamer` reports verbatim. Seeking to `T` therefore
-/// lands on a picture stamped `T + base`, and that is *correct* — the frame
-/// really is T into the stream.
-///
-/// Measured from the clip rather than hardcoded, so the seek tests calibrate
-/// themselves against the stream's own timebase instead of encoding a magic
-/// number that would quietly mask a genuine drift.
+/// Container edit lists and decoder preroll can give a track a small non-zero
+/// first PTS. Measure it rather than assuming zero, so the seek tests calibrate
+/// against the stream's own timebase without masking genuine drift.
 #[cfg(feature = "decode")]
 pub fn stream_pts_base_ms(engine: &mut media::MediaEngine) -> u64 {
     let first = decode_frame_at(engine, 0, "stream timebase probe");
