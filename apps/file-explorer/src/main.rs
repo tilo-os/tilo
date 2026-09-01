@@ -105,6 +105,9 @@ fn named_actor(prefix: &str) -> Option<String> {
 ///
 /// Returns an error if `--shots` mode fails to lay out or render the
 /// offscreen frame (a taffy layout error, or writing the output PNG).
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

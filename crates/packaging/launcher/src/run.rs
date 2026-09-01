@@ -413,7 +413,7 @@ pub fn resolve_runtime(
         let version = manifest
             .runtime_ref()
             .map_or_else(|| "1".to_string(), |(_, v)| v.to_string());
-        enforce_bundle_policy(explicit, opts)?;
+        enforce_bundle_policy(explicit, opts, false)?;
         return Ok(Some((explicit.clone(), version)));
     }
     // 2. Manifest declaration.
@@ -426,10 +426,10 @@ pub fn resolve_runtime(
     // Look up: per-user first, then system.
     let per_user = runtime_bundle::default_bundle_path(version).ok();
     let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system]).collect();
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
-            enforce_bundle_policy(cand, opts)?;
+            enforce_bundle_policy(cand, opts, cand == &system)?;
             return Ok(Some((cand.clone(), version.to_string())));
         }
     }
@@ -456,7 +456,11 @@ pub fn resolve_runtime(
 ///   3. Else any signed publisher is accepted.
 ///
 /// Layering lets the OS image bake and pin a fresh key at build time.
-fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError> {
+fn enforce_bundle_policy(
+    path: &Path,
+    opts: &RunOptions,
+    system_bundle: bool,
+) -> Result<(), RunError> {
     let require_publisher = match opts.require_runtime_publisher.clone() {
         Some(explicit) => Some(explicit),
         None => trusted_publisher_pin_from_file(),
@@ -466,7 +470,21 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
         require_signature: !opts.allow_unsigned_runtime,
         require_arch: None,
     };
-    match runtime_bundle::verify_bundle_with(path, &verify_opts) {
+    let verified = if system_bundle {
+        runtime_bundle::verify_bundle_metadata_with(path, &verify_opts).and_then(|manifest| {
+            if system_bundle_tree_is_root_owned(path, &manifest) {
+                Ok(manifest)
+            } else {
+                Err(runtime_bundle::BundleError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "system runtime is not an immutable root-owned tree",
+                )))
+            }
+        })
+    } else {
+        runtime_bundle::verify_bundle_with(path, &verify_opts)
+    };
+    match verified {
         Ok(manifest) => {
             // Multi-publisher trust list: `require_publisher` above was `None`
             // (only one key can be pinned there), so check by hand here.
@@ -497,6 +515,55 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
             reason: e.to_string(),
         }),
     }
+}
+
+#[cfg(unix)]
+fn system_bundle_tree_is_root_owned(
+    root: &Path,
+    manifest: &runtime_bundle::BundleManifest,
+) -> bool {
+    fn secure(path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            return false;
+        };
+        !metadata.file_type().is_symlink() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0
+    }
+
+    // Protect against replacing the otherwise-secure version directory through
+    // a writable ancestor, then check every signed file and its subdirectories.
+    let mut ancestor = Some(root);
+    while let Some(path) = ancestor {
+        if !secure(path) {
+            return false;
+        }
+        ancestor = path.parent();
+    }
+    if !secure(&root.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)) {
+        return false;
+    }
+    for file in &manifest.files {
+        let path = root.join(&file.path);
+        if !secure(&path) {
+            return false;
+        }
+        let mut parent = path.parent();
+        while let Some(dir) = parent.filter(|dir| dir.starts_with(root) && *dir != root) {
+            if !secure(dir) {
+                return false;
+            }
+            parent = dir.parent();
+        }
+    }
+    true
+}
+
+#[cfg(not(unix))]
+fn system_bundle_tree_is_root_owned(
+    _root: &Path,
+    _manifest: &runtime_bundle::BundleManifest,
+) -> bool {
+    false
 }
 
 /// A single-entry trust list is the pin handed to

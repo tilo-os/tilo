@@ -10,8 +10,8 @@
 //! qOS mints a personal Ed25519 root plus a distinct device key certified
 //! by that root, with no escrow or recovery phrase. `threshold-identity`
 //! implements share-based recovery but isn't wired into this path, so the
-//! only true thing to tell a user is that losing every local or copied root
-//! record loses the identity. The copy in
+//! only true thing to tell a user is that losing every local key and encrypted
+//! portable backup loses the identity. The copy in
 //! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
@@ -60,16 +60,16 @@ pub const NO_RECOVERY_TITLE: &str =
 pub const NO_RECOVERY_POINTS: &[&str] = &[
     "There is no recovery service. qOS has no backup code, no recovery phrase, and no \
      support desk that can recreate your key.",
-    "Setup creates a personal root record in your home and a separate certified device key \
-     in the protected system identity directory. Both remain on this machine.",
-    "If this device is lost or wiped and you kept no copy of the personal root record, the \
+    "Setup protects your personal root key in this login's key store and creates a separate, \
+     certified key for this device. Neither is uploaded.",
+    "If this device is lost or wiped and you kept no encrypted portable backup, the \
      identity cannot be rebuilt. Not by you, and not by anyone else.",
     "With no backup you would start again with a new identity and rejoin shared workspaces \
      as a new participant. Work you already signed stays signed and stays yours; you just \
      cannot sign anything new with the old key.",
-    "Copying the personal root record somewhere safe is the only backup that exists today. \
-     Anyone who has a copy can sign as you and certify devices, so treat it like a key to \
-     your house.",
+    "Setup can save an encrypted portable backup after creating the key. Keep that file and \
+     its passphrase separately; together they can sign as you and certify devices, so treat \
+     them like a key to your house.",
 ];
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
@@ -148,6 +148,14 @@ impl Onboarding {
     pub fn begin_connect(&mut self) {
         if self.screen == Screen::Intro {
             self.screen = Screen::Connect;
+        }
+    }
+
+    /// Return to the choice screen before any identity exists.
+    pub fn back(&mut self) {
+        if matches!(self.screen, Screen::Connect | Screen::NoRecovery) {
+            self.screen = Screen::Intro;
+            self.acknowledged = false;
         }
     }
 
@@ -306,6 +314,20 @@ mod tests {
         assert!(!o.can_create());
     }
 
+    #[test]
+    fn back_returns_to_the_choice_without_carrying_acknowledgement() {
+        let mut o = Onboarding::new();
+        o.begin();
+        o.set_acknowledged(true);
+        o.back();
+        assert_eq!(o.screen(), Screen::Intro);
+        assert!(!o.acknowledged());
+
+        o.begin_connect();
+        o.back();
+        assert_eq!(o.screen(), Screen::Intro);
+    }
+
     /// A UI bug must not be able to mint behind the user's back.
     #[test]
     fn completing_without_the_gate_changes_nothing() {
@@ -342,8 +364,8 @@ mod tests {
     ///
     /// qOS mints a root and certified device key with no escrow or recovery phrase.
     /// `threshold-identity` implements share-based recovery but is
-    /// deliberately not wired into this path, so any language here about
-    /// restoring/recovering/backing up would be false — if recovery is ever wired up, this test and the copy change together.
+    /// deliberately not wired into this path. A user-held encrypted export is
+    /// a backup, but it is not escrow and cannot help without its passphrase.
     #[test]
     fn copy_does_not_promise_recovery() {
         let all = NO_RECOVERY_POINTS.join(" ").to_lowercase();

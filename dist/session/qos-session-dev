@@ -99,6 +99,6 @@ export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 
 echo "qos-session-dev: starting $TARGET_REAL" >&2
 # --firstboot for the same reason as the production wrapper: a host has no
-# unit that runs the one-time setup, and it is a no-op once the identity
-# record exists.
+# unit that prepares the user's config directories. Identity creation remains
+# an interactive compositor-owned step.
 exec "$TARGET_REAL" --firstboot --backend drm "$@"

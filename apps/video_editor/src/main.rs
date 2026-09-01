@@ -52,6 +52,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// can exercise the overlay-flap layout. Pass `--narrow` to select it.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.video-editor", video_editor::app_root)
