@@ -196,6 +196,14 @@ fn now_unix_seconds() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Stable, non-secret identifier for one exact signed invite. Authorities use
+/// it to correlate a redemption with the role they minted without putting a
+/// room-wide "next arrival" grant on the wire.
+#[must_use]
+pub fn invite_id(token: &str) -> [u8; 32] {
+    *blake3::hash(token.as_bytes()).as_bytes()
+}
+
 /// Mint an invite for `workspace` with no always-on hosts and no bound
 /// signing identity.
 ///
