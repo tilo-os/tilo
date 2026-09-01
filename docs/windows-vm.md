@@ -23,8 +23,12 @@ guest-tools ISO, and starts the headless singleton. It deliberately does not
 open a viewer or accept, log, or retain a product key. Complete Windows Setup
 and enter any licence in the explicitly owner-authorised provisioning console.
 The singleton domain attaches the copied installer and guest-tools images as
-read-only CD-ROMs; its empty disk falls through to the installer on first boot
-and takes priority after Windows is installed.
+read-only CD-ROMs, plus the packaged `/usr/share/virtio-win/virtio-win.iso`
+driver image needed for stock Windows Setup to see the virtio disk and NIC. qOS
+does not download or redistribute that image; it uses the host distribution's
+audited `virtio-win` package and retains its license notices. The empty disk
+falls through to the installer on first boot and takes priority after Windows
+is installed.
 
 The unprivileged, typed status command is `qos-windows-owner status`; it emits
 the appliance phase, licensing state, cached catalogue generation, published
@@ -122,7 +126,7 @@ hints may be imported. qOS never executes a record's Steps, URLs, shell text,
 or dependency instructions.
 
 Once the authenticated bridge proves enrollment, qOS automatically detaches
-both setup ISOs from the running guest and its persistent libvirt definition
+all setup media, including the driver ISO, from the running guest and its persistent libvirt definition
 before marking the appliance launchable. The tools image carries the one-time
 enrollment key and therefore never remains readable to application users.
 
@@ -181,7 +185,9 @@ while the lease is live. The persistent domain has no egress NIC: the default
 host-only network remains `forward mode="none"`. The NAT network is defined but
 inactive and non-autostart, and the live-only NIC is removed on close, expiry,
 shutdown or restart. If qOS or the guest crashes, the lease cannot survive a
-domain restart. A user can therefore select **Allow temporarily for
+domain restart. Root-owned lease records are written before attachment and a
+systemd reaper checks them every 30 seconds, so a controller/UI crash also
+closes expired live NICs. A user can therefore select **Allow temporarily for
 activation/updates**, complete the normal Windows flow inside the managed
 console, and then revoke it immediately; qOS never implements KMS, activation
 bypass, or a shared key.

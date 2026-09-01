@@ -9,6 +9,8 @@ OS_ROOT="${OS_ROOT:-$(cd "$HERE/.." && pwd)}"
 NET="$OS_ROOT/usr/share/qos/windows/libvirt/qos-windows-hostonly.xml"
 EGRESS_NET="$OS_ROOT/usr/share/qos/windows/libvirt/qos-windows-egress.xml"
 UNIT="$OS_ROOT/usr/lib/systemd/system/qos-windows-vm-network.service"
+REAPER="$OS_ROOT/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service"
+REAPER_TIMER="$OS_ROOT/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer"
 NETWORK_TOOL="$OS_ROOT/usr/libexec/qos-windows-vm-network"
 PROVISION="$OS_ROOT/usr/libexec/qos-windows-provision"
 RECOVERY="$OS_ROOT/usr/libexec/qos-windows-recovery-console"
@@ -32,7 +34,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$EGRESS_NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$COMPAT_DOC"; do need "$file"; done
+for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$COMPAT_DOC"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -42,6 +44,10 @@ has "$EGRESS_NET" '<forward mode="nat"/>' 'egress network is explicitly NAT-back
 has "$EGRESS_NET" '<qos:windows-egress ' 'egress network has qOS ownership marker'
 has "$NETWORK_TOOL" 'qos-windows-egress' 'network service defines the brokered egress network'
 has "$NETWORK_TOOL" 'net-destroy' 'egress network is inactive by default'
+has "$REAPER" 'egress-reap' 'root service reaps expired egress leases'
+has "$REAPER_TIMER" 'OnUnitActiveSec=30s' 'egress lease reaper runs periodically'
+has "$VM_CONTROL_SOURCE" 'write_lease' 'egress lease is recorded before NIC attachment'
+has "$VM_CONTROL_SOURCE" 'egress-reap' 'controller has a crash-safe lease reaper action'
 has "$NETWORK_TOOL" 'existing $NAME is not a qOS host-only network' 'foreign network collision fails closed'
 has "$NETWORK_TOOL" "net-define" 'network is defined through libvirt'
 has "$UNIT" 'RestrictAddressFamilies=AF_UNIX' 'network setup is Unix-socket-only'
@@ -67,6 +73,9 @@ has "$VM_CONTROL_SOURCE" 'egress-open' 'typed controller exposes purpose-bound e
 has "$VM_CONTROL_SOURCE" 'shutdown|force-shutdown|restart|suspend|resume' 'typed controller exposes lifecycle actions'
 has "$LIBVIRT" 'SMBIOS' 'virtual SMBIOS identity remains stable for activation'
 has "$LIBVIRT" 'qos-windows-system' 'virtual disk identity remains stable for activation'
+has "$LIBVIRT" '/usr/share/virtio-win/virtio-win.iso' 'setup attaches packaged virtio drivers'
+has "$LIBVIRT" '"sdd"' 'setup retires the virtio driver medium'
+has "$PROVISION" 'virtio-win driver ISO is missing' 'provisioning requires packaged virtio drivers'
 
 lacks "$INSTALL" 'ProductType -ne 3' 'client Windows is not rejected outright'
 has "$INSTALL" 'RDS-RD-Server' 'official RDS RemoteApp role is required'
@@ -83,18 +92,21 @@ has "$BRIDGE" 'HMACSHA256' 'bridge authenticates requests'
 has "$BRIDGE" 'SHA256]::HashData($cert.RawData)' 'RDP and bridge certificate is pinned with SHA-256'
 has "$BRIDGE" 'FixedTimeEquals' 'bridge compares authentication in constant time'
 has "$BRIDGE" 'replayed bridge nonce' 'bridge rejects nonce reuse'
-has "$BRIDGE" 'New-LocalUser' 'each native RAIL launch receives a fresh account'
+has "$INSTALL" 'managed-session.json' 'provisioning binds one persistent managed Windows identity'
+has "$INSTALL" 'New-LocalUser -Name $managedUser' 'persistent managed identity is created only during provisioning'
+has "$INSTALL" 'fSingleSessionPerUser' 'Windows is constrained to one session for the managed identity'
+lacks "$BRIDGE" 'New-LocalUser' 'native RAIL launches never create extra Windows accounts'
+has "$BRIDGE" 'Get-ManagedSession' 'native RAIL reuses the provisioned managed identity'
 has "$BRIDGE" 'requestedPresentation -ne' 'focused SPICE does not mint RDP credentials'
 has "$BRIDGE" 'Start-FocusedApplication' 'SPICE launch invokes the managed guest focus helper'
 has "$BRIDGE" 'no managed interactive session exists' 'SPICE fails honestly without a visible session'
 has "$BRIDGE" 'app_focused_spice' 'bridge has an explicit SPICE launch request'
-has "$BRIDGE" 'RandomNumberGenerator]::Create' 'launch password uses Windows PowerShell-compatible cryptographic RNG'
-has "$BRIDGE" 'New-ScheduledTaskTrigger -Once -At $when' 'credential cleanup avoids locale-dependent schtasks dates'
-has "$BRIDGE" 'qOS-Remove-' 'temporary launch accounts are reaped'
+lacks "$BRIDGE" 'qOS-Remove-' 'bridge has no temporary-account cleanup path'
 has "$BRIDGE" "LicenseStatus -eq 1" 'guest health reports real Windows activation state'
 has "$BRIDGE" 'catalogGeneration = $catalog.generation' 'guest health reports the manifest catalogue generation'
 has "$BRIDGE" 'generation = $source.generation' 'guest catalogue preserves its persisted generation'
 has "$CONTAINERFILE" 'qos-windows-vm-network.service' 'image wires network service'
+has "$CONTAINERFILE" 'qos-windows-vm-egress-reaper.timer' 'image enables crash-safe egress lease reaper'
 has "$CONTAINERFILE" 'qos-windows-provision' 'image wires provision tool'
 has "$CONTAINERFILE" '/out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control' 'image ships the singleton VM controller'
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
@@ -189,11 +201,18 @@ has "$REMOTE_APP" 'OsString::from("xfreerdp")' 'RAIL uses the upstream FreeRDP c
 lacks "$REMOTE_APP" 'binary: OsString::from("wlfreerdp")' 'RAIL does not assume a nonexistent Wayland wrapper'
 has "$REMOTE_APP" 'AppFocusedSpiceLauncher' 'SPICE is an explicit app-focused fallback'
 has "$REMOTE_APP" 'qemu:///system' 'SPICE attaches through local libvirt only'
+has "$REMOTE_APP" '/clipboard:direction-to:all,files-to:all' 'file drag and clipboard need the explicit RAIL lease'
+has "$REMOTE_APP" '"-home-drive"' 'RAIL never redirects the owner home directory'
+has "$REMOTE_APP" '/cert:fingerprint:sha256:' 'RAIL pins the authenticated guest certificate'
+has "$REMOTE_APP" '--auto-resize=always' 'focused SPICE follows qOS tile resizing when its guest agent is present'
 has "$PRESENTATION" 'ApplicationPresentation::AppFocusedSpice' 'presentation fallback is typed'
 lacks "$PRESENTATION" 'ApplicationPresentation::Recovery' 'recovery is not an application route'
 has "$LIBVIRT" '/var/lib/qos/windows/install-media.iso' 'prepared Windows media is attached read-only'
 has "$LIBVIRT" '/var/lib/qos/windows/qos-guest-tools.iso' 'guest tools are attached read-only'
 has "$LIBVIRT" 'retire_installation_media' 'authenticated enrollment retires setup media'
+has "$LIBVIRT" "<clipboard copypaste='no'/>" 'SPICE clipboard stays disabled independently of guest state'
+has "$LIBVIRT" "<filetransfer enable='no'/>" 'SPICE file transfer stays disabled independently of guest state'
+has "$LIBVIRT" "name='com.redhat.spice.0'" 'SPICE exposes the bounded resize/cursor agent channel'
 has "$LIBVIRT" '"--live",' 'setup media is removed from the running guest'
 has "$LIBVIRT" '"--config",' 'setup media is removed from persistent configuration'
 has "$SESSION_WIRING" 'LiveVmDelegate::new' 'session composes the live singleton VM delegate'
