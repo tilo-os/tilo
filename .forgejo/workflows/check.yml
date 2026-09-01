@@ -220,8 +220,11 @@ jobs:
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
-  report-packaging-branch-result:
-    if: always() && github.ref == 'refs/heads/codex/package-desktop-release'
+  report-check-result:
+    if: >-
+      always() &&
+      (github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/codex/package-desktop-release')
     needs: [select, affected]
     runs-on: runner
     permissions:
