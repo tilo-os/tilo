@@ -1,0 +1,15 @@
+[package]
+name = "qos-dev-template-smoke"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+ui = { path = "../../../ui" }
+
+[build-dependencies]
+qos-dev = { path = "../qos-dev" }
+
+[lints]
+workspace = true

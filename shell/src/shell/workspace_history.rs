@@ -231,6 +231,13 @@ struct Fingerprint {
     supplied_tree_rows: Option<Vec<(HistoryEntryId, std::time::SystemTime)>>,
 }
 
+struct IndexedRecords {
+    referenced: Vec<RecordCheckout>,
+    included: Vec<RecordCheckout>,
+    cold: BTreeMap<RecordId, AutoCommit>,
+    capped_records: usize,
+}
+
 /// Cached, deterministic reduction of the workspace's document graphs.
 pub struct WorkspaceHistoryIndex {
     authors: AuthorDirectory,
@@ -316,10 +323,13 @@ impl WorkspaceHistoryIndex {
                 if end <= start {
                     return false;
                 }
-                let origin = projected[start].1;
-                projected[start..end]
-                    .iter()
-                    .all(|(_, candidate)| *candidate == origin)
+                let Some(span) = projected.get(start..end) else {
+                    return false;
+                };
+                let Some((_, origin)) = span.first() else {
+                    return false;
+                };
+                span.iter().all(|(_, candidate)| candidate == origin)
             })
             .cloned()
             .collect()
@@ -418,7 +428,7 @@ impl WorkspaceHistoryIndex {
                 }
                 after
                     .get(&key)
-                    .map_or(true, |changes| changes.contains(&row.id.change))
+                    .is_none_or(|changes| changes.contains(&row.id.change))
             })
             .collect()
     }
@@ -482,6 +492,38 @@ impl WorkspaceHistoryIndex {
         local: Option<&dyn PersistedRecordHistory>,
     ) -> bool {
         let limit = query.bounded_limit();
+        let mut indexed = Self::index_records(tree, records, &query, local);
+        let fingerprint = Self::build_fingerprint(
+            tree,
+            records,
+            &query,
+            supplied,
+            &indexed.referenced,
+            &indexed.included,
+            &mut indexed.cold,
+        );
+        if self.fingerprint.as_ref() == Some(&fingerprint) {
+            return false;
+        }
+
+        let entries = self.collect_entries(
+            tree,
+            records,
+            supplied,
+            &indexed.included,
+            &mut indexed.cold,
+            limit,
+        );
+        self.finish_refresh(query, &indexed, fingerprint, entries);
+        true
+    }
+
+    fn index_records(
+        tree: &WorkspaceTree,
+        records: &RecordStore,
+        query: &WorkspaceHistoryQuery,
+        local: Option<&dyn PersistedRecordHistory>,
+    ) -> IndexedRecords {
         let referenced = query.rooms.as_ref().map_or_else(
             || referenced_records(tree, query.room),
             |rooms| {
@@ -493,27 +535,10 @@ impl WorkspaceHistoryIndex {
         );
         let referenced_ids: BTreeSet<RecordId> =
             referenced.iter().map(|record| record.id.clone()).collect();
-        let open = records.open_records();
-
         let mut candidates = BTreeMap::new();
-        for checkout in &open {
-            let belongs = if let Some(rooms) = query.rooms.as_ref() {
-                referenced_ids.contains(&checkout.id)
-                    || records.read(&checkout.id, |doc| {
-                        home(doc)
-                            .and_then(|value| value.parse::<uuid::Uuid>().ok())
-                            .is_some_and(|home| rooms.iter().any(|room| room.as_uuid() == home))
-                    }) == Some(true)
-            } else {
-                query.room.is_none()
-                    || referenced_ids.contains(&checkout.id)
-                    || records.read(&checkout.id, |doc| {
-                        home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
-                            == query.room.map(|room| room.as_uuid())
-                    }) == Some(true)
-            };
-            if belongs {
-                candidates.insert(checkout.id.clone(), checkout.clone());
+        for checkout in records.open_records() {
+            if Self::record_belongs(records, &checkout.id, query, &referenced_ids) {
+                candidates.insert(checkout.id.clone(), checkout);
             }
         }
         for checkout in &referenced {
@@ -539,13 +564,50 @@ impl WorkspaceHistoryIndex {
                 included.push(checkout);
             }
         }
-        let included_ids: BTreeSet<RecordId> =
-            included.iter().map(|record| record.id.clone()).collect();
+        IndexedRecords {
+            referenced,
+            included,
+            cold,
+            capped_records,
+        }
+    }
 
+    fn record_belongs(
+        records: &RecordStore,
+        id: &RecordId,
+        query: &WorkspaceHistoryQuery,
+        referenced_ids: &BTreeSet<RecordId>,
+    ) -> bool {
+        if referenced_ids.contains(id) {
+            return true;
+        }
+        let Some(rooms) = query.rooms.as_ref() else {
+            return query.room.is_none()
+                || records.read(id, |doc| {
+                    home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
+                        == query.room.map(|room| room.as_uuid())
+                }) == Some(true);
+        };
+        records.read(id, |doc| {
+            home(doc)
+                .and_then(|value| value.parse::<uuid::Uuid>().ok())
+                .is_some_and(|home| rooms.iter().any(|room| room.as_uuid() == home))
+        }) == Some(true)
+    }
+
+    fn build_fingerprint(
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        query: &WorkspaceHistoryQuery,
+        supplied: Option<&[HistoryEntry]>,
+        referenced: &[RecordCheckout],
+        included: &[RecordCheckout],
+        cold: &mut BTreeMap<RecordId, AutoCommit>,
+    ) -> Fingerprint {
         let mut documents = vec![("workspace-tree".to_string(), tree.doc.get_heads())];
-        for record in &included {
+        for record in included {
             if let Some(heads) = records
-                .with(&record.id, |doc| doc.get_heads())
+                .with(&record.id, AutoCommit::get_heads)
                 .or_else(|| cold.get_mut(&record.id).map(AutoCommit::get_heads))
             {
                 documents.push((format!("record:{}", record.id), heads));
@@ -556,16 +618,23 @@ impl WorkspaceHistoryIndex {
                 .map(|entry| (entry.id, entry.timestamp))
                 .collect()
         });
-        let fingerprint = Fingerprint {
+        Fingerprint {
             query: query.clone(),
             documents,
-            references: referenced.clone(),
+            references: referenced.to_vec(),
             supplied_tree_rows,
-        };
-        if self.fingerprint.as_ref() == Some(&fingerprint) {
-            return false;
         }
+    }
 
+    fn collect_entries(
+        &self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        supplied: Option<&[HistoryEntry]>,
+        included: &[RecordCheckout],
+        cold: &mut BTreeMap<RecordId, AutoCommit>,
+        limit: usize,
+    ) -> Vec<WorkspaceHistoryEntry> {
         let mut by_id: BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry> = BTreeMap::new();
         let tree_rows = supplied.map_or_else(
             || {
@@ -577,9 +646,9 @@ impl WorkspaceHistoryIndex {
             },
             <[HistoryEntry]>::to_vec,
         );
-        insert_rows(&mut by_id, HistoryOrigin::WorkspaceTree, tree_rows);
+        insert_rows(&mut by_id, &HistoryOrigin::WorkspaceTree, tree_rows);
 
-        for record in &included {
+        for record in included {
             let kind = artifact_kind(&record.kind);
             let origin = HistoryOrigin::Record {
                 id: record.id.clone(),
@@ -592,7 +661,7 @@ impl WorkspaceHistoryIndex {
                     .with_artifact_kind(kind)
                     .with_max_entries(limit)
                     .entries(doc);
-                insert_rows(&mut by_id, origin.clone(), rows);
+                insert_rows(&mut by_id, &origin, rows);
             });
             if inserted_live.is_none()
                 && let Some(doc) = cold.get_mut(&record.id)
@@ -602,7 +671,7 @@ impl WorkspaceHistoryIndex {
                     .with_artifact_kind(kind)
                     .with_max_entries(limit)
                     .entries(doc);
-                insert_rows(&mut by_id, origin, rows);
+                insert_rows(&mut by_id, &origin, rows);
             }
         }
 
@@ -619,30 +688,44 @@ impl WorkspaceHistoryIndex {
         if entries.len() > limit {
             entries.drain(..entries.len().saturating_sub(limit));
         }
+        entries
+    }
 
-        let unavailable_records = referenced
+    fn finish_refresh(
+        &mut self,
+        query: WorkspaceHistoryQuery,
+        indexed: &IndexedRecords,
+        fingerprint: Fingerprint,
+        entries: Vec<WorkspaceHistoryEntry>,
+    ) {
+        let included_ids: BTreeSet<RecordId> = indexed
+            .included
+            .iter()
+            .map(|record| record.id.clone())
+            .collect();
+        let unavailable_records = indexed
+            .referenced
             .iter()
             .filter(|record| !included_ids.contains(&record.id))
             .cloned()
             .collect();
         self.coverage = FeedCoverage {
-            referenced_records: referenced.len(),
-            indexed_records: included.len(),
+            referenced_records: indexed.referenced.len(),
+            indexed_records: indexed.included.len(),
             unavailable_records,
-            capped_records,
+            capped_records: indexed.capped_records,
         };
         self.entries = entries;
         self.query = Some(query);
         self.document_heads = fingerprint.documents.iter().cloned().collect();
         self.fingerprint = Some(fingerprint);
         self.generation = self.generation.wrapping_add(1);
-        true
     }
 }
 
 fn insert_rows(
     target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
-    origin: HistoryOrigin,
+    origin: &HistoryOrigin,
     rows: Vec<HistoryEntry>,
 ) {
     for entry in rows {

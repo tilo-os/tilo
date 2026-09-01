@@ -144,6 +144,8 @@ enum DragUnit {
     All,
 }
 
+type TextChangeCallback = Box<dyn FnMut(&str)>;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -177,9 +179,22 @@ pub struct TextInput {
     click_count: u32,
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
-    /// Gates whether edits splice into `state`; false even with a path string
-    /// set if it doesn't resolve to a real CRDT object.
+    /// App-local notification hook. The comparison value prevents cursor,
+    /// selection, and IME-preedit events from repeating the last edit.
+    on_change: Option<TextChangeCallback>,
+    last_notified_text: String,
+    /// Typed process-local model mirrored in both directions during the
+    /// ordinary widget sync/event lifecycle.
+    local_state: Option<crate::local_state::LocalBinding<String>>,
+    /// A programmatic/model change can alter multiline measurement without
+    /// pretending to be a user edit through `take_dirty`.
+    model_layout_dirty: bool,
+    /// Gates whether edits splice into `state`, materialising a missing path
+    /// lazily on the first effective edit.
     crdt_bound: bool,
+    /// Distinguishes an uninitialised binding (where a local initial value may
+    /// remain visible) from a path removed by undo or a remote model change.
+    path_was_present: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
@@ -241,6 +256,7 @@ pub struct TextInput {
     context_menu: ContextMenu,
     /// Per-row action parallel to `context_menu`'s items (separators → `None`).
     context_actions: Vec<Option<CtxAction>>,
+    accessible_name: String,
     placeholder: String,
     /// Measurement switches with this so the caret/selection stay aligned with the draw.
     mono: bool,
@@ -276,6 +292,7 @@ pub struct TextInput {
     /// Last configured caret width, retained for the platform IME anchor whose
     /// trait hook does not receive a theme.
     last_caret_width: f64,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 /// One on-screen row: a whole short logical line, or one soft-wrapped
@@ -341,7 +358,12 @@ impl TextInput {
             scroll_x: 0.0,
             last_edit_time: None,
             dirty: false,
+            on_change: None,
+            last_notified_text: String::new(),
+            local_state: None,
+            model_layout_dirty: false,
             crdt_bound: false,
+            path_was_present: false,
             external_buffer: None,
             font_size_override: None,
             plain: false,
@@ -365,6 +387,7 @@ impl TextInput {
             pending_text_action: None,
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
+            accessible_name: String::new(),
             placeholder: String::new(),
             mono: false,
             family: None,
@@ -385,6 +408,7 @@ impl TextInput {
             hl_sig: u64::MAX,
             last_scroll_caret: None,
             last_caret_width: 2.0,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -395,6 +419,7 @@ impl TextInput {
 
     /// After binding, [`sync`] reads from `obj` regardless of the string-path mode.
     pub fn bind_text(&mut self, obj: ObjId) {
+        self.local_state = None;
         self.bound_text = Some(obj);
         self.crdt_bound = true;
     }
@@ -415,6 +440,29 @@ impl TextInput {
             return Some(id);
         }
         None
+    }
+
+    /// Materialise a path-bound text object after the first effective edit.
+    ///
+    /// Path bindings deliberately stay absent while the user only focuses or
+    /// navigates the field. When an edit was applied locally without an
+    /// existing Automerge text object, publish the complete resulting value as
+    /// one text object so sibling document readers observe that first edit.
+    fn persist_first_path_edit(&self, previous_text: &str, state: &mut AutoCommit, root: &ObjId) {
+        if !self.crdt_bound
+            || self.bound_text.is_some()
+            || self.on_change_path.is_empty()
+            || self.text == previous_text
+            || self.resolve_text_obj(state, root).is_some()
+        {
+            return;
+        }
+        let Ok(obj) = state.put_object(root, self.on_change_path.as_str(), ObjType::Text) else {
+            return;
+        };
+        if !self.text.is_empty() {
+            let _ = state.splice_text(&obj, 0, 0, self.text.as_str());
+        }
     }
 
     #[must_use]
@@ -727,6 +775,37 @@ impl TextInput {
         s
     }
 
+    /// Create a true two-way binding to typed process-local text state.
+    ///
+    /// User edits update `state`; mutations through any clone of `state`
+    /// update this input on the next synchronization pass. Several inputs and
+    /// read-only [`Text`](super::Text) views can therefore share one value
+    /// without initial-value snapshots, callbacks, or app-owned fan-out.
+    /// Selecting a document or external-buffer binding later replaces this
+    /// process-local binding explicitly.
+    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let mut input = Self::local().with_initial_value(&value);
+        input.local_state = Some(binding);
+        input
+    }
+
+    /// Create an input bound to one root-level document string.
+    ///
+    /// The path may contain either an Automerge string scalar or `Text`
+    /// object. The first effective edit upgrades a missing path (or scalar)
+    /// to collaborative `Text`; focus and selection alone do not materialise
+    /// model state. Pair with
+    /// [`Text::from_document_string`](super::Text::from_document_string) for a
+    /// synchronized read-only view without app-owned callbacks.
+    pub fn from_document_string(path: impl Into<String>) -> Self {
+        let path = path.into();
+        let mut input = Self::local();
+        input.crdt_bound = !path.is_empty();
+        input.on_change_path = path;
+        input
+    }
+
     /// Admit only characters accepted by `filter` on every insertion path.
     ///
     /// This is deliberately a character predicate, not a validator for the
@@ -737,6 +816,8 @@ impl TextInput {
         self.char_filter = Some(filter);
         self.text.retain(filter);
         self.clamp_to_text();
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
         self
     }
 
@@ -747,6 +828,8 @@ impl TextInput {
         self.cursor_pos = self.text.len();
         self.caret_affinity = TextAffinity::Before;
         self.dirty = false;
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
         self
     }
 
@@ -761,11 +844,43 @@ impl TextInput {
         self.selection_anchor = None;
         self.clamp_to_text();
         self.dirty = false;
+        self.model_layout_dirty = self.multiline;
         self.last_edit_time = None;
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
     }
 
     pub fn value(&self) -> &str {
         &self.text
+    }
+
+    /// Register an app-local callback for committed user edits.
+    ///
+    /// Keyboard input, paste, accessibility edits, and committed IME text
+    /// notify once with the complete new value. IME preedit, cursor movement,
+    /// selection changes, [`Self::set_text`], and CRDT synchronization do not.
+    #[must_use]
+    pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self.last_notified_text.clone_from(&self.text);
+        self
+    }
+
+    fn notify_user_change(&mut self) {
+        if !self.dirty || self.last_notified_text == self.text {
+            return;
+        }
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(&self.text);
+        }
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.text);
+        }
     }
 
     /// Local-mode only. In CRDT-bound mode prefer a real key event instead,
@@ -774,6 +889,8 @@ impl TextInput {
         // `insert_str` only touches the CRDT when given an object id.
         let mut sink = AutoCommit::new();
         self.insert_str(s, &mut sink, None);
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
     }
 
     pub fn cursor_pos(&self) -> usize {
@@ -1637,9 +1754,10 @@ impl TextInput {
         let text_transform =
             transform * Affine::translate((self.single_origin.x, self.single_origin.y));
         if self.shows_placeholder() {
+            let placeholder = crate::i18n!(&self.placeholder);
             tr.draw_text(
                 scene,
-                &self.placeholder,
+                &placeholder,
                 size,
                 theme.text_dim,
                 text_transform,
@@ -1897,13 +2015,14 @@ impl TextInput {
         }
 
         if self.shows_placeholder() {
+            let placeholder = crate::i18n!(&self.placeholder);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let origin = transform
                 * Affine::translate((self.rect.x0 + left, self.rect.y0 + ML_PAD_Y - self.scroll_y));
-            tr.draw_text(scene, &self.placeholder, size, theme.text_dim, origin, None);
+            tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
         }
 
         let text_color = if self.disabled {
@@ -2040,8 +2159,14 @@ impl TextInput {
         self
     }
 
+    /// Bind this input to one root-level document string.
+    ///
+    /// Prefer [`Self::from_document_string`] when constructing a new field;
+    /// this builder remains useful when the rest of the input is assembled
+    /// dynamically first.
     #[must_use]
     pub fn with_on_change_path(mut self, path: &str) -> Self {
+        self.local_state = None;
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
         self
@@ -2051,6 +2176,7 @@ impl TextInput {
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
+        self.local_state = None;
         self.external_buffer = Some(buffer);
         self.crdt_bound = false;
         self
@@ -2258,6 +2384,15 @@ impl TextInput {
     #[must_use]
     pub fn with_placeholder(mut self, hint: &str) -> Self {
         self.placeholder = hint.to_string();
+        self
+    }
+
+    /// Set the stable label announced for this field by assistive technology.
+    /// Placeholder text is intentionally not used as the label because it
+    /// disappears after entry and often describes format rather than purpose.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = name.into();
         self
     }
 
@@ -3216,7 +3351,22 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let local_value = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll);
+        if let Some(value) = local_value {
+            self.set_text(&value);
+        }
         if self.dirty
             && let Some(buffer) = &self.external_buffer
             && let Ok(mut value) = buffer.lock()
@@ -3230,27 +3380,43 @@ impl Widget for TextInput {
                 self.text = text;
             }
             self.clamp_to_text();
+            self.last_notified_text.clone_from(&self.text);
             return;
         }
         if !self.crdt_bound {
             return;
         }
-        if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
-            match val {
-                Value::Scalar(s) => {
-                    if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                        self.text = text.to_string();
+        match state.get(root, self.on_change_path.as_str()) {
+            Ok(Some((val, obj_id))) => {
+                self.path_was_present = true;
+                match val {
+                    Value::Scalar(s) => {
+                        if let automerge::ScalarValue::Str(text) = s.as_ref() {
+                            self.text = text.to_string();
+                        }
                     }
-                }
-                Value::Object(ObjType::Text) => {
-                    if let Ok(text) = state.text(&obj_id) {
-                        self.text = text;
+                    Value::Object(ObjType::Text) => {
+                        if let Ok(text) = state.text(&obj_id) {
+                            self.text = text;
+                        }
                     }
+                    Value::Object(_) => {}
                 }
-                Value::Object(_) => {}
+            }
+            Ok(None) if self.path_was_present => {
+                self.path_was_present = false;
+                self.text.clear();
+                self.cursor_pos = 0;
+                self.selection_anchor = None;
+                self.goal_x = None;
+            }
+            Ok(None) | Err(_) => {
+                // Keep an app-provided initial value until the binding has
+                // existed. An error is likewise not evidence of deletion.
             }
         }
         self.clamp_to_text();
+        self.last_notified_text.clone_from(&self.text);
     }
 
     fn build_layout(
@@ -3263,7 +3429,7 @@ impl Widget for TextInput {
         let height = if self.multiline {
             Dimension::auto()
         } else {
-            Dimension::length(40.0)
+            Dimension::length(40.0_f32.max(self.interaction.minimum_target()))
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -3295,6 +3461,7 @@ impl Widget for TextInput {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         if !self.multiline {
+            self.model_layout_dirty = false;
             return taffy::Size::ZERO;
         }
         let width = known.width.unwrap_or(match available.width {
@@ -3308,6 +3475,7 @@ impl Widget for TextInput {
             reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
         )]
         let height = self.content_height() as f32;
+        self.model_layout_dirty = false;
         taffy::Size { width, height }
     }
 
@@ -3476,6 +3644,7 @@ impl Widget for TextInput {
             }
             _ => {}
         }
+        self.notify_user_change();
     }
 
     fn name(&self) -> &'static str {
@@ -3498,7 +3667,7 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
     /// A disabled input claims no cursor and defers to the host default.
@@ -3597,6 +3766,9 @@ impl Widget for TextInput {
                 self.cursor_pos,
             );
         }
+        if !self.accessible_name.is_empty() {
+            node = node.with_name(crate::i18n!(&self.accessible_name));
+        }
         Some(node)
     }
 
@@ -3613,6 +3785,7 @@ impl Widget for TextInput {
         }
         match action {
             Action::SetValue(value) => {
+                let previous_text = self.text.clone();
                 let cleaned = if self.multiline {
                     value
                         .replace("\r\n", "\n")
@@ -3627,6 +3800,10 @@ impl Widget for TextInput {
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
                 self.insert_str(&cleaned, state, obj.as_ref());
+                if obj.is_none() {
+                    self.persist_first_path_edit(&previous_text, state, root);
+                }
+                self.notify_user_change();
                 true
             }
             Action::SetSelection { anchor, focus } => {
@@ -4000,6 +4177,7 @@ impl TextInput {
         text_color: vello::peniko::Color,
     ) {
         if self.shows_placeholder() {
+            let placeholder = crate::i18n!(&self.placeholder);
             // `Affine * Affine` composes two geometric transforms over f64
             // coordinates; it has no integer overflow/wrap semantics.
             #[allow(
@@ -4010,7 +4188,7 @@ impl TextInput {
                 transform * Affine::translate((self.rect.x0 + padding_x, text_y));
             text_renderer.draw_text(
                 scene,
-                &self.placeholder,
+                &placeholder,
                 text_size,
                 theme.text_dim,
                 placeholder_origin,
@@ -4246,8 +4424,12 @@ impl TextInput {
             if element_state == ElementState::Pressed {
                 let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
                 if let Some(idx) = self.context_menu.item_at(point) {
+                    let previous_text = self.text.clone();
                     let obj_id_opt = self.resolve_text_obj(state, root);
                     self.dispatch_context_action(idx, state, obj_id_opt.as_ref());
+                    if obj_id_opt.is_none() {
+                        self.persist_first_path_edit(&previous_text, state, root);
+                    }
                 } else {
                     self.context_menu.close();
                 }
@@ -4527,6 +4709,7 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
+        let previous_text = self.text.clone();
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         let obj_id = obj_id_opt.as_ref();
         let shift = modifiers.state().shift_key();
@@ -4573,6 +4756,9 @@ impl TextInput {
                 }
             }
         }
+        if obj_id_opt.is_none() {
+            self.persist_first_path_edit(&previous_text, state, root);
+        }
     }
 
     fn handle_ime_commit(
@@ -4587,6 +4773,7 @@ impl TextInput {
         }
         self.preedit.clear();
         self.preedit_cursor = None;
+        let previous_text = self.text.clone();
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         if !t.chars().all(char::is_control) {
             if let Some((boundary_at, boundary)) = t.char_indices().next_back()
@@ -4607,6 +4794,9 @@ impl TextInput {
                 self.insert_str(t, state, obj_id_opt.as_ref());
             }
             *handled = true;
+        }
+        if obj_id_opt.is_none() {
+            self.persist_first_path_edit(&previous_text, state, root);
         }
     }
 
@@ -5018,6 +5208,132 @@ mod tests {
 
         ti.set_focus(false);
         assert!(Widget::ime_cursor_rect(&ti).is_none());
+    }
+
+    #[test]
+    fn on_change_reports_committed_user_edits_once() {
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut ti = TextInput::local()
+            .with_initial_value("a")
+            .on_change(move |value| captured.borrow_mut().push(value.to_string()));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &char_key_event("b"),
+            mods(false, false),
+        ));
+        assert_eq!(&*changes.borrow(), &["ab"]);
+
+        // A non-edit event must not repeat the prior notification even though
+        // the legacy dirty flag remains set until its owner drains it.
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            mods(false, false),
+        );
+        assert_eq!(&*changes.borrow(), &["ab"]);
+
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "漢".into(),
+                Some(("漢".len(), "漢".len())),
+            )),
+            mods(false, false),
+        ));
+        assert_eq!(&*changes.borrow(), &["ab"]);
+
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+            mods(false, false),
+        ));
+        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+
+        ti.set_text("programmatic");
+        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+        ti.insert_at_cursor(" helper");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            mods(false, false),
+        );
+        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_multiple_inputs() {
+        let state = crate::LocalState::new(String::from("Ada"));
+        let mut first = TextInput::from_state(&state);
+        let mut second = TextInput::from_state(&state);
+        let mut document = AutoCommit::new();
+
+        state.set(String::from("Grace"));
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), "Grace");
+        assert_eq!(second.value(), "Grace");
+        assert_eq!(first.take_dirty(), None, "model updates are not user edits");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &crate::a11y::Action::SetValue("Lin".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "Lin", "user edits publish typed state");
+
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), "Lin", "sibling input follows the model");
+        assert_eq!(second.take_dirty(), None);
+
+        first.set_text("programmatic");
+        assert_eq!(state.get(), "programmatic");
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), "programmatic");
+        assert_eq!(first.take_dirty(), None);
+    }
+
+    #[test]
+    fn local_state_binding_coexists_with_an_app_callback() {
+        let state = crate::LocalState::new(String::from("before"));
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut input = TextInput::from_state(&state)
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("after".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "after");
+        assert_eq!(&*changes.borrow(), &["after"]);
+    }
+
+    #[test]
+    fn local_state_model_update_invalidates_multiline_measurement_only() {
+        let state = crate::LocalState::new(String::from("short"));
+        let mut input = TextInput::from_state(&state).multiline(true);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 80.0));
+        assert!(!Widget::layout_needs_measure(&input));
+
+        state.set(String::from("a much longer line\nwith another row"));
+        let mut document = AutoCommit::new();
+        Widget::sync(&mut input, &mut document, &automerge::ROOT);
+
+        assert!(Widget::layout_needs_measure(&input));
+        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
     }
 
     /// Otherwise caret-following scroll hides the first characters.
@@ -5891,6 +6207,16 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_uses_explicit_name_not_placeholder() {
+        let input = TextInput::local()
+            .with_placeholder("name@example.com")
+            .with_accessible_name("Email address");
+        let node = Widget::accessibility(&input).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Email address"));
+        assert_ne!(node.name.as_deref(), Some(input.placeholder()));
+    }
+
+    #[test]
     fn accessibility_actions_use_extended_grapheme_indices_and_update_crdt() {
         use crate::a11y::Action;
 
@@ -5927,6 +6253,50 @@ mod tests {
         ));
         assert_eq!(ti.value(), "new value");
         assert_eq!(doc.text(&obj).unwrap(), "new value");
+    }
+
+    #[test]
+    fn first_path_bound_edit_materialises_shared_text() {
+        use crate::a11y::Action;
+
+        let mut input = TextInput::local().with_on_change_path("title");
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &Action::SetValue("Project Atlas".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+
+        let Some((Value::Object(ObjType::Text), object)) =
+            document.get(&automerge::ROOT, "title").unwrap()
+        else {
+            panic!("the first effective edit must create a document text object");
+        };
+        assert_eq!(document.text(&object).unwrap(), "Project Atlas");
+    }
+
+    #[test]
+    fn path_bound_selection_does_not_materialise_shared_text() {
+        use crate::a11y::Action;
+
+        let mut input = TextInput::local().with_on_change_path("title");
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &Action::SetSelection {
+                anchor: 0,
+                focus: 0,
+            },
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert!(
+            document.get(&automerge::ROOT, "title").unwrap().is_none(),
+            "selection and navigation must not create document history"
+        );
     }
 
     #[test]

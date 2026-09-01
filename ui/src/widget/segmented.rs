@@ -322,6 +322,7 @@ impl Widget for TriStateControl {
             .enumerate()
             .map(|(i, label)| {
                 AccessNode::new(Role::RadioButton)
+                    .with_action_target(format!("segment:{i}"))
                     .with_name(label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
@@ -348,6 +349,32 @@ impl Widget for TriStateControl {
             return None;
         };
         self.seg_rects.get(*segment).copied()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("segment:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < self.labels.len())
+        else {
+            return false;
+        };
+        if !matches!(
+            action,
+            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        let next = if index == self.selected { 1 } else { index };
+        self.selected = next;
+        self.choice = Some(next);
+        true
     }
 }
 
@@ -614,6 +641,7 @@ impl Widget for ColorSwatchPicker {
             .enumerate()
             .map(|(i, &rgb)| {
                 AccessNode::new(Role::ListItem)
+                    .with_action_target(format!("swatch:{i}"))
                     .with_name(hex(rgb))
                     .with_state(AccessState {
                         selected: self.selected == Some(i),
@@ -639,6 +667,28 @@ impl Widget for ColorSwatchPicker {
             return None;
         };
         self.swatch_rects.get(*swatch).copied()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("swatch:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < self.palette.len())
+        else {
+            return false;
+        };
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        self.selected = Some(index);
+        self.choice = Some(index);
+        true
     }
 }
 
@@ -734,6 +784,35 @@ mod tests {
             "re-clicking the active segment falls to neutral"
         );
         assert_eq!(t.take_choice(), Some(1));
+    }
+
+    #[test]
+    fn synthetic_segment_and_swatch_actions_use_the_pointer_choice_paths() {
+        let mut tri = TriStateControl::allow_inherit_deny().with_selected(2);
+        assert!(Widget::perform_semantic_action(
+            &mut tri,
+            "segment:0",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(tri.selected(), 0);
+        assert_eq!(tri.take_choice(), Some(0));
+
+        let mut picker = ColorSwatchPicker::new();
+        assert!(Widget::perform_semantic_action(
+            &mut picker,
+            "swatch:5",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(picker.take_choice(), Some(5));
+        assert!(
+            Widget::accessibility(&picker).unwrap().children[5]
+                .state
+                .selected
+        );
     }
 
     #[test]

@@ -288,6 +288,26 @@ fn is_drm_path(p: &Path) -> bool {
     p == Path::new(DRM_DIR) || p.starts_with(DRM_DIR)
 }
 
+/// Host-governed human identity directory exposed to Files.  Unlike the
+/// app's writable data directory, this individual mount is read-only.
+pub const SANDBOX_TRUSTED_IDENTITIES_DIR: &str = "/run/qos/identity-projection";
+/// Stable JSON path Files reloads inside that directory.
+pub const SANDBOX_TRUSTED_IDENTITIES_PATH: &str =
+    "/run/qos/identity-projection/trusted-identities.json";
+
+/// Bind one already-staged identity projection into Files.
+///
+/// The caller restricts this to the Files package.  Keeping the bind helper
+/// dumb makes its exact mount shape independently testable.
+pub fn push_trusted_identities_bind(argv: &mut Vec<String>, host_path: &Path) {
+    let host_directory = host_path.parent().unwrap_or(host_path);
+    push_bind(
+        argv,
+        "--ro-bind",
+        host_directory,
+        Path::new(SANDBOX_TRUSTED_IDENTITIES_DIR),
+    );
+}
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs: `runtime_root`, `service_binds` (fds reach the child by
 /// inheritance, not argv), `dbus_bind`, and whether an identity broker fd is
@@ -1374,6 +1394,23 @@ mod tests {
         assert!(
             !argv.iter().any(|arg| arg.contains("identity/primary.json")),
             "private identity path reached the sandbox argv: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn trusted_identity_projection_is_one_live_read_only_directory() {
+        let mut argv = Vec::new();
+        push_trusted_identities_bind(
+            &mut argv,
+            Path::new("/run/user/1000/qos/identity-projections/room/trusted.json"),
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "--ro-bind",
+                "/run/user/1000/qos/identity-projections/room",
+                SANDBOX_TRUSTED_IDENTITIES_DIR,
+            ]
         );
     }
 

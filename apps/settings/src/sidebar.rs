@@ -58,8 +58,8 @@ const SECTION_GAP_ABOVE: f32 = 18.0;
 const SECTION_GAP_BELOW: f32 = 2.0;
 
 /// Width (logical px) of the docked sidebar. Sized so the widest row
-/// ("Permissions & Roles" with its glyph, plus the row's horizontal padding)
-/// fits without clipping, with margin to spare.
+/// ("Device Privacy & Security" with its glyph, plus the row's horizontal
+/// padding) fits without clipping, with margin to spare.
 pub const SIDEBAR_WIDTH: f64 = 264.0;
 
 /// Height (logical px) of a single category row. Generous enough to read as a
@@ -422,11 +422,12 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
     )
 }
 
-/// An uppercase, dimmed section header line.
+/// An uppercase, dimmed section header line. Kept at 12 px so the category
+/// groups remain comfortably readable instead of becoming low-contrast chrome.
 fn section_header(label: &str) -> Box<dyn Widget> {
     Box::new(
         Text::new(&label.to_uppercase())
-            .with_size(11.0)
+            .with_size(12.0)
             .with_color(Theme::dark().text_dim),
     )
 }

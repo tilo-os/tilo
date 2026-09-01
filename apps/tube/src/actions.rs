@@ -34,14 +34,30 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::model::{Route, TubeModel};
 
 /// Registry `type_id` for every Tube action.
 pub const TUBE_ACTION_TYPE: &str = "tube.action";
+pub const TUBE_OPERATION_TYPE: &str = "tube.operation";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TubeOperation {
+    TogglePlayback,
+    Share { video_id: String },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TubeOperation>, String> {
+    if type_id != TUBE_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 /// Composite comment key: stable across the ordered `Video.comments` list.
 fn comment_key(video_id: &str, index: usize) -> String {
@@ -93,7 +109,11 @@ impl Action for TubeAction {
         match self {
             TubeAction::LikeVideo { video_id } => {
                 let likes = child_map(doc, &tube, "likes")?;
-                doc.put(&likes, video_id.as_str(), ScalarValue::Boolean(true))?;
+                let liked = doc
+                    .get(&likes, video_id.as_str())?
+                    .and_then(|(value, _)| value.to_bool())
+                    .unwrap_or(false);
+                doc.put(&likes, video_id.as_str(), ScalarValue::Boolean(!liked))?;
             }
             TubeAction::AddToQueue { video_id } => {
                 let queue = child_list(doc, &tube, "queue")?;
@@ -204,6 +224,26 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
         )
         .with_description("Toggle the like on this video"),
     );
+    for (id, label, kind, operation) in [
+        (
+            "play-pause",
+            "Play or pause",
+            OperationKind::View,
+            TubeOperation::TogglePlayback,
+        ),
+        (
+            "share",
+            "Copy share link",
+            OperationKind::Effect,
+            TubeOperation::Share {
+                video_id: video_id.clone(),
+            },
+        ),
+    ] {
+        if let Ok(spec) = ActionSpec::operation(id, label, kind, TUBE_OPERATION_TYPE, &operation) {
+            root = root.with_action(spec);
+        }
+    }
     root = root.with_action(
         immediate_spec(
             "queue",

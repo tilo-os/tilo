@@ -108,14 +108,15 @@ jobs:
           bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
           cargo check --workspace --locked --all-targets
 
-      # `cargo check --all-targets` type-checks examples but does not exercise
-      # their final link. Keep that coverage here, once per day rather than on
-      # every pull request.
-      - name: Build every workspace example
+      # `cargo check --all-targets` type-checks examples but neither links nor
+      # runs their test harnesses. Reuse the test-profile artifacts above to do
+      # both here, once per day rather than in a separate job or on every pull
+      # request.
+      - name: Test every workspace example
         run: >-
           bash tools/ci-measure.sh "nightly workspace examples" --
-          bash scripts/ci-run.sh "cargo build --workspace --examples" --
-          cargo build --workspace --examples --locked
+          bash scripts/ci-run.sh "cargo test --workspace --examples" --
+          cargo test --workspace --examples --locked
 
       - name: Report remote compiler-cache effectiveness
         if: always()

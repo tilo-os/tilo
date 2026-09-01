@@ -119,7 +119,11 @@ impl Fit {
 /// hit-testing) when `action_label` is `Some`, else `None`. `hover` is the
 /// pointer position for the pill hover state (pass an off-screen point to
 /// suppress hover).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one immediate-mode pass must keep adaptive layout, painting, focus treatment and returned hit geometry in lockstep"
+)]
 fn paint_empty_state(
     scene: &mut Scene,
     transform: Affine,
@@ -131,6 +135,7 @@ fn paint_empty_state(
     message: Option<&str>,
     action_label: Option<&str>,
     hover: Point,
+    action_focused: bool,
 ) -> Option<Rect> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
@@ -218,6 +223,18 @@ fn paint_empty_state(
         };
         let pill = RoundedRect::from_rect(action_rect, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
+        // An empty-state action is often the only route out of a first-use
+        // screen. Keep the normal, high-visibility focus treatment even
+        // though this compact state is painted as one immediate-mode widget.
+        if action_focused {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &pill,
+            );
+        }
         let ty = action_rect.y0 + (btn_h - f64::from(btn_size)) / 2.0;
         text_renderer.draw_text(
             scene,
@@ -244,6 +261,9 @@ pub struct EmptyState {
     rect: Rect,
     action_rect: Rect,
     last_cursor: Point,
+    /// The action is immediate-mode, but still participates in the normal
+    /// Tab / Enter contract through this owning widget.
+    action_focused: bool,
 }
 
 impl EmptyState {
@@ -260,6 +280,7 @@ impl EmptyState {
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            action_focused: false,
         }
     }
 
@@ -326,6 +347,7 @@ impl EmptyState {
             message,
             action_label,
             hover,
+            false,
         )
     }
 }
@@ -399,6 +421,7 @@ impl Widget for EmptyState {
             self.message.as_deref(),
             self.action_label.as_deref(),
             self.last_cursor,
+            self.action_focused,
         )
         .unwrap_or(Rect::ZERO);
     }
@@ -439,6 +462,32 @@ impl Widget for EmptyState {
         }
     }
 
+    fn is_focusable(&self) -> bool {
+        self.action_label.is_some()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.action_focused = focused && self.action_label.is_some();
+    }
+
+    fn is_focused(&self) -> bool {
+        self.action_focused
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if self.action_label.is_some() && matches!(action, crate::a11y::Action::Activate) {
+            self.action_fired = true;
+            true
+        } else {
+            false
+        }
+    }
+
     fn name(&self) -> &'static str {
         "EmptyState"
     }
@@ -448,7 +497,7 @@ impl Widget for EmptyState {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+        use crate::a11y::{AccessNode, AccessState, Role};
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
@@ -456,7 +505,37 @@ impl Widget for EmptyState {
         if let Some(msg) = &self.message {
             node = node.with_description(msg.clone());
         }
+        if let Some(action) = &self.action_label {
+            node = node
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.action_focused,
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(action.clone())
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.action_focused,
+                            ..Default::default()
+                        }),
+                ]);
+        }
         Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        matches!(path, [0]).then_some(self.action_rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if matches!(path, [0]) && self.action_label.is_some() {
+            self.action_focused = true;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -632,6 +711,37 @@ mod tests {
             "click away from the pill is not consumed"
         );
         assert!(!es.take_action());
+    }
+
+    #[test]
+    fn action_is_keyboard_reachable_and_exposed_as_a_named_button() {
+        let mut es = EmptyState::new("No notes yet")
+            .with_message("Create one to get started")
+            .with_action("Create note");
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+
+        assert!(Widget::is_focusable(&es));
+        Widget::set_focus(&mut es, true);
+        let node = Widget::accessibility(&es).expect("empty state is semantic");
+        assert!(node.state.focusable && node.state.focused);
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].role, crate::a11y::Role::Button);
+        assert_eq!(node.children[0].name.as_deref(), Some("Create note"));
+        assert!(node.children[0].state.focused);
+        assert_eq!(
+            es.synthetic_accessibility_rect(&[0]),
+            Some(es.action_rect())
+        );
+
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut es,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(es.take_action(), "Enter/Space/AT Activate reaches the CTA");
     }
 
     #[test]

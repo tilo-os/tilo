@@ -25,8 +25,8 @@ use qdoc::{Containers, DocMut};
 use crate::num;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 /// Registry `type_id` for every word-processor action.
@@ -759,13 +759,11 @@ pub struct WpResourceCtx {
 fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> ActionSpec {
     // Built from `encode`, which is total, rather than the fallible
     // `ActionSpec::immediate` — the two produce the same spec.
-    ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        input: ActionInput::Immediate(encode(action)),
-    }
+    //
+    // Through the constructor rather than a struct literal: `ActionSpec`
+    // carries private `params`/`build` fields, so a literal cannot name
+    // them and the shared defaults would be bypassed if it could.
+    ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
 }
 
 /// A short label for a structural block in the palette.
@@ -909,6 +907,7 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qos_actions::ActionInput;
     use qos_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {

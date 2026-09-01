@@ -6,7 +6,7 @@
 //! ## Launcher mode — search does not live in the app
 //!
 //! Built with [`SearchField::opens_palette`], the field becomes a
-//! non-editable affordance that raises the shared Ctrl+K
+//! non-editable affordance that raises the shared command-search shortcut
 //! [`CommandPalette`](crate::widget::CommandPalette) instead: a click
 //! latches a request the host polls with [`SearchField::take_palette_request`]
 //! and opens its own `CommandPalette`. Search UI and ranking thus live in
@@ -22,6 +22,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::icons::Icon;
+use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -55,6 +56,7 @@ pub struct SearchField {
     /// Latched when the (non-editable) launcher pill is activated;
     /// drained by the host via [`SearchField::take_palette_request`].
     palette_requested: bool,
+    platform: PlatformConventions,
 }
 
 impl SearchField {
@@ -72,6 +74,7 @@ impl SearchField {
             last_cursor: Point::ZERO,
             opens_palette: false,
             palette_requested: false,
+            platform: PlatformConventions::default(),
         }
     }
 
@@ -180,9 +183,9 @@ impl SearchField {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        const LABEL: &str = "Ctrl+K";
         const SIZE: f32 = 11.0;
-        let (tw, _) = text_renderer.measure(LABEL, SIZE, None);
+        let label = Shortcut::command("K").label(self.platform);
+        let (tw, _) = text_renderer.measure(&label, SIZE, None);
         let chip_h = 20.0_f64;
         let chip_w = f64::from(tw) + 14.0;
         let right_inset = 10.0_f64;
@@ -214,7 +217,7 @@ impl SearchField {
                       or panic"
         )]
         let label_transform = transform * Affine::translate((chip.x0 + 7.0, cy - 6.5));
-        text_renderer.draw_text(scene, LABEL, SIZE, theme.text_dim, label_transform, None);
+        text_renderer.draw_text(scene, &label, SIZE, theme.text_dim, label_transform, None);
     }
 }
 
@@ -225,6 +228,11 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.platform = conventions;
+        self.input.set_platform_conventions(conventions);
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.input.sync(state, path);
     }
@@ -451,9 +459,10 @@ impl Widget for SearchField {
         use crate::a11y::{AccessNode, AccessState, Role};
         // A button that opens the shared palette, not an editable field.
         if self.opens_palette {
+            let shortcut = Shortcut::command("K").label(self.platform);
             return Some(
                 AccessNode::new(Role::Button)
-                    .with_name("Open search (Ctrl+K)")
+                    .with_name(format!("Open search ({shortcut})"))
                     .with_state(AccessState::new().focusable(true)),
             );
         }
@@ -635,6 +644,20 @@ mod tests {
         assert_eq!(node.role, Role::TextInput);
         assert_eq!(node.value.as_deref(), Some("abc"));
         assert!(node.state.focusable);
+    }
+
+    #[test]
+    fn launcher_accessibility_uses_the_platform_shortcut_label() {
+        use crate::platform::{Platform, PlatformConventions};
+
+        let mut field = SearchField::new().opens_palette();
+        field.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+        let node = Widget::accessibility(&field).expect("launcher exposes a11y");
+        assert_eq!(node.name.as_deref(), Some("Open search (⌘K)"));
+
+        field.set_platform_conventions(PlatformConventions::new(Platform::Windows));
+        let node = Widget::accessibility(&field).expect("launcher exposes a11y");
+        assert_eq!(node.name.as_deref(), Some("Open search (Ctrl+K)"));
     }
 
     #[test]

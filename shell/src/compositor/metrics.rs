@@ -527,6 +527,10 @@ fn us(d: Duration) -> u32 {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact metric boundary fixtures are the behavior under test"
+)]
 mod tests {
     use super::*;
 

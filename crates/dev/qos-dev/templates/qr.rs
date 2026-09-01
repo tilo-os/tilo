@@ -1,0 +1,27 @@
+use ui::LocalState;
+use ui::tokens::TextRole;
+use ui::widget::{ModelView, QrWidget, Text, TextInput, Widget, labeled_field};
+
+/// A complete IME input → typed state → generated visual output loop.
+pub fn app_root() -> Box<dyn Widget> {
+    crate::install_catalog();
+    let payload = LocalState::new(String::from("https://qos.dev"));
+    let output = ModelView::from_state(&payload, |payload| {
+        let alt =
+            ui::i18n::I18nManager::format("qr-output-alt", &[("payload", payload.as_str().into())]);
+        Box::new(
+            QrWidget::new(payload.as_bytes().to_vec())
+                .with_id("qr-output")
+                .with_alt(alt),
+        )
+    });
+    let input = TextInput::from_state(&payload)
+        .with_id("qr-input")
+        .with_placeholder("qr-input-placeholder");
+
+    Box::new(ui::column![
+        Text::new("qr-title").with_role(TextRole::Title),
+        labeled_field("qr-input-label", input),
+        output,
+    ])
+}

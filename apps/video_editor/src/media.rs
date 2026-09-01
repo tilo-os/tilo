@@ -28,6 +28,7 @@
 //! are and *whether* they are local yet, never a bare assumption.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Root of the qOS P2P FUSE filesystem. Every collaborator mounts the same
 /// logical tree here, so a workspace-relative media path resolves to the
@@ -59,7 +60,7 @@ impl Hydration {
             Hydration::Local => "local",
         }
     }
-    pub fn from_key(s: &str) -> Self {
+    pub fn from_str(s: &str) -> Self {
         match s {
             "local" => Hydration::Local,
             _ => Hydration::Projected,
@@ -89,6 +90,32 @@ impl MediaSource {
     }
 }
 
+/// The directory a relative media path that is **not** a workspace
+/// reference is resolved against: wherever the open project file lives.
+///
+/// A `.qvp` can be copied somewhere with its footage beside it, and a
+/// project built by hand (a script, the export probe) can carry a path
+/// relative to the shell that ran it. Neither is a workspace reference, and
+/// before this both silently resolved to a `/var/workspace/<path>` that did
+/// not exist — every layer fell back to its stand-in fill and the export
+/// encoded a gradient while reporting success.
+static PROJECT_ANCHOR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Point relative media resolution at the directory holding the project
+/// file. Called on open and on save-as; `None` clears it (a project that
+/// has never been saved has no directory of its own).
+pub fn set_project_anchor(dir: Option<PathBuf>) {
+    if let Ok(mut slot) = PROJECT_ANCHOR.lock() {
+        *slot = dir;
+    }
+}
+
+/// The directory relative media is resolved against, if a project file is
+/// open.
+pub fn project_anchor() -> Option<PathBuf> {
+    PROJECT_ANCHOR.lock().ok().and_then(|s| s.clone())
+}
+
 /// Resolve a media `path` to an absolute [`MediaSource`], reporting whether its
 /// bytes are hydrated.
 ///
@@ -100,7 +127,16 @@ impl MediaSource {
 ///      use it. `--shots` sets `QOS_VE_MEDIA_DIR` to the crate's `sample-media/`
 ///      directory so headless captures decode real bytes deterministically
 ///      without a live FUSE mount.
-///   2. **FUSE mount** — otherwise the canonical `/var/workspace/<path>`.
+///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
+///      A workspace reference is what the CRDT replicates, so the mount is
+///      asked before anything local: two peers must resolve the same
+///      logical file even if one of them happens to have a same-named file
+///      beside their project.
+///   3. **Beside the project file**, then **the working directory** — the
+///      two places a relative path that is not a workspace reference can
+///      honestly mean.
+///   4. Failing all of that, the canonical `/var/workspace/<path>`, reported
+///      as [`Hydration::Projected`].
 ///
 /// `hydration` is `Local` iff the resolved path exists on disk (the FUSE
 /// reports a present cached file as an ordinary stat); `Projected`
@@ -131,16 +167,30 @@ pub fn resolve(path: &str) -> MediaSource {
             };
         }
     }
-    // 2. Canonical FUSE location.
-    let abs = Path::new(WORKSPACE_ROOT).join(path);
-    let hydration = if abs.exists() {
-        Hydration::Local
-    } else {
-        Hydration::Projected
-    };
+    // 2/3. The mount first, then the project's own directory, then the
+    //      working directory. Order matters: the mount is the shared
+    //      meaning, the other two are this machine's.
+    let mounted = Path::new(WORKSPACE_ROOT).join(path);
+    let bases = [
+        Some(PathBuf::from(WORKSPACE_ROOT)),
+        project_anchor(),
+        std::env::current_dir().ok(),
+    ];
+    let found = bases
+        .into_iter()
+        .flatten()
+        .map(|base| base.join(path))
+        .find(|c| c.exists());
+    if let Some(abs_path) = found {
+        return MediaSource {
+            abs_path,
+            hydration: Hydration::Local,
+        };
+    }
+    // 4. Nothing has it. Report the canonical location, projected.
     MediaSource {
-        abs_path: abs,
-        hydration,
+        abs_path: mounted,
+        hydration: Hydration::Projected,
     }
 }
 
@@ -188,8 +238,11 @@ mod tests {
     }
 
     // Both env-sensitive cases live in one test so there's no inter-test
-    // race over the shared `QOS_VE_MEDIA_DIR` process env var.
+    // race over the shared `QOS_VE_MEDIA_DIR` process env var. The serial
+    // group additionally keeps it off the project anchor, which is the
+    // other piece of process-wide state `resolve` reads.
     #[test]
+    #[serial_test::serial(video_editor_media_env)]
     fn resolve_reports_projected_or_local_via_the_seam() {
         // Safety: single-threaded test mutation of process env.
         unsafe {
@@ -221,10 +274,48 @@ mod tests {
         std::fs::remove_file(&f).ok();
     }
 
+    /// The two relative-path anchors, in one test so nothing races over the
+    /// shared process-wide anchor or the working directory.
+    #[test]
+    #[serial_test::serial(video_editor_media_env)]
+    fn a_relative_path_resolves_beside_the_project_and_then_in_the_working_directory() {
+        // Safety: single-threaded test mutation of process env.
+        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR") };
+        let root = std::env::temp_dir().join(format!("qos-ve-anchor-{}", std::process::id()));
+        let nested = root.join("footage");
+        std::fs::create_dir_all(&nested).expect("make the fixture tree");
+        let rel = "footage/take1.mp4";
+        std::fs::write(root.join(rel), b"bytes").expect("write the fixture");
+
+        // With no anchor and nothing of that name in the working directory,
+        // the reference is a workspace one: projected, not fabricated.
+        set_project_anchor(None);
+        let away = resolve(rel);
+        assert_eq!(away.hydration, Hydration::Projected, "{away:?}");
+        assert!(away.abs_path.starts_with(WORKSPACE_ROOT), "{away:?}");
+
+        // Anchored at the project's own directory it resolves to the real
+        // file. This is the case that used to export a flat gradient and
+        // report success.
+        set_project_anchor(Some(root.clone()));
+        let found = resolve(rel);
+        assert_eq!(found.abs_path, root.join(rel), "{found:?}");
+        assert_eq!(found.hydration, Hydration::Local);
+        assert!(found.is_decodable());
+
+        // An anchor that does not have the file falls through rather than
+        // claiming a path that is not there.
+        set_project_anchor(Some(root.join("elsewhere")));
+        assert_eq!(resolve(rel).hydration, Hydration::Projected);
+
+        set_project_anchor(None);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn hydration_round_trips_through_strings() {
         for h in [Hydration::Projected, Hydration::Local] {
-            assert_eq!(Hydration::from_key(h.as_str()), h);
+            assert_eq!(Hydration::from_str(h.as_str()), h);
         }
     }
 

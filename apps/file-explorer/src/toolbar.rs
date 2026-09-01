@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! [ ← → ↑ ]   [ Home › Projects › qos ················· ]   [ List | Grid ]  ( Sort by )  [ ⋯ ]
+//! [ ← ↑ ]     [ Home › Projects › qos ················· ]                         [ ⋯ ]
 //! ```
 //!
 //! * a nav cluster (back / forward / up) — the only icon-only controls, and
@@ -44,13 +45,22 @@ use ui::widget::toggle_group::ToggleGroup;
 use ui::widget::{Button, Widget};
 
 use crate::command::{CommandSink, FileCommand, push};
+use crate::i18n::t;
 use crate::model::ViewMode;
 use crate::path_bar::PathBar;
 
 /// Compact nav-button size.
 const NAV_W: f32 = 36.0;
 const NAV_H: f32 = 32.0;
+/// Below this width, navigation and location remain visible while view/sort
+/// choices move into the one labelled overflow. Keeping desktop controls in a
+/// 390 px row made the path and segmented control overlap.
+const COMPACT_BREAKPOINT_PX: f64 = 520.0;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "navigation availability and the two responsive-layout flags are independent toolbar facts"
+)]
 pub struct FileToolbar {
     sink: CommandSink,
     /// The editable path bar (breadcrumb ⇄ text field). Persistent so an
@@ -65,6 +75,10 @@ pub struct FileToolbar {
     left: Vec<Box<dyn Widget>>,
     right: Vec<Box<dyn Widget>>,
     rect: Rect,
+    /// Derived from the last laid-out width. A change marks the toolbar dirty
+    /// so the next composition uses the appropriate child set.
+    compact: bool,
+    structure_dirty: bool,
 }
 
 impl FileToolbar {
@@ -79,6 +93,11 @@ impl FileToolbar {
             left: Vec::new(),
             right: Vec::new(),
             rect: Rect::ZERO,
+            // Start compact: an initial layout does not yet know its viewport.
+            // A wide window promotes the full controls on the next frame;
+            // narrow windows are correct from their very first frame.
+            compact: true,
+            structure_dirty: false,
         }
     }
 
@@ -134,63 +153,71 @@ impl FileToolbar {
     }
 
     fn build_left(&self) -> Vec<Box<dyn Widget>> {
-        vec![
-            self.nav_button(
-                "files.back",
-                Icon::ArrowLeft,
-                FileCommand::Back,
-                self.can_back,
-                "Back",
-            ),
-            self.nav_button(
+        let mut controls = vec![self.nav_button(
+            "files.back",
+            Icon::ArrowLeft,
+            FileCommand::Back,
+            self.can_back,
+            &t("files-back"),
+        )];
+        if !self.compact {
+            controls.push(self.nav_button(
                 "files.forward",
                 Icon::ArrowRight,
                 FileCommand::Forward,
                 self.can_forward,
-                "Forward",
-            ),
-            self.nav_button(
-                "files.up",
-                Icon::ArrowUp,
-                FileCommand::Up,
-                self.can_up,
-                "Up one folder",
-            ),
-        ]
+                &t("files-forward"),
+            ));
+        }
+        controls.push(self.nav_button(
+            "files.up",
+            Icon::ArrowUp,
+            FileCommand::Up,
+            self.can_up,
+            &t("files-up"),
+        ));
+        controls
     }
 
     fn build_right(&self) -> Vec<Box<dyn Widget>> {
         let mut out: Vec<Box<dyn Widget>> = Vec::new();
 
-        // View switch — labelled, so the active view is obvious.
-        let view_sink = self.sink.clone();
-        let selected = match self.view_mode {
-            ViewMode::List => 0,
-            ViewMode::Grid => 1,
-        };
-        out.push(Box::new(
-            ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], selected).on_change(
-                move |i| {
+        if !self.compact {
+            // View switch — labelled, so the active view is obvious.
+            let view_sink = self.sink.clone();
+            let selected = match self.view_mode {
+                ViewMode::List => 0,
+                ViewMode::Grid => 1,
+            };
+            out.push(Box::new(
+                ToggleGroup::new(
+                    vec![
+                        Segment::new(t("files-view-list")),
+                        Segment::new(t("files-view-grid")),
+                    ],
+                    selected,
+                )
+                .on_change(move |i| {
                     let mode = if i == 0 {
                         ViewMode::List
                     } else {
                         ViewMode::Grid
                     };
                     push(&view_sink, FileCommand::SetView(mode));
-                },
-            ),
-        ));
-
-        // Grid mode has no clickable column header, so it gets a labelled Sort
-        // menu button. List mode sorts by clicking a header, so it needs none.
-        if self.view_mode == ViewMode::Grid {
-            let sink = self.sink.clone();
-            out.push(Box::new(
-                Button::new("files.sort_menu", "Sort by", None)
-                    .with_icon(Icon::ArrowUpDown)
-                    .with_size(104.0, NAV_H)
-                    .on_click(move || push(&sink, FileCommand::OpenSortMenu)),
+                }),
             ));
+
+            // Grid mode has no clickable column header, so it gets a labelled Sort
+            // menu button. List mode sorts by clicking a header, so it needs none.
+            if self.view_mode == ViewMode::Grid {
+                let sink = self.sink.clone();
+                out.push(Box::new(
+                    Button::new("files.sort_menu", &t("files-sort-by"), None)
+                        .with_icon(Icon::ArrowUpDown)
+                        .with_size(104.0, NAV_H)
+                        .on_click(move || push(&sink, FileCommand::OpenSortMenu)),
+                ));
+            }
         }
 
         // Overflow: the labelled View-options menu (new folder/file, show
@@ -201,8 +228,8 @@ impl FileToolbar {
             Button::new("files.view_menu", "", None)
                 .with_icon(Icon::MoreHorizontal)
                 .with_size(NAV_W, NAV_H)
-                .with_accessible_name("View options")
-                .tooltip("View options")
+                .with_accessible_name(&t("files-view-options"))
+                .tooltip(t("files-view-options"))
                 .on_click(move || push(&sink, FileCommand::OpenViewMenu)),
         ));
         out
@@ -224,7 +251,7 @@ impl FileToolbar {
     /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
     /// where it is the second control on the right, before the ⋯).
     pub fn sort_menu_anchor(&self) -> Point {
-        self.right.get(1).map_or_else(
+        self.right.get(1).or_else(|| self.right.last()).map_or_else(
             || Point::new(self.rect.x1, self.rect.y1),
             |b| {
                 let r = b.get_rect();
@@ -234,10 +261,21 @@ impl FileToolbar {
     }
 
     /// The Up nav button's on-screen rect, so a drag can be dropped on it to
-    /// move the carried items into the parent directory. `left` is
-    /// `[back, forward, up]`, so the Up button is the third control.
+    /// move the carried items into the parent directory. It is the final left
+    /// control in both full and compact layouts.
     pub fn up_button_rect(&self) -> Option<Rect> {
-        self.left.get(2).map(|b| b.get_rect())
+        self.left.last().map(|b| b.get_rect())
+    }
+
+    /// Whether compact navigation is active. Exposed for the Files responsive
+    /// layout test; all live behavior is driven by [`Self::apply_layout`].
+    pub fn is_compact(&self) -> bool {
+        self.compact
+    }
+
+    /// Whether a compact overflow should offer Forward navigation.
+    pub fn can_go_forward(&self) -> bool {
+        self.can_forward
     }
 
     /// Group node ranges within the toolbar row's children. `None` if
@@ -324,6 +362,11 @@ impl Widget for FileToolbar {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        let compact = self.rect.width() < COMPACT_BREAKPOINT_PX;
+        if compact != self.compact {
+            self.compact = compact;
+            self.structure_dirty = true;
+        }
         let base = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
             let nleft = self.left.len();
@@ -473,6 +516,10 @@ impl Widget for FileToolbar {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.path_bar.cursor_shape(point)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty) || self.path_bar.take_structure_dirty()
     }
 
     fn name(&self) -> &'static str {

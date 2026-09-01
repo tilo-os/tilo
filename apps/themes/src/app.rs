@@ -1815,13 +1815,24 @@ mod tests {
         // The host drains the affordance's captured heads (taken just before the
         // dispatch, so the command-bus churn is outside the bracket) and records
         // ONE boundary — exactly the `about_to_wait` path in `ui::App`.
-        let bracket = app
-            .take_committed_action()
-            .expect("an affordance boundary was captured");
-        st.record_committed_action(bracket, None, None);
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn ui::widget::Widget = &mut app;
         assert!(
-            st.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
+            ui::undo::record_dispatched_action(
+                &mut st,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the affordance's delete"
+        );
+        let entry = st
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
         );
         assert!(
             app.take_committed_action().is_none(),
@@ -1829,7 +1840,8 @@ mod tests {
         );
 
         // Ctrl+Z reverts the delete.
-        st.undo(None, None).expect("an undo entry to pop");
+        st.undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         app.sync(&mut st.doc, &st.root);
         assert_eq!(
             catalog(&st).len(),
