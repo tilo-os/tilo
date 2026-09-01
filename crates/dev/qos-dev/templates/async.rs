@@ -1,5 +1,5 @@
 use ui::widget::{Banner, Button, Column, Spinner, Text, Widget};
-use ui::{LatestTask, ModelView};
+use ui::{LatestTask, ModelView, tokens::TextRole};
 
 enum LoadState {
     Idle,
@@ -72,7 +72,7 @@ pub fn app_root() -> Box<dyn Widget> {
 
     Box::new(
         Column::new()
-            .push(Box::new(Text::new("task-title").with_size(28.0)))
+            .push(Box::new(Text::new("task-title").with_role(TextRole::Title)))
             .push(Box::new(run))
             .push(Box::new(body)),
     )
