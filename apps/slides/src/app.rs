@@ -542,6 +542,9 @@ pub struct SlidesApp {
     /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
     /// the deck bytes to write once the user names a destination.
     doc_portal_rx: Option<DocPortalChannel>,
+    resource_file: Option<(bool, std::path::PathBuf)>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -660,6 +663,9 @@ impl SlidesApp {
             toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
+            resource_file: None,
+            resource_invocation: None,
+            completed_resource_invocation: None,
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
             font_input: NumberInput::new(40.0)
@@ -2352,12 +2358,21 @@ impl SlidesApp {
                 self.doc_portal_rx = None;
                 match outcome {
                     DocOutcome::Open(path) => {
-                        self.load_odp(doc, &path);
+                        let success = self.load_odp(doc, &path);
+                        self.finish_resource_file(
+                            success,
+                            (!success).then(|| "presentation could not be opened".into()),
+                        );
                     }
                     DocOutcome::Save(path) => {
-                        self.save_odp(&path);
+                        let success = self.save_odp(&path);
+                        self.finish_resource_file(
+                            success,
+                            (!success).then(|| "presentation could not be saved".into()),
+                        );
                     }
-                    DocOutcome::Cancelled | DocOutcome::Failed(_) => {}
+                    DocOutcome::Cancelled => self.finish_resource_file(false, None),
+                    DocOutcome::Failed(reason) => self.finish_resource_file(false, Some(reason)),
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -2365,6 +2380,33 @@ impl SlidesApp {
                 self.doc_portal_rx = None;
             }
         }
+    }
+
+    fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.completed_resource_invocation = Some(if success {
+            qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            }
+        } else if let Some(message) = error {
+            qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "slides.file_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else {
+            qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            }
+        });
     }
 
     /// Load a `.odp` from disk, replacing the deck in the shared document so
@@ -4591,13 +4633,100 @@ impl Widget for SlidesApp {
             SlidesOperation::ShowOverview => self.mode = Mode::Overview,
             SlidesOperation::StartPresentation => self.enter_present(),
             SlidesOperation::EndPresentation => self.exit_present(),
-            SlidesOperation::Open => self.request_odp_open(),
-            SlidesOperation::SaveAs => self.request_odp_save(),
+            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
+                return Err(
+                    "presentation file operations require the lifecycle-capable host".into(),
+                );
+            }
         }
         Ok(true)
     }
 
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
+        match operation {
+            crate::actions::SlidesOperation::Open { path: file }
+            | crate::actions::SlidesOperation::SaveAs { path: file } => {
+                if self.resource_invocation.is_some() {
+                    return Err("another presentation file operation is running".into());
+                }
+                let save = save_operation;
+                self.resource_invocation = Some(invocation);
+                let direct = file.is_some();
+                if let Some(file) = file {
+                    self.resource_file = Some((save, file.into()));
+                } else if save {
+                    self.request_odp_save();
+                } else {
+                    self.request_odp_open();
+                }
+                if !direct && self.doc_portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    return Err("presentation picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.resource_file = None;
+            self.doc_portal_rx = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("presentation file operation cancelled".into()),
+            });
+        }
+        if self
+            .completed_resource_invocation
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_resource_invocation.take();
+        }
+        None
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        if let Some((save, file)) = self.resource_file.take() {
+            let success = if save {
+                self.save_odp(&file)
+            } else {
+                self.load_odp(state, &file)
+            };
+            self.finish_resource_file(
+                success,
+                (!success).then(|| "presentation file operation failed".into()),
+            );
+        }
         if !self.seeded {
             if SlidesDoc::is_empty(state) {
                 SlidesDoc::seed(state, &self.deck);
