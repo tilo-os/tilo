@@ -342,6 +342,13 @@ impl Widget for TriStateControl {
                 .with_children(segments),
         )
     }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [segment] = path else {
+            return None;
+        };
+        self.seg_rects.get(*segment).copied()
+    }
 }
 
 pub struct ColorSwatchPicker {
@@ -626,6 +633,13 @@ impl Widget for ColorSwatchPicker {
                 .with_children(items),
         )
     }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [swatch] = path else {
+            return None;
+        };
+        self.swatch_rects.get(*swatch).copied()
+    }
 }
 
 #[cfg(test)]
@@ -698,6 +712,7 @@ mod tests {
     fn tri_state_click_selects_segment() {
         let mut t = TriStateControl::allow_inherit_deny(); // starts on middle
         lay_out(&mut t);
+        assert_eq!(t.synthetic_accessibility_rect(&[0]), Some(t.seg_rects[0]));
         let p = t.seg_rects[0].center();
         dispatch(&mut t, &cursor_at(p));
         assert!(dispatch(&mut t, &left_press()), "segment click consumed");
@@ -725,6 +740,10 @@ mod tests {
     fn swatch_picker_records_clicked_index() {
         let mut p = ColorSwatchPicker::new();
         lay_out(&mut p);
+        assert_eq!(
+            p.synthetic_accessibility_rect(&[5]),
+            Some(p.swatch_rects[5])
+        );
         let c = p.swatch_rects[5].center();
         dispatch(&mut p, &cursor_at(c));
         assert!(dispatch(&mut p, &left_press()), "swatch click consumed");
