@@ -238,7 +238,8 @@ pub struct MatchKey {
 impl MatchKey {
     /// Match the key after applying qOS's case/whitespace/path normalization.
     pub fn matches(&self, query: &ApplicationQuery) -> bool {
-        self.normalized().matches(&query.normalized())
+        let key = self.normalized();
+        key.has_identity() && key.matches(&query.normalized())
     }
 
     fn normalized(&self) -> NormalizedKey {
@@ -556,6 +557,15 @@ struct NormalizedQuery {
 type NormalizedKey = NormalizedQuery;
 
 impl NormalizedKey {
+    fn has_identity(&self) -> bool {
+        self.package_id.is_some()
+            || self.app_id.is_some()
+            || self.game_id.is_some()
+            || self.executable.is_some()
+            || self.publisher.is_some()
+            || self.product.is_some()
+    }
+
     fn matches(&self, query: &NormalizedQuery) -> bool {
         fn equal_if_present(key: Option<&String>, value: Option<&String>) -> bool {
             key.is_none_or(|key| value == Some(key))

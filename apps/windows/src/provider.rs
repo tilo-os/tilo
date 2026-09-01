@@ -19,10 +19,21 @@ pub trait CompatibilityProvider: Send {
 
 /// Predictable fixture. It deliberately looks like the service response, not a
 /// mock of Wine: code depending on it cannot accidentally gain host execution.
-pub struct SampleProvider { catalogue: Catalogue }
+pub struct SampleProvider {
+    catalogue: Catalogue,
+}
 impl SampleProvider {
     pub fn new() -> Self {
-        let grants = |items: &[(&str, &str, bool)]| items.iter().map(|(label, detail, enabled)| Grant { label: (*label).to_string(), detail: (*detail).to_string(), enabled: *enabled }).collect();
+        let grants = |items: &[(&str, &str, bool)]| {
+            items
+                .iter()
+                .map(|(label, detail, enabled)| Grant {
+                    label: (*label).to_string(),
+                    detail: (*detail).to_string(),
+                    enabled: *enabled,
+                })
+                .collect()
+        };
         Self { catalogue: Catalogue {
             apps: vec![
                 WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "If it stops working, repair this capsule or open it in the managed Windows VM.".into() },
@@ -31,9 +42,35 @@ impl SampleProvider {
             ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0 } } }
     }
 }
-impl Default for SampleProvider { fn default() -> Self { Self::new() } }
+impl Default for SampleProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl CompatibilityProvider for SampleProvider {
-    fn catalogue(&self) -> Catalogue { self.catalogue.clone() }
-    fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String> { let app = self.catalogue.app_mut(app_id).ok_or_else(|| "Unknown Windows app".to_string())?; app.route = route; app.runner = match route { Route::Wine => "Wine 11.0 (qOS pinned)", Route::Proton => "UMU-Proton 10.0-3", Route::Vm => "Windows 11 managed VM" }.into(); Ok(()) }
-    fn reset_route_override(&mut self, app_id: &str) -> Result<(), String> { let app = self.catalogue.app_mut(app_id).ok_or_else(|| "Unknown Windows app".to_string())?; app.route = app.recommended_route; Ok(()) }
+    fn catalogue(&self) -> Catalogue {
+        self.catalogue.clone()
+    }
+    fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String> {
+        let app = self
+            .catalogue
+            .app_mut(app_id)
+            .ok_or_else(|| "Unknown Windows app".to_string())?;
+        app.route = route;
+        app.runner = match route {
+            Route::Wine => "Wine 11.0 (qOS pinned)",
+            Route::Proton => "UMU-Proton 10.0-3",
+            Route::Vm => "Windows 11 managed VM",
+        }
+        .into();
+        Ok(())
+    }
+    fn reset_route_override(&mut self, app_id: &str) -> Result<(), String> {
+        let app = self
+            .catalogue
+            .app_mut(app_id)
+            .ok_or_else(|| "Unknown Windows app".to_string())?;
+        app.route = app.recommended_route;
+        Ok(())
+    }
 }
