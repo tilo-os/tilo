@@ -60,8 +60,28 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TubeOper
 }
 
 /// Composite comment key: stable across the ordered `Video.comments` list.
-fn comment_key(video_id: &str, index: usize) -> String {
+fn legacy_comment_key(video_id: &str, index: usize) -> String {
     format!("{video_id}#{index}")
+}
+
+/// Stable content identity for a comment. The upstream model has no comment
+/// id, so hash all immutable source fields with an explicitly fixed FNV-1a
+/// algorithm rather than addressing a row by its current list position.
+fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for field in [
+        video_id,
+        comment.author.as_str(),
+        comment.initials.as_str(),
+        comment.text.as_str(),
+        comment.time_ago.as_str(),
+    ] {
+        for byte in field.bytes().chain(std::iter::once(0xff)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("{video_id}#{hash:016x}")
 }
 
 /// Every collaborative operation Tube exports. One serializable enum so a single
@@ -73,10 +93,17 @@ pub enum TubeAction {
     /// Append a video to the shared watch queue.
     AddToQueue { video_id: String },
     /// Like a comment (addressed by its video + ordered index).
-    LikeComment { video_id: String, index: usize },
+    LikeComment {
+        video_id: String,
+        index: usize,
+        #[serde(default)]
+        comment_id: String,
+    },
     ReplyToComment {
         video_id: String,
         index: usize,
+        #[serde(default)]
+        comment_id: String,
         text: String,
     },
 }
@@ -120,21 +147,32 @@ impl Action for TubeAction {
                 let len = doc.length(&queue);
                 doc.insert(&queue, len, ScalarValue::Str(video_id.as_str().into()))?;
             }
-            TubeAction::LikeComment { video_id, index } => {
+            TubeAction::LikeComment {
+                video_id,
+                index,
+                comment_id,
+            } => {
                 let likes = child_map(doc, &tube, "comment_likes")?;
-                doc.put(
-                    &likes,
-                    comment_key(video_id, *index).as_str(),
-                    ScalarValue::Boolean(true),
-                )?;
+                let key = if comment_id.is_empty() {
+                    legacy_comment_key(video_id, *index)
+                } else {
+                    comment_id.clone()
+                };
+                doc.put(&likes, key, ScalarValue::Boolean(true))?;
             }
             TubeAction::ReplyToComment {
                 video_id,
                 index,
+                comment_id,
                 text,
             } => {
                 let replies_map = child_map(doc, &tube, "comment_replies")?;
-                let list = child_list(doc, &replies_map, &comment_key(video_id, *index))?;
+                let key = if comment_id.is_empty() {
+                    legacy_comment_key(video_id, *index)
+                } else {
+                    comment_id.clone()
+                };
+                let list = child_list(doc, &replies_map, &key)?;
                 let len = doc.length(&list);
                 doc.insert(&list, len, ScalarValue::Str(text.as_str().into()))?;
             }
@@ -264,7 +302,7 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
         )
         .with_description("Append to the shared watch queue")
         .with_contract(ActionContract {
-            retry: RetryPolicy::RetryWithInvocationId,
+            retry: RetryPolicy::AtMostOnce,
             execution: ExecutionMode::Immediate,
             ..ActionContract::default()
         })
@@ -272,10 +310,11 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
     );
 
     for (index, comment) in video.comments.iter().enumerate() {
+        let comment_id = comment_key(video_id, comment);
         let vid = video_id.clone();
         let vid2 = video_id.clone();
         let child = Resource::new(
-            format!("tube.comment:{}", comment_key(video_id, index)),
+            format!("tube.comment:{comment_id}"),
             "tube.comment",
             comment_label(&comment.author, &comment.text),
         )
@@ -286,6 +325,7 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                 &TubeAction::LikeComment {
                     video_id: vid.clone(),
                     index,
+                    comment_id: comment_id.clone(),
                 },
             )
             .reversible(),
@@ -300,6 +340,7 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                 encode(&TubeAction::ReplyToComment {
                     video_id: vid2.clone(),
                     index,
+                    comment_id: comment_id.clone(),
                     text: text.to_string(),
                 })
             },
@@ -339,6 +380,39 @@ mod tests {
         (TubeApp::new().with_model_for_test(model), vid, n_comments)
     }
 
+    #[test]
+    fn comment_resource_identity_survives_reordering() {
+        let mut model = crate::sample::model();
+        let video = model
+            .videos
+            .iter_mut()
+            .find(|video| video.comments.len() > 1)
+            .expect("sample has multiple comments");
+        let video_id = video.id.clone();
+        model.route = Route::Watch(video_id.clone());
+        let before = provide_resources(&model)[0]
+            .children
+            .iter()
+            .map(|resource| resource.id.0.clone())
+            .collect::<std::collections::HashSet<_>>();
+        model
+            .videos
+            .iter_mut()
+            .find(|video| video.id == video_id)
+            .unwrap()
+            .comments
+            .swap(0, 1);
+        let after = provide_resources(&model)[0]
+            .children
+            .iter()
+            .map(|resource| resource.id.0.clone())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            before, after,
+            "comment addresses must not be list positions"
+        );
+    }
+
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
@@ -374,7 +448,7 @@ mod tests {
                 .unwrap()
                 .contract
                 .retry,
-            RetryPolicy::RetryWithInvocationId
+            RetryPolicy::AtMostOnce
         );
 
         assert_eq!(
