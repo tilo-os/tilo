@@ -42,7 +42,6 @@ src/widget/activity_timeline.rs theme_blind_white 6
 src/widget/autocomplete.rs theme_blind_white 1
 src/widget/avatar.rs literal_color 1
 src/widget/avatar.rs white_or_black 1
-src/widget/badge.rs white_or_black 1
 src/widget/button.rs literal_color 1
 src/widget/button.rs white_or_black 3
 src/widget/channel_browser.rs literal_color 1
@@ -60,7 +59,6 @@ src/widget/conflict_picker.rs theme_blind_white 3
 src/widget/context_menu.rs theme_blind_white 1
 src/widget/data_table.rs theme_blind_white 1
 src/widget/empty_state.rs white_or_black 1
-src/widget/floating_window.rs literal_color 1
 src/widget/history_scrubber.rs theme_blind_white 10
 src/widget/identity_flow/add_device_host.rs literal_color 3
 src/widget/identity_flow/create_identity.rs literal_color 3
