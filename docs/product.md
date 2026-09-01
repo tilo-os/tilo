@@ -3,7 +3,8 @@
 The bar: everything we ship must be **genuinely usable for most users**, not just
 toy/demo use cases. No mock/example data — apps start empty and operate on real
 state. Design is governed by `ui/HIG.md`; per-app open issues are tracked in
-`apps/MISSING.md`; this document is the canonical scope + intent.
+the current [`ui-ux-overview.md`](ui-ux-overview.md) release ledger; this
+document is the canonical scope + intent.
 
 ## Standard apps
 

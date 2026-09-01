@@ -37,7 +37,7 @@ use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{CodeEditor, FlapState, Language, SplitLayout, Widget};
+use ui::widget::{CodeEditor, EmptyState, FlapState, Language, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
@@ -65,6 +65,10 @@ const TOGGLE_SIZE: f64 = 26.0;
 pub struct DbClientApp {
     session: Session,
     editor: CodeEditor,
+    /// Honest first-run surface. Kept as a real child widget so its primary
+    /// action participates in focus navigation and the accessibility tree.
+    empty_state: EmptyState,
+    empty_state_node: Option<NodeId>,
     grid: GridView,
     data_grid: GridView,
     tree: SchemaTree,
@@ -112,8 +116,6 @@ pub struct DbClientApp {
     run_btn: Rect,
     snippet_btn: Rect,
     new_conn_btn: Rect,
-    /// Call-to-action button in the main-panel empty state (opens the modal).
-    empty_new_conn_btn: Rect,
     tab_rects: Vec<(MainTab, Rect)>,
     conn_rects: Vec<(usize, Rect)>,
     /// Per-row delete ("×") hit rects in the sidebar, shown on hover.
@@ -195,6 +197,13 @@ impl DbClientApp {
             session,
             demo,
             editor,
+            empty_state: EmptyState::new("No connection yet")
+                .with_icon(ui::icons::Icon::HardDrive)
+                .with_message(
+                    "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.",
+                )
+                .with_action("New connection"),
+            empty_state_node: None,
             grid: GridView::new(),
             data_grid: GridView::new(),
             tree: SchemaTree::new(),
@@ -207,7 +216,6 @@ impl DbClientApp {
             cursor: Point::ZERO,
             sidebar_rect: Rect::ZERO,
             main_rect: Rect::ZERO,
-            empty_new_conn_btn: Rect::ZERO,
             flap: FlapState::open_when_docked(),
             last_tick: Instant::now(),
             scrim_rect: Rect::ZERO,
@@ -519,6 +527,13 @@ impl Widget for DbClientApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // Accessibility activation is delivered directly to the focused child;
+        // drain its semantic action here and enter the same modal flow as a
+        // pointer press.
+        if self.empty_state.take_action() {
+            self.modal.open_new();
+            self.dirty = true;
+        }
         if !self.seeded {
             // Only the demo build seeds a starter query; the live editor
             // opens empty so nothing references a database that isn't there.
@@ -562,14 +577,18 @@ impl Widget for DbClientApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = match taffy.new_leaf(Style {
-            size: Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
+        let empty_state_node = self.empty_state.build_layout(taffy, _theme, node_map);
+        let node = match taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
+                },
+                flex_grow: 1.0,
+                ..Default::default()
             },
-            flex_grow: 1.0,
-            ..Default::default()
-        }) {
+            &[empty_state_node],
+        ) {
             Ok(node) => node,
             // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
             // at capacity; this arm exists so a future upstream change
@@ -578,6 +597,7 @@ impl Widget for DbClientApp {
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
+        self.empty_state_node = Some(empty_state_node);
         node
     }
 
@@ -621,6 +641,16 @@ impl Widget for DbClientApp {
         self.last_tick = now;
         self.flap.tick(split, dt);
         self.relayout();
+        if let Some(empty_state_node) = self.empty_state_node {
+            self.empty_state
+                .apply_layout(taffy, empty_state_node, origin);
+            self.empty_state.apply_layout_external(Rect::new(
+                self.main_rect.x0,
+                self.main_rect.y0 + TABBAR_H,
+                self.main_rect.x1,
+                self.main_rect.y1,
+            ));
+        }
     }
 
     fn draw(
@@ -629,7 +659,7 @@ impl Widget for DbClientApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let p = theme.db();
         // App background.
@@ -653,7 +683,7 @@ impl Widget for DbClientApp {
         // Main panel first (it sits behind the overlay flap), then the scrim
         // and the sidebar on top. In docked mode the sidebar occupies its own
         // column and the scrim is empty, so the order is harmless there.
-        self.draw_main(scene, transform, tr, theme);
+        self.draw_main(scene, transform, tr, theme, presence);
 
         if self.scrim_rect.width() > 0.0 {
             // Scrim opacity tracks the reveal so it fades in with the flap.
@@ -710,6 +740,30 @@ impl Widget for DbClientApp {
             return;
         }
 
+        // The first-run action is a real child widget. Give it first refusal
+        // while it is visible, then translate its drained semantic action into
+        // the existing connection-modal flow.
+        if self.session.connections.is_empty()
+            && let Some(empty_state_node) = self.empty_state_node
+        {
+            self.empty_state.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                empty_state_node,
+                taffy,
+            );
+            if self.empty_state.take_action() {
+                self.modal.open_new();
+                self.dirty = true;
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.on_cursor_moved(position.x, position.y, scale_factor);
@@ -742,7 +796,7 @@ impl Widget for DbClientApp {
         // Skip anything the app already consumed — e.g. a sidebar / scrim /
         // toggle click, or an Esc that dismissed the overlay flap — so an open
         // sidebar doesn't leak clicks into the editor behind it.
-        if self.session.tab == MainTab::Query && !*handled {
+        if !self.session.connections.is_empty() && self.session.tab == MainTab::Query && !*handled {
             self.editor.handle_event(
                 event,
                 scale_factor,
@@ -769,18 +823,24 @@ impl Widget for DbClientApp {
     }
 
     fn is_focusable(&self) -> bool {
-        true
+        !self.session.connections.is_empty()
     }
 
     fn set_focus(&mut self, focused: bool) {
-        self.editor.set_focus(focused);
+        self.editor
+            .set_focus(focused && !self.session.connections.is_empty());
     }
 
     fn is_focused(&self) -> bool {
-        self.session.tab == MainTab::Query && self.editor.is_focused()
+        !self.session.connections.is_empty()
+            && self.session.tab == MainTab::Query
+            && self.editor.is_focused()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.session.connections.is_empty() {
+            return self.empty_state.cursor_shape(point);
+        }
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.cursor_shape(point))
             .flatten()
@@ -818,25 +878,34 @@ impl Widget for DbClientApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.session.tab == MainTab::Query {
+        if !self.session.connections.is_empty() && self.session.tab == MainTab::Query {
             self.editor
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        (self.session.tab == MainTab::Query && self.editor.is_focused())
-            .then(|| self.editor.ime_cursor_rect())
-            .flatten()
+        (!self.session.connections.is_empty()
+            && self.session.tab == MainTab::Query
+            && self.editor.is_focused())
+        .then(|| self.editor.ime_cursor_rect())
+        .flatten()
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        (self.session.tab == MainTab::Query && self.editor.is_focused())
-            .then(|| self.editor.ime_purpose())
-            .flatten()
+        (!self.session.connections.is_empty()
+            && self.session.tab == MainTab::Query
+            && self.editor.is_focused())
+        .then(|| self.editor.ime_purpose())
+        .flatten()
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if self.session.connections.is_empty() {
+            // The retained EmptyState child owns the Group + Button semantics;
+            // returning them here too would duplicate the subtree.
+            return None;
+        }
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.accessibility())
             .flatten()
@@ -848,11 +917,32 @@ impl Widget for DbClientApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if self.session.connections.is_empty() {
+            return false;
+        }
         self.session.tab == MainTab::Query && self.editor.perform_action(action, state, path)
     }
 
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.session.connections.is_empty() {
+            vec![&self.empty_state]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.session.connections.is_empty() {
+            vec![&mut self.empty_state]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn wants_pointer_capture(&self) -> bool {
-        self.session.tab == MainTab::Query && self.editor.wants_pointer_capture()
+        !self.session.connections.is_empty()
+            && self.session.tab == MainTab::Query
+            && self.editor.wants_pointer_capture()
     }
 
     fn needs_commit(&self) -> bool {
@@ -1014,8 +1104,8 @@ impl DbClientApp {
         }
     }
 
-    /// Hamburger toggle, scrim dismiss, and the empty-state call to action —
-    /// chrome that isn't gated on which main tab is active.
+    /// Hamburger toggle and scrim dismiss — chrome that isn't gated on which
+    /// main tab is active.
     fn click_chrome(&mut self, c: Point, handled: &mut bool) -> bool {
         // Hamburger toggle (summon / dismiss the sidebar).
         if self.show_toggle() && self.toggle_btn.contains(c) {
@@ -1033,13 +1123,6 @@ impl DbClientApp {
         {
             self.flap.close();
             self.dirty = true;
-            *handled = true;
-            return true;
-        }
-
-        // Empty-state call to action in the main panel (opens the modal).
-        if self.session.connections.is_empty() && self.empty_new_conn_btn.contains(c) {
-            self.modal.open_new();
             *handled = true;
             return true;
         }
@@ -1428,12 +1511,25 @@ impl DbClientApp {
         );
     }
 
-    fn draw_main(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_main(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         let bar = self.draw_tab_bar(scene, t, tr, theme);
 
         // Empty state: nothing to query until the user adds a connection.
         if self.session.connections.is_empty() {
-            self.draw_main_empty_state(scene, t, tr, theme, bar);
+            self.empty_state.apply_layout_external(Rect::new(
+                self.main_rect.x0,
+                bar.y1,
+                self.main_rect.x1,
+                self.main_rect.y1,
+            ));
+            self.empty_state.draw(scene, t, tr, theme, presence);
             return;
         }
 
@@ -1532,174 +1628,6 @@ impl DbClientApp {
         }
 
         bar
-    }
-
-    /// Composed zero-state — a database mark, a clear title + hint, and a
-    /// single primary action — shown until the user adds a connection.
-    /// `bar` is the tab bar rect, so the card centers in the space below it.
-    fn draw_main_empty_state(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bar: Rect,
-    ) {
-        let body = Rect::new(
-            self.main_rect.x0,
-            bar.y1,
-            self.main_rect.x1,
-            self.main_rect.y1,
-        );
-        let cx = body.center().x;
-        let card_w = 380.0_f64.min(body.width() - 32.0);
-        let card_h = 250.0;
-        let card = Rect::new(
-            cx - card_w / 2.0,
-            body.center().y - card_h / 2.0,
-            cx + card_w / 2.0,
-            body.center().y + card_h / 2.0,
-        );
-        Self::draw_empty_state_card_bg(scene, t, theme, card);
-        Self::draw_empty_state_db_icon(scene, t, theme, cx, card);
-        Self::draw_empty_state_text(scene, t, tr, theme, cx, card, card_w);
-        self.draw_empty_state_button(scene, t, tr, theme, cx, card);
-    }
-
-    fn draw_empty_state_card_bg(scene: &mut Scene, t: Affine, theme: &Theme, card: Rect) {
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.bg_primary,
-            None,
-            &card.to_rounded_rect(14.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.border_standard,
-            None,
-            &card.to_rounded_rect(14.0),
-        );
-    }
-
-    /// Database-cylinder mark, drawn from the accent so it re-tints.
-    fn draw_empty_state_db_icon(scene: &mut Scene, t: Affine, theme: &Theme, cx: f64, card: Rect) {
-        let p = theme.db();
-        let accent = theme.accent_primary;
-        let icx = cx;
-        let icy = card.y0 + 34.0;
-        let rx = 21.0;
-        let ry = 6.5;
-        let bh = 30.0;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            p.selection,
-            None,
-            &Rect::new(icx - rx, icy, icx + rx, icy + bh),
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            p.selection,
-            None,
-            &vello::kurbo::Ellipse::new((icx, icy + bh), (rx, ry), 0.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.3),
-            t,
-            accent,
-            None,
-            &Line::new(Point::new(icx - rx, icy), Point::new(icx - rx, icy + bh)),
-        );
-        scene.stroke(
-            &Stroke::new(1.3),
-            t,
-            accent,
-            None,
-            &Line::new(Point::new(icx + rx, icy), Point::new(icx + rx, icy + bh)),
-        );
-        scene.stroke(
-            &Stroke::new(1.3),
-            t,
-            accent,
-            None,
-            &vello::kurbo::Ellipse::new((icx, icy + bh * 0.5), (rx, ry), 0.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            accent,
-            None,
-            &vello::kurbo::Ellipse::new((icx, icy), (rx, ry), 0.0),
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_empty_state_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cx: f64,
-        card: Rect,
-        card_w: f64,
-    ) {
-        let title = "No connection yet";
-        let hint = "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.";
-        let (tw, _) = tr.measure(title, 17.0, None);
-        tr.draw_text(
-            scene,
-            title,
-            17.0,
-            theme.text_primary,
-            t * Affine::translate((cx - f64::from(tw) / 2.0, card.y0 + 92.0)),
-            None,
-        );
-        tr.draw_text(
-            scene,
-            hint,
-            12.5,
-            theme.text_dim,
-            t * Affine::translate((card.x0 + 26.0, card.y0 + 120.0)),
-            Some((card_w - 52.0) as f32),
-        );
-    }
-
-    fn draw_empty_state_button(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cx: f64,
-        card: Rect,
-    ) {
-        let btn_w = 188.0;
-        let btn = Rect::new(
-            cx - btn_w / 2.0,
-            card.y1 - 54.0,
-            cx + btn_w / 2.0,
-            card.y1 - 20.0,
-        );
-        self.empty_new_conn_btn = btn;
-        let btn_bg = if btn.contains(self.cursor) {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, t, btn_bg, None, &btn.to_rounded_rect(7.0));
-        let label = "+  New connection";
-        let (lw, _) = tr.measure(label, 13.0, None);
-        tr.draw_text(
-            scene,
-            label,
-            13.0,
-            Color::WHITE,
-            t * Affine::translate((cx - f64::from(lw) / 2.0, btn.y0 + 9.0)),
-            None,
-        );
     }
 
     /// Hamburger / close toggle at the left of the tab bar. Shown whenever the
@@ -2212,6 +2140,7 @@ mod responsive_tests {
 #[cfg(test)]
 mod honesty_tests {
     use super::*;
+    use automerge::ROOT;
 
     #[test]
     fn live_app_starts_empty() {
@@ -2225,6 +2154,53 @@ mod honesty_tests {
         );
         assert!(!app.session.connected, "no live engine on a fresh machine");
         assert_eq!(app.session.schema.table_count(), 0, "no fabricated schema");
+    }
+
+    #[test]
+    fn live_empty_state_exposes_the_new_connection_action() {
+        use ui::a11y::Role;
+
+        let app = DbClientApp::build(Session::new(), false);
+        assert!(
+            app.accessibility().is_none(),
+            "the root must not duplicate its accessible child"
+        );
+        let children = app.children();
+        assert_eq!(children.len(), 1, "one retained first-run child");
+        let node = children[0]
+            .accessibility()
+            .expect("the first-run child is accessible");
+
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("No connection yet"));
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].role, Role::Button);
+        assert_eq!(node.children[0].name.as_deref(), Some("New connection"));
+        assert!(
+            children[0].is_focusable(),
+            "the shared CTA participates in keyboard focus"
+        );
+    }
+
+    #[test]
+    fn accessibility_activation_opens_the_existing_connection_modal() {
+        let mut app = DbClientApp::build(Session::new(), false);
+        let mut doc = AutoCommit::new();
+
+        assert!(!app.modal.is_open());
+        assert!(
+            app.empty_state
+                .perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT)
+        );
+        assert!(
+            !app.modal.is_open(),
+            "the child publishes its action before the parent sync drains it"
+        );
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            app.modal.is_open(),
+            "semantic activation enters the existing new-connection flow"
+        );
     }
 
     #[test]

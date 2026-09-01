@@ -602,7 +602,7 @@ impl Widget for MainPanel {
                 Some(Icon::FileText),
                 "Start your first note",
                 Some("Capture an idea, a plan, or a decision. You can organise it later."),
-                Some("Create note"),
+                Some("New note"),
                 self.last_pointer,
             )
             .unwrap_or(Rect::ZERO);
@@ -813,7 +813,7 @@ impl Widget for MainPanel {
         use ui::a11y::{AccessNode, AccessState, Role};
         self.page_id.is_none().then(|| {
             AccessNode::new(Role::Button)
-                .with_name("Create note")
+                .with_name("New note")
                 .with_description("Create the first note in this workspace")
                 .with_state(AccessState {
                     focusable: true,
@@ -892,7 +892,7 @@ mod tests {
         p.set_focus(true);
         let node = p.accessibility().expect("empty state is exposed");
         assert_eq!(node.role, ui::a11y::Role::Button);
-        assert_eq!(node.name.as_deref(), Some("Create note"));
+        assert_eq!(node.name.as_deref(), Some("New note"));
         assert!(node.state.focusable);
         assert!(node.state.focused);
 

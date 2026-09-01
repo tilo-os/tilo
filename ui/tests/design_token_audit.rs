@@ -31,6 +31,7 @@ fn is_exempt(path: &Path) -> bool {
         || s.contains("/tokens/")
         || s.contains("/presence/render.rs")
         || s.contains("/tests/")
+        || path.file_name().is_some_and(|name| name == "tests.rs")
 }
 
 fn walk(root: &Path, out: &mut Vec<PathBuf>) {
@@ -180,6 +181,11 @@ fn no_hardcoded_style_literals_in_tree() {
 /// Path to the recorded counts, relative to the crate root.
 const BASELINE: &str = "tests/design_token_baseline.txt";
 
+/// Cross-product baseline. The toolkit has had a theme escape-hatch ratchet
+/// for a while; without the same guard around apps and shell chrome, bespoke
+/// colours can keep entering through the much larger product surface.
+const APP_SHELL_BASELINE: &str = "tests/app_shell_design_token_baseline.txt";
+
 /// Patterns that are ratcheted rather than forbidden outright. The key is what
 /// the baseline file names; the message is what a new hit is told to do.
 fn ratcheted_patterns() -> Vec<(&'static str, Regex, &'static str)> {
@@ -263,6 +269,51 @@ fn read_baseline(path: &Path) -> BTreeMap<(String, String), usize> {
     out
 }
 
+fn write_baseline(path: &Path, counts: &BTreeMap<(String, String), usize>) {
+    let mut output = String::from(
+        "# Theme escape hatches in app and shell production code.\n\
+         # Format: <path relative to repository root> <pattern> <count>\n\
+         # This is a ratchet, not approval: counts may only move down.\n",
+    );
+    for ((path, pattern), count) in counts {
+        output.push_str(&format!("{path} {pattern} {count}\n"));
+    }
+    fs::write(path, output).unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
+}
+
+fn ratchet_failures(
+    found: &BTreeMap<(String, String), usize>,
+    baseline: &BTreeMap<(String, String), usize>,
+) -> (Vec<String>, Vec<String>) {
+    let messages: BTreeMap<&str, &str> = ratcheted_patterns()
+        .into_iter()
+        .map(|(key, _, message)| (key, message))
+        .collect();
+    let mut grew = Vec::new();
+    let mut stale = Vec::new();
+    for (key, count) in found {
+        let allowed = baseline.get(key).copied().unwrap_or(0);
+        if *count > allowed {
+            grew.push(format!(
+                "{} [{}]: {count} occurrence(s), baseline {allowed} — {}",
+                key.0,
+                key.1,
+                messages.get(key.1.as_str()).copied().unwrap_or_default(),
+            ));
+        }
+    }
+    for (key, allowed) in baseline {
+        let count = found.get(key).copied().unwrap_or(0);
+        if count < *allowed {
+            stale.push(format!(
+                "{} [{}]: now {count}, baseline still {allowed} — lower it to {count}",
+                key.0, key.1,
+            ));
+        }
+    }
+    (grew, stale)
+}
+
 /// The escape hatches the older audit was blind to may not grow, and a file
 /// that has shed some has to say so — the record only moves downward.
 #[test]
@@ -275,33 +326,7 @@ fn theme_escape_hatches_do_not_grow() {
 
     let found = ratcheted_counts(&files, root);
     let baseline = read_baseline(&root.join(BASELINE));
-    let messages: BTreeMap<&str, &str> = ratcheted_patterns()
-        .into_iter()
-        .map(|(k, _, m)| (k, m))
-        .collect();
-
-    let mut grew = Vec::new();
-    let mut stale = Vec::new();
-    for (key, n) in &found {
-        let allowed = baseline.get(key).copied().unwrap_or(0);
-        if *n > allowed {
-            grew.push(format!(
-                "{} [{}]: {n} occurrence(s), baseline {allowed} — {}",
-                key.0,
-                key.1,
-                messages.get(key.1.as_str()).copied().unwrap_or_default(),
-            ));
-        }
-    }
-    for (key, allowed) in &baseline {
-        let n = found.get(key).copied().unwrap_or(0);
-        if n < *allowed {
-            stale.push(format!(
-                "{} [{}]: now {n}, baseline still {allowed} — lower it to {n}",
-                key.0, key.1,
-            ));
-        }
-    }
+    let (grew, stale) = ratchet_failures(&found, &baseline);
 
     assert!(
         grew.is_empty(),
@@ -316,6 +341,46 @@ fn theme_escape_hatches_do_not_grow() {
         "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
          The ratchet only moves down — lower these so the progress is kept:\n{}",
         stale.len(),
+        stale.join("\n"),
+    );
+}
+
+/// App and shell styling debt may only shrink. Set
+/// `UPDATE_APP_SHELL_DESIGN_BASELINE=1` only after reviewing the initial or
+/// deliberately lowered counts; CI never sets it.
+#[test]
+fn app_and_shell_theme_escape_hatches_do_not_grow() {
+    let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = ui_root.parent().expect("ui crate lives in the repository");
+    let mut files = Vec::new();
+    walk(&repository.join("apps"), &mut files);
+    walk(&repository.join("shell/src"), &mut files);
+    assert!(
+        !files.is_empty(),
+        "cross-product audit found no files to scan"
+    );
+    files.sort();
+
+    let found = ratcheted_counts(&files, repository);
+    let baseline_path = ui_root.join(APP_SHELL_BASELINE);
+    if std::env::var_os("UPDATE_APP_SHELL_DESIGN_BASELINE").is_some_and(|value| value == "1") {
+        write_baseline(&baseline_path, &found);
+        return;
+    }
+    let baseline = read_baseline(&baseline_path);
+    let (grew, stale) = ratchet_failures(&found, &baseline);
+
+    assert!(
+        grew.is_empty(),
+        "{} app/shell file(s) gained theme-blind styling. Use shared Theme tokens.\n{}",
+        grew.len(),
+        grew.join("\n"),
+    );
+    assert!(
+        stale.is_empty(),
+        "{} app/shell baseline entr(ies) are stale. Keep the improvement by lowering {}.\n{}",
+        stale.len(),
+        APP_SHELL_BASELINE,
         stale.join("\n"),
     );
 }

@@ -35,6 +35,12 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 /// `Mutex` because `RenderContext::device(...)` takes `&mut self`.
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
+/// A complex first frame can make Vello grow its bump reservation more than
+/// once before it produces pixels. Four submissions covered the observed
+/// two-growth case with one spare attempt, while remaining strictly bounded
+/// for intentionally transparent scenes.
+const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+
 fn shared_render_context() -> Arc<Mutex<RenderContext>> {
     SHARED_RENDER_CONTEXT
         .get_or_init(|| Arc::new(Mutex::new(RenderContext::new())))
@@ -275,7 +281,7 @@ impl OffscreenRenderer {
                   `ctx`, so `ctx` can't drop until the clones are taken, and the block \
                   already ends (dropping it) right after that"
     )]
-    pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
+    fn render_with_overflow(&mut self, scene: &Scene, bg: Color) -> (Vec<u8>, bool) {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
         // Arc-backed `Device`/`Queue` handles out and drop the guard
@@ -355,12 +361,55 @@ impl OffscreenRenderer {
         }
         drop(mapped);
         self.readback_buf.unmap();
-        tight
+        let overflowed = self.renderer.settle_bump_budget(&device);
+        (tight, overflowed)
+    }
+
+    pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
+        self.render_with_overflow(scene, bg).0
     }
 
     /// [`render`](Self::render) with a transparent background.
     pub fn render_rgba(&mut self, scene: &Scene) -> Vec<u8> {
         self.render(scene, Color::TRANSPARENT)
+    }
+
+    /// Render until Vello confirms that no bump-allocated geometry was
+    /// dropped, up to a strict attempt limit. This checks the renderer's GPU
+    /// counters, so partially missing glyphs are caught as reliably as a
+    /// completely transparent failed frame.
+    pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
+        let (mut pixels, mut overflowed) = self.render_with_overflow(scene, bg);
+        let mut grew_budget = overflowed;
+        for _ in 1..RESILIENT_RENDER_ATTEMPTS {
+            let unexpectedly_transparent = bg == Color::TRANSPARENT
+                && !scene.encoding().is_empty()
+                && pixels
+                    .chunks_exact(4)
+                    .all(|pixel| pixel.get(3).copied().unwrap_or(0) == 0);
+            if !overflowed && !unexpectedly_transparent && !grew_budget {
+                break;
+            }
+            // The first frame that fits after a growth can still be the one
+            // that finishes populating glyph/image atlas state. Require one
+            // additional confirmed-fit submission, then return immediately.
+            let confirm_after_growth = grew_budget && !overflowed && !unexpectedly_transparent;
+            (pixels, overflowed) = self.render_with_overflow(scene, bg);
+            grew_budget = if confirm_after_growth {
+                overflowed
+            } else {
+                grew_budget || overflowed
+            };
+        }
+        pixels
+    }
+
+    /// Render a one-shot scene without accepting Vello's transparent
+    /// bump-buffer warm-up frame. Interactive rendering naturally gets a next
+    /// frame after the reservation grows; screenshots, first recording frames
+    /// and deterministic visual snapshots do not, so they retry here.
+    pub fn render_rgba_resilient(&mut self, scene: &Scene) -> Vec<u8> {
+        self.render_resilient(scene, Color::TRANSPARENT)
     }
 
     /// Convenience: render `scene` and write the result to `path` as a
@@ -377,7 +426,7 @@ impl OffscreenRenderer {
         reason = "render_png is a debug/test screenshot helper called as infallible from shots and test call sites across the workspace; a write/encode failure is a dev-environment problem worth crashing loudly on, not a Result this signature can propagate without a wide API change"
     )]
     pub fn render_png<P: AsRef<Path>>(&mut self, scene: &Scene, bg: Color, path: P) {
-        let rgba = self.render(scene, bg);
+        let rgba = self.render_resilient(scene, bg);
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
