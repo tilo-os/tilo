@@ -2179,10 +2179,11 @@ impl MusicApp {
         }
     }
 
-    /// Install the worker this app will talk to, instead of letting
+    /// Install the worker this test will talk to, instead of letting
     /// [`Self::ensure_worker`] spawn one against whatever backend the build and
     /// the host's network happen to offer. The lazy spawn keeps whatever is
     /// already here, so this decides the data source for the whole session.
+    #[cfg(test)]
     pub(crate) fn use_worker(&mut self, worker: StreamWorker) {
         self.worker = Some(worker);
     }
@@ -5036,6 +5037,7 @@ mod tests {
     // 'test(full_track_streams_whole_file_or_reports_the_source_truncation)'`
     // when changing the stream resolver; that is when it has something to say.
     #[ignore = "streams a real track over the network; opt in with --run-ignored"]
+    #[allow(clippy::too_many_lines)] // One end-to-end proof with two source outcomes.
     fn full_track_streams_whole_file_or_reports_the_source_truncation() {
         use std::time::Duration;
         if !ytdlp_present() {
@@ -5115,7 +5117,7 @@ mod tests {
         let whole_file = app.audio.staging_complete();
         eprintln!(
             "[full-track] duration={dur}ms frames={frames} staged={got}/{} complete={whole_file}",
-            want.map(|w| w.to_string()).unwrap_or_else(|| "?".into())
+            want.map_or_else(|| "?".into(), |w| w.to_string())
         );
 
         if !whole_file {
