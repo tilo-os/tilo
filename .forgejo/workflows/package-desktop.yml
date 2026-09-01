@@ -74,95 +74,84 @@ jobs:
 
   package:
     needs: validate
-    name: ${{ matrix.distro }} / ${{ matrix.arch }}
+    name: package lane / ${{ matrix.arch }}
     runs-on: runner
-    timeout-minutes: 180
-    # Forgejo does not currently document or enforce strategy.max-parallel.
-    # Two explicit job-concurrency lanes provide the actual capacity bound:
-    # one amd64 target and one arm64 target at a time.
-    concurrency:
-      group: package-desktop-${{ github.ref }}-${{ matrix.arch }}
-      cancel-in-progress: false
+    timeout-minutes: 600
+    # Forgejo 16 starts every entry of a 10-item matrix despite both
+    # max-parallel and job concurrency groups. Model the capacity bound as the
+    # matrix itself: exactly one sequential lane per architecture, two jobs.
     strategy:
       fail-fast: false
-      # Retain the hint for Actions implementations that support it. The
-      # concurrency lanes above are the authoritative Forgejo bound.
       max-parallel: 2
       matrix:
         include:
-          - id: ubuntu-24.04
-            distro: ubuntu-24.04
-            image: docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
-            revision: 1+ubuntu24.04
-            arch: amd64
-          - id: ubuntu-24.04
-            distro: ubuntu-24.04
-            image: docker.io/library/ubuntu@sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea
-            revision: 1+ubuntu24.04
-            arch: arm64
-          - id: debian-13
-            distro: debian-13
-            image: docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1
-            revision: 1+deb13
-            arch: amd64
-          - id: debian-13
-            distro: debian-13
-            image: docker.io/library/debian@sha256:0aa0908407cce3da2a90c1d80acc6ca5ca57401ed63eecfa8149b7ba3cc40829
-            revision: 1+deb13
-            arch: arm64
-          - id: fedora-44
-            distro: fedora-44
-            image: registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b
-            revision: ""
-            arch: amd64
-          - id: fedora-44
-            distro: fedora-44
-            image: registry.fedoraproject.org/fedora@sha256:260eeddffc3fa8c1ba71b31cabe08a8b635cbc52d1559e536fca13b2bb9e1721
-            revision: ""
-            arch: arm64
-          - id: arch
-            distro: arch
-            image: docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c
-            revision: ""
-            arch: amd64
-          - id: arch
-            distro: arch
-            image: docker.io/menci/archlinuxarm@sha256:e08f0be5d8da6c22c165026036508aabd91b004f972dd84799d76a7fdb911ccb
-            revision: ""
-            arch: arm64
-          - id: nix
-            distro: nix
-            image: docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2
-            revision: ""
-            arch: amd64
-          - id: nix
-            distro: nix
-            # Nixpkgs cross-builds the ARM host closure from this native amd64
-            # userspace; qemu-user is reserved for distro install tests.
-            image: docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2
-            revision: ""
-            arch: arm64
+          - arch: amd64
+            targets: |-
+              arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|
+              nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
+              ubuntu-24.04|docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316|1+ubuntu24.04
+              debian-13|docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1|1+deb13
+              fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
+          - arch: arm64
+            targets: |-
+              arch|docker.io/menci/archlinuxarm@sha256:e08f0be5d8da6c22c165026036508aabd91b004f972dd84799d76a7fdb911ccb|
+              nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
+              ubuntu-24.04|docker.io/library/ubuntu@sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea|1+ubuntu24.04
+              debian-13|docker.io/library/debian@sha256:0aa0908407cce3da2a90c1d80acc6ca5ca57401ed63eecfa8149b7ba3cc40829|1+deb13
+              fedora-44|registry.fedoraproject.org/fedora@sha256:260eeddffc3fa8c1ba71b31cabe08a8b635cbc52d1559e536fca13b2bb9e1721|
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Build and install-test in the target userspace
+      - name: Build and install-test all five target userspaces
         env:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
-        run: >-
-          dist/ci/run-package-job.sh
-          "${{ matrix.distro }}"
-          "${{ matrix.image }}"
-          "${{ matrix.arch }}"
-          "${{ matrix.revision }}"
+          QOS_LANE_TARGETS: ${{ matrix.targets }}
+        shell: bash
+        run: |
+          status=0
+          while IFS='|' read -r distro image revision; do
+            [[ -n $distro ]] || continue
+            echo "::group::$distro / ${{ matrix.arch }}"
+            if ! dist/ci/run-package-job.sh \
+                "$distro" "$image" "${{ matrix.arch }}" "$revision"; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done <<<"$QOS_LANE_TARGETS"
+          exit "$status"
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
       - uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: ${{ matrix.id }}-${{ matrix.arch }}
-          path: dist/ci-output/${{ matrix.id }}-${{ matrix.arch }}/*
+          name: arch-${{ matrix.arch }}
+          path: dist/ci-output/arch-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: nix-${{ matrix.arch }}
+          path: dist/ci-output/nix-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: ubuntu-24.04-${{ matrix.arch }}
+          path: dist/ci-output/ubuntu-24.04-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: debian-13-${{ matrix.arch }}
+          path: dist/ci-output/debian-13-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: fedora-44-${{ matrix.arch }}
+          path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
           if-no-files-found: error
 
   release-guard:
