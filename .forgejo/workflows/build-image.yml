@@ -260,6 +260,7 @@ jobs:
           # default enters a named distrobox that does not exist on runners.
           QOS_DISTROBOX: ""
           QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          QOS_RESEALED_DIGEST_FILE: /var/tmp/qos-resealed-composefs-digest
         run: |
           set -euo pipefail
 
@@ -303,7 +304,26 @@ jobs:
           # calling disk-image.sh directly would only exercise the rejected
           # first pass and could never prove the published image bootable.
           mkdir -p "$QOS_OUTPUT" "$QOS_RUN"
+          rm -f "$QOS_RESEALED_DIGEST_FILE"
           ./os/dev/build-image.sh
+
+          # build-image may add a deterministic /boot-only UKI reseal layer.
+          # Reproduce that exact final layer on the independent image and gate
+          # the artifact that will actually be published, not merely its base.
+          repro_image="code.podesta.ai/qos/qos:repro-${GITHUB_SHA}"
+          podman load --input /var/tmp/qos-image-repro.tar
+          if [[ -s "$QOS_RESEALED_DIGEST_FILE" ]]; then
+            resealed_digest="$(tr -d '\n\r' < "$QOS_RESEALED_DIGEST_FILE")"
+            ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
+          fi
+          final_manifest="$(skopeo inspect --raw "containers-storage:$QOS_IMAGE" | sha256sum | awk '{print $1}')"
+          repro_manifest="$(skopeo inspect --raw "containers-storage:$repro_image" | sha256sum | awk '{print $1}')"
+          test -n "$final_manifest" && test "$final_manifest" = "$repro_manifest" || {
+            echo "::error::final sealed OS images differ: $final_manifest != $repro_manifest"
+            exit 1
+          }
+          echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
+
           export QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the real qOS compositor.
