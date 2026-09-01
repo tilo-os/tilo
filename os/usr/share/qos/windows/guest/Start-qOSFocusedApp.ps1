@@ -26,7 +26,11 @@ if ($executable -notmatch '^(C:\\Program Files( \(x86\))?\\|C:\\Windows\\)') {
 }
 if (-not (Test-Path $executable -PathType Leaf)) { throw "qOS application is missing: $executable" }
 
-$explorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue)
+$sessionId = (Get-Process -Id $PID).SessionId
+$explorer = @(
+    Get-Process -Name explorer -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $sessionId }
+)
 try {
     # A whole-surface SPICE fallback should look like the selected application,
     # not a second Windows desktop. Stop only Explorer instances visible to the
@@ -45,7 +49,11 @@ try {
     # Reconstitute Explorer only when it was present before this managed
     # surface. This makes closing the fallback return the guest to its normal
     # recovery environment without leaving a shellless user session behind.
-    if ($explorer.Count -gt 0 -and $null -eq (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+    $sessionExplorer = @(
+        Get-Process -Name explorer -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $sessionId }
+    )
+    if ($explorer.Count -gt 0 -and $sessionExplorer.Count -eq 0) {
         Start-Process -FilePath "$env:WINDIR\explorer.exe" | Out-Null
     }
     if ($null -ne $job.taskName -and [string]$job.taskName -match '^qOS-Focus-[A-Za-z0-9-]{8,64}$') {
