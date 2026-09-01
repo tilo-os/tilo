@@ -20501,6 +20501,7 @@ mod tests {
             "s",
             ModifiersState::CONTROL
         ));
+        app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project_rx.is_none(), "Ctrl+S did not open a chooser");
         assert!(!app.project_is_dirty(), "it saved");
         assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
