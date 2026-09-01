@@ -5814,7 +5814,7 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let ch = self.curve_channel;
         let spline = clip.curves.spline(ch);
-        fill_rrect(scene, tf, c.surface_white_5, canvas, 8.0);
+        fill_rrect(scene, tf, c.lift(0.35), canvas, 8.0);
         stroke_rrect(scene, tf, c.border_standard, canvas, 8.0, 1.0);
 
         // Quarter grid. Faint, because it is a reading aid and the curve is
@@ -6014,7 +6014,7 @@ impl VideoEditorApp {
             let (name_rect, note_btn, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
             if hovered {
-                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+                fill_rrect(scene, tf, c.lift(0.35), *row, 6.0);
             }
             let Some((_, mk, _)) = self
                 .project
@@ -13181,7 +13181,7 @@ impl VideoEditorApp {
             let bg = if open {
                 c.accent[5]
             } else if hovered {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
                 c.neutral[3]
             };
@@ -13660,7 +13660,7 @@ impl VideoEditorApp {
         let bg = if open {
             c.accent[5]
         } else if hovered {
-            c.surface_white_10
+            c.lift(0.72)
         } else {
             c.neutral[3]
         };
@@ -13723,7 +13723,7 @@ impl VideoEditorApp {
             scene,
             tf,
             if add_hover {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
                 c.neutral[3]
             },
@@ -13807,7 +13807,7 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), rect, 8.0);
                 stroke_rrect(scene, tf, c.accent[5], rect, 8.0, 1.5);
             } else if hover {
-                fill_rrect(scene, tf, c.surface_white_5, rect, 8.0);
+                fill_rrect(scene, tf, c.lift(0.35), rect, 8.0);
             }
             // Thumbnail swatch.
             let thumb = Rect::new(
@@ -14324,7 +14324,7 @@ impl VideoEditorApp {
             let bg = if is_play {
                 c.accent[5]
             } else if hovered {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
                 c.neutral[3]
             };
@@ -15123,7 +15123,7 @@ impl VideoEditorApp {
                 let bg = if on {
                     c.accent[5]
                 } else if hovered {
-                    c.surface_white_10
+                    c.lift(0.72)
                 } else {
                     c.neutral[3]
                 };
@@ -15442,7 +15442,7 @@ impl VideoEditorApp {
                 .title_edit
                 .as_ref()
                 .map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
-            fill_rrect(scene, tf, c.surface_white_5, rect, 6.0);
+            fill_rrect(scene, tf, c.lift(0.35), rect, 6.0);
             stroke_rrect(
                 scene,
                 tf,
@@ -15660,7 +15660,7 @@ impl VideoEditorApp {
                     continue;
                 };
                 let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
-                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+                fill_rrect(scene, tf, c.lift(0.35), *row, 6.0);
                 // Reorder / remove: real icons on hover-lit hit targets, sized to
                 // the pointer rather than to the glyph. These were raw Unicode
                 // arrows in 16x18px boxes with no hover state at all.
@@ -15742,7 +15742,7 @@ impl VideoEditorApp {
                 scene,
                 tf,
                 if add_hover {
-                    c.surface_white_10
+                    c.lift(0.72)
                 } else {
                     c.neutral[3]
                 },
@@ -15806,7 +15806,7 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let open = !self.collapsed.contains(&section);
         if rect.contains(self.last_mouse) {
-            fill_rrect(scene, tf, c.surface_white_5, rect, 5.0);
+            fill_rrect(scene, tf, c.lift(0.35), rect, 5.0);
         }
         let g = 11.0;
         let arrow = Rect::new(
@@ -16259,7 +16259,7 @@ impl VideoEditorApp {
         for (tid, kind, lane) in &lanes {
             // lane background stripe
             let stripe = if *kind == TrackKind::Video {
-                c.surface_white_5
+                c.lift(0.35)
             } else {
                 with_alpha(c.semantic.success, 0.05)
             };
@@ -16353,7 +16353,7 @@ impl VideoEditorApp {
                 let pill_bg = if on {
                     on_bg
                 } else if pill_hover {
-                    c.surface_white_10
+                    c.lift(0.72)
                 } else {
                     c.neutral[3]
                 };
@@ -16615,11 +16615,7 @@ impl VideoEditorApp {
             fill_rrect(
                 scene,
                 tf,
-                if hover {
-                    c.surface_white_10
-                } else {
-                    c.neutral[3]
-                },
+                if hover { c.lift(0.72) } else { c.neutral[3] },
                 rect,
                 6.0,
             );
@@ -17951,7 +17947,7 @@ fn draw_key_control(
     let c = &theme.tokens.colors;
     let ctr = rect.center();
     if hovered {
-        fill_rrect(scene, tf, c.surface_white_10, rect, 5.0);
+        fill_rrect(scene, tf, c.lift(0.72), rect, 5.0);
     }
     let (r, col, filled) = match state {
         KeyState::Off => (4.0, c.text_tertiary, false),

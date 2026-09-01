@@ -500,8 +500,8 @@ fn bring_up_portal(
             portal_pickers,
         )),
         screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(
-            std::sync::Arc::new(crate::portal::MockScreenCastProvisioner::new_with_node(
-                1, "default",
+            std::sync::Arc::new(crate::portal::UnavailableScreenCastProvisioner::new(
+                "hosted compositor capture has not been connected to PipeWire",
             )),
         ),
         remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),

@@ -675,7 +675,7 @@ impl CodeApp {
         // Button background (raised so it covers any tab edge underneath),
         // tinted when the sidebar is open.
         let bg = if self.sidebar_open() {
-            c.surface_white_10
+            c.lift(0.72)
         } else {
             c.surfaces.raised
         };
@@ -1309,7 +1309,13 @@ impl CodeApp {
         let y0 = self.rect.y0 + (self.rect.height() - h) / 2.0;
         let card = vello::kurbo::RoundedRect::new(x0, y0, x0 + w, y0 + h, 12.0);
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &card);
-        scene.stroke(&Stroke::new(1.0), transform, c.border_white_20, None, &card);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+            None,
+            &card,
+        );
 
         text_renderer.draw_text_weighted(
             scene,
@@ -1787,7 +1793,13 @@ impl CodeApp {
         let y0 = self.rect.y0 + (self.rect.height() - h) / 2.0;
         let card = vello::kurbo::RoundedRect::new(x0, y0, x0 + w, y0 + h, 12.0);
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &card);
-        scene.stroke(&Stroke::new(1.0), transform, c.border_white_20, None, &card);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+            None,
+            &card,
+        );
 
         text_renderer.draw_text_weighted(
             scene,

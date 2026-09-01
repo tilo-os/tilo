@@ -1350,7 +1350,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_5,
+                theme.tokens.colors.lift(0.35),
                 None,
                 &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
             );
@@ -1483,7 +1483,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_5,
+                theme.tokens.colors.lift(0.35),
                 None,
                 &RoundedRect::from_rect(rect, 6.0),
             );
@@ -1852,7 +1852,7 @@ impl RoomActivityPane {
                 if active {
                     colors.accent[5]
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.35)
                 },
                 None,
                 &shape,
@@ -2946,7 +2946,7 @@ fn draw_brief_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surface_white_5,
+        theme.tokens.colors.lift(0.35),
         None,
         &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
     );
@@ -3027,7 +3027,7 @@ fn draw_chip_row<T: Clone>(
             if active {
                 colors.accent[5]
             } else {
-                colors.surface_white_5
+                colors.lift(0.35)
             },
             None,
             &shape,
@@ -3101,7 +3101,7 @@ fn draw_chip_row_paginated<T: Clone>(
             if is_active(value) {
                 colors.accent[5]
             } else {
-                colors.surface_white_5
+                colors.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(rect, chip_h / 2.0),
@@ -3131,7 +3131,7 @@ fn draw_chip_row_paginated<T: Clone>(
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &RoundedRect::from_rect(rect, chip_h / 2.0),
         );
@@ -3170,7 +3170,7 @@ fn draw_more_row(
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surface_white_5,
+        theme.tokens.colors.lift(0.35),
         None,
         &RoundedRect::from_rect(rect, 6.0),
     );

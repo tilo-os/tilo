@@ -40,7 +40,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -63,6 +63,7 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 /// compositor for the test that fails if they drift apart again.
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
+pub const SHELL_UI_SERVICE: &str = "shell-ui";
 pub const COMPAT_SERVICE: &str = "compat";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
 
@@ -149,6 +150,46 @@ pub fn collab_socket() -> PathBuf {
 
 pub fn identity_socket() -> PathBuf {
     socket_for(IDENTITY_SERVICE)
+}
+
+/// Authenticate the optional shell-UI channel before the child enters its
+/// sandbox. The app cannot forge or race this first frame: the launcher writes
+/// the canonical package/app id on the connected descriptor before `fork`,
+/// and the compositor refuses lifecycle messages until it has consumed it.
+pub fn authenticate_shell_ui_bind(
+    resolved: &[ResolvedService],
+    app_id: &str,
+) -> Result<(), ServiceError> {
+    let Some(service) = resolved
+        .iter()
+        .find(|service| service.name == SHELL_UI_SERVICE)
+    else {
+        return Ok(());
+    };
+    let path = socket_for(SHELL_UI_SERVICE);
+    // Duplicate only for a temporary writer; the original descriptor remains
+    // owned by `ResolvedService` for the child handoff.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(service.host_fd()) };
+    let owned = borrowed
+        .try_clone_to_owned()
+        .map_err(|source| ServiceError::OpenFailed {
+            path: path.clone(),
+            source,
+        })?;
+    let mut stream = UnixStream::from(owned);
+    let mut frame = serde_json::to_vec(&serde_json::json!({
+        "protocol": 1,
+        "app_id": app_id,
+    }))
+    .map_err(|error| ServiceError::OpenFailed {
+        path: path.clone(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })?;
+    frame.push(b'\n');
+    stream
+        .write_all(&frame)
+        .and_then(|()| stream.flush())
+        .map_err(|source| ServiceError::OpenFailed { path, source })
 }
 
 /// Connect the per-session identity broker and authenticate the launch
@@ -508,6 +549,28 @@ mod tests {
             out[0].child_fd, 17,
             "the app is told to read fd 17, so that is where it must land"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn shell_ui_connection_is_authenticated_before_child_handoff() {
+        use std::io::{BufRead, BufReader};
+
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
+        let mut services = BTreeMap::new();
+        services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
+        let resolved = resolve_service_binds(&services, false).unwrap();
+        authenticate_shell_ui_bind(&resolved, "dev.qos.chat").unwrap();
+
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(handshake["protocol"], 1);
+        assert_eq!(handshake["app_id"], "dev.qos.chat");
     }
 
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`

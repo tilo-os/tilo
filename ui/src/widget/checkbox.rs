@@ -324,12 +324,18 @@ impl Widget for Checkbox {
             }
             return;
         }
-        if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
-            && let Value::Scalar(s) = val
-            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-        {
-            self.is_checked = *b;
-        }
+        self.is_checked = state
+            .get(root, self.on_toggle_path.as_str())
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(scalar) => match scalar.as_ref() {
+                    automerge::ScalarValue::Boolean(checked) => Some(*checked),
+                    _ => None,
+                },
+                Value::Object(_) => None,
+            })
+            .unwrap_or(false);
     }
 
     fn build_layout(
@@ -641,6 +647,24 @@ mod tests {
             &root
         ));
         assert!(!c.is_checked, "Activate flips back");
+    }
+
+    #[test]
+    fn document_binding_resets_after_the_boolean_path_disappears() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut checkbox = Checkbox::new("any", "checked");
+        doc.put(&root, "checked", true).unwrap();
+        Widget::sync(&mut checkbox, &mut doc, &root);
+        assert!(checkbox.is_checked());
+
+        doc.delete(&root, "checked").unwrap();
+        Widget::sync(&mut checkbox, &mut doc, &root);
+        assert!(!checkbox.is_checked(), "a removed path means unchecked");
+
+        doc.put(&root, "checked", "not-a-boolean").unwrap();
+        Widget::sync(&mut checkbox, &mut doc, &root);
+        assert!(!checkbox.is_checked(), "a mistyped path cannot stay stale");
     }
 
     #[test]

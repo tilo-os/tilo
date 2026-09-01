@@ -24,6 +24,22 @@ or test harness:
 qos-dev test -- --nocapture
 ```
 
+Every app using the shared `LaunchSpec` runner also gets a standard responsive
+acceptance capture without app-specific argument parsing:
+
+```bash
+my-app --responsive-matrix target/responsive
+my-app --responsive-matrix target/responsive-expanded --pseudo-locale
+my-app --responsive-matrix target/responsive-large-type --text-scale 2
+```
+
+The matrix renders phone portrait (390×844), tablet (768×1024), laptop
+(1366×768), and large desktop (1920×1080) images from the same scenario. The
+pseudo locale lengthens translated strings and invalidates retained text layout,
+so reviewers see clipped labels and fixed-width assumptions before catalogs are
+complete. The text-scale pass exercises the supported 200% accessibility size.
+Pseudo-localization is a layout audit mode, not a language presented to users.
+
 `qos-dev check` is the copyable local/CI quality gate. It reports the complete
 structural `doctor` result, runs the app's Rust and generated accessibility
 tests, then executes every saved scenario in isolated state with accessibility
@@ -32,8 +48,15 @@ tree, target list, document, and versioned audit report; `--no-scenarios` keeps
 the structural and Rust-test phases for apps that deliberately have no saved
 flows. Arguments after `--` are forwarded to the Cargo test harness.
 
+For serialized screens, that structural preflight crosses file boundaries: it
+checks every component node against `src/components/mod.rs`, verifies each
+registered module and graph factory still exists, and validates the generated
+display/form factory's typed props with the screen path and node id in the
+diagnostic. A customized router context is reported as app-owned and therefore
+not statically verifiable; generated contexts fail early on missing factories.
+
 With no name, `qos-dev new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents eight
+name, window title, application ID, and starter shape. It presents nine
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
@@ -54,7 +77,17 @@ cargo run -p qos-dev -- new activity-feed --template list
 cargo run -p qos-dev -- new qr-code --template qr
 cargo run -p qos-dev -- new repo-scan --template async
 cargo run -p qos-dev -- new notes --template document
+cargo run -p qos-dev -- new project-workspace --template workspace
 ```
+
+Use `--template workspace` for a composed professional starting point rather
+than an isolated widget example. It creates a resizable master-detail shell
+with stable tree selection, a keyed detail view, and directly document-bound
+fields for each item. Switching items preserves independent edits, while the
+standard app document supplies persistence, collaboration, inspection, and
+undo without app-owned synchronization callbacks. The generated headless
+scenario exercises navigation and editing, and the normal generated test
+includes the initial accessibility audit.
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
@@ -76,6 +109,10 @@ Grow an existing app from any directory inside it with `add`:
 ```bash
 qos-dev add
 qos-dev add component profile-card --template form
+qos-dev add component activity-card --mount main \
+  --props '{"title":"Recent activity","detail":"Nothing pending"}'
+qos-dev add component profile-form --template form --mount main \
+  --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
 qos-dev add component project-tree --template tree
 qos-dev add component activity-list --template list
 qos-dev add component results-table --template table
@@ -95,9 +132,11 @@ or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
 typed-props display, a typed-state form, a source-agnostic virtualized tree, a
 sparse variable-height list, a model-backed table, or advanced text. The wizard
-reviews the resolved artifact before entering the same atomic publication path
-as the explicit commands. Scripts and CI should continue to use the fully
-specified subcommands.
+offers to place a display or form component directly into a generated graph
+screen, including typed display props or form document-binding paths. It reviews
+the resolved artifact before entering the same atomic publication path as the
+explicit commands.
+Scripts and CI should continue to use the fully specified subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -114,11 +153,22 @@ let value_for_save = profile.value.clone();
 The instance ID prefixes every semantic control ID, allowing the same component
 to appear more than once. Its text and checkbox use two-way `LocalState`
 bindings, visible/accessibility labels share generated Fluent messages, and a
-headless component test exercises both controls. The `display` template instead
-generates a typed props struct plus a heading/detail view. Component source,
-registry, library wiring, and locale updates publish as one rollback-safe batch;
-an app-owned registry or existing component is protected unless replacement is
-explicit.
+headless component test exercises both controls. In a generated graph app,
+`--mount main` also creates a graph adapter whose `value_path` and
+`enabled_path` bind both controls directly to the shared app document. Reuse a
+path to keep multiple component instances or ordinary graph controls in sync;
+use distinct paths for independent values. These edits therefore participate
+in persistence, collaboration, and document undo without app-owned fan-out.
+Without explicit `--props`, the paths default to `<component>-value` and
+`<component>-enabled`; the wizard lets you choose both.
+The `display` template instead generates a typed props struct plus a
+heading/detail view.
+Component source, registry, library wiring, and locale updates publish as one
+rollback-safe batch; an app-owned registry or existing component is protected
+unless replacement is explicit. Even with `--force`, changing a generated
+component template is refused while an existing graph node has incompatible
+props or the replacement has no graph factory; update or remove those nodes
+first, so generation cannot leave the app unbuildable.
 
 `add component project-tree --template tree` starts at the professional tree
 boundary without choosing the app's data source. Its function accepts any
@@ -682,6 +732,91 @@ bad number, duplicate id, empty required binding, or inaccessible control is
 reported in the inspector without partially changing the preview or saved
 document. Renaming a selected node keeps that node selected under its new id.
 
+App-owned reusable Rust components participate in the same object graph through
+a component node. The graph keeps only a stable factory name and serializable
+props:
+
+```json
+{
+  "type": "component",
+  "id": "account-profile",
+  "name": "profile-card",
+  "props": {
+    "title": "Ada",
+    "detail": "Workspace owner"
+  }
+}
+```
+
+For typed display and form components, generate both the Rust component and its
+validated graph adapter, then insert an instance without writing JSON by hand:
+
+```bash
+qos-dev add component profile-card --mount main \
+  --props '{"title":"Ada","detail":"Workspace owner"}'
+qos-dev add component profile-form --template form --mount main \
+  --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
+```
+
+That one command generates the typed Rust component, updates its module and
+factory registries, migrates an untouched older generated graph root when
+needed, and appends the first instance to `ui/main.json`. All candidate files
+validate before publication; any failure leaves the component, registry, app
+root, and screen byte-for-byte as they were. Model-backed tree, list, and table
+templates still require an app-supplied model in Rust, and advanced text accepts
+Rust-native style/engine values, so generate those templates without `--mount`.
+
+For an existing component, or an app-owned router context, insert only the node:
+
+```bash
+qos-dev ui component ui/main.json profile-card \
+  --props '{"title":"Ada","detail":"Workspace owner"}'
+```
+
+`ui component` appends to `root` by default, derives a unique id
+(`profile-card`, `profile-card-2`, ...), and atomically rejects a bad factory
+name, non-object props, invalid parent, duplicate explicit id, or out-of-range
+index. Use `--id`, `--parent`, and `--index` when placement must be explicit.
+Apps created with `--template graph` pass the generated
+`components::ui_graph_context()` to their screen router. Adding the component
+with `--mount` updates that registry and the screen in the same atomic
+publication, so it is the complete wiring path—there is no app-root edit:
+
+```rust
+let app = screens::router_with(
+    "main",
+    &Theme::default(),
+    components::ui_graph_context(),
+)?;
+```
+
+The generated display `from_ui_graph` function converts `title` and `detail`
+into the same typed `ProfileCardProps` used by ordinary Rust callers. The form
+adapter validates non-empty `value_path` and `enabled_path` strings, then builds
+the controls with the same document bindings used by built-in graph inputs and
+checkboxes. Both return precise field errors, and `qos-dev doctor` checks those
+generated prop contracts before compilation. Already-generated v1 form adapters
+and their snapshot props remain recognized by `doctor`; regenerating a form uses
+document bindings. Older generated graph roots are migrated when their original
+router call is still intact; customized
+app roots are never rewritten. For a custom component shape, write the
+equivalent small function from `UiComponentRequest` to `Element` and register it
+with `UiBuildContext::with_component` or extend the app-owned context explicitly.
+
+The factory returns an ordinary retained widget, so its child controls, model
+bindings, focus, accessibility, inspection, and headless scenarios work exactly
+as they do when the component is constructed directly in Rust. Keep the graph
+node id on the returned component's semantic root when the component itself is
+an addressable test target. Missing factories and invalid props are explicit
+construction errors containing the node id and component name; production never
+silently substitutes a placeholder.
+
+The standalone builder cannot load application code, so it displays a named,
+accessible placeholder while still allowing the component name and JSON props
+to be edited, moved, saved, undone, and inspected. The app replaces that
+placeholder through its `UiBuildContext` at runtime. Component names use the
+same lowercase kebab-case convention as `qos-dev add component`.
+
 The center preview is the real `LiveUi` widget tree, so focus, keyboard input,
 accessibility, bindings, layout, and theme behavior do not diverge from the
 app. In a source checkout, `qos-dev` builds the workspace builder on first use.
@@ -717,6 +852,7 @@ qos-dev ui remove ui/settings.json --id obsolete-help
 qos-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
 qos-dev ui set ui/settings.json --id panel --property fill_height --value true
 qos-dev ui set ui/settings.json --id title --property size --unset
+qos-dev ui apply ui/settings.json ui/settings.edits.json
 qos-dev ui format ui/settings.json
 ```
 
@@ -730,11 +866,49 @@ the complete graph before the original file is atomically replaced. A bad
 property name, type, duplicate ID, invalid binding, or accessibility regression
 therefore leaves the file byte-for-byte unchanged.
 
+Use `ui apply` when a generator, migration, or coding agent needs several
+coordinated edits. The edit file is a reviewable JSON array using the same
+operations as the individual commands:
+
+```json
+[
+  {
+    "op": "set-property",
+    "id": "title",
+    "property": "text.value",
+    "value": "Account settings"
+  },
+  {
+    "op": "insert",
+    "parent": "actions",
+    "index": 0,
+    "node": {
+      "type": "button",
+      "id": "save",
+      "label": "settings-save",
+      "style": "primary"
+    }
+  },
+  {
+    "op": "move",
+    "id": "cancel",
+    "parent": "actions",
+    "index": 1
+  }
+]
+```
+
+Supported operation tags are `insert`, `remove`, `replace`, `move`,
+`set-property`, and `unset-property`. All operations run against one in-memory
+candidate and the source file is published once, after the last edit succeeds.
+If edit 8 of 10 fails, none of the first seven edits reach disk and the error
+identifies edit 8.
+
 Every command parses through the same lightweight `qos-ui-graph` schema used
-by the renderer. Property, insert, remove, replace, move, and formatting edits
-write through a same-directory temporary file only after the complete candidate
-validates; an invalid id, duplicate subtree, inaccessible control, illegal
-reparent, or bad binding leaves the source file byte-for-byte unchanged.
+by the renderer. Property, batch, insert, remove, replace, move, and formatting
+edits write through a same-directory temporary file only after the complete
+candidate validates; an invalid id, duplicate subtree, inaccessible control,
+illegal reparent, or bad binding leaves the source file byte-for-byte unchanged.
 
 Load it once and keep the handle when an inspector or builder should edit the
 running tree:
@@ -1652,6 +1826,28 @@ the visible window, while an error row issues a `TreeLoadReason::Retry`
 request when clicked or activated with Enter or Space. Sources that cannot
 wake the application may return `true` from `needs_poll`; idle workers should
 prefer `LatestRequest`.
+
+Use `with_slot_delegate` to replace the built-in placeholder copy with
+localized retained widgets. The delegate receives the stable `TreeSlot`, its
+depth, and `TreeSlotState::Loading` or `TreeSlotState::Error`. Only unresolved
+rows in the virtual window are mounted. The tree keeps the outer tree-item
+semantics, marks loading rows busy and error rows invalid, measures variable
+placeholder heights, and preserves click/keyboard activation as retry:
+
+```rust
+tree.with_slot_delegate(|_, slot, _depth, state| {
+    let message = match state {
+        TreeSlotState::Loading => "project-tree-loading",
+        TreeSlotState::Error { .. } => "project-tree-load-error",
+    };
+    Box::new(Text::new(message).with_id(format!("tree-slot-{}", slot.index)))
+});
+```
+
+Generated tree components install this localized delegate by default. Replace
+it with a progress indicator, diagnostic detail, or a retry button when the app
+needs richer loading UI; ordinary child-widget focus and accessibility remain
+nested beneath the slot's `TreeItem` semantic node.
 
 When a slot changes state, send `TreeModelChange::SlotsChanged`. The tree
 invalidates request deduplication and transfers focus, measured height, and the

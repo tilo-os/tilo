@@ -23,6 +23,9 @@ ui = { path = "../../ui" }
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
 qos-actions = { path = "../../crates/collab/actions" }
+# qOS-device sessions consume the canonical direct-first mesh placement
+# decision; Remote does not maintain a second host-selection implementation.
+qos-relay = { path = "../../crates/hosting/qos-relay" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
