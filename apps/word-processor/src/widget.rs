@@ -4134,41 +4134,32 @@ impl WordProcessorWidget {
         ));
     }
 
-    /// Draw the transient status toast (a rounded pill just above the status bar)
-    /// when one is staged. Purely a confirmation cue — dismissed on the next
-    /// interaction. Kept in the overlay pass so it floats over the page content.
-    fn draw_toast(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer) {
-        let Some(msg) = self.toast.clone() else {
+    /// Draw the transient confirmation through the shared toast-card renderer.
+    /// It remains anchored above the status bar and is dismissed by the next
+    /// interaction.
+    fn draw_toast(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(msg) = self.toast.as_deref() else {
             return;
         };
-        let cc = self.chrome;
         let approx = num::f64_of_usize(msg.chars().count()) * 7.4 + 32.0;
         let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
-        let h = 34.0;
+        let h = 40.0;
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let y1 = self.rect.y1 - LAYOUT_BAR_H - 14.0;
         let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        let shape = vello::kurbo::RoundedRect::from_rect(r, 8.0);
-        // A soft drop shadow so the pill reads above the page.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(Color::BLACK, 0x33),
-            None,
-            &vello::kurbo::RoundedRect::from_rect(
-                Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 + 2.0),
-                8.0,
-            ),
-        );
-        scene.fill(Fill::NonZero, transform, cc.accent, None, &shape);
-        let tw = num::f64_of_usize(msg.chars().count()) * 7.0;
-        tr.draw_text(
+        ui::widget::toast::paint_card(
             scene,
-            &msg,
-            13.0,
-            cc.on_accent,
-            transform * Affine::translate((cx - tw / 2.0, f64::midpoint(r.y0, r.y1) - 8.0)),
-            None,
+            transform,
+            tr,
+            theme,
+            r,
+            &ui::widget::toast::ToastCard::new(msg, ui::widget::toast::ToastKind::Success),
         );
     }
 }
@@ -7786,7 +7777,7 @@ impl Widget for WordProcessorWidget {
         presence: &PresenceCtx,
     ) {
         // Toast first, so an open menu stacks above it.
-        self.draw_toast(scene, transform, text_renderer);
+        self.draw_toast(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
             Widget::draw(
                 &mut self.context_menu,
