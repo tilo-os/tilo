@@ -22,6 +22,64 @@ use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::IdentityRecord;
 
+/// Human-facing name of the Unix account running this session.
+///
+/// Identity material already lives below that account's XDG directories and
+/// is protected by ordinary Unix ownership.  Recording the passwd entry's
+/// name in newly-created public metadata makes that association visible
+/// throughout qOS without inventing a second account or password.  Existing
+/// identity files are never rewritten.
+#[cfg(unix)]
+pub fn login_account_display_name() -> String {
+    use std::ffi::CStr;
+
+    let uid = unsafe { libc::geteuid() };
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status == 0 && !result.is_null() {
+        let pwd = unsafe { pwd.assume_init() };
+        let username = unsafe { CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        let gecos = unsafe { CStr::from_ptr(pwd.pw_gecos) }
+            .to_string_lossy()
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !gecos.is_empty() {
+            return gecos;
+        }
+        if !username.is_empty() {
+            return username;
+        }
+    }
+    std::env::var("USER")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("User {uid}"))
+}
+
+#[cfg(not(unix))]
+pub fn login_account_display_name() -> String {
+    std::env::var("USER")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Local user".to_string())
+}
+
 /// File name for the primary single-device identity record. Matches
 /// what the runtime identity broker migrates and what `DiskIdentityStore`
 /// writes via the UI's identity-flow ceremony.
@@ -142,7 +200,7 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
     let record = IdentityRecord::from_threshold_identity(
         &identity,
-        "",
+        &login_account_display_name(),
         [128, 128, 128],
         std::time::SystemTime::now(),
     )
@@ -586,6 +644,13 @@ mod tests {
                 panic!("expected Created on empty dir, got {other:?}")
             }
         }
+        let identity = runtime_identity::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
+            .expect("load created identity");
+        assert_eq!(
+            identity.display_name(),
+            login_account_display_name(),
+            "fresh qOS identity metadata follows the Unix account people already use"
+        );
         // Second run leaves it alone.
         assert_eq!(
             ensure_primary_identity(&dir).expect("provision ok (2nd)"),
