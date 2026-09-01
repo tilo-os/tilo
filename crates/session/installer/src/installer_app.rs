@@ -135,11 +135,30 @@ fn has_tpm2() -> bool {
     std::path::Path::new("/dev/tpmrm0").exists() || std::path::Path::new("/dev/tpm0").exists()
 }
 
+fn secure_boot_enabled() -> bool {
+    std::fs::read_dir("/sys/firmware/efi/efivars")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("SecureBoot-")
+        })
+        .and_then(|entry| std::fs::read(entry.path()).ok())
+        .and_then(|bytes| bytes.get(4).copied())
+        == Some(1)
+}
+
 /// Explanation shown under the encryption chooser, reflecting the choice and
 /// what this machine's hardware can actually do.
-fn encrypt_description(tpm2: bool) -> &'static str {
-    if tpm2 {
+fn encrypt_description(tpm2: bool, secure_boot: bool) -> &'static str {
+    if tpm2 && secure_boot {
         "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
+    } else if tpm2 {
+        "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
     } else {
         "qOS always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
     }
@@ -599,6 +618,8 @@ pub struct InstallerApp {
     /// Encryption works either way; without one the unlock secret stops being
     /// optional, because the alternative is typing the recovery key at boot.
     tpm2: bool,
+    /// Short-PIN mode is safe only when firmware verifies early boot.
+    secure_boot: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -667,6 +688,7 @@ impl InstallerApp {
             fido2: false,
             recovery_ack: false,
             tpm2: has_tpm2(),
+            secure_boot: secure_boot_enabled(),
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -785,12 +807,16 @@ impl InstallerApp {
         layouts::by_display_name(self.keymap.trim()).unwrap_or_else(layouts::default_layout)
     }
 
+    fn verified_tpm(&self) -> bool {
+        self.tpm2 && self.secure_boot
+    }
+
     /// May the install start, as far as encryption is concerned? Native qOS
     /// always requires both a reproducible recovery factor and a startup
     /// secret: a TPM2-bound PIN where supported, otherwise a disk passphrase.
     fn encryption_ready(&self) -> bool {
         self.recovery_ack
-            && validate_startup_secret(&secret_copy(&self.password), self.tpm2).is_ok()
+            && validate_startup_secret(&secret_copy(&self.password), self.verified_tpm()).is_ok()
     }
 
     /// Human-readable summary of the encryption factors for the Review step.
@@ -798,7 +824,10 @@ impl InstallerApp {
         // Recovery key is always present; TPM is PIN-protected iff a PIN was
         // entered; FIDO2 is listed only when enrolling.
         let mut factors = vec!["recovery key".to_string()];
-        match (self.tpm2, secret_copy(&self.password).trim().is_empty()) {
+        match (
+            self.verified_tpm(),
+            secret_copy(&self.password).trim().is_empty(),
+        ) {
             (true, true) => factors.push("TPM2 + startup PIN required".to_string()),
             (true, false) => factors.push("TPM2 + PIN".to_string()),
             // No TPM: the same secret is enrolled as an ordinary passphrase
@@ -932,7 +961,7 @@ impl InstallerApp {
                 }
                 if self.step == Step::Account
                     && let Err(message) =
-                        validate_startup_secret(&secret_copy(&self.password), self.tpm2)
+                        validate_startup_secret(&secret_copy(&self.password), self.verified_tpm())
                 {
                     self.set_status(message);
                     return;
@@ -992,7 +1021,9 @@ impl InstallerApp {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if let Err(message) = validate_startup_secret(&secret_copy(&self.password), self.tpm2) {
+        if let Err(message) =
+            validate_startup_secret(&secret_copy(&self.password), self.verified_tpm())
+        {
             self.set_status(message);
             return;
         }
@@ -1293,7 +1324,7 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
-        let credential_label = if self.tpm2 {
+        let credential_label = if self.verified_tpm() {
             "Startup and unlock PIN"
         } else {
             "Startup and unlock passphrase"
@@ -1305,7 +1336,7 @@ impl InstallerApp {
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
-        let credential_help = if self.tpm2 {
+        let credential_help = if self.verified_tpm() {
             "Choose 6–12 digits. Enter this once at startup; it also unlocks your session later."
         } else {
             "Choose at least 12 characters. It decrypts the disk at startup and unlocks your session later."
@@ -1313,7 +1344,7 @@ impl InstallerApp {
         children.push(Box::new(
             Text::new(credential_help).with_size(sm).with_color(dim),
         ));
-        let confirmation_label = if self.tpm2 {
+        let confirmation_label = if self.verified_tpm() {
             "Confirm startup and unlock PIN"
         } else {
             "Confirm startup and unlock passphrase"
@@ -1378,7 +1409,7 @@ impl InstallerApp {
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(
-            Text::new(encrypt_description(self.tpm2))
+            Text::new(encrypt_description(self.tpm2, self.secure_boot))
                 .with_size(sm)
                 .with_color(dim),
         ));
@@ -2419,6 +2450,7 @@ mod tests {
         // Pin the hardware: sampled from the host, this would assert something
         // different on a machine with no TPM.
         app.tpm2 = true;
+        app.secure_boot = true;
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, TPM2 + startup PIN required)"
@@ -2469,6 +2501,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.tpm2 = true;
+        app.secure_boot = true;
         app.recovery_ack = true;
         assert!(
             !app.encryption_ready(),
@@ -2489,6 +2522,23 @@ mod tests {
     }
 
     #[test]
+    fn tpm_without_verified_boot_uses_the_passphrase_policy() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = true;
+        app.secure_boot = false;
+        app.recovery_ack = true;
+
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(
+            !app.encryption_ready(),
+            "an unverified TPM must not enable short-PIN mode"
+        );
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        assert!(app.encryption_ready());
+        assert!(encrypt_description(true, false).contains("Secure Boot is not active"));
+    }
+
+    #[test]
     fn summary_and_description_name_the_passphrase_when_there_is_no_tpm() {
         let mut app = InstallerApp::with_disks(sample());
         app.tpm2 = false;
@@ -2503,11 +2553,11 @@ mod tests {
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
         assert!(
-            encrypt_description(false).contains("no TPM2 chip"),
+            encrypt_description(false, false).contains("no TPM2 chip"),
             "the chooser has to say the machine cannot unlock itself"
         );
         assert!(
-            !encrypt_description(true).contains("Requires a TPM2 device"),
+            !encrypt_description(true, true).contains("Requires a TPM2 device"),
             "encryption no longer requires a TPM, and the copy must not claim it does"
         );
     }
@@ -2520,6 +2570,7 @@ mod tests {
         app.selected_disk = Some(0);
         app.step = Step::Review;
         app.tpm2 = true;
+        app.secure_boot = true;
         let _ = build(&mut app);
         let card = app.children()[0];
         let begin_disabled = card
@@ -2533,6 +2584,7 @@ mod tests {
         app2.selected_disk = Some(0);
         app2.step = Step::Review;
         app2.tpm2 = true;
+        app2.secure_boot = true;
         app2.recovery_ack = true;
         *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
