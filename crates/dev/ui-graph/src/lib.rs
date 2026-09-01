@@ -8,6 +8,7 @@ const MAX_GRAPH_DEPTH: usize = 64;
 const MAX_GRAPH_NODES: usize = 4096;
 const MAX_ID_LEN: usize = 128;
 const MAX_BINDING_LEN: usize = 512;
+const MAX_COMPONENT_NAME_LEN: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -364,6 +365,15 @@ pub enum UiNode {
         #[serde(default = "default_true")]
         enabled: bool,
     },
+    /// App-owned retained widget built by a process-local component factory.
+    Component {
+        id: String,
+        /// Stable kebab-case factory name registered by the app.
+        name: String,
+        /// Serializable app-defined input passed unchanged to the factory.
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        props: serde_json::Map<String, serde_json::Value>,
+    },
     Spacer {
         id: String,
     },
@@ -385,6 +395,7 @@ impl UiNode {
             | Self::TextInput { id, .. }
             | Self::Checkbox { id, .. }
             | Self::Toggle { id, .. }
+            | Self::Component { id, .. }
             | Self::Spacer { id } => id,
         }
     }
@@ -581,6 +592,7 @@ impl UiNode {
                 validate_form_label(label.as_deref(), accessible_name, id)?;
                 validate_binding(value_path, id)?;
             }
+            Self::Component { name, .. } => validate_component_name(name, id)?,
             Self::Row { .. } | Self::Spacer { .. } => {}
         }
         for (index, child) in self.children().into_iter().enumerate() {
@@ -592,6 +604,26 @@ impl UiNode {
             )?;
         }
         Ok(())
+    }
+}
+
+fn validate_component_name(name: &str, id: &str) -> Result<(), UiGraphError> {
+    let bytes = name.as_bytes();
+    let valid = !bytes.is_empty()
+        && bytes.len() <= MAX_COMPONENT_NAME_LEN
+        && bytes.first().is_some_and(u8::is_ascii_lowercase)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        && !bytes.windows(2).any(|pair| pair == b"--");
+    if valid {
+        Ok(())
+    } else {
+        Err(UiGraphError::InvalidComponentName {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
     }
 }
 
@@ -671,6 +703,16 @@ pub enum UiGraphError {
     InvalidBinding { id: String, binding: String },
     #[error("UI node {id:?} has invalid {property}")]
     InvalidDimension { id: String, property: String },
+    #[error("UI component node {id:?} has invalid component name {name:?}")]
+    InvalidComponentName { id: String, name: String },
+    #[error("UI component node {id:?} references unregistered component {name:?}")]
+    UnknownComponent { id: String, name: String },
+    #[error("UI component {name:?} at node {id:?} could not be built: {message}")]
+    ComponentBuild {
+        id: String,
+        name: String,
+        message: String,
+    },
     #[error("UI node {0:?} does not exist")]
     UnknownNode(String),
     #[error("UI node {0:?} is not a row or column and cannot accept children")]
@@ -757,6 +799,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["root", "title", "create", "actions"]
         );
+    }
+
+    #[test]
+    fn app_component_nodes_round_trip_props_and_validate_factory_names() {
+        let document = UiDocument::from_json(
+            r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"account_id":42,"compact":true}}}"#,
+        )
+        .expect("valid app component");
+        assert!(matches!(
+            document.node("profile"),
+            Some(UiNode::Component { name, props, .. })
+                if name == "profile-card"
+                    && props.get("account_id") == Some(&serde_json::json!(42))
+                    && props.get("compact") == Some(&serde_json::json!(true))
+        ));
+        assert_eq!(
+            UiDocument::from_json(&document.to_json_pretty().unwrap()).unwrap(),
+            document
+        );
+
+        for name in [
+            "",
+            "ProfileCard",
+            "profile_card",
+            "-profile",
+            "profile--card",
+        ] {
+            let source = format!(
+                r#"{{"version":1,"root":{{"type":"component","id":"profile","name":{name:?}}}}}"#
+            );
+            assert!(matches!(
+                UiDocument::from_json(&source),
+                Err(UiGraphError::InvalidComponentName { .. })
+            ));
+        }
     }
 
     #[test]
