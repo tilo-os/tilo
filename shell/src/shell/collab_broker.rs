@@ -12,7 +12,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use collab_types::{
-    ArtifactId, ChannelState, OpClass, RedactedMarker, ValidationError, validate_inbound_op,
+    ArtifactId, ArtifactKind, ChannelState, DocumentMutation, OpClass, RedactedMarker,
+    ValidationError, document_artifact_id, document_attestation_id, validate_admitted_inbound_op,
 };
 use ui::collaboration::CollabEvent;
 
@@ -700,29 +701,35 @@ impl DrainQueues {
         for entry in drained_signed {
             let envelope = *entry.envelope;
             let artifact = envelope.artifact;
-            let validation = {
+            let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
+            let mutation = validate_document_route(&route, &envelope);
+            let validation = if let Err(reason) = &mutation {
+                Err(reason.clone())
+            } else {
                 let Ok(mut ch) = self.channels.lock() else {
-                    continue;
+                    return false;
                 };
                 let state = ch.state_for(artifact);
-                validate_inbound_op(&envelope, state)
+                state.artifacts.insert(artifact, ArtifactKind::Note);
+                state.artifact_apps.insert(artifact, entry.app_id.clone());
+                validate_admitted_inbound_op(
+                    &envelope,
+                    entry.role,
+                    state,
+                    std::time::SystemTime::now(),
+                    Duration::from_secs(300),
+                )
             };
-            match validation {
-                Ok(()) => {
-                    // Built from individual fields, not `&entry` —
-                    // `entry.envelope` was moved out above, and a
-                    // struct with a moved-out field can no longer be
-                    // borrowed as a whole.
-                    let route =
-                        CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
+            match (mutation, validation) {
+                (Ok(mutation), Ok(())) => {
                     self.accept_signed_op(
-                        envelope, artifact, entry.peer, &route, labels, announced,
+                        envelope, &mutation, entry.peer, &route, labels, announced,
                     );
                 }
-                Err(ValidationError::OpAlreadyRedacted { target }) => {
+                (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
                     self.record_already_redacted(envelope, artifact, target);
                 }
-                Err(reason) => {
+                (_, Err(reason)) => {
                     tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
                     if let Ok(mut ch) = self.channels.lock() {
                         ch.audit.record(
@@ -735,6 +742,7 @@ impl DrainQueues {
                         );
                     }
                 }
+                (Err(_), Ok(())) => return false,
             }
         }
         true
@@ -746,12 +754,13 @@ impl DrainQueues {
     fn accept_signed_op(
         &self,
         envelope: collab_types::SignedOp,
-        artifact: ArtifactId,
+        mutation: &DocumentMutation,
         peer: u64,
         route: &CrdtRoute,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) {
+        let artifact = envelope.artifact;
         if let Ok(mut ch) = self.channels.lock() {
             let state = ch.state_for(artifact);
             state.record_validated_op(envelope.clone());
@@ -775,9 +784,15 @@ impl DrainQueues {
             labels,
             announced,
         );
-        let event = CollabEvent::SignedCRDTIncremental {
-            envelope: Box::new(envelope),
-            from_user_id,
+        let event = match mutation {
+            DocumentMutation::Snapshot(_) => CollabEvent::SignedCRDTUpdate {
+                envelope: Box::new(envelope),
+                from_user_id,
+            },
+            DocumentMutation::Incremental(_) => CollabEvent::SignedCRDTIncremental {
+                envelope: Box::new(envelope),
+                from_user_id,
+            },
         };
         // Same app + cluster stamp as unsigned envelopes; an
         // unaddressed one (too old to stamp) is dropped, not shown to
@@ -883,6 +898,21 @@ impl DrainQueues {
         }
         true
     }
+}
+
+fn validate_document_route(
+    route: &CrdtRoute,
+    envelope: &collab_types::SignedOp,
+) -> Result<DocumentMutation, ValidationError> {
+    if envelope.artifact != document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id)
+        || envelope.attestation_id
+            != document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id)
+        || envelope.op_class != OpClass::Splice
+        || envelope.encryption.is_some()
+    {
+        return Err(ValidationError::DocumentRouteMismatch);
+    }
+    DocumentMutation::decode(&envelope.payload).map_err(|_| ValidationError::DocumentRouteMismatch)
 }
 
 fn spawn_inner(
@@ -1056,6 +1086,42 @@ mod tests {
 
     /// A digest-shaped peer id, as presence frames carry it.
     const PEER: &str = "peer@5537458103208628978";
+
+    #[test]
+    fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
+        let route = CrdtRoute::record("dev.qos.notes", "room-1", "record-1");
+        let (signing, author) = collab_types::generate_keypair();
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"whole document".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            author,
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, &signing).expect("signed snapshot");
+
+        assert!(matches!(
+            validate_document_route(&route, &envelope),
+            Ok(DocumentMutation::Snapshot(data)) if data == b"whole document"
+        ));
+        assert_eq!(
+            validate_document_route(
+                &CrdtRoute::record("dev.qos.notes", "room-1", "record-2"),
+                &envelope,
+            ),
+            Err(ValidationError::DocumentRouteMismatch),
+            "an envelope signed for one record cannot be replayed as another",
+        );
+        envelope.payload = b"untyped bytes".to_vec();
+        assert_eq!(
+            validate_document_route(&route, &envelope),
+            Err(ValidationError::DocumentRouteMismatch),
+        );
+    }
 
     #[test]
     fn a_named_peer_is_announced_and_then_left_alone() {
