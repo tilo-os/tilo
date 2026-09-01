@@ -665,6 +665,7 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
         label: label.to_string(),
         description: None,
         locus: ExecutionLocus::ClientLocal,
+        kind: qos_actions::OperationKind::Document,
         input: ActionInput::Immediate(inert_encoded_action()),
     })
 }

@@ -171,6 +171,7 @@ fn immediate(id: &str, label: impl Into<String>, action: &MapsAction) -> ActionS
             label,
             description: None,
             locus: action.locus(),
+            kind: qos_actions::OperationKind::Document,
             input: ActionInput::Immediate(encode(action)),
         }
     })

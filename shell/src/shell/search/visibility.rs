@@ -28,6 +28,23 @@ pub fn required_capability(
     resource: &ResourceRef,
     kind: &ResourceKind,
 ) -> Option<(CapResource, Verb)> {
+    if resource.provider == super::providers::live_app_actions::PROVIDER_ID
+        && let Some((app, operation_kind, action)) =
+            super::providers::live_app_actions::LiveAppActionsProvider::capability_target(
+                &resource.id,
+            )
+    {
+        if operation_kind == qos_actions::OperationKind::View {
+            return None;
+        }
+        return Some((
+            CapResource::Action {
+                app: app.to_string(),
+                action: action.to_string(),
+            },
+            Verb::Write,
+        ));
+    }
     match kind {
         // Showing is free — the larger half of the surface.
         ResourceKind::Note

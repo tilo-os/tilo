@@ -996,6 +996,7 @@ mod tests {
                 action_label: label.to_string(),
                 description: None,
                 locus: qos_actions::ExecutionLocus::ClientLocal,
+                kind: qos_actions::OperationKind::Document,
                 input: match collects {
                     None => qos_actions::InputSpec::None,
                     Some(c) => qos_actions::InputSpec::Text {

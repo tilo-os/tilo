@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus};
+use crate::action::{
+    Action, ActionError, EncodedAction, ExecutionLocus, OperationKind,
+};
 
 /// Stable identity of a resource within the publishing app instance
 /// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
@@ -117,6 +119,9 @@ pub struct ActionSpec {
     /// [`Action::locus`]), so the palette can show/route it before the
     /// action is built.
     pub locus: ExecutionLocus,
+    /// Whether this mutates the shared document, performs an effect, or
+    /// changes only the local view.
+    pub kind: OperationKind,
     pub input: ActionInput,
 }
 
@@ -142,6 +147,7 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
+            kind: OperationKind::Document,
             input: ActionInput::Immediate(EncodedAction::encode(type_id, action)?),
         })
     }
@@ -161,6 +167,54 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
+            kind: OperationKind::Document,
+            input: ActionInput::Prompted {
+                prompt: prompt.into(),
+                placeholder: placeholder.into(),
+                collects: Collects::Words,
+                build: Arc::new(build),
+            },
+        }
+    }
+
+    /// An immediate effect or view operation owned by the application.
+    pub fn operation<T>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: OperationKind,
+        type_id: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, ActionError>
+    where
+        T: serde::Serialize,
+    {
+        debug_assert!(kind != OperationKind::Document);
+        Ok(Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind,
+            input: ActionInput::Immediate(EncodedAction::encode_operation(type_id, payload)?),
+        })
+    }
+
+    /// A prompted effect or view operation owned by the application.
+    pub fn prompted_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        debug_assert!(kind != OperationKind::Document);
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind,
             input: ActionInput::Prompted {
                 prompt: prompt.into(),
                 placeholder: placeholder.into(),
@@ -241,5 +295,54 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
     }
     for child in &resource.children {
         flatten_into(child, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize)]
+    struct OpenPath {
+        path: String,
+    }
+
+    #[test]
+    fn non_document_operations_do_not_require_a_fake_action_impl() {
+        let effect = ActionSpec::operation(
+            "open",
+            "Open",
+            OperationKind::Effect,
+            "files.open",
+            &OpenPath {
+                path: "/tmp/report".into(),
+            },
+        )
+        .expect("plain effect payload encodes");
+        assert_eq!(effect.kind, OperationKind::Effect);
+        let ActionInput::Immediate(encoded) = effect.input else {
+            panic!("effect is immediate");
+        };
+        assert_eq!(encoded.type_id, "files.open");
+        assert_eq!(
+            serde_json::from_slice::<OpenPath>(&encoded.payload)
+                .expect("payload decodes")
+                .path,
+            "/tmp/report"
+        );
+    }
+
+    #[test]
+    fn prompted_view_keeps_its_operation_class() {
+        let view = ActionSpec::prompted_operation(
+            "go",
+            "Go",
+            "Destination",
+            "item id",
+            OperationKind::View,
+            |value| EncodedAction::encode_operation("view.go", &value).expect("text encodes"),
+        );
+        assert_eq!(view.kind, OperationKind::View);
     }
 }
