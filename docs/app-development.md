@@ -76,6 +76,8 @@ Grow an existing app from any directory inside it with `add`:
 ```bash
 qos-dev add
 qos-dev add component profile-card --template form
+qos-dev add component activity-card --mount main \
+  --props '{"title":"Recent activity","detail":"Nothing pending"}'
 qos-dev add component project-tree --template tree
 qos-dev add component activity-list --template list
 qos-dev add component results-table --template table
@@ -95,9 +97,10 @@ or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
 typed-props display, a typed-state form, a source-agnostic virtualized tree, a
 sparse variable-height list, a model-backed table, or advanced text. The wizard
-reviews the resolved artifact before entering the same atomic publication path
-as the explicit commands. Scripts and CI should continue to use the fully
-specified subcommands.
+offers to place a display component directly into a generated graph screen,
+including starter title and detail props. It reviews the resolved artifact
+before entering the same atomic publication path as the explicit commands.
+Scripts and CI should continue to use the fully specified subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -702,7 +705,21 @@ For the common typed display case, generate both the Rust component and its
 validated graph adapter, then insert an instance without writing JSON by hand:
 
 ```bash
-qos-dev add component profile-card --template display
+qos-dev add component profile-card --mount main \
+  --props '{"title":"Ada","detail":"Workspace owner"}'
+```
+
+That one command generates the typed Rust component, updates its module and
+factory registries, migrates an untouched older generated graph root when
+needed, and appends the first instance to `ui/main.json`. All candidate files
+validate before publication; any failure leaves the component, registry, app
+root, and screen byte-for-byte as they were. `--mount` currently applies to the
+graph-compatible `display` template. Omit it to generate other component
+templates without placing them.
+
+For an existing component, or an app-owned router context, insert only the node:
+
+```bash
 qos-dev ui component ui/main.json profile-card \
   --props '{"title":"Ada","detail":"Workspace owner"}'
 ```
@@ -711,10 +728,10 @@ qos-dev ui component ui/main.json profile-card \
 (`profile-card`, `profile-card-2`, ...), and atomically rejects a bad factory
 name, non-object props, invalid parent, duplicate explicit id, or out-of-range
 index. Use `--id`, `--parent`, and `--index` when placement must be explicit.
-Apps created with `--template graph` already pass the generated
+Apps created with `--template graph` pass the generated
 `components::ui_graph_context()` to their screen router. Adding the component
-updates that registry in the same atomic publication, so the two commands above
-are the complete wiring path—there is no app-root edit:
+with `--mount` updates that registry and the screen in the same atomic
+publication, so it is the complete wiring path—there is no app-root edit:
 
 ```rust
 let app = screens::router_with(
