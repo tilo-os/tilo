@@ -26,8 +26,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::PdfDoc;
@@ -37,7 +38,7 @@ use crate::model::{AnnoKind, Annotation, Comment, MARGIN, PtRect, Reply, Swatch}
 pub const PDF_VIEWER_ACTION_TYPE: &str = "pdf_viewer.action";
 pub const PDF_VIEWER_OPERATION_TYPE: &str = "pdf_viewer.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PdfOperation {
     PreviousPage,
     NextPage,
@@ -46,8 +47,35 @@ pub enum PdfOperation {
     FitPage,
     FitWidth,
     ToggleSidebar,
-    Open,
-    SaveAs,
+    Open { path: Option<String> },
+    SaveAs { path: Option<String> },
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    use super::*;
+    #[test]
+    fn path_argument_binds_into_background_open() {
+        let spec = file_operation("open", "Open PDF", false);
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"path":"/tmp/a.pdf"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PdfOperation::Open {
+                path: Some("/tmp/a.pdf".into())
+            })
+        );
+        assert!(matches!(
+            spec.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+    }
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PdfOperation>, String> {
@@ -71,8 +99,45 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: PdfOperation) ->
         | PdfOperation::ZoomIn
         | PdfOperation::ZoomOut
         | PdfOperation::ToggleSidebar => spec.with_contract(ActionContract::view()),
-        PdfOperation::Open | PdfOperation::SaveAs => spec.destructive(),
+        PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => spec.destructive(),
     }
+}
+
+fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "optional absolute path",
+        OperationKind::Effect,
+        PDF_VIEWER_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "Filesystem path; omit to use the system picker",
+        )],
+        move |args: &ActionArgs| {
+            let path = args
+                .text("path")
+                .filter(|path| !path.trim().is_empty())
+                .map(str::to_string);
+            let operation = if save {
+                PdfOperation::SaveAs { path }
+            } else {
+                PdfOperation::Open { path }
+            };
+            EncodedAction {
+                type_id: PDF_VIEWER_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("PdfOperation serializes"),
+            }
+        },
+    )
+    .with_contract(ActionContract {
+        risk: qos_actions::RiskLevel::Destructive,
+        confirmation: qos_actions::ConfirmationPolicy::Confirm,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        ..ActionContract::default()
+    })
 }
 
 /// Serializable mirror of an annotation's geometry. [`model::AnnoKind`] carries
@@ -533,20 +598,8 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             OperationKind::View,
             PdfOperation::ToggleSidebar,
         ),
-        (
-            "open",
-            "Open PDF",
-            OperationKind::Effect,
-            PdfOperation::Open,
-        ),
-        (
-            "save-as",
-            "Save annotated PDF",
-            OperationKind::Effect,
-            PdfOperation::SaveAs,
-        ),
     ] {
-        let mut spec = operation(id, label, kind, value);
+        let mut spec = operation(id, label, kind, value.clone());
         if value == PdfOperation::PreviousPage && ctx.page <= 1 {
             spec = spec.unavailable("first_page", "Already at the first page");
         }
@@ -555,6 +608,8 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         }
         root = root.with_action(spec);
     }
+    root = root.with_action(file_operation("open", "Open PDF", false));
+    root = root.with_action(file_operation("save-as", "Save annotated PDF", true));
 
     // Document-level: add a sticky note carrying the prompted text at the
     // current page's top margin. The ids are minted once when the argument is

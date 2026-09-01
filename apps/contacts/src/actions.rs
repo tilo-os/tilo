@@ -37,8 +37,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -51,8 +52,36 @@ pub const CONTACTS_OPERATION_TYPE: &str = "contacts.operation";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContactsOperation {
     Open { id: String },
-    ImportVcard,
-    ExportAllVcard,
+    ImportVcard { path: Option<String> },
+    ExportAllVcard { path: Option<String> },
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    use super::*;
+    #[test]
+    fn path_argument_binds_into_background_import() {
+        let spec = file_operation("import-vcard", "Import vCard", false);
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"path":"/tmp/a.vcf"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        let decoded: ContactsOperation = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(
+            decoded,
+            ContactsOperation::ImportVcard {
+                path: Some("/tmp/a.vcf".into())
+            }
+        );
+        assert!(matches!(
+            spec.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+    }
 }
 
 fn contact_operation(
@@ -68,9 +97,54 @@ fn contact_operation(
         // These invocations synchronously enqueue a host-portal request and
         // return. The app has no durable job handle or cancellation channel,
         // so advertising a cancellable background lifecycle would be false.
-        ContactsOperation::ImportVcard => spec,
-        ContactsOperation::ExportAllVcard => spec.destructive(),
+        ContactsOperation::ImportVcard { .. } => spec,
+        ContactsOperation::ExportAllVcard { .. } => spec.destructive(),
     }
+}
+
+fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "optional absolute path",
+        OperationKind::Effect,
+        CONTACTS_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "vCard path; omit to use the system picker",
+        )],
+        move |args: &ActionArgs| {
+            let path = args
+                .text("path")
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string);
+            let operation = if export {
+                ContactsOperation::ExportAllVcard { path }
+            } else {
+                ContactsOperation::ImportVcard { path }
+            };
+            EncodedAction {
+                type_id: CONTACTS_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("ContactsOperation serializes"),
+            }
+        },
+    )
+    .with_contract(ActionContract {
+        risk: if export {
+            qos_actions::RiskLevel::Destructive
+        } else {
+            qos_actions::RiskLevel::Low
+        },
+        confirmation: if export {
+            qos_actions::ConfirmationPolicy::Confirm
+        } else {
+            qos_actions::ConfirmationPolicy::None
+        },
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        ..ActionContract::default()
+    })
 }
 
 /// A serializable snapshot of a contact's fields, in exactly the representation
@@ -311,22 +385,12 @@ fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec 
 /// on-screen affordance dispatches.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("contacts.book", "contacts.book", "Contacts");
-    let mut import = contact_operation(
-        "import-vcard",
-        "Import vCard",
-        OperationKind::Effect,
-        ContactsOperation::ImportVcard,
-    );
+    let mut import = file_operation("import-vcard", "Import vCard", false);
     if ctx.import_busy {
         import = import.unavailable("already_running", "A contact import is already in progress");
     }
     root = root.with_action(import);
-    let mut export = contact_operation(
-        "export-all-vcard",
-        "Export all contacts",
-        OperationKind::Effect,
-        ContactsOperation::ExportAllVcard,
-    );
+    let mut export = file_operation("export-all-vcard", "Export all contacts", true);
     if ctx.contacts.is_empty() {
         export = export.unavailable("book_empty", "There are no contacts to export");
     } else if ctx.export_busy {
