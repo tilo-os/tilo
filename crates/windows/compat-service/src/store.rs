@@ -4,8 +4,11 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
 
-use compat_catalogue::{LaunchPlan, Layer, Runner, RunnerSettings, SecurityProfileRef};
+use compat_catalogue::{
+    ApplicationQuery, LaunchPlan, Layer, Runner, RunnerSettings, SecurityProfileRef,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const CAPSULE_SCHEMA_VERSION: u16 = 1;
@@ -18,6 +21,10 @@ pub struct CapsuleProgram {
     pub display_name: String,
     /// Relative to the prefix root, normally `drive_c/Program Files/...`.
     pub prefix_relative_executable: PathBuf,
+    /// Identity metadata captured by the trusted installer/importer. Live
+    /// clients select this program by opaque ID and cannot replace this query.
+    #[serde(default)]
+    pub query: ApplicationQuery,
 }
 
 impl CapsuleProgram {
@@ -100,6 +107,45 @@ impl CapsuleStore {
             return Err(CapsuleError::StateIdentityMismatch);
         }
         Ok(Some(state))
+    }
+
+    /// Enumerate registered programs from private capsule state. Directory
+    /// names and state identities are revalidated; malformed state fails the
+    /// whole snapshot instead of disappearing from management UI.
+    pub fn registered_programs(&self) -> Result<Vec<RegisteredProgram>, CapsuleError> {
+        let capsules = self.root.join("capsules");
+        let entries = match fs::read_dir(capsules) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut ids = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect::<Vec<_>>();
+        ids.sort();
+        let mut programs = Vec::new();
+        for capsule_id in ids {
+            validate_id("capsule id", &capsule_id)?;
+            let Some(state) = self.load(&capsule_id)? else {
+                continue;
+            };
+            for program in state.programs.values() {
+                let mut query = program.query.clone();
+                if query.executable.is_none() {
+                    query.executable =
+                        Some(program.prefix_relative_executable.display().to_string());
+                }
+                programs.push(RegisteredProgram {
+                    entry_id: managed_program_id(&state.id, &program.id),
+                    app_id: managed_app_id(&state.id, &program.id),
+                    capsule_id: state.id.clone(),
+                    program: program.clone(),
+                    query,
+                });
+            }
+        }
+        Ok(programs)
     }
 
     /// Creates a capsule on first use. A recipe change is never silently
@@ -229,6 +275,65 @@ impl CapsuleStore {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredProgram {
+    pub entry_id: String,
+    /// Canonical qOS capability subject derived by the service, never a client.
+    pub app_id: String,
+    pub capsule_id: String,
+    pub program: CapsuleProgram,
+    pub query: ApplicationQuery,
+}
+
+fn managed_program_id(capsule_id: &str, program_id: &str) -> String {
+    format!("windows-{}", identity_digest(capsule_id, program_id))
+}
+
+fn managed_app_id(capsule_id: &str, program_id: &str) -> String {
+    format!(
+        "dev.qos.windows.{}",
+        identity_digest(capsule_id, program_id)
+    )
+}
+
+fn identity_digest(capsule_id: &str, program_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(capsule_id.as_bytes());
+    digest.update([0]);
+    digest.update(program_id.as_bytes());
+    hex_lower(digest.finalize().iter().take(16).copied())
+}
+
+fn hex_lower(bytes: impl IntoIterator<Item = u8>) -> String {
+    let mut output = String::new();
+    for byte in bytes {
+        output.push(hex_digit(byte >> 4));
+        output.push(hex_digit(byte & 0x0f));
+    }
+    output
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0 => '0',
+        1 => '1',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        9 => '9',
+        10 => 'a',
+        11 => 'b',
+        12 => 'c',
+        13 => 'd',
+        14 => 'e',
+        _ => 'f',
+    }
+}
+
 pub(crate) fn validate_id(label: &'static str, value: &str) -> Result<(), CapsuleError> {
     if value.is_empty()
         || value.len() > 128
@@ -336,6 +441,7 @@ mod tests {
             id: "bad".to_string(),
             display_name: "Bad".to_string(),
             prefix_relative_executable: PathBuf::from("../host.exe"),
+            query: ApplicationQuery::default(),
         };
         assert!(matches!(
             program.validate(),

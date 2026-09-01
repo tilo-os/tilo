@@ -16,8 +16,8 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, resolve_identity_bind, resolve_service_binds,
-    to_service_binds,
+    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_identity_bind,
+    resolve_service_binds_for_launch, to_service_binds,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -1377,8 +1377,15 @@ pub fn run_with(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // 1. Service sockets.
-    let mut resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
+    let mut resolved = resolve_service_binds_for_launch(
+        &manifest.sandbox.services,
+        opts.no_services,
+        ServiceLaunchContext {
+            app_id: launch_app_id,
+            workspace_id: opts.workspace_id.as_deref(),
+        },
+    )?;
     if let Some(identity) = resolve_identity_bind(
         launch_app_id,
         opts.workspace_id.as_deref(),
@@ -1633,8 +1640,15 @@ pub fn run_with_captured(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.
-    let mut resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
+    let mut resolved = resolve_service_binds_for_launch(
+        &manifest.sandbox.services,
+        opts.no_services,
+        ServiceLaunchContext {
+            app_id: launch_app_id,
+            workspace_id: opts.workspace_id.as_deref(),
+        },
+    )?;
     if let Some(identity) = resolve_identity_bind(
         launch_app_id,
         opts.workspace_id.as_deref(),

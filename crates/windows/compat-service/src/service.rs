@@ -6,6 +6,7 @@ use compat_catalogue::{
 };
 use launcher::capabilities::CapabilityPlan;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
@@ -173,7 +174,7 @@ where
         now_unix: Option<u64>,
     ) -> Result<ExplainStatus, ServiceError> {
         validate_launch_id("app id", app_id)?;
-        let route = self.catalogue.resolver()?.resolve(query, vm_fallback);
+        let route = self.resolve_route(query, vm_fallback, app_id)?;
         let resolved = CapabilityPlan::for_app(app_id, capabilities, now_unix);
         Ok(explanation(&route, vm_fallback, &resolved, false))
     }
@@ -195,10 +196,7 @@ where
         validate_launch_id("app id", &input.app_id)?;
         validate_launch_id("workspace id", &input.workspace_id)?;
         validate_launch_id("program id", &input.program_id)?;
-        let route = self
-            .catalogue
-            .resolver()?
-            .resolve(&input.query, input.vm_fallback);
+        let route = self.resolve_route(&input.query, input.vm_fallback, &input.app_id)?;
         let capabilities =
             CapabilityPlan::for_app(&input.app_id, &input.capabilities, input.now_unix);
         if route.runtime.layer == Layer::Vm {
@@ -264,6 +262,50 @@ where
             success: outcome.success,
             exit_code: outcome.exit_code,
         })
+    }
+
+    fn resolve_route(
+        &self,
+        query: &ApplicationQuery,
+        vm_fallback: VmFallback,
+        app_id: &str,
+    ) -> Result<LaunchPlan, ServiceError> {
+        let mut route = self.catalogue.resolver()?.resolve(query, vm_fallback);
+        if route.record_id.is_none() && route.runtime.layer == Layer::Wine {
+            let digest = Sha256::digest(app_id.as_bytes());
+            route.runtime.id = format!("wine-{}", hex_lower(digest.iter().take(16).copied()));
+        }
+        Ok(route)
+    }
+}
+
+fn hex_lower(bytes: impl IntoIterator<Item = u8>) -> String {
+    let mut output = String::new();
+    for byte in bytes {
+        output.push(hex_digit(byte >> 4));
+        output.push(hex_digit(byte & 0x0f));
+    }
+    output
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0 => '0',
+        1 => '1',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        9 => '9',
+        10 => 'a',
+        11 => 'b',
+        12 => 'c',
+        13 => 'd',
+        14 => 'e',
+        _ => 'f',
     }
 }
 
@@ -503,8 +545,6 @@ mod tests {
             "explicit_vm_fallback": false,
             "capabilities": [{"effect": "grant"}]
         });
-        let parsed: crate::ProtocolRequest = serde_json::from_value(request).unwrap();
-        let encoded = serde_json::to_value(parsed).unwrap();
-        assert!(encoded.get("capabilities").is_none());
+        assert!(serde_json::from_value::<crate::ProtocolRequest>(request).is_err());
     }
 }
