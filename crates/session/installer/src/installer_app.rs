@@ -36,6 +36,7 @@
 //! no event loop) it falls back to a synchronous run.
 
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use automerge::{
@@ -158,11 +159,30 @@ fn kernel_lockdown_active() -> bool {
         .unwrap_or(false)
 }
 
+/// Does this installer image prove that the target it writes will retain the
+/// verified-boot boundary after reboot? The current split install flow cannot
+/// make that promise merely because the live medium itself booted securely.
+/// A future UKI/signing integration owns this executable and must fail closed
+/// unless the target UKI, initramfs, command line and firmware trust chain are
+/// all covered.
+fn target_verified_boot_ready() -> bool {
+    Command::new("/usr/libexec/qos-verified-boot-install-preflight")
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Explanation shown under the encryption chooser, reflecting the choice and
 /// what this machine's hardware can actually do.
-fn encrypt_description(tpm2: bool, secure_boot: bool, kernel_lockdown: bool) -> &'static str {
-    if tpm2 && secure_boot && kernel_lockdown {
+fn encrypt_description(
+    tpm2: bool,
+    secure_boot: bool,
+    kernel_lockdown: bool,
+    target_verified_boot: bool,
+) -> &'static str {
+    if tpm2 && secure_boot && kernel_lockdown && target_verified_boot {
         "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
+    } else if tpm2 && secure_boot && kernel_lockdown {
+        "qOS always encrypts the disk with LUKS2. This installer cannot yet prove that the installed target preserves verified boot, so it uses one strong startup passphrase instead of an unsafe short PIN."
     } else if tpm2 && secure_boot {
         "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
     } else if tpm2 {
@@ -631,6 +651,9 @@ pub struct InstallerApp {
     /// Secure Boot must have propagated into the kernel's runtime restrictions;
     /// the EFI variable alone is not sufficient evidence for short-PIN mode.
     kernel_lockdown: bool,
+    /// A dedicated preflight must also prove the installed target, not merely
+    /// the running live medium, retains the complete verified-boot boundary.
+    target_verified_boot: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -701,6 +724,7 @@ impl InstallerApp {
             tpm2: has_tpm2(),
             secure_boot: secure_boot_enabled(),
             kernel_lockdown: kernel_lockdown_active(),
+            target_verified_boot: target_verified_boot_ready(),
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -820,7 +844,7 @@ impl InstallerApp {
     }
 
     fn verified_tpm(&self) -> bool {
-        self.tpm2 && self.secure_boot && self.kernel_lockdown
+        self.tpm2 && self.secure_boot && self.kernel_lockdown && self.target_verified_boot
     }
 
     /// May the install start, as far as encryption is concerned? Native qOS
@@ -1425,6 +1449,7 @@ impl InstallerApp {
                 self.tpm2,
                 self.secure_boot,
                 self.kernel_lockdown,
+                self.target_verified_boot,
             ))
             .with_size(sm)
             .with_color(dim),
@@ -2468,6 +2493,7 @@ mod tests {
         app.tpm2 = true;
         app.secure_boot = true;
         app.kernel_lockdown = true;
+        app.target_verified_boot = true;
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, TPM2 + startup PIN required)"
@@ -2520,6 +2546,7 @@ mod tests {
         app.tpm2 = true;
         app.secure_boot = true;
         app.kernel_lockdown = true;
+        app.target_verified_boot = true;
         app.recovery_ack = true;
         assert!(
             !app.encryption_ready(),
@@ -2554,7 +2581,9 @@ mod tests {
         );
         *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
-        assert!(encrypt_description(true, false, false).contains("Secure Boot is not active"));
+        assert!(
+            encrypt_description(true, false, false, false).contains("Secure Boot is not active")
+        );
     }
 
     #[test]
@@ -2569,7 +2598,29 @@ mod tests {
         assert!(!app.encryption_ready());
         *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
-        assert!(encrypt_description(true, true, false).contains("kernel lockdown is not"));
+        assert!(encrypt_description(true, true, false, false).contains("kernel lockdown is not"));
+    }
+
+    #[test]
+    fn live_verified_boot_without_target_preflight_uses_a_passphrase() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = true;
+        app.target_verified_boot = false;
+        app.recovery_ack = true;
+
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(
+            !app.encryption_ready(),
+            "the live medium's boundary cannot vouch for the installed target"
+        );
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        assert!(app.encryption_ready());
+        assert!(
+            encrypt_description(true, true, true, false)
+                .contains("cannot yet prove that the installed target")
+        );
     }
 
     #[test]
@@ -2587,11 +2638,11 @@ mod tests {
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
         assert!(
-            encrypt_description(false, false, false).contains("no TPM2 chip"),
+            encrypt_description(false, false, false, false).contains("no TPM2 chip"),
             "the chooser has to say the machine cannot unlock itself"
         );
         assert!(
-            !encrypt_description(true, true, true).contains("Requires a TPM2 device"),
+            !encrypt_description(true, true, true, true).contains("Requires a TPM2 device"),
             "encryption no longer requires a TPM, and the copy must not claim it does"
         );
     }
@@ -2606,6 +2657,7 @@ mod tests {
         app.tpm2 = true;
         app.secure_boot = true;
         app.kernel_lockdown = true;
+        app.target_verified_boot = true;
         let _ = build(&mut app);
         let card = app.children()[0];
         let begin_disabled = card
@@ -2621,6 +2673,7 @@ mod tests {
         app2.tpm2 = true;
         app2.secure_boot = true;
         app2.kernel_lockdown = true;
+        app2.target_verified_boot = true;
         app2.recovery_ack = true;
         *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
