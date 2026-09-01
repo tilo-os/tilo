@@ -771,7 +771,9 @@ fn annotate_contracts(resource: &mut Resource) {
             action.contract.reversible = true;
         }
         if action.kind == OperationKind::Document
-            && (action.id.starts_with("delete-") || action.id.starts_with("remove-"))
+            && (action.id == "delete"
+                || action.id.starts_with("delete-")
+                || action.id.starts_with("remove-"))
         {
             let old = action.clone();
             *action = old.destructive();
@@ -2571,6 +2573,10 @@ mod tests {
         VideoDoc::load_project(&doc)
     }
 
+    fn rejects(spec: &ActionSpec, arg: &str) -> bool {
+        serde_json::from_slice::<VideoEditorAction>(&prompted_encode(spec, arg).payload).is_err()
+    }
+
     /// A project with one clip under the playhead.
     fn ctx_fixture() -> (VideoResourceCtx, Uuid) {
         let mut p = Project::new("act");
@@ -3521,7 +3527,7 @@ mod tests {
 
         let known = declared();
         for (id, sp) in all_specs(&ctx) {
-            if sp.params().is_empty() {
+            if sp.params().is_empty() || sp.kind == OperationKind::Effect {
                 continue;
             }
             assert!(
@@ -3969,8 +3975,7 @@ mod tests {
 
         // `parse_unit("half")` answered 0.5 — half the frame cropped away, on
         // a typo. The word cannot bind now, so the edge keeps its value.
-        let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("half"));
-        assert_eq!(cropped.clip(cid).unwrap().transform.crop_left, 0.0);
+        assert!(rejects(&spec(&ctx, "crop-left"), "half"));
         // A number still lands, and out of range still clamps: asking to cut
         // 1.4 of the frame is a legible "all of it".
         let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("1.4"));
@@ -3980,8 +3985,7 @@ mod tests {
 
         // The geometry parse answered 0.0, which for scale is a clip that is
         // no longer on screen.
-        let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("banana"));
-        assert_eq!(scaled.clip(cid).unwrap().transform.scale_x, 1.0);
+        assert!(rejects(&spec(&ctx, "set-scale"), "banana"));
         let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("0.5"));
         assert_eq!(scaled.clip(cid).unwrap().transform.scale_y, 0.5);
         // Rotation is a real number and stays one — degrees are not integers.
@@ -3995,8 +3999,7 @@ mod tests {
             project: fast,
             ..ctx
         };
-        let still_fast = run(&ctx2.project, &spec(&ctx2, "set-speed"), Some("quickly"));
-        assert_eq!(still_fast.clip(cid).unwrap().speed.rate(), 2.0);
+        assert!(rejects(&spec(&ctx2, "set-speed"), "quickly"));
     }
 
     /// A named transition and effect still land; a name the action never
@@ -4019,12 +4022,7 @@ mod tests {
             mix: ctx.mix.clone(),
             ..ctx
         };
-        let kept = run(&ctx2.project, &spec(&ctx2, "set-transition"), Some("swipe"));
-        assert_eq!(
-            kept.clip(cid).unwrap().transition,
-            Transition::DipToBlack,
-            "an unoffered name no longer falls through to a hard cut",
-        );
+        assert!(rejects(&spec(&ctx2, "set-transition"), "swipe"));
 
         // An alias the placeholder never listed but the parser has always
         // taken still works — declaring the type must not take a working name
@@ -4034,8 +4032,7 @@ mod tests {
             inverted.clip(cid).unwrap().effects.last().map(|e| e.kind),
             Some(EffectKind::Invert),
         );
-        let none = run(&ctx.project, &spec(&ctx, "add-effect"), Some("chrome"));
-        assert!(none.clip(cid).unwrap().effects.is_empty());
+        assert!(rejects(&spec(&ctx, "add-effect"), "chrome"));
     }
 
     /// The title's own arguments: three declared names for alignment, numbers
@@ -4053,12 +4050,7 @@ mod tests {
         };
         // "centre" used to be read as `Center` — an edit, from a spelling the
         // action never offered, indistinguishable from a real one.
-        let same = run(
-            &ctx2.project,
-            &spec(&ctx2, "set-title-align"),
-            Some("centre"),
-        );
-        assert_eq!(title_of(&same).align, crate::model::TextAlign::Left);
+        assert!(rejects(&spec(&ctx2, "set-title-align"), "centre"));
 
         let big = run(&ctx2.project, &spec(&ctx2, "set-title-size"), Some("0.3"));
         assert_eq!(title_of(&big).size, 0.3);
@@ -4435,7 +4427,7 @@ mod tests {
         );
         let (_, delete) = specs
             .iter()
-            .find(|(_, action)| action.id == "delete-clip")
+            .find(|(_, action)| action.id == "delete")
             .expect("fixture clip exports deletion");
         assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
         assert_eq!(
