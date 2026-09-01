@@ -33,6 +33,17 @@ function Test-FixedTime([string]$left, [string]$right) {
 function Write-Json($context, $value, [int]$status = 200) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Depth 8 -Compress))
     $context.Response.StatusCode = $status; $context.Response.ContentType = 'application/json'
+    # The initial enrollment request intentionally cannot rely on a pre-existing
+    # TLS trust anchor. Bind every response to the already-authenticated
+    # request so the host can verify the bridge certificate DER before it
+    # persists that DER as its Rustls root. This also prevents a host-only
+    # relay from swapping catalogue or credential JSON.
+    $timestamp = [string]$context.Request.Headers['X-qOS-Timestamp']
+    $nonce = [string]$context.Request.Headers['X-qOS-Nonce']
+    if (-not [string]::IsNullOrWhiteSpace($timestamp) -and -not [string]::IsNullOrWhiteSpace($nonce)) {
+        $responseText = [Text.Encoding]::UTF8.GetString($bytes)
+        $context.Response.Headers.Add('X-qOS-Response-Auth', (Get-Hmac "$timestamp`n$nonce`n$responseText"))
+    }
     $context.Response.ContentLength64 = $bytes.Length; $context.Response.OutputStream.Write($bytes, 0, $bytes.Length); $context.Response.Close()
 }
 function Require-RequestAuth($context, [string]$body) {
@@ -107,6 +118,18 @@ function Start-FocusedApplication($app) {
     return @{ user = $user; taskName = $taskName; applicationId = $app.id }
 }
 
+function Get-PublishedCatalog() {
+    # The administrator-owned manifest carries executable paths and arguments,
+    # but those never leave the Windows SYSTEM bridge. The host receives only
+    # opaque published ids and aliases that `WindowsAppliance` validates.
+    $source = Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json
+    $published = @()
+    foreach ($app in @($source.applications)) {
+        $published += @{ id = [string]$app.id; displayName = [string]$app.name; remoteAppAlias = [string]$app.id; associations = @() }
+    }
+    return @{ generation = 1; applications = $published }
+}
+
 # Generate a VM-local TLS identity once. The certificate has no host trust
 # anchor; qOS learns and pins its SHA-256 thumbprint through authenticated
 # enrollment, then refuses certificate changes until explicit repair.
@@ -134,9 +157,11 @@ while ($listener.IsListening) {
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
                 $interactiveUser = Get-ManagedInteractiveUser
-                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; license = $license; catalogGeneration = 1; presentationBackend = $presentation; appFocusedSpiceAvailable = ($null -ne $interactiveUser); appFocusedSpiceUnavailableReason = if ($null -eq $interactiveUser) { 'no managed interactive session' } else { $null } }; break
+                $bootId = [string]$os.LastBootUpTime.ToUniversalTime().ToFileTimeUtc()
+                $certificateDerBase64 = [Convert]::ToBase64String($cert.RawData)
+                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; certificateDerBase64 = $certificateDerBase64; license = $license; catalogGeneration = 1; guestBootId = $bootId; presentationBackend = $presentation; appFocusedSpiceAvailable = ($null -ne $interactiveUser); appFocusedSpiceUnavailableReason = if ($null -eq $interactiveUser) { 'no managed interactive session' } else { $null } }; break
             }
-            'GET /v1/catalog' { Write-Json $context (Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json); break }
+            'GET /v1/catalog' { Write-Json $context (Get-PublishedCatalog); break }
             'POST /v1/launch' {
                 $request = $body | ConvertFrom-Json
                 if ($request.applicationId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or $request.launchNonce -notmatch '^[A-Za-z0-9-]{16,128}$') { throw 'invalid launch request' }
@@ -176,7 +201,7 @@ while ($listener.IsListening) {
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
                 $focus = $null
                 if ($requestedPresentation -eq 'app_focused_spice') { $focus = Start-FocusedApplication $app }
-                Write-Json $context @{ endpoint = "$guestIp`:3389"; bridgePort = $port; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256; presentationBackend = if ($requestedPresentation -eq 'app_focused_spice') { 'app_focused_spice' } else { $presentation }; focus = $focus }
+                Write-Json $context @{ endpoint = "$guestIp`:3389"; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256; presentationBackend = if ($requestedPresentation -eq 'app_focused_spice') { 'app_focused_spice' } else { $presentation } }
                 break
             }
             default { Write-Json $context @{ error = 'not found' } 404; break }
