@@ -36,6 +36,7 @@ const STDERR_TAIL_LINES: usize = 12;
 /// Reading with `BufRead::lines` grows until a newline and lets a package
 /// exhaust compositor memory with one unterminated write.
 const APP_LOG_LINE_BYTES: usize = 8 * 1024;
+const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 
 fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
     let mut chunk = [0_u8; 4096];
@@ -86,6 +87,24 @@ struct LaunchedProcess {
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceLaunchIdentity {
+    pub app_id: String,
+    pub workspace_id: String,
+    pub allowed_compat_entry_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TrustedServiceLaunch {
+    start_time: u64,
+    identity: ServiceLaunchIdentity,
+    registered_at: Instant,
+}
+
+static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static WINDOWS_COMPAT_ENTRY_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
@@ -111,10 +130,58 @@ fn register_launched_process(pid: u32, package_id: &str) {
     }
 }
 
+fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
+    let Some((_, start_time)) = proc_stat(pid) else {
+        return;
+    };
+    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+    launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.insert(
+        pid,
+        TrustedServiceLaunch {
+            start_time,
+            identity,
+            registered_at: Instant::now(),
+        },
+    );
+}
+
+/// Consume the compositor's one-shot authority record for a launcher child.
+/// Kernel process facts corroborate the record but never create authority.
+pub fn consume_trusted_service_launch(
+    pid: u32,
+    start_time: u64,
+    app_id: &str,
+    workspace_id: &str,
+) -> Option<Vec<String>> {
+    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+    launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    let launch = launches.get(&pid)?;
+    if launch.start_time != start_time
+        || launch.identity.app_id != app_id
+        || launch.identity.workspace_id != workspace_id
+    {
+        return None;
+    }
+    launches
+        .remove(&pid)
+        .map(|launch| launch.identity.allowed_compat_entry_ids)
+}
+
+/// Publish the server-owned compatibility entries that a newly launched
+/// Windows manager may address. Existing launches deliberately retain their
+/// one-shot snapshot.
+pub fn set_windows_compat_entry_ids(mut entry_ids: Vec<String>) {
+    entry_ids.sort();
+    entry_ids.dedup();
+    *lock(&WINDOWS_COMPAT_ENTRY_IDS) = entry_ids;
+}
+
 fn unregister_launched_process(pid: u32) {
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.remove(&pid);
     }
+    lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
 }
 
 /// Resolve a host process (normally xdg-dbus-proxy) to the qOS package
@@ -299,6 +366,9 @@ pub struct LaunchCommand {
     /// Environment *overrides* for the child; `WAYLAND_DISPLAY` is set
     /// inside the sandbox by `qos-launcher`, not inherited from here.
     pub env: Vec<(String, String)>,
+    /// Compositor-owned service authority registered only after this exact
+    /// launcher process exists. Never serialised into the child environment.
+    pub service_identity: Option<ServiceLaunchIdentity>,
 }
 
 static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -818,6 +888,15 @@ fn build_launch_command_for(
             "XDG_RUNTIME_DIR".to_string(),
             runtime_dir().display().to_string(),
         )],
+        service_identity: Some(ServiceLaunchIdentity {
+            app_id: app.package_id.clone(),
+            workspace_id: room.to_string(),
+            allowed_compat_entry_ids: if app.package_id == "dev.qos.windows" {
+                lock(&WINDOWS_COMPAT_ENTRY_IDS).clone()
+            } else {
+                Vec::new()
+            },
+        }),
     }
 }
 
@@ -1068,6 +1147,9 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
                 return;
             }
         };
+        if let Some(identity) = command.service_identity.clone() {
+            register_trusted_service_launch(child.id(), identity);
+        }
         register_launched_process(child.id(), &app.package_id);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
@@ -1989,5 +2071,34 @@ mod tests {
         );
         assert_eq!(verified_package_for_descendant(pid), None);
         unregister_launched_process(pid);
+    }
+
+    #[test]
+    fn compatibility_service_authority_is_exact_and_consumed_once() {
+        let pid = std::process::id();
+        lock(&TRUSTED_SERVICE_LAUNCHES).clear();
+        register_trusted_service_launch(
+            pid,
+            ServiceLaunchIdentity {
+                app_id: "dev.qos.windows".into(),
+                workspace_id: "room-1".into(),
+                allowed_compat_entry_ids: vec!["windows-reader".into()],
+            },
+        );
+        let (_, start_time) = proc_stat(pid).expect("current process stat");
+        assert_eq!(
+            consume_trusted_service_launch(pid, start_time, "dev.qos.windows", "wrong-room"),
+            None,
+            "a mismatch must deny without transferring the record"
+        );
+        assert_eq!(
+            consume_trusted_service_launch(pid, start_time, "dev.qos.windows", "room-1"),
+            Some(vec!["windows-reader".into()])
+        );
+        assert_eq!(
+            consume_trusted_service_launch(pid, start_time, "dev.qos.windows", "room-1"),
+            None,
+            "the authority record is single-use"
+        );
     }
 }
