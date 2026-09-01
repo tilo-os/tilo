@@ -32,7 +32,11 @@ document-title-label = Title\n\
 document-title-placeholder = Untitled\n\
 document-body-label = Body\n\
 document-body-placeholder = Start writing…\n\
-document-preview-heading = Live preview\n";
+document-preview-heading = Live preview\n\
+qr-title = QR code generator\n\
+qr-input-label = Content\n\
+qr-input-placeholder = Type text or a link\n\
+qr-output-alt = QR code for { $payload }\n";
 
     pub const IDS: &[&str] = &["de-DE", "en-US"];
 
@@ -72,6 +76,10 @@ pub mod async_task {
 
 pub mod document {
     include!("../../qos-dev/templates/document.rs");
+}
+
+pub mod qr {
+    include!("../../qos-dev/templates/qr.rs");
 }
 
 pub mod screens {
@@ -199,7 +207,7 @@ mod tests {
     #[test]
     fn every_generated_template_has_a_clean_initial_accessibility_audit() {
         type TemplateCase = (&'static str, Box<dyn ui::widget::Widget>, (u32, u32));
-        let templates: [TemplateCase; 7] = [
+        let templates: [TemplateCase; 8] = [
             ("starter", super::starter::app_root(), (800, 500)),
             ("data", super::data::app_root(), (800, 500)),
             ("list", super::list::app_root(), (800, 500)),
@@ -207,6 +215,7 @@ mod tests {
             ("graph", super::graph::app_root(), (800, 500)),
             ("async", super::async_task::app_root(), (800, 500)),
             ("document", super::document::app_root(), (800, 600)),
+            ("qr", super::qr::app_root(), (800, 600)),
         ];
         for (name, root, viewport) in templates {
             let driver = ui::headless::Driver::new(ui::State::new(), root, viewport);
@@ -227,6 +236,20 @@ mod tests {
                 .name_contains("Ada"),
         )
         .expect("generated greeting semantics match");
+    }
+
+    #[test]
+    fn generated_qr_composes_input_state_and_accessible_visual_output() {
+        let mut app =
+            ui::headless::Driver::new(ui::State::new(), super::qr::app_root(), (800, 600));
+        app.perform_named("qr-input", &Action::SetValue("你好 Rust GUI".into()))
+            .expect("generated input remains addressable");
+        app.expect(
+            &SemanticExpectation::named("qr-output")
+                .role(Role::Image)
+                .name_contains("你好 Rust GUI"),
+        )
+        .expect("generated QR output is screen-reader visible");
     }
 
     #[test]

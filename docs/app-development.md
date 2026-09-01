@@ -33,7 +33,7 @@ the structural and Rust-test phases for apps that deliberately have no saved
 flows. Arguments after `--` are forwarded to the Cargo test harness.
 
 With no name, `qos-dev new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents seven
+name, window title, application ID, and starter shape. It presents eight
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
@@ -51,6 +51,7 @@ cargo run -p qos-dev -- new log-browser \
   --template data
 
 cargo run -p qos-dev -- new activity-feed --template list
+cargo run -p qos-dev -- new qr-code --template qr
 cargo run -p qos-dev -- new repo-scan --template async
 cargo run -p qos-dev -- new notes --template document
 ```
@@ -233,6 +234,12 @@ The `async` starter shows a complete button-to-worker flow using
 `LatestTask` for automatic event-loop wakeup, cancellation, and stale-result
 suppression, plus `ModelView::from_state_by` for keyed loading, success, and
 failure subtrees without polling or string messages.
+The `qr` starter demonstrates a compact generated-visual composition path: an
+IME-capable input writes one typed `LocalState<String>`,
+`ModelView::from_state` replaces only the generated `QrWidget`, and
+payload-specific alternative text makes the output independently visible to
+screen readers, inspection, and headless scenarios. No app-owned event bus or
+extra image dependency is required.
 The `document` starter is the durable counterpart: title and body inputs write
 directly to the persisted Automerge model, live preview text reads those same
 fields, and the generated headless contract proves an edit is synchronized
