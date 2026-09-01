@@ -46,8 +46,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::SlidesDoc;
@@ -59,14 +60,41 @@ use crate::model::{
 pub const SLIDES_ACTION_TYPE: &str = "slides.action";
 pub const SLIDES_OPERATION_TYPE: &str = "slides.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SlidesOperation {
     ShowEditor,
     ShowOverview,
     StartPresentation,
     EndPresentation,
-    Open,
-    SaveAs,
+    Open { path: Option<String> },
+    SaveAs { path: Option<String> },
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    use super::*;
+    #[test]
+    fn path_argument_binds_into_background_save() {
+        let spec = file_operation("save-as", "Save presentation", true);
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"path":"/tmp/a.odp"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(SlidesOperation::SaveAs {
+                path: Some("/tmp/a.odp".into())
+            })
+        );
+        assert!(matches!(
+            spec.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+    }
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SlidesOperation>, String> {
@@ -88,8 +116,45 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation)
         SlidesOperation::StartPresentation | SlidesOperation::EndPresentation => {
             spec.with_contract(ActionContract::view())
         }
-        SlidesOperation::Open | SlidesOperation::SaveAs => spec.destructive(),
+        SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => spec.destructive(),
     }
+}
+
+fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "optional absolute path",
+        OperationKind::Effect,
+        SLIDES_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "ODP path; omit to use the system picker",
+        )],
+        move |args: &ActionArgs| {
+            let path = args
+                .text("path")
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string);
+            let operation = if save {
+                SlidesOperation::SaveAs { path }
+            } else {
+                SlidesOperation::Open { path }
+            };
+            EncodedAction {
+                type_id: SLIDES_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("SlidesOperation serializes"),
+            }
+        },
+    )
+    .with_contract(ActionContract {
+        risk: qos_actions::RiskLevel::Destructive,
+        confirmation: qos_actions::ConfirmationPolicy::Confirm,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        ..ActionContract::default()
+    })
 }
 
 // ===========================================================================
@@ -708,21 +773,11 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             OperationKind::View,
             SlidesOperation::EndPresentation,
         ),
-        (
-            "open",
-            "Open presentation",
-            OperationKind::Effect,
-            SlidesOperation::Open,
-        ),
-        (
-            "save-as",
-            "Save presentation",
-            OperationKind::Effect,
-            SlidesOperation::SaveAs,
-        ),
     ] {
         deck = deck.with_action(operation(id, label, kind, value));
     }
+    deck = deck.with_action(file_operation("open", "Open presentation", false));
+    deck = deck.with_action(file_operation("save-as", "Save presentation", true));
 
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
