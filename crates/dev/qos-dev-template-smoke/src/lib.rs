@@ -287,7 +287,7 @@ mod tests {
         .expect("generated durable input remains addressable");
         app.expect(
             &SemanticExpectation::named("document-title-preview")
-                .role(Role::StaticText)
+                .role(Role::Heading { level: 2 })
                 .name("Project Atlas"),
         )
         .expect("generated document preview semantics match");
