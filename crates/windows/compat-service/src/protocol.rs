@@ -18,6 +18,13 @@ pub enum ProtocolRequest {
         version: u16,
         entry_id: String,
     },
+    /// A distinct manager action is required before the singleton Windows
+    /// fallback may be selected.  The server still supplies the entry,
+    /// workspace, capability snapshot, and published application id.
+    LaunchVmFallback {
+        version: u16,
+        entry_id: String,
+    },
     /// The portal-selected descriptor accompanies this frame via SCM_RIGHTS.
     Install {
         version: u16,

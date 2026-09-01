@@ -29,8 +29,6 @@ const MAX_HANDOFF_BYTES: usize = 4 * 1024;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
-const VM_DISABLED_REASON: &str =
-    "The privileged authenticated Windows guest adapter is not installed in this session.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,6 +103,10 @@ where
         self.store.installations().map_err(Into::into)
     }
 
+    fn vm_availability(&self) -> crate::VmAvailability {
+        self.service.vm_availability()
+    }
+
     fn explain_entry(
         &self,
         entry: &RegisteredProgram,
@@ -148,6 +150,28 @@ where
                 program_id: entry.program.id.clone(),
                 query: entry.query.clone(),
                 vm_fallback: VmFallback::Disabled,
+                capabilities,
+                now_unix: now_unix(),
+            })
+            .map_err(Into::into)
+    }
+
+    fn launch_vm_fallback_entry(
+        &self,
+        entry: &RegisteredProgram,
+        workspace_id: &str,
+        capabilities: Vec<CapOverride>,
+    ) -> Result<crate::LaunchReceipt, SessionError> {
+        // This method is reached only through the separately named protocol
+        // request.  It is deliberately not a client boolean that can be
+        // smuggled into an ordinary launch frame.
+        self.service
+            .launch(&LaunchInput {
+                app_id: entry.app_id.clone(),
+                workspace_id: workspace_id.to_string(),
+                program_id: entry.program.id.clone(),
+                query: entry.query.clone(),
+                vm_fallback: VmFallback::Explicit,
                 capabilities,
                 now_unix: now_unix(),
             })
@@ -555,6 +579,7 @@ where
     let version = match &request {
         ProtocolRequest::List { version }
         | ProtocolRequest::Launch { version, .. }
+        | ProtocolRequest::LaunchVmFallback { version, .. }
         | ProtocolRequest::Install { version, .. }
         | ProtocolRequest::RetryInstall { version, .. }
         | ProtocolRequest::RemoveLauncher { version, .. }
@@ -603,6 +628,25 @@ where
                     .map_err(SessionError::Authority)?;
                 managed
                     .launch_entry(&entry, &handoff.workspace_id, capabilities)
+                    .map(|receipt| ProtocolResponse::Launched { receipt })
+            } else {
+                Err(SessionError::UnknownEntry)
+            }
+        }
+        ProtocolRequest::LaunchVmFallback { entry_id, .. } => {
+            if valid_id(&entry_id) && allowed_entry_ids.contains(&entry_id) {
+                let entry = managed
+                    .entries()?
+                    .into_iter()
+                    .find(|entry| {
+                        entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
+                    })
+                    .ok_or(SessionError::UnknownEntry)?;
+                let capabilities = authority
+                    .capabilities_for(&handoff.workspace_id, &entry.app_id)
+                    .map_err(SessionError::Authority)?;
+                managed
+                    .launch_vm_fallback_entry(&entry, &handoff.workspace_id, capabilities)
                     .map(|receipt| ProtocolResponse::Launched { receipt })
             } else {
                 Err(SessionError::UnknownEntry)
@@ -686,6 +730,9 @@ where
     V: VmDelegate,
 {
     let mut applications = Vec::new();
+    // A list refresh reports real delegate readiness, but never wakes the
+    // fallback appliance merely to draw a manager badge.
+    let vm_availability = managed.vm_availability();
     for entry in managed.entries()?.into_iter().filter(|entry| {
         allowed_entry_ids.contains(&entry.entry_id)
             && entry.program.kind == ProgramKind::Application
@@ -711,8 +758,9 @@ where
             capsule_id: entry.capsule_id,
             program_id: entry.program.id,
             explanation,
-            vm_launch_available: false,
-            vm_unavailable_reason: Some(VM_DISABLED_REASON.to_string()),
+            vm_launch_available: vm_availability.available,
+            vm_unavailable_reason: (!vm_availability.available)
+                .then(|| vm_availability.detail.clone()),
             // The resource broker gives every Wine/UMU launch a fresh
             // playback-only PipeWire/Pulse graph. A startup failure is a
             // launch error, not an imaginary unavailable feature in the UI.
