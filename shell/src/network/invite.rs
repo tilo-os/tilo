@@ -78,6 +78,11 @@ pub struct PeerInviteToken {
     /// behaviour through the enum default.
     #[serde(default)]
     pub role: InviteRole,
+    /// Random per-invite nonce. Names stay authority-side, but this makes
+    /// two invitations minted in the same second distinct credentials so
+    /// cancellation and redemption can target the exact invitation.
+    #[serde(default)]
+    pub invite_nonce: [u8; 16],
     pub expiry_unix_seconds: u64,
     pub signature: Vec<u8>,
 }
@@ -112,6 +117,19 @@ struct InvitePayloadWithRole<'a> {
     host_addrs: &'a [iroh::EndpointAddr],
     owner_device_cert: Option<&'a DeviceCert>,
     role: InviteRole,
+    expiry_unix_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct InvitePayloadWithNonce<'a> {
+    workspace_id: u64,
+    room_id: &'a str,
+    owner_peer_id: &'a str,
+    owner_addr: &'a iroh::EndpointAddr,
+    host_addrs: &'a [iroh::EndpointAddr],
+    owner_device_cert: Option<&'a DeviceCert>,
+    role: InviteRole,
+    invite_nonce: [u8; 16],
     expiry_unix_seconds: u64,
 }
 
@@ -178,6 +196,19 @@ fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
 }
 
 fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> {
+    if token.invite_nonce != [0; 16] {
+        return postcard::to_allocvec(&InvitePayloadWithNonce {
+            workspace_id: token.workspace_id,
+            room_id: &token.room_id,
+            owner_peer_id: &token.owner_peer_id,
+            owner_addr: &token.owner_addr,
+            host_addrs: &token.host_addrs,
+            owner_device_cert: token.owner_device_cert.as_ref(),
+            role: token.role,
+            invite_nonce: token.invite_nonce,
+            expiry_unix_seconds: token.expiry_unix_seconds,
+        });
+    }
     postcard::to_allocvec(&InvitePayloadWithRole {
         workspace_id: token.workspace_id,
         room_id: &token.room_id,
@@ -309,6 +340,7 @@ pub fn make_invite_token_with_identity_and_role(
         host_addrs: host_addrs.to_vec(),
         owner_device_cert,
         role,
+        invite_nonce: *uuid::Uuid::new_v4().as_bytes(),
         expiry_unix_seconds: now_unix_seconds().saturating_add(expiry_seconds_from_now),
         signature: Vec::new(),
     };
@@ -531,6 +563,37 @@ mod tests {
     }
 
     #[test]
+    fn invitations_minted_in_the_same_second_remain_distinct_and_valid() {
+        let owner = iroh::SecretKey::from_bytes(&[32; 32]);
+        let workspace = workspace(32);
+        let addr = endpoint(&owner, 3232);
+        let first = make_invite_token_with_identity_and_role(
+            &owner,
+            &workspace,
+            &addr,
+            &[],
+            None,
+            InviteRole::Editor,
+            3600,
+        )
+        .expect("first invite");
+        let second = make_invite_token_with_identity_and_role(
+            &owner,
+            &workspace,
+            &addr,
+            &[],
+            None,
+            InviteRole::Editor,
+            3600,
+        )
+        .expect("second invite");
+        assert_ne!(first, second, "each invitation is independently revocable");
+        assert_ne!(invite_id(&first), invite_id(&second));
+        validate_invite_token(&first).expect("first remains valid");
+        validate_invite_token(&second).expect("second remains valid");
+    }
+
+    #[test]
     fn identity_certificate_binds_inviter_person_to_device_endpoint() {
         use qos_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -591,6 +654,7 @@ mod tests {
             host_addrs: Vec::new(),
             owner_device_cert: None,
             role: InviteRole::Editor,
+            invite_nonce: [0; 16],
             expiry_unix_seconds: now_unix_seconds() + 3600,
             signature: Vec::new(),
         };
