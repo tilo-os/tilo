@@ -29,8 +29,8 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, OpClass, RedactedMarker,
-    ResourceRef, SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id,
+    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, RedactedMarker, ResourceRef,
+    SignedOp, ValidationError, document_artifact_id, document_attestation_id, role_permits,
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
@@ -223,9 +223,14 @@ struct PresenceEnvelope {
 
 /// Envelope pushed onto a [`ContextStreamServer`]'s queue.
 #[derive(Clone, Debug)]
-struct ContextEnvelope {
-    collaborators: Vec<ui::collaboration::Collaborator>,
-    permissions: Vec<String>,
+enum ContextEnvelope {
+    Snapshot {
+        collaborators: Vec<ui::collaboration::Collaborator>,
+        permissions: Vec<String>,
+    },
+    FollowChanged {
+        peer_id: Option<String>,
+    },
 }
 
 /// One subscription onto the broker fanout. Slot-indexed inside a
@@ -341,7 +346,6 @@ impl CapnpBrokerState {
         if route.app_id.is_empty()
             || envelope.artifact != expected_artifact
             || envelope.attestation_id != expected_attestation
-            || envelope.op_class != OpClass::Splice
             || envelope.encryption.is_some()
         {
             return Err(capnp::Error::failed(
@@ -372,11 +376,13 @@ impl CapnpBrokerState {
             kind: ArtifactKind::Note,
             instance: expected_artifact,
         };
-        let decision = workspace.decide(&actor, &resource, Verb::Write);
+        let required = collab_types::caps::verb_for_opclass(envelope.op_class);
+        let decision = workspace.decide(&actor, &resource, required);
+        let role_allows = role_permits(admitted.role, ArtifactKind::Note, envelope.op_class);
         drop(tree);
-        if decision != CapDecision::Allow {
+        if decision != CapDecision::Allow || !role_allows {
             return Err(capnp::Error::failed(
-                "current workspace capability denies document editing".into(),
+                "current workspace capability denies this document action".into(),
             ));
         }
         Ok(mutation)
@@ -440,6 +446,9 @@ impl CapnpBrokerState {
                 collaborators,
                 permissions,
             } => Self::fanout_context(channels, except, collaborators, permissions),
+            CollabEvent::FollowChanged { peer_id } => {
+                Self::fanout_follow_changed(channels, except, peer_id.as_deref());
+            }
             CollabEvent::ActionArrived { type_id, .. } => {
                 // Unreachable today; said out loud, not silently dropped.
                 tracing::warn!(
@@ -547,7 +556,7 @@ impl CapnpBrokerState {
         collaborators: &[ui::collaboration::Collaborator],
         permissions: &[String],
     ) {
-        let env = ContextEnvelope {
+        let env = ContextEnvelope::Snapshot {
             collaborators: collaborators.to_vec(),
             permissions: permissions.to_vec(),
         };
@@ -557,6 +566,27 @@ impl CapnpBrokerState {
                     return true;
                 }
                 s.tx.send(env.clone()).is_ok()
+            });
+        }
+    }
+
+    /// Session-local view binding. It rides the session context stream but
+    /// is explicitly tagged so clients do not replace their roster with an
+    /// empty control frame.
+    fn fanout_follow_changed<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        peer_id: Option<&str>,
+    ) {
+        let env = ContextEnvelope::FollowChanged {
+            peer_id: peer_id.map(str::to_owned),
+        };
+        for subs in channels {
+            subs.context.retain(|sub| {
+                if sub.peer_id == except {
+                    return true;
+                }
+                sub.tx.send(env.clone()).is_ok()
             });
         }
     }
@@ -881,13 +911,13 @@ fn handle_signed_op_send(
             if let Ok(mut ch) = state.broker_channels.lock() {
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
-                if envelope.op_class == OpClass::Compaction
+                if envelope.op_class == collab_types::OpClass::Compaction
                     && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
             }
-            if envelope.op_class == OpClass::Redact {
+            if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
@@ -1335,12 +1365,23 @@ impl context_stream::Server for ContextStreamServer {
             };
             drop(guard);
             let mut ctx = results.get().init_ctx();
-            let collab_count = u32::try_from(env.collaborators.len()).map_err(|_| {
+            let (collaborators, permissions) = match env {
+                ContextEnvelope::Snapshot {
+                    collaborators,
+                    permissions,
+                } => (collaborators, permissions),
+                ContextEnvelope::FollowChanged { peer_id } => {
+                    ctx.set_follow_changed(true);
+                    ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
+                    return Ok(());
+                }
+            };
+            let collab_count = u32::try_from(collaborators.len()).map_err(|_| {
                 capnp::Error::failed("context: too many collaborators to encode".into())
             })?;
             {
                 let mut collabs = ctx.reborrow().init_collaborators(collab_count);
-                for (i, c) in env.collaborators.iter().enumerate() {
+                for (i, c) in collaborators.iter().enumerate() {
                     // `i < env.collaborators.len()`, already proven to fit
                     // in `u32` above; `u32::MAX` is unreachable here.
                     let idx = u32::try_from(i).unwrap_or(u32::MAX);
@@ -1350,12 +1391,12 @@ impl context_stream::Server for ContextStreamServer {
                     slot.set_color(pack_color(c.color));
                 }
             }
-            let perm_count = u32::try_from(env.permissions.len()).map_err(|_| {
+            let perm_count = u32::try_from(permissions.len()).map_err(|_| {
                 capnp::Error::failed("context: too many permissions to encode".into())
             })?;
             {
                 let mut perms = ctx.init_permissions(perm_count);
-                for (i, p) in env.permissions.iter().enumerate() {
+                for (i, p) in permissions.iter().enumerate() {
                     let idx = u32::try_from(i).unwrap_or(u32::MAX);
                     perms.set(idx, p.as_str());
                 }
@@ -1752,7 +1793,7 @@ mod tests {
         workspace.capabilities.push(CapOverride::membership(
             Subject::person(principal),
             room,
-            Verb::Read,
+            collab_types::Verb::Read,
         ));
         drop(tree);
     }
@@ -1978,7 +2019,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            OpClass::Splice,
+            collab_types::OpClass::Splice,
             SystemTime::now(),
             1,
         );

@@ -222,6 +222,10 @@ fn presence_label(p: Presence) -> &'static str {
 
 impl ChatApp {
     // ---------------------------------------------------------------- rail
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact rail paints the two related destinations and their badges from one shared geometry pass"
+    )]
     pub(crate) fn draw_rail(
         &self,
         scene: &mut Scene,
@@ -237,56 +241,109 @@ impl ChatApp {
         let btn = 48.0;
         let cx = rail.x0 + RAIL_W_CENTER;
         let mut y = rail.y0 + 16.0;
-        for ws in &self.workspaces {
-            let active = ws.id == self.active_ws;
+
+        // Inbox is a system-wide destination, not another workspace. Its
+        // fixed envelope icon and aggregate unread badge make that distinction
+        // visible before a person opens it.
+        let inbox = Rect::new(cx - btn / 2.0, y, cx + btn / 2.0, y + btn);
+        let inbox_bg = if self.inbox_open {
+            c.accent[5]
+        } else {
+            c.neutral[2]
+        };
+        fill_round(
+            scene,
+            tf,
+            inbox,
+            if self.inbox_open { 16.0 } else { 24.0 },
+            inbox_bg,
+        );
+        label(
+            scene,
+            tr,
+            tf,
+            "✉",
+            20.0,
+            if self.inbox_open {
+                Color::WHITE
+            } else {
+                c.text_dim
+            },
+            inbox.center().x - 10.0,
+            inbox.center().y - 12.0,
+        );
+        let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
+        if unread > 0 {
+            let badge = Rect::new(
+                inbox.x1 - 16.0,
+                inbox.y0 - 4.0,
+                inbox.x1 + 5.0,
+                inbox.y0 + 17.0,
+            );
+            fill_round(scene, tf, badge, 10.5, c.semantic.danger);
+            let count = if unread > 99 {
+                "99+".into()
+            } else {
+                unread.to_string()
+            };
+            let (w, _) = tr.measure(&count, 9.0, None);
+            label(
+                scene,
+                tr,
+                tf,
+                &count,
+                9.0,
+                Color::WHITE,
+                badge.center().x - f64::from(w) / 2.0,
+                badge.center().y - 6.0,
+            );
+        }
+        ChatApp::push_hit(hits, inbox, Hit::Inbox);
+        y += btn + 18.0;
+        hline(
+            scene,
+            tf,
+            rail.x0 + 18.0,
+            rail.x1 - 18.0,
+            y - 7.0,
+            c.border_standard,
+        );
+
+        // One contextual destination: the qOS workspace that owns this Chat
+        // instance. Other workspaces are reachable only through Inbox.
+        if let Some(ws) = self.workspaces.iter().find(|ws| ws.id == self.context_ws) {
+            let active = !self.inbox_open;
             let b = Rect::new(cx - btn / 2.0, y, cx + btn / 2.0, y + btn);
-            // selection pill on the rail's left edge
             if active {
                 let pill = Rect::new(rail.x0 + 3.0, y + 8.0, rail.x0 + 7.0, y + btn - 8.0);
                 fill_round(scene, tf, pill, 2.0, c.text_primary);
             }
-            let radius = if active { 16.0 } else { btn / 2.0 };
-            let fill = if active {
-                palette_color(theme, ws.color_idx)
-            } else {
-                c.neutral[2]
-            };
-            fill_round(scene, tf, b, radius, fill);
+            fill_round(
+                scene,
+                tf,
+                b,
+                if active { 16.0 } else { btn / 2.0 },
+                if active {
+                    palette_color(theme, ws.color_idx)
+                } else {
+                    c.neutral[2]
+                },
+            );
             let (tw, th) = tr.measure_weighted(&ws.glyph, 17.0, None, TextWeight::Bold);
-            let col = if active { Color::WHITE } else { c.text_dim };
             text(
                 scene,
                 tr,
                 tf,
                 &ws.glyph,
                 17.0,
-                col,
+                if active { Color::WHITE } else { c.text_dim },
                 b.center().x - f64::from(tw) / 2.0,
                 b.center().y - f64::from(th) / 2.0,
                 TextWeight::Bold,
                 None,
             );
-            ChatApp::push_hit(hits, b, Hit::Workspace(ws.id.clone()));
-            y += btn + 12.0;
+            ChatApp::push_hit(hits, b, Hit::CurrentContext);
         }
-
-        // add-workspace affordance — creates a new workspace and switches to it.
-        let add = Rect::new(cx - btn / 2.0, y, cx + btn / 2.0, y + btn);
-        fill_round(scene, tf, add, btn / 2.0, c.neutral[2]);
-        let (aw, ah) = tr.measure_weighted("+", 24.0, None, TextWeight::Regular);
-        text(
-            scene,
-            tr,
-            tf,
-            "+",
-            24.0,
-            c.semantic.success,
-            add.center().x - f64::from(aw) / 2.0,
-            add.center().y - f64::from(ah) / 2.0,
-            TextWeight::Regular,
-            None,
-        );
-        ChatApp::push_hit(hits, add, Hit::AddWorkspace);
         // The single user avatar lives in the sidebar identity bar (drawn in
         // `draw_sidebar`), not here — the rail foot intentionally has none.
     }
@@ -305,6 +362,11 @@ impl ChatApp {
         let side = self.sidebar_rect();
         fill_rect(scene, tf, side, c.surfaces.raised);
 
+        if self.inbox_open {
+            self.draw_inbox_sidebar(scene, tf, tr, theme, side, hits);
+            return;
+        }
+
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
         self.draw_sidebar_tree(scene, tf, tr, theme, presence, side, header, hits);
         // qOS stays calm while a workspace is private. The shell already owns
@@ -314,6 +376,157 @@ impl ChatApp {
         // available to, or while a call is active.
         if self.has_other_collaborator() || self.call.active {
             self.draw_sidebar_identity_bar(scene, tf, tr, theme, side, hits);
+        }
+    }
+
+    /// Cross-workspace conversation navigation. The CRDT keeps its legacy
+    /// workspace ids for wire compatibility; this projection makes them source
+    /// labels inside one Inbox instead of presenting them as nested workspaces.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one immediate-mode grouped conversation list keeps its source headings, unread badges, selection and hit geometry aligned"
+    )]
+    fn draw_inbox_sidebar(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        side: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        label(
+            scene,
+            tr,
+            tf,
+            "Inbox",
+            17.0,
+            c.text_primary,
+            side.x0 + 16.0,
+            side.y0 + 13.0,
+        );
+        label(
+            scene,
+            tr,
+            tf,
+            "Conversations across qOS workspaces",
+            10.5,
+            c.text_dim,
+            side.x0 + 16.0,
+            side.y0 + 36.0,
+        );
+        hline(
+            scene,
+            tf,
+            side.x0 + 12.0,
+            side.x1 - 12.0,
+            side.y0 + 58.0,
+            c.border_standard,
+        );
+
+        let mut y = side.y0 + 68.0;
+        let mut workspaces = self.workspaces.clone();
+        workspaces.sort_by(|left, right| left.name.cmp(&right.name));
+        for workspace in workspaces {
+            let mut channels: Vec<_> = self
+                .channels
+                .iter()
+                .filter(|channel| {
+                    channel.workspace == workspace.id
+                        && channel.kind == ChannelKind::Text
+                        && !channel.archived
+                })
+                .collect();
+            if channels.is_empty() {
+                continue;
+            }
+            channels.sort_by(|left, right| {
+                right
+                    .unread
+                    .cmp(&left.unread)
+                    .then_with(|| left.order.cmp(&right.order))
+            });
+            label(
+                scene,
+                tr,
+                tf,
+                &workspace.name.to_uppercase(),
+                10.0,
+                c.text_dim.with_alpha_factor(0.78),
+                side.x0 + 16.0,
+                y,
+            );
+            y += 22.0;
+            for channel in channels {
+                let row = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 36.0);
+                let selected = channel.id == self.active_channel;
+                if selected {
+                    fill_round(scene, tf, row, 8.0, c.accent[5].with_alpha_factor(0.16));
+                    fill_round(
+                        scene,
+                        tf,
+                        Rect::new(side.x0, row.y0 + 7.0, side.x0 + 4.0, row.y1 - 7.0),
+                        2.0,
+                        c.accent[5],
+                    );
+                }
+                label(
+                    scene,
+                    tr,
+                    tf,
+                    "#",
+                    14.0,
+                    if selected { c.accent[7] } else { c.text_dim },
+                    row.x0 + 10.0,
+                    row.y0 + 9.0,
+                );
+                let name = truncate_to(tr, &channel.name, 13.5, row.width() - 62.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &name,
+                    13.5,
+                    if selected || channel.unread > 0 {
+                        c.text_primary
+                    } else {
+                        c.text_dim
+                    },
+                    row.x0 + 32.0,
+                    row.y0 + 9.0,
+                    if channel.unread > 0 {
+                        TextWeight::Semibold
+                    } else {
+                        TextWeight::Regular
+                    },
+                    None,
+                );
+                if channel.unread > 0 {
+                    let count = channel.unread.to_string();
+                    let (w, _) = tr.measure(&count, 10.0, None);
+                    let badge = Rect::new(
+                        row.x1 - f64::from(w) - 20.0,
+                        row.y0 + 9.0,
+                        row.x1 - 6.0,
+                        row.y1 - 9.0,
+                    );
+                    fill_round(scene, tf, badge, 9.0, c.accent[5]);
+                    label(
+                        scene,
+                        tr,
+                        tf,
+                        &count,
+                        10.0,
+                        Color::WHITE,
+                        badge.x0 + 7.0,
+                        badge.y0 + 2.0,
+                    );
+                }
+                ChatApp::push_hit(hits, row, Hit::Channel(channel.id.clone()));
+                y += 38.0;
+            }
+            y += 8.0;
         }
     }
 
@@ -338,7 +551,12 @@ impl ChatApp {
             .map(|w| w.name.clone())
             .unwrap_or_default();
         let header = Rect::new(side.x0, side.y0, side.x1, side.y0 + 52.0);
-        let ws_title = truncate_to(tr, &ws_name, 16.0, side.width() - 60.0);
+        let ws_title = truncate_to(
+            tr,
+            &format!("{ws_name} channels"),
+            16.0,
+            side.width() - 60.0,
+        );
         label(
             scene,
             tr,
@@ -1081,7 +1299,23 @@ impl ChatApp {
 
         let ch = self.channel(&self.active_channel).cloned();
         let (name, topic, glyph) = match &ch {
-            Some(ch) => (ch.name.clone(), ch.topic.clone(), ch.kind.glyph()),
+            Some(ch) => {
+                let topic = if self.inbox_open {
+                    let source = self
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == ch.workspace)
+                        .map_or("qOS workspace", |workspace| workspace.name.as_str());
+                    if ch.topic.is_empty() {
+                        format!("From {source}")
+                    } else {
+                        format!("{source} · {}", ch.topic)
+                    }
+                } else {
+                    ch.topic.clone()
+                };
+                (ch.name.clone(), topic, ch.kind.glyph())
+            }
             None => (String::new(), String::new(), "#"),
         };
 
