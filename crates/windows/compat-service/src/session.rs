@@ -116,15 +116,16 @@ where
         self.service.vm_inventory()
     }
 
-    fn vm_installation_status(&self) -> Option<crate::VmInstallation> {
-        self.service.vm_installation_status()
+    fn vm_installation_status(&self, workspace_id: &str) -> Option<crate::VmInstallation> {
+        self.service.vm_installation_status(workspace_id)
     }
 
     fn refresh_vm_installation_status(
         &self,
+        workspace_id: &str,
     ) -> Result<Option<crate::VmInstallation>, SessionError> {
         self.service
-            .refresh_vm_installation_status()
+            .refresh_vm_installation_status(workspace_id)
             .map_err(Into::into)
     }
 
@@ -260,9 +261,13 @@ where
             .map_err(Into::into)
     }
 
-    fn publish_vm_candidate(&self, entry_id: &str) -> Result<crate::VmInstallation, SessionError> {
+    fn publish_vm_candidate(
+        &self,
+        workspace_id: &str,
+        entry_id: &str,
+    ) -> Result<crate::VmCandidatePublication, SessionError> {
         self.service
-            .publish_vm_install_candidate(entry_id)
+            .publish_vm_install_candidate(workspace_id, entry_id)
             .map_err(Into::into)
     }
 
@@ -818,36 +823,23 @@ where
                 &handoff.workspace_id,
                 &pending.input,
             )?;
-            allowed_entry_ids.extend(
-                installation
-                    .candidates
-                    .iter()
-                    .map(|candidate| candidate.entry_id.clone()),
-            );
+            authorize_vm_candidates(allowed_entry_ids, &installation);
             Ok(ProtocolResponse::VmInstallStarted { installation })
         }
         ProtocolRequest::PublishVmCandidate { entry_id, .. } => {
             if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
                 return Err(SessionError::UnknownEntry);
             }
-            let installation = managed.publish_vm_candidate(&entry_id)?;
-            allowed_entry_ids.extend(
-                installation
-                    .candidates
-                    .iter()
-                    .map(|candidate| candidate.entry_id.clone()),
-            );
-            Ok(ProtocolResponse::VmCandidatePublished { installation })
+            let publication = managed.publish_vm_candidate(&handoff.workspace_id, &entry_id)?;
+            authorize_vm_publication(allowed_entry_ids, &publication);
+            Ok(ProtocolResponse::VmCandidatePublished {
+                installation: publication.installation,
+            })
         }
         ProtocolRequest::RefreshVmInstallation { .. } => {
-            let installation = managed.refresh_vm_installation_status()?;
+            let installation = managed.refresh_vm_installation_status(&handoff.workspace_id)?;
             if let Some(installation) = &installation {
-                allowed_entry_ids.extend(
-                    installation
-                        .candidates
-                        .iter()
-                        .map(|candidate| candidate.entry_id.clone()),
-                );
+                authorize_vm_candidates(allowed_entry_ids, installation);
             }
             Ok(ProtocolResponse::VmInstallationRefreshed { installation })
         }
@@ -952,14 +944,9 @@ where
     // fallback appliance merely to draw a manager badge.
     let vm_inventory = managed.vm_inventory();
     let vm_availability = vm_inventory.availability.clone();
-    let vm_installation = managed.vm_installation_status();
+    let vm_installation = managed.vm_installation_status(&handoff.workspace_id);
     if let Some(installation) = &vm_installation {
-        allowed_entry_ids.extend(
-            installation
-                .candidates
-                .iter()
-                .map(|candidate| candidate.entry_id.clone()),
-        );
+        authorize_vm_candidates(allowed_entry_ids, installation);
     }
     for entry in managed.entries()?.into_iter().filter(|entry| {
         allowed_entry_ids.contains(&entry.entry_id)
@@ -1147,6 +1134,29 @@ where
             .map(|entry| entry.entry_id),
     );
     Ok(())
+}
+
+fn authorize_vm_candidates(
+    allowed_entry_ids: &mut BTreeSet<String>,
+    installation: &crate::VmInstallation,
+) {
+    allowed_entry_ids.extend(
+        installation
+            .candidates
+            .iter()
+            .map(|candidate| candidate.entry_id.clone()),
+    );
+}
+
+fn authorize_vm_publication(
+    allowed_entry_ids: &mut BTreeSet<String>,
+    publication: &crate::VmCandidatePublication,
+) {
+    // This set belongs to exactly one authenticated connection.  Its caller
+    // has already proved that the connection's workspace owns the candidate.
+    // Never add the resulting guest catalogue entry to any other connection.
+    allowed_entry_ids.insert(publication.published_entry_id.clone());
+    authorize_vm_candidates(allowed_entry_ids, &publication.installation);
 }
 
 fn retain_capsule_control_entry<R, B, E, V>(
@@ -1497,6 +1507,33 @@ mod tests {
             "explicit_vm_fallback": true
         });
         assert!(serde_json::from_value::<ProtocolRequest>(injected).is_err());
+    }
+
+    #[test]
+    fn publishing_authorizes_the_opaque_vm_entry_only_for_its_workspace_session() {
+        let publication = crate::VmCandidatePublication {
+            installation: crate::VmInstallation {
+                detail: "Published".to_string(),
+                phase: crate::VmInstallationPhase::Completed,
+                exit_code: Some(0),
+                candidates: vec![crate::VmInstallCandidate {
+                    entry_id: "windows-vm-candidate-remaining".to_string(),
+                    display_name: "Another app".to_string(),
+                    publisher: None,
+                    version: None,
+                }],
+            },
+            published_entry_id: "windows-vm-published".to_string(),
+        };
+        let mut workspace_a_entries = BTreeSet::new();
+        let workspace_b_entries = BTreeSet::<String>::new();
+
+        authorize_vm_publication(&mut workspace_a_entries, &publication);
+
+        assert!(workspace_a_entries.contains("windows-vm-published"));
+        assert!(workspace_a_entries.contains("windows-vm-candidate-remaining"));
+        assert!(!workspace_b_entries.contains("windows-vm-published"));
+        assert!(!workspace_b_entries.contains("windows-vm-candidate-remaining"));
     }
 
     #[test]

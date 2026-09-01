@@ -12,12 +12,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use compat_service::{
-    load_shipped_catalogue, spawn_session_service, AudioIsolatedSpiceLauncher, BwrapExecutor,
-    CapabilityAuthority, CapsuleStore, CompatSessionHandle, DenyAllVmCapabilityBroker,
-    DenyAllVmPortalAuthority, HostSession, LauncherAuthenticator, LiveVmDelegate,
-    ManagedCompatibility, ShippedCataloguePaths, SystemResourceBroker, SystemRuntimeRegistry,
-    TrustedLauncherRegistry, VmAvailability, VmDelegate, VmInstallation, VmInstallerInput,
-    VmInventory, VmRouteRequest,
+    AudioIsolatedSpiceLauncher, BwrapExecutor, CapabilityAuthority, CapsuleStore,
+    CompatSessionHandle, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession,
+    LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths,
+    SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
+    VmCandidatePublication, VmDelegate, VmInstallation, VmInstallerInput, VmInventory,
+    VmRouteRequest, load_shipped_catalogue, spawn_session_service,
 };
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
@@ -176,35 +176,38 @@ impl VmDelegate for SessionVmDelegate {
 
     fn install_from_portal(
         &self,
+        workspace_id: &str,
         input: VmInstallerInput,
         source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
         self.get()
             .map_err(windows_vm::AgentError::Transport)?
-            .install_from_portal(input, source)
+            .install_from_portal(workspace_id, input, source)
     }
 
-    fn installation_status(&self) -> Option<VmInstallation> {
+    fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
         self.get()
             .ok()
-            .and_then(|delegate| delegate.installation_status())
+            .and_then(|delegate| delegate.installation_status(workspace_id))
     }
 
     fn refresh_installation_status(
         &self,
+        workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
         self.get()
             .map_err(windows_vm::AgentError::Transport)?
-            .refresh_installation_status()
+            .refresh_installation_status(workspace_id)
     }
 
     fn publish_install_candidate(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+    ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
         self.get()
             .map_err(windows_vm::AgentError::Transport)?
-            .publish_install_candidate(entry_id)
+            .publish_install_candidate(workspace_id, entry_id)
     }
 
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
@@ -391,6 +394,7 @@ mod tests {
     impl VmDelegate for RecordingVmDelegate {
         fn install_from_portal(
             &self,
+            _workspace_id: &str,
             _input: VmInstallerInput,
             _source: File,
         ) -> Result<VmInstallation, windows_vm::LaunchError> {
@@ -398,13 +402,14 @@ mod tests {
             Ok(Self::installation())
         }
 
-        fn installation_status(&self) -> Option<VmInstallation> {
+        fn installation_status(&self, _workspace_id: &str) -> Option<VmInstallation> {
             self.calls.fetch_or(STATUS, Ordering::AcqRel);
             Some(Self::installation())
         }
 
         fn refresh_installation_status(
             &self,
+            _workspace_id: &str,
         ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
             self.calls.fetch_or(REFRESHED, Ordering::AcqRel);
             Ok(Some(Self::installation()))
@@ -412,10 +417,14 @@ mod tests {
 
         fn publish_install_candidate(
             &self,
+            _workspace_id: &str,
             _entry_id: &str,
-        ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
             self.calls.fetch_or(PUBLISHED, Ordering::AcqRel);
-            Ok(Self::installation())
+            Ok(VmCandidatePublication {
+                installation: Self::installation(),
+                published_entry_id: "windows-vm-published".to_string(),
+            })
         }
 
         fn remove_published_application(
@@ -459,11 +468,18 @@ mod tests {
         };
 
         delegate
-            .install_from_portal(input, File::open("/dev/null").unwrap())
+            .install_from_portal("workspace", input, File::open("/dev/null").unwrap())
             .unwrap();
-        assert!(delegate.installation_status().is_some());
-        assert!(delegate.refresh_installation_status().unwrap().is_some());
-        delegate.publish_install_candidate("candidate").unwrap();
+        assert!(delegate.installation_status("workspace").is_some());
+        assert!(
+            delegate
+                .refresh_installation_status("workspace")
+                .unwrap()
+                .is_some()
+        );
+        delegate
+            .publish_install_candidate("workspace", "candidate")
+            .unwrap();
         delegate
             .remove_published_application("application")
             .unwrap();

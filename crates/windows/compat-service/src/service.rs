@@ -91,6 +91,15 @@ pub struct VmInstallation {
     pub candidates: Vec<VmInstallCandidate>,
 }
 
+/// The host-owned entry created by publishing one installer candidate.  The
+/// entry ID is intentionally returned only to the authenticated workspace
+/// that owns the active installer transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VmCandidatePublication {
+    pub installation: VmInstallation,
+    pub published_entry_id: String,
+}
+
 /// A local confirmation is required before the exact portal file is streamed
 /// to Windows. It is the only outcome that can select the VM installer path.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -270,6 +279,7 @@ pub trait VmDelegate: Send + Sync {
     /// returns only bounded, client-safe status.
     fn install_from_portal(
         &self,
+        _workspace_id: &str,
         _input: VmInstallerInput,
         _source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
@@ -278,7 +288,7 @@ pub trait VmDelegate: Send + Sync {
 
     /// Passive status query for the one managed installer operation. It must
     /// not accept a client operation ID or wake the appliance.
-    fn installation_status(&self) -> Option<VmInstallation> {
+    fn installation_status(&self, _workspace_id: &str) -> Option<VmInstallation> {
         None
     }
 
@@ -286,16 +296,18 @@ pub trait VmDelegate: Send + Sync {
     /// handle from the client, so it cannot become a guest-process oracle.
     fn refresh_installation_status(
         &self,
+        workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
-        Ok(self.installation_status())
+        Ok(self.installation_status(workspace_id))
     }
 
     /// Publishes a candidate selected by its server-owned entry ID. The
     /// delegate rechecks that the candidate belongs to the active operation.
     fn publish_install_candidate(
         &self,
+        _workspace_id: &str,
         _entry_id: &str,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+    ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
         Err(windows_vm::AgentError::InstallerUnsupported.into())
     }
 
@@ -330,27 +342,30 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
 
     fn install_from_portal(
         &self,
+        workspace_id: &str,
         input: VmInstallerInput,
         source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        (**self).install_from_portal(input, source)
+        (**self).install_from_portal(workspace_id, input, source)
     }
 
-    fn installation_status(&self) -> Option<VmInstallation> {
-        (**self).installation_status()
+    fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
+        (**self).installation_status(workspace_id)
     }
 
     fn refresh_installation_status(
         &self,
+        workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
-        (**self).refresh_installation_status()
+        (**self).refresh_installation_status(workspace_id)
     }
 
     fn publish_install_candidate(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        (**self).publish_install_candidate(entry_id)
+    ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
+        (**self).publish_install_candidate(workspace_id, entry_id)
     }
 
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
@@ -383,27 +398,30 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Arc<T> {
 
     fn install_from_portal(
         &self,
+        workspace_id: &str,
         input: VmInstallerInput,
         source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        (**self).install_from_portal(input, source)
+        (**self).install_from_portal(workspace_id, input, source)
     }
 
-    fn installation_status(&self) -> Option<VmInstallation> {
-        (**self).installation_status()
+    fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
+        (**self).installation_status(workspace_id)
     }
 
     fn refresh_installation_status(
         &self,
+        workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
-        (**self).refresh_installation_status()
+        (**self).refresh_installation_status(workspace_id)
     }
 
     fn publish_install_candidate(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        (**self).publish_install_candidate(entry_id)
+    ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
+        (**self).publish_install_candidate(workspace_id, entry_id)
     }
 
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
@@ -525,12 +543,17 @@ where
     }
 
     #[must_use]
-    pub fn vm_installation_status(&self) -> Option<VmInstallation> {
-        self.vm.installation_status()
+    pub fn vm_installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
+        self.vm.installation_status(workspace_id)
     }
 
-    pub fn refresh_vm_installation_status(&self) -> Result<Option<VmInstallation>, ServiceError> {
-        self.vm.refresh_installation_status().map_err(Into::into)
+    pub fn refresh_vm_installation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<VmInstallation>, ServiceError> {
+        self.vm
+            .refresh_installation_status(workspace_id)
+            .map_err(Into::into)
     }
 
     pub fn register_program(
@@ -734,17 +757,19 @@ where
             .seek(SeekFrom::Start(0))
             .map_err(InstallerError::from)?;
         self.vm
-            .install_from_portal(input, source)
+            .install_from_portal(workspace_id, input, source)
             .map_err(Into::into)
     }
 
     pub fn publish_vm_install_candidate(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<VmInstallation, ServiceError> {
+    ) -> Result<VmCandidatePublication, ServiceError> {
+        validate_launch_id("workspace id", workspace_id)?;
         validate_launch_id("VM installer candidate", entry_id)?;
         self.vm
-            .publish_install_candidate(entry_id)
+            .publish_install_candidate(workspace_id, entry_id)
             .map_err(Into::into)
     }
 
