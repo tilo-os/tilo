@@ -79,10 +79,14 @@ def changed_files(root: Path, base: str | None, head: str) -> list[str]:
     try:
         merge_base = run("git", "merge-base", base, head, cwd=root)
     except subprocess.CalledProcessError:
-        # Shallow/manual checkouts must be safe.  Selecting everything is much
-        # better than silently omitting a package.
-        return ["Cargo.toml"]
-    output = run("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", f"{merge_base}...{head}", cwd=root)
+        # A depth-limited checkout may have the event's exact base tree without
+        # enough ancestry to compute a merge base. Comparing those two trees can
+        # over-select files for a pull request whose base moved, but it cannot
+        # omit a file that differs between the advertised base and head.
+        diff_range = f"{base}..{head}"
+    else:
+        diff_range = f"{merge_base}...{head}"
+    output = run("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", diff_range, cwd=root)
     return [line for line in output.splitlines() if line]
 
 

@@ -30,7 +30,6 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 # W7 — text injection into the focused surface via the Wayland
 # `virtual-keyboard-v1` protocol (wtype-style). The injector opens its own,
 # second wayland-client connection, independent of the one winit owns.
