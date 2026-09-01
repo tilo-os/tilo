@@ -28,7 +28,9 @@ an imager or OS image obtained from a mirror whose digest is not listed by qOS.
 The cross-platform build workflow also emits digests, but its unsigned CI
 artifacts are for validation only: they must not be presented as production
 downloads. Code signing on Linux and Windows and signing plus notarization on
-macOS are release gates performed with protected release credentials.
+macOS are release gates performed with protected release credentials. An
+`imager-v*` tag fails rather than producing a release artifact if any required
+credential is absent; see `apps/imager/packaging/README.md`.
 
 - Linux: launch the signed application bundle and authorize its polkit prompt.
 - Windows: launch qOS Imager and accept the Administrator prompt. The app uses
