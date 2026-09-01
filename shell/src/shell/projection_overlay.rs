@@ -451,7 +451,11 @@ impl ProjectionOverlay {
         self.was_open = open;
         self.transition.set_open(
             open,
-            Duration::from_millis(OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let now = Instant::now();
