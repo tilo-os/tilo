@@ -5,11 +5,17 @@ pub mod locales {
 starter-name-label = Dein Name\n\
 starter-name-placeholder = Name eingeben\n\
 starter-updates-label = Neuigkeiten erhalten\n\
+starter-refresh-label = Aktualisierungsintervall\n\
+starter-volume-label = Lautstärke\n\
+starter-region-label = Region\n\
 starter-greeting = Hallo, { $name }!\n";
     const CATALOG_1: &str = "starter-title = Your first qOS app\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
 starter-updates-label = Receive updates\n\
+starter-refresh-label = Refresh interval\n\
+starter-volume-label = Volume\n\
+starter-region-label = Region\n\
 starter-greeting = Hello, { $name }!\n\
 data-name-column = Name\n\
 data-actions-column = Actions\n\
@@ -246,6 +252,30 @@ mod tests {
                 .checked(false),
         )
         .expect("generated boolean binding updates semantics");
+        app.perform_named("refresh-input", &Action::SetValue("30".into()))
+            .expect("generated number input remains addressable");
+        app.expect(
+            &SemanticExpectation::named("refresh-input")
+                .role(Role::SpinButton)
+                .value("30 min"),
+        )
+        .expect("generated numeric binding updates semantics");
+        app.perform_named("volume-slider", &Action::SetValue("75%".into()))
+            .expect("generated slider remains addressable");
+        app.expect(
+            &SemanticExpectation::named("volume-slider")
+                .role(Role::Slider)
+                .value("75%"),
+        )
+        .expect("generated slider binding updates semantics");
+        app.perform_named("region-select", &Action::SetValue("Asia/Tokyo".into()))
+            .expect("generated dropdown remains addressable");
+        app.expect(
+            &SemanticExpectation::named("region-select")
+                .role(Role::ComboBox)
+                .value("Asia/Tokyo"),
+        )
+        .expect("generated choice binding updates semantics");
     }
 
     #[test]
@@ -321,6 +351,8 @@ mod tests {
         assert!(snapshot.contains("Deine erste qOS-App"), "{snapshot}");
         assert!(snapshot.contains("Dein Name"), "{snapshot}");
         assert!(snapshot.contains("Neuigkeiten erhalten"), "{snapshot}");
+        assert!(snapshot.contains("Aktualisierungsintervall"), "{snapshot}");
+        assert!(snapshot.contains("Lautstärke"), "{snapshot}");
         assert!(snapshot.contains("Hallo, world!"), "{snapshot}");
         app.expect(
             &SemanticExpectation::named("name-input")
