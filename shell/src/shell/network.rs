@@ -97,7 +97,12 @@ pub struct PendingInvitation {
     pub room: crate::shell::state::RoomId,
     pub name: String,
     pub role: crate::network::invite::InviteRole,
+    /// Original signed bearer, kept in the private mode-0600 inventory so the
+    /// owner can resend the same invitation without minting another grant.
     pub token: String,
+    /// When present, redemption is limited to this exact person identity.
+    #[serde(default)]
+    pub recipient_user_public_key: Option<[u8; 32]>,
     pub expiry_unix_seconds: u64,
 }
 
@@ -152,6 +157,17 @@ fn persist_pending_invitations(
     if let Err(error) = atomic_file::write_with_mode(path, &bytes, 0o600) {
         tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
     }
+}
+
+/// Non-secret metadata shown in collaboration settings for a pending invite.
+/// `invite_id` is a one-way BLAKE3 digest, never the redeemable bearer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingInviteSummary {
+    pub invite_id: String,
+    pub invitee: String,
+    pub role: crate::network::invite::InviteRole,
+    pub recipient_bound: bool,
+    pub expiry_unix_seconds: u64,
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
@@ -903,6 +919,30 @@ impl ShellNetwork {
         true
     }
 
+    /// Export the selected person identity as a non-secret card another qOS
+    /// user can paste into the recipient-bound invite composer.
+    pub fn person_identity_card(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+    ) -> Result<String, String> {
+        let room = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            replica
+                .tree
+                .read()
+                .room_of(local)
+                .ok_or_else(|| format!("no workspace {}", local.raw()))?
+        };
+        let cert = selected_device_cert(room, &self.keypair)?;
+        Ok(format!(
+            "qos-identity:{}",
+            hex::encode(cert.user_public_key)
+        ))
+    }
+
     /// Mint a signed invite to the workspace `local`, valid for
     /// `expiry_seconds_from_now`. Signs with this shell's own Iroh
     /// key and embeds the address the endpoint actually bound, so the
@@ -923,6 +963,7 @@ impl ShellNetwork {
             expiry_seconds_from_now,
             None,
             crate::network::invite::InviteRole::Editor,
+            None,
         )
     }
 
@@ -959,7 +1000,28 @@ impl ShellNetwork {
         invitee: &str,
         role: crate::network::invite::InviteRole,
     ) -> Result<String, String> {
-        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee), role)
+        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee), role, None)
+    }
+
+    /// Mint a recipient-bound invite. Possessing its link does not grant
+    /// admission unless the joining device presents a certificate for the
+    /// selected person identity. This is the safe form for offline hosted
+    /// admission.
+    pub fn issue_invite_bound_with_role(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        expiry_seconds_from_now: u64,
+        invitee: &str,
+        recipient_user_public_key: [u8; 32],
+        role: crate::network::invite::InviteRole,
+    ) -> Result<String, String> {
+        self.issue_invite_for(
+            local,
+            expiry_seconds_from_now,
+            Some(invitee),
+            role,
+            Some(recipient_user_public_key),
+        )
     }
 
     fn issue_invite_for(
@@ -968,6 +1030,7 @@ impl ShellNetwork {
         expiry_seconds_from_now: u64,
         invitee: Option<&str>,
         role: crate::network::invite::InviteRole,
+        recipient_user_public_key: Option<[u8; 32]>,
     ) -> Result<String, String> {
         let tree_handle = {
             let replica = self
@@ -1004,13 +1067,16 @@ impl ShellNetwork {
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
-            let token = crate::network::invite::make_invite_token_with_identity_and_role(
+            let signed_invitee = recipient_user_public_key.and(invitee);
+            let token = crate::network::invite::make_invite_token_with_recipient(
                 &self.keypair,
                 &ws,
                 &addr,
                 &hosts,
                 Some(device_cert),
                 role,
+                recipient_user_public_key,
+                signed_invitee,
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
@@ -1053,6 +1119,7 @@ impl ShellNetwork {
                 name: invitee.unwrap_or("Member").to_string(),
                 role,
                 token: token.clone(),
+                recipient_user_public_key,
                 expiry_unix_seconds: parsed.expiry_unix_seconds,
             },
         );
@@ -1061,6 +1128,88 @@ impl ShellNetwork {
         }
         drop(pending);
         Ok(token)
+    }
+
+    /// List live invitations for a locally governed workspace. Only
+    /// non-secret metadata is returned through this API; the private bearer
+    /// remains available through the explicit resend action.
+    pub fn pending_invites(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+    ) -> Result<Vec<PendingInviteSummary>, String> {
+        let room = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == local)
+                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
+            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
+                return Err(
+                    "only the governing workspace administrator can inspect invites".into(),
+                );
+            }
+            workspace.room
+        };
+        Ok(self
+            .pending_invitations(room)
+            .into_iter()
+            .map(|invite| PendingInviteSummary {
+                invite_id: invite.id_hex(),
+                invitee: invite.name,
+                role: invite.role,
+                recipient_bound: invite.recipient_user_public_key.is_some(),
+                expiry_unix_seconds: invite.expiry_unix_seconds,
+            })
+            .collect())
+    }
+
+    /// Revoke a pending invite by the digest returned from
+    /// [`Self::pending_invites`]. A digest from another room is never removed.
+    pub fn revoke_pending_invite(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        invite_id: &str,
+    ) -> Result<bool, String> {
+        let room = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == local)
+                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
+            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
+                return Err("only the governing workspace administrator can revoke invites".into());
+            }
+            workspace.room
+        };
+        let bytes =
+            hex::decode(invite_id).map_err(|_| "invite id is not hexadecimal".to_string())?;
+        let id: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "invite id must encode exactly 32 bytes".to_string())?;
+        let mut pending = self
+            .pending_identity_admissions
+            .lock()
+            .map_err(|_| "invite admission state is unavailable".to_string())?;
+        if !pending.get(&id).is_some_and(|invite| invite.room == room) {
+            return Ok(false);
+        }
+        pending.remove(&id);
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
+        Ok(true)
     }
 
     /// Promote a transport-authenticated identity announcement through room
@@ -1724,6 +1873,17 @@ impl ShellNetwork {
             }
             return;
         }
+        if admission
+            .recipient_user_public_key
+            .is_some_and(|recipient| recipient != cert.user_public_key)
+        {
+            tracing::warn!(
+                room = %room,
+                peer = %peer,
+                "refusing invite redemption by a different person identity"
+            );
+            return;
+        }
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
@@ -2034,6 +2194,7 @@ mod tests {
             name: "Ada".into(),
             role: crate::network::invite::InviteRole::Editor,
             token: "signed-one".into(),
+            recipient_user_public_key: Some([0x31; 32]),
             expiry_unix_seconds: u64::MAX,
         };
         let second = PendingInvitation {
@@ -2042,6 +2203,7 @@ mod tests {
             name: "Lin".into(),
             role: crate::network::invite::InviteRole::Viewer,
             token: "signed-two".into(),
+            recipient_user_public_key: None,
             expiry_unix_seconds: u64::MAX,
         };
         let persisted = std::collections::HashMap::from([
@@ -2153,7 +2315,8 @@ mod tests {
         tree.workspaces.push(workspace);
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 99);
         net.require_peer_identity = true;
-        net.pending_identity_admissions
+        let _ = net
+            .pending_identity_admissions
             .lock()
             .expect("pending")
             .insert(
@@ -2164,9 +2327,48 @@ mod tests {
                     name: "Ada".into(),
                     role: crate::network::invite::InviteRole::Editor,
                     token: "invite-one".into(),
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             );
+
+        let attacker_root = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
+        let attacker_device = iroh::SecretKey::from_bytes(&[84; 32]);
+        let mut attacker_cert = DeviceCert {
+            user_public_key: attacker_root.verifying_key().to_bytes(),
+            device_public_key: *attacker_device.public().as_bytes(),
+            device_label: "Link thief".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut attacker_cert, &attacker_root).expect("attacker certificate");
+        net.redeem_invited_identity(
+            room_topic_id(room),
+            [2; 32],
+            &attacker_device.public(),
+            &attacker_cert,
+        );
+        let collab_types::caps::Principal::Person(attacker_person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(attacker_cert.user_public_key),
+            )
+        else {
+            unreachable!()
+        };
+        assert!(
+            net.replica
+                .lock()
+                .expect("replica")
+                .tree
+                .read()
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .is_some_and(|workspace| workspace.role_of(&attacker_person).is_none()),
+            "possession must not redeem an invite bound to a different person"
+        );
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.event_tx
@@ -2484,7 +2686,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (net, _commands) = shell_network_for_test(tree.shared(), 81);
-        net.pending_identity_admissions
+        let _ = net
+            .pending_identity_admissions
             .lock()
             .expect("pending")
             .insert(
@@ -2495,6 +2698,7 @@ mod tests {
                     name: "Vi".into(),
                     role: crate::network::invite::InviteRole::Viewer,
                     token: "invite-two".into(),
+                    recipient_user_public_key: Some(cert.user_public_key),
                     expiry_unix_seconds: u64::MAX,
                 },
             );
@@ -2674,7 +2878,8 @@ mod tests {
         };
         let (viewer_device, viewer_cert) = make_guest(31, "Viewer device");
         let (editor_device, editor_cert) = make_guest(41, "Editor device");
-        net.pending_identity_admissions.lock().unwrap().extend([
+        let mut pending = net.pending_identity_admissions.lock().unwrap();
+        for (id, admission) in [
             (
                 [11; 32],
                 PendingInvitation {
@@ -2683,6 +2888,7 @@ mod tests {
                     name: "Vera".into(),
                     role: crate::network::invite::InviteRole::Viewer,
                     token: "invite-eleven".into(),
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
@@ -2694,10 +2900,14 @@ mod tests {
                     name: "Eli".into(),
                     role: crate::network::invite::InviteRole::Editor,
                     token: "invite-twelve".into(),
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
-        ]);
+        ] {
+            pending.insert(id, admission);
+        }
+        drop(pending);
 
         net.redeem_invited_identity(
             room_topic_id(room),
@@ -2872,7 +3082,8 @@ mod tests {
             signature: [0; 64],
         };
         qos_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
-        net.pending_identity_admissions
+        let _ = net
+            .pending_identity_admissions
             .lock()
             .expect("pending admission")
             .insert(
@@ -2883,6 +3094,7 @@ mod tests {
                     name: "Peer".into(),
                     role: crate::network::invite::InviteRole::Editor,
                     token: "invite-three".into(),
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             );

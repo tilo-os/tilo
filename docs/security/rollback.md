@@ -171,14 +171,21 @@ firmware update from turning into a recovery-key prompt.
    retention window is arithmetic on the number, and moving the floor costs one NV
    write per step.
 
-   **Where the number comes from.** The published series is its own record: every
-   published image carries a `gen<N>` tag in the registry, and the next number is
-   `max + 1`. `os/dev/next-generation.sh` reads that, `os/dev/build-image.sh` uses
-   it, and the `build-image` CI job resolves it the same way and pushes the `gen<N>`
-   tag alongside the release tags — so a number is consumed exactly when an image
-   carrying it becomes reachable. A counter file would have to be kept in step with
-   what was actually published, in both directions, and nothing would notice when it
-   drifted.
+   **Where the number comes from.** The signed published series is its own record:
+   every image carries a `gen<N>` tag, transparency-logged signature, and signed
+   SLSA provenance binding the image digest to N. `os/dev/next-generation.sh`
+   requires a dense history, verifies the highest tag and provenance, and requires
+   signed `latest` to name the same digest before returning `N+1`. Registry tag text
+   alone is attacker-controlled input. `os/dev/build-image.sh` uses the result and
+   the release job promotes `gen<N>` only after signing and attestation, so a number
+   is consumed exactly when a verified image becomes reachable.
+
+   This detects unsigned injection, deletion gaps, tag/provenance mismatch and a
+   `latest`/generation split. A registry can still freeze a brand-new machine on a
+   complete older signed view; an installed machine's TPM floor prevents that view
+   from unlocking once its floor advanced. Closing freshness for new installations
+   requires an independent signed witness/checkpoint, tracked as a priority gap in
+   [threat-model.md](threat-model.md).
 
    There is no default, and nothing falls back to one when the registry cannot be
    read. A constant is the failure this replaces: it produced images that all
