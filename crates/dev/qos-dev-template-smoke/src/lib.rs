@@ -431,6 +431,22 @@ mod tests {
                 .name("Desktop app"),
         )
         .expect("default detail is addressable");
+        let targets = app.targets();
+        for target in [
+            "workspace-selected-item",
+            "workspace-title-input",
+            "workspace-notes-input",
+            "workspace-share",
+        ] {
+            let rect = targets
+                .get(target)
+                .unwrap_or_else(|| panic!("missing {target}"));
+            assert!(
+                rect.width() > 0.0 && rect.height() > 0.0,
+                "{target}: {rect:?}"
+            );
+            assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{target}: {rect:?}");
+        }
         app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
             .expect("select design system");
         app.expect(
