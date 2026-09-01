@@ -24,7 +24,7 @@ use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController
 use crate::selection::KeySelection;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::colors::{ACCENT_PRIMARY_IDX, Colors};
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
@@ -1253,10 +1253,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
         if let Some(track) = self.scrollbar_track() {
             let radius = BAR_THICKNESS / 2.0;
+            let colors = &theme.tokens.colors;
+            let track_color = Colors::hairline_on(colors.surfaces.base, colors.overlay_subtle.a());
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_5,
+                track_color,
                 None,
                 &RoundedRect::from_rect(track, radius),
             );
