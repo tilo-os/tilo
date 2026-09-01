@@ -201,7 +201,7 @@ impl OnboardingView {
             Screen::Done => (3, "Ready"),
         };
         let body: Box<dyn Widget> = match self.flow.screen() {
-            Screen::Intro => Self::intro(theme),
+            Screen::Intro => self.intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
             Screen::Done => self.done(theme),
