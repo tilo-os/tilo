@@ -17,6 +17,15 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     arch=$3
     revision=${4:-}
     case "$arch" in amd64|arm64) ;; *) usage ;; esac
+    execution_arch=$arch
+    if [[ $distro == nix && $arch == arm64 ]]; then
+        # qemu-user/PRoot is reliable for install-testing the FHS packages, but
+        # Nix's large store realization is repeatedly SIGKILLed inside it even
+        # on an otherwise idle 56 GiB runner. Nixpkgs supports a real
+        # aarch64-linux cross package, so build that from the native amd64 Nix
+        # userspace and still verify/export the ARM closure below.
+        execution_arch=amd64
+    fi
     if [[ $arch == arm64 ]]; then
         cargo_jobs=2
     else
@@ -69,12 +78,13 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     '
     create_log=$log_dir/create.log
     set +e
-    if [[ $arch == amd64 ]]; then
+    if [[ $execution_arch == amd64 ]]; then
         container=$(docker create --platform linux/amd64 \
             --entrypoint /bin/sh \
             --env QOS_IN_PACKAGE_CONTAINER=1 \
             --env QOS_PACKAGE_DISTRO="$distro" \
             --env QOS_EXPECT_ARCH="$arch" \
+            --env QOS_EXECUTION_ARCH="$execution_arch" \
             --env QOS_DEB_REVISION="$revision" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
@@ -109,7 +119,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         exit "$container_status"
     fi
     start_log=$log_dir/start.log
-    if [[ $arch == arm64 ]]; then
+    if [[ $execution_arch == arm64 ]]; then
         qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
         proot_sha=b7f2adf5a225000a164f4905aabefeebe11c4c1d5bedff5e1fe8866c48dd70d2
         tools_dir=$log_dir/tools
@@ -181,6 +191,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_IN_PACKAGE_CONTAINER=1
         export QOS_PACKAGE_DISTRO="$distro"
         export QOS_EXPECT_ARCH="$arch"
+        export QOS_EXECUTION_ARCH="$execution_arch"
         export QOS_DEB_REVISION="$revision"
         export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
@@ -228,6 +239,7 @@ fi
 [[ $# == 0 ]] || usage
 distro=${QOS_PACKAGE_DISTRO:?missing QOS_PACKAGE_DISTRO}
 arch=${QOS_EXPECT_ARCH:?missing QOS_EXPECT_ARCH}
+execution_arch=${QOS_EXECUTION_ARCH:-$arch}
 export QOS_EXPECT_ARCH="$arch"
 
 stage=bootstrap
@@ -241,7 +253,7 @@ record_failure() {
 trap record_failure ERR
 
 stage=architecture-check
-dist/ci/assert-native-arch.sh "$arch"
+dist/ci/assert-native-arch.sh "$execution_arch"
 
 case "$distro" in
 ubuntu-24.04|debian-13)
@@ -343,20 +355,16 @@ arch)
     ;;
 nix)
     nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
-    if [[ $arch == arm64 ]]; then
-        # Nix's Linux seccomp filter is installed by the emulated guest. Under
-        # qemu-user/PRoot it filters the emulator's host syscalls instead and
-        # deterministically SIGKILLs Nix while realizing the first store paths.
-        # Keep filtering enabled for native builds and disable it only in this
-        # architecture-emulated CI userspace.
-        nix_config+=$'\nfilter-syscalls = false'
-    fi
     export NIX_CONFIG=$nix_config
+    package=qos-session
+    if [[ $arch == arm64 ]]; then
+        package=qos-session-aarch64
+    fi
     stage=build-nix
-    nix build --print-build-logs .#qos-session
+    nix build --print-build-logs ".#$package"
     stage=inspect-nix
     dist/ci/verify-nix-result.sh result "$arch"
-    nix flake check --no-build
+    nix flake check --no-build --all-systems
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
     nix-store --export "${requisites[@]}" \
