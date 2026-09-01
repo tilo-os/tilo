@@ -12076,7 +12076,10 @@ dependencies = [
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
+ "argon2",
+ "chacha20poly1305",
  "ed25519-dalek 2.2.0",
+ "getrandom 0.2.17",
  "hex",
  "libc",
  "postcard",
