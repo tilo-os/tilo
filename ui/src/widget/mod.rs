@@ -17,6 +17,49 @@ use std::time::Instant;
 pub const DISABLED_ALPHA: f32 = 0.45;
 
 pub trait Widget {
+    /// Attach native child views after the host window exists. The default
+    /// recursively reaches retained descendants; leaf adapters make mounting
+    /// idempotent so this can be repeated after a structural rebuild.
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        for child in self.children_mut() {
+            child.mount_native_views(host);
+        }
+    }
+
+    /// Tear native children down while their parent window is still alive.
+    fn unmount_native_views(&mut self) {
+        for child in self.children_mut() {
+            child.unmount_native_views();
+        }
+    }
+
+    /// Called before each live frame. Native adapters hide first, then their
+    /// normal draw call reveals only views actually present in this frame.
+    fn native_view_frame_start(&mut self) {
+        for child in self.children_mut() {
+            child.native_view_frame_start();
+        }
+    }
+
+    /// Receive host-selected platform conventions. The default propagates to
+    /// retained children, keeping target-OS branches out of app code.
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        for child in self.children_mut() {
+            child.set_platform_conventions(conventions);
+        }
+    }
+
+    /// Receive the host's current input capabilities. The default propagates
+    /// through retained containers, so app code does not need device branches.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         false
@@ -156,6 +199,28 @@ pub trait Widget {
         false
     }
 
+    /// Reparent one retained [`children`](Widget::children) entry beneath a
+    /// synthetic child returned by [`accessibility`](Widget::accessibility).
+    /// The returned index addresses `AccessNode::children` for this frame.
+    /// Collections use this to place a real interactive row delegate inside
+    /// its virtual `ListItem`/`TreeItem` instead of exporting a duplicate.
+    fn accessibility_child_parent(&self, _child_index: usize) -> Option<usize> {
+        None
+    }
+
+    /// Reparent one retained [`children`](Widget::children) entry beneath a
+    /// nested path of synthetic children returned by
+    /// [`accessibility`](Widget::accessibility).
+    ///
+    /// The default preserves the one-level
+    /// [`accessibility_child_parent`](Widget::accessibility_child_parent)
+    /// contract. Tables override this to place a real cell control beneath
+    /// its synthetic row and cell, for example `[visible_row, column]`.
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        self.accessibility_child_parent(child_index)
+            .map(|parent| vec![parent])
+    }
+
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
     /// Default `false` ("not handled") falls back to generic dispatch
     /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
@@ -219,6 +284,19 @@ pub trait Widget {
     ) -> bool {
         let _ = key_path;
         self.perform_action(action, state, path)
+    }
+
+    /// Handle an action addressed to a synthetic accessibility child created
+    /// by this widget. `target` is the opaque stable value supplied through
+    /// [`AccessNode::with_action_target`](crate::a11y::AccessNode::with_action_target).
+    fn perform_semantic_action(
+        &mut self,
+        _target: &str,
+        _action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
     }
 
     /// A disabled (`false`) widget is excluded from focus traversal, must
@@ -456,6 +534,19 @@ pub trait Widget {
         None
     }
 
+    /// Offer a host keyboard undo/redo shortcut to focused widget-local
+    /// history before the application document consumes it.
+    ///
+    /// The default recursively asks retained children. A component with its
+    /// own editing history should return `true` only while focus is inside
+    /// that component and it has consumed the request. Returning `false`
+    /// preserves the standard collaboration-safe document undo behavior.
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.handle_local_undo_request(request))
+    }
+
     /// Apply an action another app in this room published, if this app owns
     /// the document — lets an app address a document it doesn't hold by
     /// saying what should happen instead of writing bytes directly, keeping
@@ -646,6 +737,10 @@ mod stack;
 pub use stack::Stack;
 mod container;
 pub use container::Container;
+mod router;
+pub use router::{RouteError, RouteHandle, Router};
+mod document_view;
+pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
@@ -781,6 +876,11 @@ pub mod modal_dialog;
 pub use modal_dialog::ModalDialog;
 pub mod modal_frame;
 pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub mod native_view;
+pub use native_view::{
+    NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
+    NativeViewInput,
+};
 pub mod modal_prompt;
 pub use modal_prompt::PromptBody;
 pub mod toolbar;
@@ -808,7 +908,12 @@ pub use webview::WebView;
 pub mod image_viewer;
 pub use image_viewer::ImageViewer;
 pub mod tree_view;
-pub use tree_view::TreeView;
+pub use tree_view::{
+    TreeChildState, TreeLoadReason, TreeLoadRequest, TreeModel, TreeModelChange, TreeNode,
+    TreeRowKey, TreeSlot, TreeView,
+};
+pub mod virtual_list;
+pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
 pub mod toggle_group;
 pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 

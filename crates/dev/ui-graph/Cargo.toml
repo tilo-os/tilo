@@ -1,0 +1,15 @@
+[package]
+name = "qos-ui-graph"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Pure schema and structural editor for qOS serialized UI graphs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

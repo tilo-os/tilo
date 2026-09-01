@@ -258,6 +258,10 @@ fn tab_bar_exposes_each_tab_with_selected_state() {
         details.supports_action(AkAction::Click),
         "tabs are activatable"
     );
+    assert!(
+        !details.supports_action(AkAction::ScrollIntoView),
+        "an unpositioned drawn control does not advertise virtual-row scrolling"
+    );
 }
 
 // toggle_group::ToggleGroup -> Group + ToggleButton children with checked

@@ -50,6 +50,7 @@ mpris = ["dep:zbus", "zbus/tokio"]
 portal = ["dep:ashpd"]
 
 [dependencies]
+qos-ui-graph = { path = "../crates/dev/ui-graph" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
 # Shared appearance path used for startup theme resolution and live reload.
@@ -115,6 +116,7 @@ winit.workspace = true
 # (Dokumente / Bilder) instead of hard-coded English ones.
 dirs.workspace = true
 fluent.workspace = true
+qos-headless-schema = { path = "../crates/dev/headless-schema" }
 unic-langid.workspace = true
 unicode-segmentation = "1.12"
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.

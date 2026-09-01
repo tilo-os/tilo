@@ -59,6 +59,7 @@ pub struct Slider {
     /// instead of just the value. When unset a sibling label is resolved
     /// by the tree builder.
     accessible_name: Option<String>,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Slider {
@@ -77,6 +78,7 @@ impl Slider {
             last_cursor: Point::ZERO,
             id_override: None,
             accessible_name: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -355,6 +357,14 @@ impl Slider {
 }
 
 impl Widget for Slider {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     #[allow(
         clippy::cast_precision_loss,
         reason = "Automerge integer values are normalized into this f64 slider model"
@@ -381,7 +391,7 @@ impl Widget for Slider {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(30.0),
+                height: Dimension::length(self.interaction.minimum_target()),
             },
             ..Default::default()
         });

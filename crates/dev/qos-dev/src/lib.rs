@@ -1,0 +1,7626 @@
+//! App scaffolding used by the `qos-dev` command.
+//!
+//! Rendering is deliberately pure: tests can assert every generated file,
+//! while the command performs one checked write phase only after all inputs
+//! have been validated.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
+use std::fmt::Write as _;
+use std::io::{self, BufRead as _, BufReader, IsTerminal, Write as _};
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+
+const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
+const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
+const LIST_APP_TEMPLATE: &str = include_str!("../templates/list.rs");
+const TREE_APP_TEMPLATE: &str = include_str!("../templates/tree.rs");
+const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
+const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
+const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Template {
+    Starter,
+    Data,
+    List,
+    Tree,
+    Graph,
+    Async,
+    Document,
+}
+
+impl Template {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Starter => "starter",
+            Self::Data => "data",
+            Self::List => "list",
+            Self::Tree => "tree",
+            Self::Graph => "graph",
+            Self::Async => "async",
+            Self::Document => "document",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Starter => "Accessible form and standard lifecycle",
+            Self::Data => "Sparse table with retained cell controls",
+            Self::List => "Sparse variable-height retained list",
+            Self::Tree => "Professional hierarchy browser",
+            Self::Graph => "Serialized UI graph and router",
+            Self::Async => "Restartable background task with cancellation",
+            Self::Document => "Durable synchronized editor with undo",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenTemplate {
+    #[default]
+    Blank,
+    Form,
+    Settings,
+    EmptyState,
+}
+
+#[derive(Debug)]
+pub struct NewAppRequest {
+    pub name: Option<String>,
+    pub app_id: Option<String>,
+    pub title: Option<String>,
+    /// `None` prompts in an interactive terminal and defaults to `Starter`
+    /// for deterministic non-interactive use.
+    pub template: Option<Template>,
+    pub directory: Option<PathBuf>,
+    pub ui_path: Option<PathBuf>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug)]
+pub struct CreateOutcome {
+    pub destination: PathBuf,
+    pub package_name: String,
+    pub app_id: String,
+    pub files: Vec<PathBuf>,
+    pub dry_run: bool,
+    pub workspace_member: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AddArtifact {
+    Screen {
+        name: String,
+        title: Option<String>,
+        template: ScreenTemplate,
+        /// Existing screen that receives a generated push-navigation button.
+        link_from: Option<String>,
+    },
+    Scenario {
+        name: String,
+        /// Registered screen used to derive a runnable interaction sequence.
+        screen: Option<String>,
+    },
+    Locale {
+        locale: String,
+    },
+}
+
+#[derive(Debug)]
+pub struct AddRequest {
+    /// App directory or any file/directory below it.
+    pub start: PathBuf,
+    pub artifact: AddArtifact,
+    pub force: bool,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct AddOutcome {
+    pub app_dir: PathBuf,
+    /// Primary artifact followed by any generated source files that changed.
+    pub files: Vec<PathBuf>,
+    /// Subset of `files` that existed and were replaced.
+    pub updated: Vec<PathBuf>,
+    pub dry_run: bool,
+    /// A command that exercises the generated artifact immediately.
+    pub next_command: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct LocaleSyncRequest {
+    /// App directory or any file/directory below it.
+    pub start: PathBuf,
+    /// One locale to synchronize, or every non-source catalog when absent.
+    pub locale: Option<String>,
+    /// Remove entries, attributes, and values no longer present in `en-US`.
+    pub prune: bool,
+    /// Reset only patterns whose external variable set no longer matches the source.
+    pub reset_variables: bool,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct LocaleSyncOutcome {
+    pub app_dir: PathBuf,
+    pub checked: Vec<String>,
+    pub files: Vec<PathBuf>,
+    /// Contract differences deliberately preserved by the selected options.
+    pub unresolved: Vec<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoctorStatus {
+    Pass,
+    Warning,
+    Fail,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DoctorCheck {
+    pub status: DoctorStatus,
+    pub label: &'static str,
+    pub detail: String,
+}
+
+#[derive(Debug)]
+pub struct DoctorReport {
+    pub app_dir: PathBuf,
+    pub checks: Vec<DoctorCheck>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppTask {
+    Run,
+    Test,
+}
+
+impl AppTask {
+    fn cargo_subcommand(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Test => "test",
+        }
+    }
+}
+
+/// A fully resolved Cargo invocation for one app. Keeping planning separate
+/// from execution makes command construction deterministic and testable.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CargoPlan {
+    pub app_dir: PathBuf,
+    pub program: OsString,
+    pub args: Vec<OsString>,
+}
+
+/// Resolved native UI-builder invocation. The heavy graphical toolkit lives in
+/// the builder process, so ordinary `qos-dev` commands stay quick to compile.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UiBuilderPlan {
+    pub program: OsString,
+    pub args: Vec<OsString>,
+}
+
+#[derive(Debug)]
+pub struct ShotRequest {
+    pub output: PathBuf,
+    pub viewport: Option<(u32, u32)>,
+    pub scenario: Option<String>,
+    pub forwarded: Vec<OsString>,
+}
+
+#[derive(Debug)]
+pub struct InspectRequest {
+    pub output: PathBuf,
+    pub viewport: Option<(u32, u32)>,
+    pub actions: Option<PathBuf>,
+    pub dump: Option<PathBuf>,
+    pub targets: Option<PathBuf>,
+    pub audit: bool,
+    pub audit_report: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub struct ScenarioRunRequest {
+    /// App directory or any file/directory below it.
+    pub start: PathBuf,
+    /// One named file under `tests/scenarios`; absent runs the complete suite.
+    pub name: Option<String>,
+    pub viewport: Option<(u32, u32)>,
+    /// Optional directory for per-case semantic, target, and document JSON.
+    /// Relative paths are resolved from the discovered app root.
+    pub artifacts: Option<PathBuf>,
+    /// Audit the final semantic tree of every isolated case.
+    pub audit: bool,
+}
+
+#[derive(Debug)]
+pub struct ScenarioSuitePlan {
+    pub app_dir: PathBuf,
+    cases: Vec<ScenarioCasePlan>,
+    artifact_dir: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ScenarioCasePlan {
+    name: String,
+    source: PathBuf,
+    cargo: CargoPlan,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScenarioSuiteOutcome {
+    pub passed: Vec<String>,
+    pub failed: Vec<ScenarioFailure>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScenarioFailure {
+    pub name: String,
+    pub source: PathBuf,
+    pub detail: String,
+}
+
+#[derive(Debug)]
+pub struct DevRequest {
+    pub forwarded: Vec<OsString>,
+    pub watch_ui: bool,
+    pub debounce: Duration,
+}
+
+#[derive(Debug)]
+pub struct PackageRequest {
+    pub output: Option<PathBuf>,
+    pub identity: Option<PathBuf>,
+    pub profile: String,
+    pub target: Option<String>,
+    pub features: Vec<String>,
+    pub no_default_features: bool,
+    pub force: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct PackageOutcome {
+    pub output: PathBuf,
+    pub entrypoints: Vec<PathBuf>,
+}
+
+/// One validated structural edit to a serialized UI object graph.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiGraphEdit {
+    Insert {
+        parent: String,
+        index: usize,
+        node: qos_ui_graph::UiNode,
+    },
+    Remove {
+        id: String,
+    },
+    Replace {
+        id: String,
+        node: qos_ui_graph::UiNode,
+    },
+    Move {
+        id: String,
+        parent: String,
+        index: usize,
+    },
+}
+
+/// Create a useful, accessible starter graph.
+///
+/// # Errors
+///
+/// Returns an error when the destination exists without `force`, its parent
+/// cannot be created, or the atomic write fails.
+pub fn init_ui_graph(path: &Path, title: &str, force: bool) -> Result<()> {
+    if title.trim().is_empty() {
+        bail!("screen title must not be empty");
+    }
+    if path.exists() && !force {
+        bail!(
+            "UI graph {} already exists; pass --force to replace it",
+            path.display()
+        );
+    }
+    let document = starter_ui_document(title.trim());
+    write_ui_graph(path, &document)
+}
+
+fn starter_ui_document(title: &str) -> qos_ui_graph::UiDocument {
+    qos_ui_graph::UiDocument::new(qos_ui_graph::UiNode::Column {
+        id: "root".into(),
+        children: vec![
+            qos_ui_graph::UiNode::Text {
+                id: "title".into(),
+                text: qos_ui_graph::UiTextSource::Static {
+                    value: title.into(),
+                },
+                role: qos_ui_graph::UiTextRole::Title,
+                size: None,
+            },
+            qos_ui_graph::UiNode::Text {
+                id: "body".into(),
+                text: qos_ui_graph::UiTextSource::Static {
+                    value: "Start building here.".into(),
+                },
+                role: qos_ui_graph::UiTextRole::Body,
+                size: None,
+            },
+        ],
+        gap: Some(8.0),
+        no_padding: false,
+        intrinsic_height: false,
+        fill_remaining_height: false,
+    })
+}
+
+const SCREEN_REGISTRY_HEADER: &str = "// @generated by qos-dev; screen graph registry.\n";
+const SCREEN_ENTRY_PREFIX: &str = "// qos-dev:screen=";
+
+struct PendingWrite {
+    path: PathBuf,
+    source: String,
+    description: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum AddWizardArtifact {
+    Screen,
+    Scenario,
+    Locale,
+}
+
+/// Interactively choose, review, and add one conventional app artifact.
+///
+/// # Errors
+///
+/// Returns an error when input is not interactive, `start` is not inside a qOS
+/// app, input ends, the user cancels, validation fails, or publication fails.
+pub fn add_app_artifact_interactive(start: &Path) -> Result<AddOutcome> {
+    if !io::stdin().is_terminal() {
+        bail!(
+            "an artifact subcommand is required when stdin is not interactive; use `qos-dev add screen`, `qos-dev add scenario`, or `qos-dev add locale`"
+        );
+    }
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    add_app_artifact_interactive_with(start, &mut stdin.lock(), &mut stdout.lock(), true)
+}
+
+fn add_app_artifact_interactive_with(
+    start: &Path,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    interactive: bool,
+) -> Result<AddOutcome> {
+    if !interactive {
+        bail!("an artifact subcommand is required when stdin is not interactive");
+    }
+    let app_dir = resolve_app_dir(start)?;
+    if !app_dir.join("qos-app.toml").is_file() {
+        bail!(
+            "{} is not a qOS app (missing qos-app.toml)",
+            app_dir.display()
+        );
+    }
+    writeln!(output, "Grow {}\n", app_dir.display()).context("showing add wizard heading")?;
+    writeln!(
+        output,
+        "Artifact:\n  1) screen    Accessible serialized screen and routing\n  2) scenario  Headless semantic interaction workflow\n  3) locale    Complete Fluent translation catalog"
+    )
+    .context("showing artifact choices")?;
+    let kind = loop {
+        let value = prompt(input, output, "Artifact", Some("1"))?;
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "screen" | "s" => break AddWizardArtifact::Screen,
+            "2" | "scenario" | "test" => break AddWizardArtifact::Scenario,
+            "3" | "locale" | "language" | "l" => break AddWizardArtifact::Locale,
+            _ => writeln!(
+                output,
+                "  ! unknown artifact {value:?}; choose 1-3 or `screen`, `scenario`, or `locale`"
+            )
+            .context("showing artifact error")?,
+        }
+    };
+
+    let artifact = match kind {
+        AddWizardArtifact::Screen => {
+            let name =
+                prompt_validated(input, output, "Screen name", None, validate_artifact_name)?;
+            let title = prompt(input, output, "Screen title", Some(&title_from_name(&name)))?;
+            let template = prompt_screen_template(input, output)?;
+            let default_link = app_dir.join("ui/main.json").is_file().then_some("main");
+            let link_from =
+                prompt_optional(input, output, "Link from (`-` for none)", default_link)?;
+            AddArtifact::Screen {
+                name,
+                title: Some(title),
+                template,
+                link_from,
+            }
+        }
+        AddWizardArtifact::Scenario => {
+            let name =
+                prompt_validated(input, output, "Scenario name", None, validate_artifact_name)?;
+            let screen = prompt_optional(input, output, "Derive from screen", None)?;
+            AddArtifact::Scenario { name, screen }
+        }
+        AddWizardArtifact::Locale => AddArtifact::Locale {
+            locale: prompt_validated(input, output, "Locale", None, validate_locale)?,
+        },
+    };
+
+    writeln!(
+        output,
+        "\nReview:\n  App:      {}\n  Artifact: {}",
+        app_dir.display(),
+        artifact_summary(&artifact),
+    )
+    .context("showing artifact review")?;
+    if !prompt_confirm(input, output, "Add this artifact", true)? {
+        bail!("artifact creation cancelled");
+    }
+    add_app_artifact(AddRequest {
+        start: app_dir,
+        artifact,
+        force: false,
+        dry_run: false,
+    })
+}
+
+fn artifact_summary(artifact: &AddArtifact) -> String {
+    match artifact {
+        AddArtifact::Screen {
+            name,
+            template,
+            link_from,
+            ..
+        } => format!(
+            "screen {name:?} ({}){}",
+            screen_template_name(*template),
+            link_from
+                .as_deref()
+                .map_or_else(String::new, |source| format!(" linked from {source:?}")),
+        ),
+        AddArtifact::Scenario { name, screen } => screen.as_deref().map_or_else(
+            || format!("empty scenario {name:?}"),
+            |screen| format!("scenario {name:?} derived from {screen:?}"),
+        ),
+        AddArtifact::Locale { locale } => format!("locale {locale:?}"),
+    }
+}
+
+fn screen_template_name(template: ScreenTemplate) -> &'static str {
+    match template {
+        ScreenTemplate::Blank => "blank",
+        ScreenTemplate::Form => "form",
+        ScreenTemplate::Settings => "settings",
+        ScreenTemplate::EmptyState => "empty-state",
+    }
+}
+
+/// Add one conventional app artifact and any required generated wiring.
+///
+/// Screens are validated serialized object graphs, scenarios are directly
+/// accepted by `qos-dev inspect --actions`, and locale files are valid Fluent
+/// catalogs wired into the generated app locale registry.
+///
+/// # Errors
+///
+/// Returns an error when `start` is not inside a qOS app, the artifact name is
+/// unsafe, the destination exists without `force`, or an atomic write fails.
+pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
+    let app_dir = resolve_app_dir(&request.start)?;
+    if !app_dir.join("qos-app.toml").is_file() {
+        bail!(
+            "{} is not a qOS app (missing qos-app.toml)",
+            app_dir.display()
+        );
+    }
+
+    let (writes, next_command) = match request.artifact {
+        AddArtifact::Screen {
+            name,
+            title,
+            template,
+            link_from,
+        } => screen_artifact_writes(
+            &app_dir,
+            &name,
+            title.as_deref(),
+            template,
+            link_from.as_deref(),
+            request.force,
+        )?,
+        AddArtifact::Scenario { name, screen } => {
+            validate_artifact_name(&name)?;
+            let relative = PathBuf::from("tests")
+                .join("scenarios")
+                .join(format!("{name}.json"));
+            let path = app_dir.join(&relative);
+            protect_destination(&path, request.force)?;
+            let command = format!("qos-dev scenario run {name}");
+            let source = screen.as_deref().map_or_else(
+                || Ok("[]\n".to_owned()),
+                |screen| screen_scenario_source(&app_dir, screen),
+            )?;
+            (
+                vec![PendingWrite {
+                    path,
+                    source,
+                    description: "headless scenario",
+                }],
+                Some(command),
+            )
+        }
+        AddArtifact::Locale { locale } => (
+            locale_artifact_writes(&app_dir, &locale, request.force)?,
+            None,
+        ),
+    };
+    let updated = writes
+        .iter()
+        .filter(|write| write.path.exists())
+        .map(|write| write.path.clone())
+        .collect();
+    if !request.dry_run {
+        write_batch(&writes)?;
+    }
+    Ok(AddOutcome {
+        app_dir,
+        files: writes.into_iter().map(|write| write.path).collect(),
+        updated,
+        dry_run: request.dry_run,
+        next_command,
+    })
+}
+
+const LOCALE_REGISTRY_HEADER: &str = "// @generated by qos-dev; locale registry.\n";
+const LOCALE_ENTRY_PREFIX: &str = "// qos-dev:locale=";
+const GENERATED_LOCALE_SETUP: &str =
+    "pub mod locales;\n\nfn install_catalog() {\n    locales::install();\n}";
+const LEGACY_GENERATED_LOCALE_SETUP: &str = r#"const SOURCE_CATALOG: &str = include_str!("../locales/en-US.ftl");
+
+fn install_catalog() {
+    if let Err(error) = ui::i18n::I18nManager::install_system(
+        "en-US",
+        &[("en-US", SOURCE_CATALOG)],
+    ) {
+        eprintln!("localization catalog: {error}");
+    }
+}"#;
+
+fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<Vec<PendingWrite>> {
+    validate_locale(locale)?;
+    if locale.eq_ignore_ascii_case("en-US") {
+        bail!("en-US is the source catalog; edit locales/en-US.ftl directly");
+    }
+    let relative = PathBuf::from("locales").join(format!("{locale}.ftl"));
+    let path = app_dir.join(relative);
+    protect_destination(&path, force)?;
+
+    let registry_path = app_dir.join("src/locales.rs");
+    let (registry, mut locales, migrated_library) = match std::fs::read_to_string(&registry_path) {
+        Ok(registry) => {
+            let locales = parse_locale_registry(&registry).with_context(|| {
+                format!(
+                    "{} is app-owned; register {locale:?} in that localization setup explicitly",
+                    registry_path.display()
+                )
+            })?;
+            (registry, locales, None)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let library = migrate_legacy_locale_setup(app_dir, locale)?;
+            (String::new(), vec!["en-US".to_owned()], Some(library))
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", registry_path.display()));
+        }
+    };
+    if let Some(existing) = locales
+        .iter()
+        .find(|existing| existing.eq_ignore_ascii_case(locale))
+    {
+        if existing != locale {
+            bail!("locale {locale:?} is already registered as {existing:?}");
+        }
+    } else {
+        locales.push(locale.to_owned());
+    }
+    locales.sort();
+    locales.dedup();
+    if !locales.iter().any(|locale| locale == "en-US") {
+        bail!("generated locale registry is missing its en-US source catalog");
+    }
+    let registry_source = locale_registry_source(&locales);
+    let source_path = app_dir.join("locales/en-US.ftl");
+    let source_catalog = std::fs::read_to_string(&source_path)
+        .with_context(|| format!("reading source catalog {}", source_path.display()))?;
+    parse_fluent_catalog(&source_catalog)
+        .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
+
+    let mut writes = vec![PendingWrite {
+        path,
+        source: translation_catalog_template(locale, &source_catalog),
+        description: "locale catalog",
+    }];
+    if registry_source != registry {
+        writes.push(PendingWrite {
+            path: registry_path,
+            source: registry_source,
+            description: "locale registry",
+        });
+    }
+    if let Some(library) = migrated_library {
+        writes.push(library);
+    }
+    Ok(writes)
+}
+
+fn translation_catalog_template(locale: &str, source: &str) -> String {
+    let mut catalog = format!(
+        "### {locale} translations.\n### Values initially mirror locales/en-US.ftl; translate them in place.\n\n"
+    );
+    catalog.push_str(source.trim_start());
+    if !catalog.ends_with('\n') {
+        catalog.push('\n');
+    }
+    catalog
+}
+
+/// Synchronize translation catalog structure with `locales/en-US.ftl` without
+/// replacing translated values. Missing messages, terms, attributes, and
+/// values are copied from the source. Stale structure and variable-mismatched
+/// patterns change only when their explicit options are enabled.
+///
+/// # Errors
+///
+/// Returns an error when the app or requested locale cannot be resolved, any
+/// catalog is malformed, or the atomic publication fails.
+pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOutcome> {
+    let app_dir = resolve_app_dir(&request.start)?;
+    if !app_dir.join("qos-app.toml").is_file() {
+        bail!(
+            "{} is not a qOS app (missing qos-app.toml)",
+            app_dir.display()
+        );
+    }
+    if let Some(locale) = request.locale.as_deref() {
+        validate_locale(locale)?;
+        if locale.eq_ignore_ascii_case("en-US") {
+            bail!("en-US is the source catalog and cannot be synchronized to itself");
+        }
+    }
+
+    let source_path = app_dir.join("locales/en-US.ftl");
+    let source_text = std::fs::read_to_string(&source_path)
+        .with_context(|| format!("reading source catalog {}", source_path.display()))?;
+    let source_resource = parse_editable_fluent(&source_text, &source_path)?;
+    let source_contract = parse_fluent_catalog(&source_text)
+        .with_context(|| format!("validating source catalog {}", source_path.display()))?;
+
+    let mut targets = if let Some(locale) = request.locale.as_deref() {
+        let path = app_dir.join("locales").join(format!("{locale}.ftl"));
+        if !path.is_file() {
+            bail!(
+                "translation catalog {} does not exist; create it with `qos-dev add locale {locale}`",
+                path.display()
+            );
+        }
+        vec![(locale.to_owned(), path)]
+    } else {
+        files_with_extension(&app_dir.join("locales"), "ftl")
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .filter_map(|path| {
+                let locale = path
+                    .file_stem()
+                    .and_then(std::ffi::OsStr::to_str)?
+                    .to_owned();
+                (locale != "en-US").then_some((locale, path))
+            })
+            .collect()
+    };
+    targets.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut writes = Vec::new();
+    let mut checked = Vec::new();
+    let mut unresolved = Vec::new();
+    for (locale, path) in targets {
+        validate_locale(&locale).with_context(|| format!("catalog filename for {locale:?}"))?;
+        let original = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading translation catalog {}", path.display()))?;
+        let mut translation = parse_editable_fluent(&original, &path)?;
+        let changed = synchronize_fluent_resource(
+            &source_resource,
+            &mut translation,
+            request.prune,
+            request.reset_variables,
+        );
+        let synchronized = if changed {
+            fluent_syntax::serializer::serialize(&translation)
+        } else {
+            original
+        };
+        let synchronized_contract = parse_fluent_catalog(&synchronized)
+            .with_context(|| format!("validating synchronized catalog {}", path.display()))?;
+        unresolved.extend(
+            fluent_contract_drift(&source_contract, &synchronized_contract)
+                .into_iter()
+                .map(|difference| format!("{locale}: {difference}")),
+        );
+        checked.push(locale);
+        if changed {
+            writes.push(PendingWrite {
+                path,
+                source: synchronized,
+                description: "synchronized locale catalog",
+            });
+        }
+    }
+    if !request.dry_run {
+        write_batch(&writes)?;
+    }
+    Ok(LocaleSyncOutcome {
+        app_dir,
+        checked,
+        files: writes.into_iter().map(|write| write.path).collect(),
+        unresolved,
+        dry_run: request.dry_run,
+    })
+}
+
+fn parse_editable_fluent(
+    source: &str,
+    path: &Path,
+) -> Result<fluent_syntax::ast::Resource<String>> {
+    fluent_syntax::parser::parse(source.to_owned()).map_err(|(_, errors)| {
+        anyhow::anyhow!("parsing Fluent catalog {}: {errors:?}", path.display())
+    })
+}
+
+fn synchronize_fluent_resource(
+    source: &fluent_syntax::ast::Resource<String>,
+    translation: &mut fluent_syntax::ast::Resource<String>,
+    prune: bool,
+    reset_variables: bool,
+) -> bool {
+    let mut changed = false;
+    for source_entry in &source.body {
+        let Some(source_id) = editable_fluent_entry_id(source_entry) else {
+            continue;
+        };
+        if let Some(target_entry) = translation
+            .body
+            .iter_mut()
+            .find(|entry| editable_fluent_entry_id(entry).as_deref() == Some(&source_id))
+        {
+            changed |= synchronize_fluent_entry(source_entry, target_entry, prune, reset_variables);
+        } else {
+            translation.body.push(source_entry.clone());
+            changed = true;
+        }
+    }
+    if prune {
+        let source_ids: BTreeSet<_> = source
+            .body
+            .iter()
+            .filter_map(editable_fluent_entry_id)
+            .collect();
+        let before = translation.body.len();
+        translation.body.retain(|entry| {
+            editable_fluent_entry_id(entry).is_none_or(|id| source_ids.contains(&id))
+        });
+        changed |= translation.body.len() != before;
+    }
+    changed
+}
+
+fn editable_fluent_entry_id(entry: &fluent_syntax::ast::Entry<String>) -> Option<String> {
+    use fluent_syntax::ast::Entry;
+
+    match entry {
+        Entry::Message(message) => Some(message.id.name.clone()),
+        Entry::Term(term) => Some(format!("-{}", term.id.name)),
+        Entry::Comment(_)
+        | Entry::GroupComment(_)
+        | Entry::ResourceComment(_)
+        | Entry::Junk { .. } => None,
+    }
+}
+
+fn synchronize_fluent_entry(
+    source: &fluent_syntax::ast::Entry<String>,
+    translation: &mut fluent_syntax::ast::Entry<String>,
+    prune: bool,
+    reset_variables: bool,
+) -> bool {
+    use fluent_syntax::ast::Entry;
+
+    match (source, translation) {
+        (Entry::Message(source), Entry::Message(translation)) => {
+            let mut changed = synchronize_fluent_value(
+                source.value.as_ref(),
+                &mut translation.value,
+                prune,
+                reset_variables,
+            );
+            changed |= synchronize_fluent_attributes(
+                &source.attributes,
+                &mut translation.attributes,
+                prune,
+                reset_variables,
+            );
+            changed
+        }
+        (Entry::Term(source), Entry::Term(translation)) => {
+            let mut changed = false;
+            if reset_variables
+                && fluent_pattern_variables(&source.value)
+                    != fluent_pattern_variables(&translation.value)
+            {
+                translation.value = source.value.clone();
+                changed = true;
+            }
+            changed
+                | synchronize_fluent_attributes(
+                    &source.attributes,
+                    &mut translation.attributes,
+                    prune,
+                    reset_variables,
+                )
+        }
+        _ => false,
+    }
+}
+
+fn synchronize_fluent_value(
+    source: Option<&fluent_syntax::ast::Pattern<String>>,
+    translation: &mut Option<fluent_syntax::ast::Pattern<String>>,
+    prune: bool,
+    reset_variables: bool,
+) -> bool {
+    match (source, translation.as_mut()) {
+        (Some(source), None) => {
+            *translation = Some(source.clone());
+            true
+        }
+        (None, Some(_)) if prune => {
+            *translation = None;
+            true
+        }
+        (Some(source), Some(translation))
+            if reset_variables
+                && fluent_pattern_variables(source) != fluent_pattern_variables(translation) =>
+        {
+            *translation = source.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn synchronize_fluent_attributes(
+    source: &[fluent_syntax::ast::Attribute<String>],
+    translation: &mut Vec<fluent_syntax::ast::Attribute<String>>,
+    prune: bool,
+    reset_variables: bool,
+) -> bool {
+    let mut changed = false;
+    for source_attribute in source {
+        if let Some(target_attribute) = translation
+            .iter_mut()
+            .find(|attribute| attribute.id.name == source_attribute.id.name)
+        {
+            if reset_variables
+                && fluent_pattern_variables(&source_attribute.value)
+                    != fluent_pattern_variables(&target_attribute.value)
+            {
+                target_attribute.value = source_attribute.value.clone();
+                changed = true;
+            }
+        } else {
+            translation.push(source_attribute.clone());
+            changed = true;
+        }
+    }
+    if prune {
+        let source_ids: BTreeSet<_> = source
+            .iter()
+            .map(|attribute| attribute.id.name.as_str())
+            .collect();
+        let before = translation.len();
+        translation.retain(|attribute| source_ids.contains(attribute.id.name.as_str()));
+        changed |= translation.len() != before;
+    }
+    changed
+}
+
+fn migrate_legacy_locale_setup(app_dir: &Path, locale: &str) -> Result<PendingWrite> {
+    let path = app_dir.join("src/lib.rs");
+    let source = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading localization entrypoint {}", path.display()))?;
+    if source.matches(LEGACY_GENERATED_LOCALE_SETUP).count() != 1 {
+        bail!(
+            "{} has app-owned localization setup; register {locale:?} explicitly or add a qos-dev generated src/locales.rs registry",
+            path.display()
+        );
+    }
+    let updated = source.replacen(LEGACY_GENERATED_LOCALE_SETUP, GENERATED_LOCALE_SETUP, 1);
+    syn::parse_file(&updated)
+        .with_context(|| format!("validating migrated locale setup in {}", path.display()))?;
+    Ok(PendingWrite {
+        path,
+        source: updated,
+        description: "locale module wiring",
+    })
+}
+
+fn parse_locale_registry(source: &str) -> Result<Vec<String>> {
+    if !source.starts_with(LOCALE_REGISTRY_HEADER) {
+        bail!("missing generated locale-registry header");
+    }
+    let mut locales: Vec<String> = Vec::new();
+    for line in source.lines() {
+        if let Some(locale) = line.strip_prefix(LOCALE_ENTRY_PREFIX) {
+            validate_locale(locale)?;
+            if let Some(existing) = locales
+                .iter()
+                .find(|existing| existing.eq_ignore_ascii_case(locale))
+            {
+                bail!("locale {locale:?} duplicates registered locale {existing:?}");
+            }
+            locales.push(locale.to_owned());
+        }
+    }
+    Ok(locales)
+}
+
+fn locale_registry_source(locales: &[String]) -> String {
+    let mut source = String::from(LOCALE_REGISTRY_HEADER);
+    source.push_str("// Edit Fluent catalogs under locales/; qos-dev maintains this registry.\n");
+    for locale in locales {
+        let _ = writeln!(source, "{LOCALE_ENTRY_PREFIX}{locale}");
+    }
+    source.push('\n');
+    for (index, locale) in locales.iter().enumerate() {
+        let _ = writeln!(
+            source,
+            "const CATALOG_{index}: &str = include_str!(\"../locales/{locale}.ftl\");"
+        );
+    }
+    source.push_str("\npub const IDS: &[&str] = &[\n");
+    for locale in locales {
+        let _ = writeln!(source, "    {locale:?},");
+    }
+    source.push_str(
+        "];\n\npub fn install() {\n    if let Err(error) = ui::i18n::I18nManager::install_system(\n        \"en-US\",\n        &[\n",
+    );
+    for (index, locale) in locales.iter().enumerate() {
+        let _ = writeln!(source, "            ({locale:?}, CATALOG_{index}),");
+    }
+    source.push_str(
+        "        ],\n    ) {\n        eprintln!(\"localization catalog: {error}\");\n    }\n}\n",
+    );
+    source
+}
+
+fn screen_artifact_writes(
+    app_dir: &Path,
+    name: &str,
+    title: Option<&str>,
+    template: ScreenTemplate,
+    link_from: Option<&str>,
+    force: bool,
+) -> Result<(Vec<PendingWrite>, Option<String>)> {
+    validate_artifact_name(name)?;
+    let title = title.map_or_else(|| title_from_name(name), ToOwned::to_owned);
+    if title.trim().is_empty() {
+        bail!("screen title must not be empty");
+    }
+    let relative = PathBuf::from("ui").join(format!("{name}.json"));
+    let localized = app_dir.join("locales/en-US.ftl").is_file();
+    let (mut document, mut messages) =
+        screen_template_document(name, title.trim(), template, localized);
+    if name != "main" {
+        let back = ScreenMessage::new(name, "back", "Back");
+        let root = document.root.id().to_owned();
+        let index = document.root.children().len();
+        document.insert_child(
+            &root,
+            index,
+            qos_ui_graph::UiNode::Button {
+                id: "back".into(),
+                label: back.reference(localized),
+                accessible_name: None,
+                tooltip: None,
+                on_click_path: None,
+                click_value: None,
+                navigate: Some(qos_ui_graph::UiNavigation::Back),
+                enabled: true,
+                style: qos_ui_graph::UiButtonStyle::Ghost,
+            },
+        )?;
+        messages.push(back);
+    }
+    let mut source = document.to_json_pretty()?;
+    source.push('\n');
+    let command = format!("qos-dev ui edit {}", shell_display_path(&relative));
+    let mut writes = screen_writes(app_dir, &relative, source, name, force)?;
+    if let Some(link_from) = link_from {
+        validate_artifact_name(link_from)?;
+        if link_from == name {
+            bail!("--link-from must name a different screen");
+        }
+        let link_label = if localized {
+            format!("{name}-title")
+        } else {
+            title.trim().to_owned()
+        };
+        writes.push(navigation_link_write(
+            app_dir,
+            link_from,
+            name,
+            &link_label,
+        )?);
+    }
+    writes.extend(screen_locale_writes(app_dir, &messages, force)?);
+    Ok((writes, Some(command)))
+}
+
+fn screen_scenario_source(app_dir: &Path, screen: &str) -> Result<String> {
+    validate_artifact_name(screen)?;
+    let app_source_path = app_dir.join("src/lib.rs");
+    let app_source = std::fs::read_to_string(&app_source_path)
+        .with_context(|| format!("reading app root {}", app_source_path.display()))?;
+    if !app_source.contains("screens::router(\"main\"") {
+        bail!(
+            "screen-derived scenarios require the app root to use `screens::router(\"main\", ...)`; create the app with `--template graph` or wire the generated router first"
+        );
+    }
+
+    let graph_path = app_dir.join("ui").join(format!("{screen}.json"));
+    let document = load_ui_graph(&graph_path)
+        .with_context(|| format!("loading scenario screen {screen:?}"))?;
+    let mut actions = Vec::new();
+    if screen != "main" {
+        let main_path = app_dir.join("ui/main.json");
+        let main = load_ui_graph(&main_path)
+            .with_context(|| format!("loading entry screen {}", main_path.display()))?;
+        let opener = main.nodes().into_iter().find_map(|node| match node {
+            qos_ui_graph::UiNode::Button {
+                id,
+                navigate: Some(qos_ui_graph::UiNavigation::Push { route }),
+                enabled: true,
+                ..
+            } if route == screen => Some(id.clone()),
+            _ => None,
+        });
+        let opener = opener.with_context(|| {
+            format!(
+                "screen {screen:?} is not directly reachable from main; add it with `qos-dev add screen {screen} --link-from main` or add a push-navigation button"
+            )
+        })?;
+        actions.push(semantic_action(&opener, "activate", None));
+    }
+
+    for node in document.nodes() {
+        match node {
+            qos_ui_graph::UiNode::TextInput {
+                id,
+                multiline,
+                disabled: false,
+                ..
+            } => actions.push(semantic_action(
+                id,
+                "set_value",
+                Some(if *multiline {
+                    "Example details"
+                } else {
+                    "Example"
+                }),
+            )),
+            qos_ui_graph::UiNode::Checkbox {
+                id, enabled: true, ..
+            }
+            | qos_ui_graph::UiNode::Toggle {
+                id, enabled: true, ..
+            } => actions.push(semantic_action(id, "toggle_check", None)),
+            qos_ui_graph::UiNode::Button {
+                id,
+                on_click_path: Some(_),
+                enabled: true,
+                ..
+            } => actions.push(semantic_action(id, "activate", None)),
+            _ => {}
+        }
+    }
+    if actions.is_empty() {
+        bail!("screen {screen:?} has no enabled interactive controls to exercise");
+    }
+    let mut source = serde_json::to_string_pretty(&actions)
+        .context("serializing generated headless scenario")?;
+    qos_headless_schema::parse_actions(&source)
+        .map_err(|error| anyhow::anyhow!("validating generated headless scenario: {error}"))?;
+    source.push('\n');
+    Ok(source)
+}
+
+fn semantic_action(target: &str, action: &str, value: Option<&str>) -> serde_json::Value {
+    let mut perform = serde_json::Map::from_iter([
+        (
+            "target".into(),
+            serde_json::Value::String(target.to_owned()),
+        ),
+        (
+            "action".into(),
+            serde_json::Value::String(action.to_owned()),
+        ),
+    ]);
+    if let Some(value) = value {
+        perform.insert("value".into(), serde_json::Value::String(value.to_owned()));
+    }
+    serde_json::json!({ "perform": perform })
+}
+
+#[derive(Clone, Debug)]
+struct ScreenMessage {
+    id: String,
+    value: String,
+}
+
+impl ScreenMessage {
+    fn new(screen: &str, suffix: &str, value: impl Into<String>) -> Self {
+        Self {
+            id: format!("{screen}-{suffix}"),
+            value: value.into(),
+        }
+    }
+
+    fn reference(&self, localized: bool) -> String {
+        if localized {
+            self.id.clone()
+        } else {
+            self.value.clone()
+        }
+    }
+}
+
+fn screen_template_document(
+    name: &str,
+    title: &str,
+    template: ScreenTemplate,
+    localized: bool,
+) -> (qos_ui_graph::UiDocument, Vec<ScreenMessage>) {
+    let title_message = ScreenMessage::new(name, "title", title);
+    let mut messages = vec![title_message.clone()];
+    let mut children = vec![screen_text(
+        "title",
+        title_message.reference(localized),
+        qos_ui_graph::UiTextRole::Title,
+    )];
+    let (content, content_messages) = match template {
+        ScreenTemplate::Blank => blank_screen_content(name, localized),
+        ScreenTemplate::Form => form_screen_content(name, localized),
+        ScreenTemplate::Settings => settings_screen_content(name, localized),
+        ScreenTemplate::EmptyState => empty_screen_content(name, localized),
+    };
+    children.extend(content);
+    messages.extend(content_messages);
+    (
+        qos_ui_graph::UiDocument::new(qos_ui_graph::UiNode::Column {
+            id: "root".into(),
+            children,
+            gap: Some(8.0),
+            no_padding: false,
+            intrinsic_height: false,
+            fill_remaining_height: false,
+        }),
+        messages,
+    )
+}
+
+fn blank_screen_content(
+    name: &str,
+    localized: bool,
+) -> (Vec<qos_ui_graph::UiNode>, Vec<ScreenMessage>) {
+    let body = ScreenMessage::new(name, "body", "Start building here.");
+    (
+        vec![screen_text(
+            "body",
+            body.reference(localized),
+            qos_ui_graph::UiTextRole::Body,
+        )],
+        vec![body],
+    )
+}
+
+fn form_screen_content(
+    name: &str,
+    localized: bool,
+) -> (Vec<qos_ui_graph::UiNode>, Vec<ScreenMessage>) {
+    let description = ScreenMessage::new(name, "description", "Enter the details below.");
+    let name_label = ScreenMessage::new(name, "name-label", "Name");
+    let name_placeholder = ScreenMessage::new(name, "name-placeholder", "Enter a name");
+    let details_label = ScreenMessage::new(name, "details-label", "Details");
+    let details_placeholder =
+        ScreenMessage::new(name, "details-placeholder", "Add more information");
+    let enabled = ScreenMessage::new(name, "enabled", "Enabled");
+    let save = ScreenMessage::new(name, "save", "Save");
+    let nodes = vec![
+        screen_text(
+            "description",
+            description.reference(localized),
+            qos_ui_graph::UiTextRole::Body,
+        ),
+        screen_text(
+            "name-label",
+            name_label.reference(localized),
+            qos_ui_graph::UiTextRole::Label,
+        ),
+        qos_ui_graph::UiNode::TextInput {
+            id: "name-input".into(),
+            accessible_name: name_label.reference(localized),
+            placeholder: name_placeholder.reference(localized),
+            value_path: Some(format!("{name}-draft-name")),
+            initial_value: String::new(),
+            multiline: false,
+            disabled: false,
+        },
+        screen_text(
+            "details-label",
+            details_label.reference(localized),
+            qos_ui_graph::UiTextRole::Label,
+        ),
+        qos_ui_graph::UiNode::TextInput {
+            id: "details-input".into(),
+            accessible_name: details_label.reference(localized),
+            placeholder: details_placeholder.reference(localized),
+            value_path: Some(format!("{name}-draft-details")),
+            initial_value: String::new(),
+            multiline: true,
+            disabled: false,
+        },
+        labeled_check_row(
+            "enabled-row",
+            "enabled",
+            enabled.reference(localized),
+            format!("{name}-draft-enabled"),
+            false,
+        ),
+        primary_action_button(name, "save", save.reference(localized), "save-requested"),
+    ];
+    (
+        nodes,
+        vec![
+            description,
+            name_label,
+            name_placeholder,
+            details_label,
+            details_placeholder,
+            enabled,
+            save,
+        ],
+    )
+}
+
+fn settings_screen_content(
+    name: &str,
+    localized: bool,
+) -> (Vec<qos_ui_graph::UiNode>, Vec<ScreenMessage>) {
+    let description = ScreenMessage::new(name, "description", "Choose how the app behaves.");
+    let notifications = ScreenMessage::new(name, "notifications", "Notifications");
+    let compact = ScreenMessage::new(name, "compact", "Compact layout");
+    let analytics = ScreenMessage::new(name, "analytics", "Share anonymous diagnostics");
+    let save = ScreenMessage::new(name, "save", "Save settings");
+    let nodes = vec![
+        screen_text(
+            "description",
+            description.reference(localized),
+            qos_ui_graph::UiTextRole::Body,
+        ),
+        labeled_check_row(
+            "notifications-row",
+            "notifications",
+            notifications.reference(localized),
+            format!("{name}-notifications"),
+            true,
+        ),
+        labeled_check_row(
+            "compact-row",
+            "compact",
+            compact.reference(localized),
+            format!("{name}-compact"),
+            true,
+        ),
+        labeled_check_row(
+            "analytics-row",
+            "analytics",
+            analytics.reference(localized),
+            format!("{name}-analytics"),
+            false,
+        ),
+        primary_action_button(name, "save", save.reference(localized), "save-requested"),
+    ];
+    (
+        nodes,
+        vec![description, notifications, compact, analytics, save],
+    )
+}
+
+fn empty_screen_content(
+    name: &str,
+    localized: bool,
+) -> (Vec<qos_ui_graph::UiNode>, Vec<ScreenMessage>) {
+    let body = ScreenMessage::new(name, "body", "There is nothing here yet.");
+    let action = ScreenMessage::new(name, "action", "Create the first item");
+    (
+        vec![
+            screen_text(
+                "body",
+                body.reference(localized),
+                qos_ui_graph::UiTextRole::Reading,
+            ),
+            primary_action_button(
+                name,
+                "primary-action",
+                action.reference(localized),
+                "primary-requested",
+            ),
+        ],
+        vec![body, action],
+    )
+}
+
+fn primary_action_button(
+    screen: &str,
+    id: &str,
+    label: String,
+    action: &str,
+) -> qos_ui_graph::UiNode {
+    qos_ui_graph::UiNode::Button {
+        id: id.into(),
+        label,
+        accessible_name: None,
+        tooltip: None,
+        on_click_path: Some(format!("{screen}-{action}")),
+        click_value: Some("yes".into()),
+        navigate: None,
+        enabled: true,
+        style: qos_ui_graph::UiButtonStyle::Primary,
+    }
+}
+
+fn screen_text(id: &str, value: String, role: qos_ui_graph::UiTextRole) -> qos_ui_graph::UiNode {
+    qos_ui_graph::UiNode::Text {
+        id: id.into(),
+        text: qos_ui_graph::UiTextSource::Static { value },
+        role,
+        size: None,
+    }
+}
+
+fn labeled_check_row(
+    row_id: &str,
+    control_id: &str,
+    label: String,
+    value_path: String,
+    toggle: bool,
+) -> qos_ui_graph::UiNode {
+    let control = if toggle {
+        qos_ui_graph::UiNode::Toggle {
+            id: control_id.into(),
+            accessible_name: label.clone(),
+            value_path,
+            enabled: true,
+        }
+    } else {
+        qos_ui_graph::UiNode::Checkbox {
+            id: control_id.into(),
+            accessible_name: label.clone(),
+            value_path,
+            enabled: true,
+        }
+    };
+    qos_ui_graph::UiNode::Row {
+        id: row_id.into(),
+        children: vec![
+            control,
+            screen_text(
+                &format!("{control_id}-label"),
+                label,
+                qos_ui_graph::UiTextRole::Label,
+            ),
+        ],
+        no_wrap: true,
+        fill_remaining_height: false,
+    }
+}
+
+fn screen_locale_writes(
+    app_dir: &Path,
+    messages: &[ScreenMessage],
+    force: bool,
+) -> Result<Vec<PendingWrite>> {
+    let source_path = app_dir.join("locales/en-US.ftl");
+    if !source_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let original_source = std::fs::read_to_string(&source_path)
+        .with_context(|| format!("reading source catalog {}", source_path.display()))?;
+    parse_fluent_catalog(&original_source)
+        .with_context(|| format!("validating source catalog {}", source_path.display()))?;
+    let mut source = parse_editable_fluent(&original_source, &source_path)?;
+    for message in messages {
+        let generated = fluent_message_entry(message)?;
+        if let Some(existing) = source
+            .body
+            .iter_mut()
+            .find(|entry| editable_fluent_entry_id(entry).as_deref() == Some(message.id.as_str()))
+        {
+            if !force {
+                bail!(
+                    "source locale already defines message {:?}; choose another screen name or pass --force with the screen replacement",
+                    message.id
+                );
+            }
+            let (
+                fluent_syntax::ast::Entry::Message(existing),
+                fluent_syntax::ast::Entry::Message(generated),
+            ) = (existing, generated)
+            else {
+                bail!("source locale entry {:?} is not a message", message.id);
+            };
+            existing.value = generated.value;
+        } else {
+            source.body.push(generated);
+        }
+    }
+    let synchronized_source = fluent_syntax::serializer::serialize(&source);
+    parse_fluent_catalog(&synchronized_source).with_context(|| {
+        format!(
+            "validating updated source catalog {}",
+            source_path.display()
+        )
+    })?;
+    let mut writes = Vec::new();
+    if synchronized_source != original_source {
+        writes.push(PendingWrite {
+            path: source_path,
+            source: synchronized_source,
+            description: "screen source messages",
+        });
+    }
+
+    for path in files_with_extension(&app_dir.join("locales"), "ftl").map_err(anyhow::Error::msg)? {
+        if path.file_stem().and_then(std::ffi::OsStr::to_str) == Some("en-US") {
+            continue;
+        }
+        let original = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading translation catalog {}", path.display()))?;
+        parse_fluent_catalog(&original)
+            .with_context(|| format!("validating translation catalog {}", path.display()))?;
+        let mut translation = parse_editable_fluent(&original, &path)?;
+        if synchronize_fluent_resource(&source, &mut translation, false, false) {
+            let synchronized = fluent_syntax::serializer::serialize(&translation);
+            parse_fluent_catalog(&synchronized).with_context(|| {
+                format!("validating synchronized translation {}", path.display())
+            })?;
+            writes.push(PendingWrite {
+                path,
+                source: synchronized,
+                description: "screen translation messages",
+            });
+        }
+    }
+    Ok(writes)
+}
+
+fn fluent_message_entry(message: &ScreenMessage) -> Result<fluent_syntax::ast::Entry<String>> {
+    let source = format!(
+        "{} = {{ \"{}\" }}\n",
+        message.id,
+        escape_fluent_string(&message.value)
+    );
+    let mut resource = fluent_syntax::parser::parse(source)
+        .map_err(|(_, errors)| anyhow::anyhow!("encoding message {:?}: {errors:?}", message.id))?;
+    if resource.body.len() != 1 {
+        bail!("encoding message {:?} produced no single entry", message.id);
+    }
+    resource
+        .body
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("encoding message {:?} produced no entry", message.id))
+}
+
+fn escape_fluent_string(value: &str) -> String {
+    let mut escaped = String::new();
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            character if character.is_control() => {
+                let value = u32::from(character);
+                if value <= 0xFFFF {
+                    let _ = write!(escaped, "\\u{value:04X}");
+                } else {
+                    let _ = write!(escaped, "\\U{value:06X}");
+                }
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn navigation_link_write(
+    app_dir: &Path,
+    from: &str,
+    to: &str,
+    label: &str,
+) -> Result<PendingWrite> {
+    let path = app_dir.join("ui").join(format!("{from}.json"));
+    let mut document = load_ui_graph(&path)
+        .with_context(|| format!("--link-from screen {from:?} must already exist and be valid"))?;
+    let root = document.root.id().to_owned();
+    let index = document.root.children().len();
+    document.insert_child(
+        &root,
+        index,
+        qos_ui_graph::UiNode::Button {
+            id: format!("open-{to}"),
+            label: label.to_owned(),
+            accessible_name: None,
+            tooltip: None,
+            on_click_path: None,
+            click_value: None,
+            navigate: Some(qos_ui_graph::UiNavigation::Push {
+                route: to.to_owned(),
+            }),
+            enabled: true,
+            style: qos_ui_graph::UiButtonStyle::Neutral,
+        },
+    )?;
+    let mut source = document.to_json_pretty()?;
+    source.push('\n');
+    Ok(PendingWrite {
+        path,
+        source,
+        description: "source screen navigation",
+    })
+}
+
+fn write_batch(writes: &[PendingWrite]) -> Result<()> {
+    write_batch_with(writes, |write| {
+        write_atomic(&write.path, write.source.as_bytes(), write.description)
+    })
+}
+
+fn write_batch_with(
+    writes: &[PendingWrite],
+    mut publish: impl FnMut(&PendingWrite) -> Result<()>,
+) -> Result<()> {
+    let originals = writes
+        .iter()
+        .map(|write| {
+            std::fs::read(&write.path)
+                .map(Some)
+                .or_else(|error| {
+                    (error.kind() == io::ErrorKind::NotFound)
+                        .then_some(None)
+                        .ok_or(error)
+                })
+                .with_context(|| format!("reading {} before generation", write.path.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    for (index, write) in writes.iter().enumerate() {
+        if let Err(error) = publish(write) {
+            let mut rollback_failures = Vec::new();
+            for (restore, original) in writes
+                .iter()
+                .zip(&originals)
+                .take(index.saturating_add(1))
+                .rev()
+            {
+                let result = match original {
+                    Some(source) => write_atomic(&restore.path, source, "generator rollback"),
+                    None if restore.path.exists() => std::fs::remove_file(&restore.path)
+                        .with_context(|| format!("removing new {}", restore.path.display())),
+                    None => Ok(()),
+                };
+                if let Err(rollback) = result {
+                    rollback_failures.push(format!("{}: {rollback:#}", restore.path.display()));
+                }
+            }
+            if rollback_failures.is_empty() {
+                return Err(error)
+                    .context("publishing generated files; earlier writes rolled back");
+            }
+            bail!(
+                "{error:#}; rollback was incomplete: {}",
+                rollback_failures.join("; ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn protect_destination(path: &Path, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "{} already exists; pass --force to replace it",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn screen_writes(
+    app_dir: &Path,
+    relative: &Path,
+    graph_source: String,
+    name: &str,
+    force: bool,
+) -> Result<Vec<PendingWrite>> {
+    let graph_path = app_dir.join(relative);
+    protect_destination(&graph_path, force)?;
+
+    let registry_path = app_dir.join("src/screens.rs");
+    let mut names = if registry_path.is_file() {
+        let registry = std::fs::read_to_string(&registry_path)
+            .with_context(|| format!("reading {}", registry_path.display()))?;
+        parse_screen_registry(&registry).with_context(|| {
+            format!(
+                "{} is app-owned; move it or add the qos-dev generated header before generating screens",
+                registry_path.display()
+            )
+        })?
+    } else {
+        Vec::new()
+    };
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_owned());
+    }
+    names.sort();
+    names.dedup();
+    let registry_source = screen_registry_source(&names);
+
+    let library_path = app_dir.join("src/lib.rs");
+    let library_source = std::fs::read_to_string(&library_path)
+        .with_context(|| format!("reading {}", library_path.display()))?;
+    let syntax = syn::parse_file(&library_source)
+        .with_context(|| format!("parsing {} before screen wiring", library_path.display()))?;
+    let screens_modules: Vec<_> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) if module.ident == "screens" => Some(module),
+            _ => None,
+        })
+        .collect();
+    let updated_library = match screens_modules.as_slice() {
+        [] => {
+            let separator = if library_source.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            format!("{library_source}{separator}pub mod screens;\n")
+        }
+        [module]
+            if module.content.is_none()
+                && matches!(module.vis, syn::Visibility::Public(_))
+                && !module.attrs.iter().any(|attr| attr.path().is_ident("path")) =>
+        {
+            library_source.clone()
+        }
+        [_] => bail!(
+            "{} already defines a custom `screens` module; generated screens require a plain `pub mod screens;` declaration",
+            library_path.display()
+        ),
+        _ => bail!(
+            "{} defines `screens` more than once",
+            library_path.display()
+        ),
+    };
+    syn::parse_file(&updated_library)
+        .with_context(|| format!("validating screen wiring for {}", library_path.display()))?;
+
+    let mut writes = vec![PendingWrite {
+        path: graph_path,
+        source: graph_source,
+        description: "screen graph",
+    }];
+    if std::fs::read_to_string(&registry_path).ok().as_deref() != Some(&registry_source) {
+        writes.push(PendingWrite {
+            path: registry_path,
+            source: registry_source,
+            description: "screen registry",
+        });
+    }
+    if updated_library != library_source {
+        writes.push(PendingWrite {
+            path: library_path,
+            source: updated_library,
+            description: "app library",
+        });
+    }
+    Ok(writes)
+}
+
+fn parse_screen_registry(source: &str) -> Result<Vec<String>> {
+    if !source.starts_with(SCREEN_REGISTRY_HEADER) {
+        bail!("missing generated screen-registry header");
+    }
+    let mut names = Vec::new();
+    for line in source.lines() {
+        if let Some(name) = line.strip_prefix(SCREEN_ENTRY_PREFIX) {
+            validate_artifact_name(name)?;
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+fn screen_registry_source(names: &[String]) -> String {
+    let mut source = String::from(SCREEN_REGISTRY_HEADER);
+    source.push_str("// Edit screen graphs under ui/; qos-dev maintains this registry.\n");
+    for name in names {
+        let _ = writeln!(source, "{SCREEN_ENTRY_PREFIX}{name}");
+    }
+    source.push_str(
+        "\nuse ui::widget::Widget;\nuse ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};\n\n",
+    );
+    source.push_str("pub const NAMES: &[&str] = &[\n");
+    for name in names {
+        let _ = writeln!(source, "    {name:?},");
+    }
+    source.push_str("];");
+    for name in names {
+        let function = name.replace('-', "_");
+        let _ = writeln!(
+            source,
+            "\n\n/// Build the `{name}` screen.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build(include_str!(\"../ui/{name}.json\"), theme)\n}}"
+        );
+    }
+    source.push_str(
+        "
+
+/// Build a screen selected at run time.
+pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphError>> {
+    match name {
+",
+    );
+    for name in names {
+        let function = name.replace('-', "_");
+        let _ = writeln!(source, "        {name:?} => Some({function}(theme)),");
+    }
+    source.push_str(
+        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
+    );
+    for name in names {
+        let _ = writeln!(
+            source,
+            "        {name:?} => include_str!(\"../ui/{name}.json\"),"
+        );
+    }
+    source.push_str(
+        "        _ => return None,\n    };\n    Some(build_routed(source, theme, navigation))\n}\n\n/// Build a history-aware host for all registered screens.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, |route, theme, navigation| {\n        get_routed(route, theme, navigation)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build(source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget(theme)?))\n}\n\nfn build_routed(\n    source: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    let context = UiBuildContext::default().with_router(navigation.clone());\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
+    );
+    source
+}
+
+fn validate_artifact_name(name: &str) -> Result<()> {
+    validate_package_name(name).map_err(|_| {
+        anyhow::anyhow!(
+            "invalid artifact name {name:?}; use lowercase ASCII letters, digits, and single hyphens"
+        )
+    })
+}
+
+fn validate_locale(locale: &str) -> Result<()> {
+    let mut parts = locale.split('-');
+    let language = parts.next().unwrap_or_default();
+    let rest: Vec<_> = parts.collect();
+    let valid_language =
+        (2..=8).contains(&language.len()) && language.bytes().all(|byte| byte.is_ascii_lowercase());
+    let valid_rest = rest.iter().all(|part| {
+        !part.is_empty() && part.len() <= 8 && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    });
+    if !valid_language || !valid_rest || locale.ends_with('-') {
+        bail!(
+            "invalid locale {locale:?}; use a BCP-47-style tag such as `de`, `en-GB`, or `zh-Hant-TW`"
+        );
+    }
+    Ok(())
+}
+
+fn shell_display_path(path: &Path) -> String {
+    let rendered = path.to_string_lossy();
+    if rendered
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"/_-.".contains(&byte))
+    {
+        rendered.into_owned()
+    } else {
+        format!("'{}'", rendered.replace('\'', "'\\''"))
+    }
+}
+
+/// Parse and validate a serialized UI graph with the toolkit's own schema.
+///
+/// # Errors
+///
+/// Returns a filesystem, JSON, or graph-validation error.
+pub fn load_ui_graph(path: &Path) -> Result<qos_ui_graph::UiDocument> {
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("reading UI graph {}", path.display()))?;
+    qos_ui_graph::UiDocument::from_json(&source)
+        .with_context(|| format!("validating UI graph {}", path.display()))
+}
+
+/// Parse one node object accepted by the current UI graph schema.
+///
+/// # Errors
+///
+/// Returns a JSON decoding error. Complete graph invariants are checked when
+/// the node is inserted or used as a replacement.
+pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
+    serde_json::from_str(source).context("parsing UI node JSON")
+}
+
+/// Apply one structural edit and atomically replace the graph file only after
+/// the complete candidate validates.
+///
+/// # Errors
+///
+/// Returns a load, structural-validation, or atomic-write error. The source
+/// file remains unchanged on failure.
+pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
+    let mut document = load_ui_graph(path)?;
+    match edit {
+        UiGraphEdit::Insert {
+            parent,
+            index,
+            node,
+        } => document.insert_child(&parent, index, node)?,
+        UiGraphEdit::Remove { id } => {
+            let _ = document.remove_node(&id)?;
+        }
+        UiGraphEdit::Replace { id, node } => document.replace_node(&id, node)?,
+        UiGraphEdit::Move { id, parent, index } => {
+            document.move_node(&id, &parent, index)?;
+        }
+    }
+    write_ui_graph(path, &document)
+}
+
+/// Rewrite a valid graph in the canonical pretty-printed form.
+///
+/// # Errors
+///
+/// Returns a load, validation, or atomic-write error.
+pub fn format_ui_graph(path: &Path) -> Result<()> {
+    let document = load_ui_graph(path)?;
+    write_ui_graph(path, &document)
+}
+
+/// A compact hierarchy suitable for a terminal builder or code review.
+///
+/// # Errors
+///
+/// Returns a load or validation error.
+pub fn ui_graph_tree(path: &Path) -> Result<String> {
+    let document = load_ui_graph(path)?;
+    let mut output = String::new();
+    write_ui_node_tree(&document.root, 0, &mut output);
+    Ok(output)
+}
+
+/// Resolve the native editor used by `qos-dev ui edit`.
+///
+/// An explicit program wins, followed by `QOS_UI_BUILDER`, a
+/// `qos-ui-builder` executable beside `qos-dev`, the source workspace's
+/// builder package, and finally `PATH`.
+///
+/// # Errors
+///
+/// Returns an error if the current executable cannot be inspected while
+/// looking for a sibling builder.
+pub fn ui_builder_plan(path: &Path, explicit: Option<OsString>) -> Result<UiBuilderPlan> {
+    let graph_arg = path.as_os_str().to_owned();
+    let (program, args) = if let Some(program) = explicit {
+        (program, vec![graph_arg])
+    } else if let Some(program) = std::env::var_os("QOS_UI_BUILDER") {
+        (program, vec![graph_arg])
+    } else {
+        let current = std::env::current_exe().context("locating qos-dev executable")?;
+        let sibling =
+            current.with_file_name(format!("qos-ui-builder{}", std::env::consts::EXE_SUFFIX));
+        if sibling.is_file() {
+            (sibling.into_os_string(), vec![graph_arg])
+        } else if let Some(manifest) = find_ui_builder_manifest(path, &current)? {
+            (
+                std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+                vec![
+                    OsString::from("run"),
+                    OsString::from("--manifest-path"),
+                    manifest.into_os_string(),
+                    OsString::from("--"),
+                    graph_arg,
+                ],
+            )
+        } else {
+            (OsString::from("qos-ui-builder"), vec![graph_arg])
+        }
+    };
+    Ok(UiBuilderPlan { program, args })
+}
+
+fn find_ui_builder_manifest(path: &Path, current_exe: &Path) -> Result<Option<PathBuf>> {
+    let graph = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("locating current directory")?
+            .join(path)
+    };
+    for start in [graph.as_path(), current_exe] {
+        let directory = if start.is_dir() {
+            start
+        } else {
+            start.parent().unwrap_or(start)
+        };
+        for ancestor in directory.ancestors() {
+            let manifest = ancestor.join("crates/dev/ui-builder/Cargo.toml");
+            if manifest.is_file() {
+                return Ok(Some(manifest));
+            }
+        }
+    }
+    Ok(None)
+}
+
+impl UiBuilderPlan {
+    /// Open the graph in the native builder and wait until its window closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the builder cannot start or exits unsuccessfully.
+    pub fn execute(&self) -> Result<()> {
+        let status = ProcessCommand::new(&self.program)
+            .args(&self.args)
+            .status()
+            .with_context(|| {
+                format!(
+                    "starting {}; build qos-ui-builder or set QOS_UI_BUILDER",
+                    self.program.to_string_lossy()
+                )
+            })?;
+        if !status.success() {
+            bail!("{} exited with {status}", self.program.to_string_lossy());
+        }
+        Ok(())
+    }
+}
+
+fn write_ui_node_tree(node: &qos_ui_graph::UiNode, depth: usize, output: &mut String) {
+    let kind = match node {
+        qos_ui_graph::UiNode::Column { .. } => "column",
+        qos_ui_graph::UiNode::Row { .. } => "row",
+        qos_ui_graph::UiNode::Container { .. } => "container",
+        qos_ui_graph::UiNode::Text { .. } => "text",
+        qos_ui_graph::UiNode::Button { .. } => "button",
+        qos_ui_graph::UiNode::TextInput { .. } => "text-input",
+        qos_ui_graph::UiNode::Checkbox { .. } => "checkbox",
+        qos_ui_graph::UiNode::Toggle { .. } => "toggle",
+        qos_ui_graph::UiNode::Spacer { .. } => "spacer",
+    };
+    let _ = writeln!(output, "{}{} ({kind})", "  ".repeat(depth), node.id());
+    match node {
+        qos_ui_graph::UiNode::Column { children, .. }
+        | qos_ui_graph::UiNode::Row { children, .. } => {
+            for child in children {
+                write_ui_node_tree(child, depth.saturating_add(1), output);
+            }
+        }
+        qos_ui_graph::UiNode::Container { child, .. } => {
+            write_ui_node_tree(child, depth.saturating_add(1), output);
+        }
+        _ => {}
+    }
+}
+
+fn write_ui_graph(path: &Path, document: &qos_ui_graph::UiDocument) -> Result<()> {
+    let mut source = document.to_json_pretty()?;
+    source.push('\n');
+    write_atomic(path, source.as_bytes(), "UI graph")
+}
+
+fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating {description} directory {}", parent.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary {description} in {}", parent.display()))?;
+    let permissions = std::fs::metadata(path).map_or_else(
+        |_| std::fs::Permissions::from_mode(0o644),
+        |metadata| metadata.permissions(),
+    );
+    temporary
+        .as_file()
+        .set_permissions(permissions)
+        .with_context(|| format!("setting {description} permissions for {}", path.display()))?;
+    temporary
+        .write_all(source)
+        .with_context(|| format!("writing temporary {description} for {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("syncing temporary {description} for {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publishing {description} {}", path.display()))?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("syncing {description} directory {}", parent.display()))?;
+    Ok(())
+}
+
+impl CargoPlan {
+    /// Run with inherited stdin/stdout/stderr so window startup, compiler
+    /// diagnostics, and test output behave exactly like invoking Cargo.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot start or exits unsuccessfully.
+    pub fn execute(&self) -> Result<()> {
+        let status = ProcessCommand::new(&self.program)
+            .args(&self.args)
+            .current_dir(&self.app_dir)
+            .status()
+            .with_context(|| format!("starting {}", self.program.to_string_lossy()))?;
+        if !status.success() {
+            bail!(
+                "{} {} failed with {status}",
+                self.program.to_string_lossy(),
+                self.args
+                    .first()
+                    .map_or_else(|| "command".into(), |arg| arg.to_string_lossy())
+            );
+        }
+        Ok(())
+    }
+}
+
+impl DoctorReport {
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        !self
+            .checks
+            .iter()
+            .any(|check| check.status == DoctorStatus::Fail)
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut output = format!("qOS app: {}\n", self.app_dir.display());
+        for check in &self.checks {
+            let mark = match check.status {
+                DoctorStatus::Pass => "✓",
+                DoctorStatus::Warning => "!",
+                DoctorStatus::Fail => "✗",
+            };
+            let _ = writeln!(output, "  {mark} {}: {}", check.label, check.detail);
+        }
+        output.push_str(if self.is_ready() {
+            "\nReady for `qos-dev run`."
+        } else {
+            "\nNot ready; fix the failed checks above."
+        });
+        output
+    }
+}
+
+/// Inspect an app's source and package wiring without compiling it.
+///
+/// `start` may be the app directory or any descendant. All expected app
+/// problems are accumulated in the report so one run can fix more than one
+/// issue; only filesystem access failures are returned as `Err`.
+///
+/// # Errors
+///
+/// Returns an error when the selected app directory cannot be resolved.
+pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
+    let app_dir = resolve_app_dir(start)?;
+    Ok(doctor_resolved_app(app_dir))
+}
+
+fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
+    let mut checks = Vec::new();
+    let package_name = check_cargo_manifest(&app_dir, &mut checks);
+    let package_id = check_package_manifest(&app_dir, &mut checks);
+
+    check_source_file(
+        &app_dir,
+        "src/lib.rs",
+        "app root",
+        "pub fn app_root",
+        &mut checks,
+    );
+    check_source_file(
+        &app_dir,
+        "src/main.rs",
+        "launch lifecycle",
+        "LaunchSpec::new",
+        &mut checks,
+    );
+    check_ui_graph_artifacts(&app_dir, &mut checks);
+    check_locale_artifacts(&app_dir, &mut checks);
+    check_headless_scenarios(&app_dir, &mut checks);
+
+    if let (Some(name), Some(id)) = (package_name, package_id) {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            label: "identity",
+            detail: format!("Cargo package {name} → app id {id}"),
+        });
+    }
+
+    DoctorReport { app_dir, checks }
+}
+
+fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
+    let start = if start.is_file() {
+        start.parent().unwrap_or(start)
+    } else {
+        start
+    };
+    let app_dir = start
+        .ancestors()
+        .find(|dir| dir.join("Cargo.toml").is_file() || dir.join("qos-app.toml").is_file())
+        .unwrap_or(start)
+        .canonicalize()
+        .with_context(|| format!("resolving app directory {}", start.display()))?;
+    Ok(app_dir)
+}
+
+/// Resolve an app, require a clean doctor preflight, and construct the Cargo
+/// command used by [`AppTask::Run`] or [`AppTask::Test`]. Arguments after the
+/// qOS command's `--` are forwarded after Cargo's own `--`.
+///
+/// # Errors
+///
+/// Returns an error when no app can be resolved or its doctor checks fail.
+pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Result<CargoPlan> {
+    let app_dir = resolve_app_dir(start)?;
+    let report = doctor_resolved_app(app_dir.clone());
+    if !report.is_ready() {
+        bail!("app preflight failed\n\n{}", report.summary());
+    }
+    let manifest = app_dir.join("Cargo.toml");
+    let mut args = vec![
+        OsString::from(task.cargo_subcommand()),
+        OsString::from("--manifest-path"),
+        manifest.into_os_string(),
+    ];
+    if !forwarded.is_empty() {
+        args.push(OsString::from("--"));
+        args.extend_from_slice(forwarded);
+    }
+    Ok(CargoPlan {
+        app_dir,
+        program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+        args,
+    })
+}
+
+/// Construct a preflighted screenshot invocation using the app's standard
+/// launch lifecycle.
+///
+/// # Errors
+///
+/// Returns an error when the app cannot be resolved or its preflight fails.
+pub fn plan_app_shot(start: &Path, request: ShotRequest) -> Result<CargoPlan> {
+    let mut app_args = vec![OsString::from("--shots"), request.output.into_os_string()];
+    if let Some((width, height)) = request.viewport {
+        app_args.extend([
+            OsString::from("--viewport"),
+            OsString::from(format!("{width}x{height}")),
+        ]);
+    }
+    if let Some(scenario) = request.scenario {
+        app_args.extend([OsString::from("--scenario"), OsString::from(scenario)]);
+    }
+    app_args.extend(request.forwarded);
+    plan_app_task(start, AppTask::Run, &app_args)
+}
+
+/// Construct a preflighted, windowless semantic-inspection invocation.
+///
+/// The optional actions file contains a JSON array of normal headless-driver
+/// actions. Output paths are passed to the app unchanged and are therefore
+/// relative to the discovered app root when they are not absolute.
+///
+/// # Errors
+///
+/// Returns an error when the app cannot be resolved, preflight fails, an
+/// output path is not valid UTF-8, or the actions file is unreadable or is not
+/// a JSON array.
+pub fn plan_app_inspection(start: &Path, request: InspectRequest) -> Result<CargoPlan> {
+    let app_dir = resolve_app_dir(start)?;
+    let mut payload = serde_json::Map::new();
+    payload.insert("inspect".into(), json_path(&request.output)?);
+    payload.insert(
+        "actions".into(),
+        request.actions.as_deref().map_or_else(
+            || Ok(serde_json::Value::Array(Vec::new())),
+            |path| {
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    app_dir.join(path)
+                };
+                read_actions(&path)
+            },
+        )?,
+    );
+    if let Some((width, height)) = request.viewport {
+        payload.insert("viewport".into(), serde_json::json!([width, height]));
+    }
+    if let Some(path) = request.dump {
+        payload.insert("dump".into(), json_path(&path)?);
+    }
+    if let Some(path) = request.targets {
+        payload.insert("targets".into(), json_path(&path)?);
+    }
+    if request.audit {
+        payload.insert("audit".into(), serde_json::Value::Bool(true));
+    }
+    if let Some(path) = request.audit_report {
+        payload.insert("audit_report".into(), json_path(&path)?);
+    }
+    let app_args = [
+        OsString::from("--headless-drive"),
+        OsString::from(serde_json::Value::Object(payload).to_string()),
+    ];
+    plan_app_task(&app_dir, AppTask::Run, &app_args)
+}
+
+fn json_path(path: &Path) -> Result<serde_json::Value> {
+    path.to_str()
+        .map(|path| serde_json::Value::String(path.to_owned()))
+        .with_context(|| format!("path is not valid UTF-8: {}", path.display()))
+}
+
+fn read_actions(path: &Path) -> Result<serde_json::Value> {
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("reading inspection actions {}", path.display()))?;
+    qos_headless_schema::parse_actions(&source).map_err(|error| {
+        anyhow::anyhow!("validating inspection actions {}: {error}", path.display())
+    })?;
+    let actions: serde_json::Value = serde_json::from_str(&source)
+        .with_context(|| format!("parsing inspection actions {}", path.display()))?;
+    Ok(actions)
+}
+
+/// Discover and preflight one or every saved headless scenario.
+///
+/// Every action file is parsed before the returned plan can start the app, so
+/// an invalid later scenario never leaves a partially executed suite.
+///
+/// # Errors
+///
+/// Returns an error when the app cannot be resolved, its structural preflight
+/// fails, a requested scenario is absent, or any action file is malformed.
+pub fn plan_scenario_suite(request: &ScenarioRunRequest) -> Result<ScenarioSuitePlan> {
+    let app_dir = resolve_app_dir(&request.start)?;
+    let artifact_dir = request.artifacts.as_ref().map(|path| {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            app_dir.join(path)
+        }
+    });
+    let scenarios = discover_scenarios(&app_dir, request.name.as_deref())?;
+    if scenarios.is_empty() {
+        bail!("no headless scenarios found; add one with `qos-dev add scenario smoke`");
+    }
+    let mut cases = Vec::with_capacity(scenarios.len());
+    for (name, source) in scenarios {
+        let actions = read_actions(&source)?;
+        let mut payload = serde_json::Map::new();
+        payload.insert("actions".into(), actions);
+        if let Some((width, height)) = request.viewport {
+            payload.insert("viewport".into(), serde_json::json!([width, height]));
+        }
+        if request.audit {
+            payload.insert("audit".into(), serde_json::Value::Bool(true));
+        }
+        if let Some(directory) = &artifact_dir {
+            payload.insert(
+                "inspect".into(),
+                json_path(&directory.join(format!("{name}.inspect.json")))?,
+            );
+            payload.insert(
+                "targets".into(),
+                json_path(&directory.join(format!("{name}.targets.json")))?,
+            );
+            payload.insert(
+                "dump".into(),
+                json_path(&directory.join(format!("{name}.document.json")))?,
+            );
+            if request.audit {
+                payload.insert(
+                    "audit_report".into(),
+                    json_path(&directory.join(format!("{name}.audit.json")))?,
+                );
+            }
+        }
+        let app_args = [
+            OsString::from("--headless-drive"),
+            OsString::from(serde_json::Value::Object(payload).to_string()),
+        ];
+        cases.push(ScenarioCasePlan {
+            name,
+            source,
+            cargo: plan_app_task(&app_dir, AppTask::Run, &app_args)?,
+        });
+    }
+    Ok(ScenarioSuitePlan {
+        app_dir,
+        cases,
+        artifact_dir,
+    })
+}
+
+fn discover_scenarios(app_dir: &Path, requested: Option<&str>) -> Result<Vec<(String, PathBuf)>> {
+    if let Some(name) = requested {
+        if name == "default" {
+            let path = app_dir.join("tests/headless-actions.json");
+            if !path.is_file() {
+                bail!("default scenario tests/headless-actions.json does not exist");
+            }
+            return Ok(vec![(name.to_owned(), path)]);
+        }
+        validate_artifact_name(name)?;
+        let path = app_dir.join("tests/scenarios").join(format!("{name}.json"));
+        if !path.is_file() {
+            bail!("scenario {name:?} does not exist at {}", path.display());
+        }
+        return Ok(vec![(name.to_owned(), path)]);
+    }
+
+    let mut scenarios = Vec::new();
+    let conventional = app_dir.join("tests/headless-actions.json");
+    if conventional.is_file() {
+        scenarios.push(("default".to_owned(), conventional));
+    }
+    let named_start = scenarios.len();
+    for path in files_with_extension(&app_dir.join("tests/scenarios"), "json")
+        .map_err(anyhow::Error::msg)?
+    {
+        let name = path
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| anyhow::anyhow!("scenario filename is not valid UTF-8"))?;
+        validate_artifact_name(name)?;
+        if name == "default" {
+            bail!("tests/scenarios/default.json conflicts with the reserved default scenario");
+        }
+        scenarios.push((name.to_owned(), path));
+    }
+    scenarios
+        .get_mut(named_start..)
+        .unwrap_or_default()
+        .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    Ok(scenarios)
+}
+
+impl ScenarioSuitePlan {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.cases.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cases.is_empty()
+    }
+
+    /// Directory receiving requested per-scenario inspection artifacts.
+    #[must_use]
+    pub fn artifact_dir(&self) -> Option<&Path> {
+        self.artifact_dir.as_deref()
+    }
+
+    /// Run every prevalidated case in deterministic order. Each case receives
+    /// private XDG directories and cannot read or overwrite normal app state.
+    /// Failures are accumulated so one run reports the complete suite.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when an isolated state directory or child process
+    /// cannot be created. Non-zero scenario exits are returned in `failed`.
+    pub fn execute(&self) -> Result<ScenarioSuiteOutcome> {
+        if let Some(directory) = &self.artifact_dir {
+            std::fs::create_dir_all(directory).with_context(|| {
+                format!(
+                    "creating scenario artifact directory {}",
+                    directory.display()
+                )
+            })?;
+        }
+        let mut passed = Vec::new();
+        let mut failed = Vec::new();
+        for case in &self.cases {
+            eprintln!("[scenario] {} ({})", case.name, case.source.display());
+            let state = tempfile::Builder::new()
+                .prefix("qos-scenario-")
+                .tempdir()
+                .with_context(|| format!("creating isolated state for scenario {:?}", case.name))?;
+            let status = ProcessCommand::new(&case.cargo.program)
+                .args(&case.cargo.args)
+                .current_dir(&case.cargo.app_dir)
+                .env("XDG_DATA_HOME", state.path().join("data"))
+                .env("XDG_STATE_HOME", state.path().join("state"))
+                .env("XDG_CONFIG_HOME", state.path().join("config"))
+                .env("XDG_CACHE_HOME", state.path().join("cache"))
+                .env_remove("QOS_PACKAGE_ID")
+                .env_remove("QOS_WORKSPACE_ID")
+                .env_remove("QUICK_CLUSTER_ID")
+                .status()
+                .with_context(|| format!("starting scenario {:?}", case.name))?;
+            if status.success() {
+                passed.push(case.name.clone());
+            } else {
+                failed.push(ScenarioFailure {
+                    name: case.name.clone(),
+                    source: case.source.clone(),
+                    detail: status.to_string(),
+                });
+            }
+        }
+        Ok(ScenarioSuiteOutcome { passed, failed })
+    }
+}
+
+#[derive(Debug)]
+struct AppPackageSpec {
+    app_dir: PathBuf,
+    cargo_package: String,
+    manifest_path: PathBuf,
+    entrypoints: Vec<(String, PathBuf)>,
+}
+
+/// Build an app's declared entrypoints, assemble its payload, sign it through
+/// `qos-pkg`, verify the result, and publish the completed `.qpkg` atomically.
+///
+/// An app-local `payload/` directory is copied into the package before the
+/// freshly built binaries are placed at their manifest paths. Relative output
+/// and identity paths are resolved from the discovered app root.
+///
+/// # Errors
+///
+/// Returns an error when preflight, compilation, staging, packing, or
+/// verification fails, or when the destination exists without `force`.
+pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    let app_dir = resolve_app_dir(start)?;
+    let report = doctor_resolved_app(app_dir.clone());
+    if !report.is_ready() {
+        bail!("app preflight failed\n\n{}", report.summary());
+    }
+    validate_profile_name(&request.profile)?;
+    let spec = load_app_package_spec(app_dir)?;
+    let output = request.output.as_ref().map_or_else(
+        || {
+            spec.app_dir
+                .join("dist")
+                .join(format!("{}.qpkg", spec.cargo_package))
+        },
+        |path| absolute_from(&spec.app_dir, path),
+    );
+    if output.exists() && !request.force {
+        bail!(
+            "package output {} already exists; pass --force to replace it",
+            output.display()
+        );
+    }
+    let output_parent = output
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
+    std::fs::create_dir_all(output_parent).with_context(|| {
+        format!(
+            "creating package output directory {}",
+            output_parent.display()
+        )
+    })?;
+
+    let built = build_entrypoints(&spec, request)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".qos-dev-package-")
+        .tempdir_in(output_parent)
+        .with_context(|| {
+            format!(
+                "creating package staging area in {}",
+                output_parent.display()
+            )
+        })?;
+    let payload = staging.path().join("payload");
+    std::fs::create_dir(&payload).context("creating staged payload")?;
+    let app_payload = spec.app_dir.join("payload");
+    if app_payload.is_dir() {
+        copy_payload_tree(&app_payload, &payload)?;
+    }
+    for (cargo_bin, payload_path) in &spec.entrypoints {
+        let source = built
+            .get(cargo_bin)
+            .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {cargo_bin}"))?;
+        let destination = payload.join(payload_path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating payload directory {}", parent.display()))?;
+        }
+        std::fs::copy(source, &destination).with_context(|| {
+            format!("copying {} to {}", source.display(), destination.display())
+        })?;
+        let permissions = std::fs::metadata(source)?.permissions();
+        std::fs::set_permissions(&destination, permissions)?;
+    }
+
+    let staged_package = staging.path().join("package.qpkg");
+    let identity = request
+        .identity
+        .as_ref()
+        .map(|path| absolute_from(&spec.app_dir, path));
+    run_qos_pkg_pack(&spec, &payload, &staged_package, identity.as_deref())?;
+    run_qos_pkg_verify(&spec.app_dir, &staged_package)?;
+    std::fs::rename(&staged_package, &output)
+        .with_context(|| format!("publishing package to {}", output.display()))?;
+    eprintln!("[qos-dev] packaged {}", output.display());
+    Ok(PackageOutcome {
+        output,
+        entrypoints: spec.entrypoints.into_iter().map(|(_, path)| path).collect(),
+    })
+}
+
+fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
+    let cargo_path = app_dir.join("Cargo.toml");
+    let cargo_source = std::fs::read_to_string(&cargo_path)
+        .with_context(|| format!("reading {}", cargo_path.display()))?;
+    let cargo: toml::Value = cargo_source
+        .parse()
+        .with_context(|| format!("parsing {}", cargo_path.display()))?;
+    let cargo_package = cargo
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Cargo.toml is missing [package].name"))?
+        .to_owned();
+
+    let manifest_path = app_dir.join("qos-app.toml");
+    let manifest_source = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let manifest = pkg::Manifest::from_toml_str(&manifest_source)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let entrypoint = manifest
+        .entrypoint
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("qos-app.toml declares no package entrypoint"))?;
+    let mut payload_paths = Vec::new();
+    if let Some(path) = entrypoint.gui_bin_path() {
+        payload_paths.push(path.clone());
+    }
+    if let Some(path) = entrypoint.cli_bin_path()
+        && !payload_paths.contains(path)
+    {
+        payload_paths.push(path.clone());
+    }
+    if payload_paths.is_empty() {
+        bail!("qos-app.toml declares no package entrypoint");
+    }
+    let entrypoints = payload_paths
+        .into_iter()
+        .map(|payload_path| {
+            let cargo_bin = payload_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "entrypoint {} has no UTF-8 binary name",
+                        payload_path.display()
+                    )
+                })?
+                .to_owned();
+            Ok((cargo_bin, payload_path))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(AppPackageSpec {
+        app_dir,
+        cargo_package,
+        manifest_path,
+        entrypoints,
+    })
+}
+
+fn build_entrypoints(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+) -> Result<HashMap<String, PathBuf>> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let mut command = ProcessCommand::new(&cargo);
+    command
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(spec.app_dir.join("Cargo.toml"))
+        .arg("--profile")
+        .arg(&request.profile)
+        .arg("--message-format=json-render-diagnostics")
+        .current_dir(&spec.app_dir)
+        .stdout(Stdio::piped());
+    for (cargo_bin, _) in &spec.entrypoints {
+        command.arg("--bin").arg(cargo_bin);
+    }
+    if let Some(target) = &request.target {
+        command.arg("--target").arg(target);
+    }
+    if request.no_default_features {
+        command.arg("--no-default-features");
+    }
+    if !request.features.is_empty() {
+        command.arg("--features").arg(request.features.join(","));
+    }
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("starting {} build", cargo.to_string_lossy()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+    let expected_manifest = spec
+        .app_dir
+        .join("Cargo.toml")
+        .canonicalize()
+        .unwrap_or_else(|_| spec.app_dir.join("Cargo.toml"));
+    let mut artifacts = HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line.context("reading Cargo artifact stream")?;
+        collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+    }
+    let status = child.wait().context("waiting for Cargo build")?;
+    if !status.success() {
+        bail!("Cargo package build failed with {status}");
+    }
+    for (cargo_bin, _) in &spec.entrypoints {
+        if !artifacts.contains_key(cargo_bin) {
+            bail!("Cargo build completed without reporting binary {cargo_bin}");
+        }
+    }
+    Ok(artifacts)
+}
+
+fn collect_cargo_message(
+    line: &str,
+    expected_manifest: &Path,
+    artifacts: &mut HashMap<String, PathBuf>,
+) {
+    let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+        eprintln!("{line}");
+        return;
+    };
+    if message.get("reason").and_then(serde_json::Value::as_str) == Some("compiler-message") {
+        if let Some(rendered) = message
+            .get("message")
+            .and_then(|message| message.get("rendered"))
+            .and_then(serde_json::Value::as_str)
+        {
+            eprint!("{rendered}");
+        }
+        return;
+    }
+    if message.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
+        return;
+    }
+    let manifest_matches = message
+        .get("manifest_path")
+        .and_then(serde_json::Value::as_str)
+        .map(Path::new)
+        .is_some_and(|path| path == expected_manifest);
+    if !manifest_matches {
+        return;
+    }
+    let Some(name) = message
+        .get("target")
+        .and_then(|target| target.get("name"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    let Some(executable) = message
+        .get("executable")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    artifacts.insert(name.to_owned(), PathBuf::from(executable));
+}
+
+fn run_qos_pkg_pack(
+    spec: &AppPackageSpec,
+    payload: &Path,
+    output: &Path,
+    identity: Option<&Path>,
+) -> Result<()> {
+    let program = std::env::var_os("QOS_PKG").unwrap_or_else(|| OsString::from("qos-pkg"));
+    let mut command = ProcessCommand::new(&program);
+    command
+        .arg("pack")
+        .arg("--manifest")
+        .arg(&spec.manifest_path)
+        .arg("--payload")
+        .arg(payload)
+        .arg("--output")
+        .arg(output)
+        .current_dir(&spec.app_dir);
+    if let Some(identity) = identity {
+        command.arg("--identity").arg(identity);
+    } else {
+        eprintln!(
+            "[qos-dev] no --identity supplied; qos-pkg will use an ephemeral self-signing key"
+        );
+    }
+    run_package_command(&mut command, &program, "pack")
+}
+
+fn run_qos_pkg_verify(app_dir: &Path, package: &Path) -> Result<()> {
+    let program = std::env::var_os("QOS_PKG").unwrap_or_else(|| OsString::from("qos-pkg"));
+    let mut command = ProcessCommand::new(&program);
+    command.arg("verify").arg(package).current_dir(app_dir);
+    run_package_command(&mut command, &program, "verify")
+}
+
+fn run_package_command(
+    command: &mut ProcessCommand,
+    program: &OsString,
+    operation: &str,
+) -> Result<()> {
+    let status = command.status().with_context(|| {
+        format!(
+            "starting {} {operation}; install/build qos-pkg or set QOS_PKG",
+            program.to_string_lossy()
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "{} {operation} failed with {status}",
+            program.to_string_lossy()
+        );
+    }
+    Ok(())
+}
+
+fn copy_payload_tree(source: &Path, destination: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(source)
+        .with_context(|| format!("reading payload overlay {}", source.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if file_type.is_symlink() {
+            bail!(
+                "payload overlay contains unsupported symlink {}",
+                entry.path().display()
+            );
+        }
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            copy_payload_tree(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+            std::fs::set_permissions(&target, entry.metadata()?.permissions())?;
+        }
+    }
+    Ok(())
+}
+
+fn absolute_from(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn validate_profile_name(profile: &str) -> Result<()> {
+    if profile.is_empty()
+        || !profile
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("invalid Cargo profile {profile:?}");
+    }
+    Ok(())
+}
+
+static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Run an app and restart it after relevant source or asset changes.
+///
+/// The app and Cargo children share a dedicated process group, so every
+/// restart and Ctrl-C stops the previous application before starting another.
+/// After the initial launch, changes are compiled while the last good app
+/// remains alive; only a successful candidate replaces its process group.
+/// A failed build or structural preflight leaves both it and the watcher alive
+/// for the next edit.
+///
+/// # Errors
+///
+/// Returns an error when the app cannot be resolved, its initial preflight
+/// fails, signal handlers cannot be installed, or filesystem watching cannot
+/// be started.
+pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
+    let app_dir = resolve_app_dir(start)?;
+    let initial = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)?;
+    let roots = dev_watch_roots(&app_dir, request.watch_ui)?;
+    let (event_tx, event_rx) = mpsc::channel();
+    let source_revision = Arc::new(AtomicU64::new(0));
+    let callback_revision = Arc::clone(&source_revision);
+    let callback_roots = roots.clone();
+    let watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |event: notify::Result<Event>| {
+            if event
+                .as_ref()
+                .is_ok_and(|event| event_requires_restart(event, &callback_roots))
+            {
+                callback_revision.fetch_add(1, Ordering::Release);
+            }
+            let _ = event_tx.send(event);
+        })
+        .context("creating app file watcher")?;
+    let mut watcher = DevWatcher::new(watcher);
+    for root in &roots {
+        watcher.watch_tree(root)?;
+    }
+    let _signals = DevSignalGuard::install()?;
+    eprintln!(
+        "[qos-dev] watching {}",
+        roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut child = spawn_dev_child_reported(&initial);
+    'watching: while !DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
+        match event_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(event)) => {
+                watcher.observe(&event);
+                if event_requires_restart(&event, &roots) {
+                    drain_until_quiet(&event_rx, &roots, request.debounce, &mut watcher);
+                    loop {
+                        report_child_exit(&mut child);
+                        eprintln!("[qos-dev] change detected; rebuilding");
+                        let building_revision = source_revision.load(Ordering::Acquire);
+                        let candidate = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)
+                            .and_then(|plan| build_dev_candidate(&plan));
+
+                        let queued_restart =
+                            drain_pending_restart_events(&event_rx, &roots, |event| {
+                                watcher.observe(event);
+                            });
+                        let superseded = queued_restart
+                            || source_revision.load(Ordering::Acquire) != building_revision;
+                        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
+                            break 'watching;
+                        }
+                        if superseded {
+                            eprintln!(
+                                "[qos-dev] newer change arrived during the build; skipping the stale candidate"
+                            );
+                            drain_until_quiet(&event_rx, &roots, request.debounce, &mut watcher);
+                            continue;
+                        }
+                        match candidate {
+                            Ok(executable) => {
+                                eprintln!("[qos-dev] build succeeded; restarting");
+                                stop_dev_child(&mut child);
+                                child = spawn_dev_binary_reported(
+                                    &app_dir,
+                                    &executable,
+                                    &request.forwarded,
+                                );
+                            }
+                            Err(error) => {
+                                let state = if child.is_some() {
+                                    "keeping the last good app running"
+                                } else {
+                                    "waiting for another change"
+                                };
+                                eprintln!("[qos-dev] build failed; {state}\n{error:#}");
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Err(error)) => eprintln!("[qos-dev] watch error: {error}"),
+            Err(RecvTimeoutError::Disconnected) => bail!("app file watcher stopped"),
+        }
+        report_child_exit(&mut child);
+    }
+    stop_dev_child(&mut child);
+    eprintln!("[qos-dev] stopped");
+    Ok(())
+}
+
+/// Drain edits queued while Cargo was compiling. Returning `true` makes the
+/// caller discard that candidate and rebuild the newest source instead of
+/// briefly launching an already-stale app.
+fn drain_pending_restart_events(
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    mut observe: impl FnMut(&Event),
+) -> bool {
+    let mut restart = false;
+    loop {
+        match events.try_recv() {
+            Ok(Ok(event)) => {
+                observe(&event);
+                restart |= event_requires_restart(&event, roots);
+            }
+            Ok(Err(error)) => eprintln!("[qos-dev] watch error: {error}"),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return restart,
+        }
+    }
+}
+
+fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
+    let manifest = plan.app_dir.join("Cargo.toml");
+    let expected_manifest = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
+    let expected_binary = dev_binary_name(&manifest)?;
+    let mut command = ProcessCommand::new(&plan.program);
+    command
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--bin")
+        .arg(&expected_binary)
+        .arg("--message-format=json-render-diagnostics")
+        .current_dir(&plan.app_dir)
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped());
+    let mut build = command
+        .spawn()
+        .with_context(|| format!("starting {} build", plan.program.to_string_lossy()))?;
+    let stdout = build
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+    let mut artifacts = HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line.context("reading Cargo development artifact stream")?;
+        collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+    }
+    let status = build
+        .wait()
+        .context("waiting for Cargo development build")?;
+    if !status.success() {
+        bail!("Cargo development build failed with {status}");
+    }
+    artifacts.remove(&expected_binary).with_context(|| {
+        format!(
+            "Cargo build completed without reporting executable {expected_binary:?}; set package.default-run when the app has multiple binaries"
+        )
+    })
+}
+
+fn dev_binary_name(manifest: &Path) -> Result<String> {
+    let source = std::fs::read_to_string(manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let value = source
+        .parse::<toml::Value>()
+        .with_context(|| format!("parsing {}", manifest.display()))?;
+    let package = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .with_context(|| format!("{} has no [package] table", manifest.display()))?;
+    package
+        .get("default-run")
+        .or_else(|| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .with_context(|| format!("{} has no package name", manifest.display()))
+}
+
+fn dev_watch_roots(app_dir: &Path, watch_ui: bool) -> Result<Vec<PathBuf>> {
+    let mut roots = vec![
+        app_dir
+            .canonicalize()
+            .with_context(|| format!("resolving app watch root {}", app_dir.display()))?,
+    ];
+    if watch_ui
+        && let Some(ui_dir) = local_ui_dependency(app_dir)?
+        && !roots.iter().any(|root| ui_dir.starts_with(root))
+    {
+        roots.push(ui_dir);
+    }
+    Ok(roots)
+}
+
+fn local_ui_dependency(app_dir: &Path) -> Result<Option<PathBuf>> {
+    let manifest_path = app_dir.join("Cargo.toml");
+    let source = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let manifest = source
+        .parse::<toml::Value>()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let Some(path) = manifest
+        .get("dependencies")
+        .and_then(|dependencies| dependencies.get("ui"))
+        .and_then(|dependency| dependency.get("path"))
+        .and_then(toml::Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let resolved = app_dir.join(path).canonicalize().with_context(|| {
+        format!(
+            "resolving local UI dependency {}",
+            app_dir.join(path).display()
+        )
+    })?;
+    Ok(Some(resolved))
+}
+
+struct DevWatcher {
+    inner: RecommendedWatcher,
+    watched: HashSet<PathBuf>,
+}
+
+impl DevWatcher {
+    fn new(inner: RecommendedWatcher) -> Self {
+        Self {
+            inner,
+            watched: HashSet::new(),
+        }
+    }
+
+    fn watch_tree(&mut self, root: &Path) -> Result<()> {
+        for directory in source_watch_directories(root)? {
+            if !self.watched.insert(directory.clone()) {
+                continue;
+            }
+            if let Err(error) = self.inner.watch(&directory, RecursiveMode::NonRecursive) {
+                self.watched.remove(&directory);
+                return Err(error).with_context(|| format!("watching {}", directory.display()));
+            }
+        }
+        Ok(())
+    }
+
+    fn observe(&mut self, event: &Event) {
+        if matches!(event.kind, EventKind::Remove(_)) {
+            for path in &event.paths {
+                let removed = self
+                    .watched
+                    .iter()
+                    .filter(|directory| directory.starts_with(path))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for directory in removed {
+                    let _ = self.inner.unwatch(&directory);
+                    self.watched.remove(&directory);
+                }
+            }
+        }
+        for path in event.paths.iter().filter(|path| {
+            path.is_dir()
+                && !ignored_watch_component(path.file_name().and_then(|name| name.to_str()))
+        }) {
+            if let Err(error) = self.watch_tree(path) {
+                eprintln!("[qos-dev] cannot watch new directory: {error:#}");
+            }
+        }
+    }
+}
+
+fn source_watch_directories(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        if ignored_watch_path(&directory, root) {
+            continue;
+        }
+        let entries = std::fs::read_dir(&directory)
+            .with_context(|| format!("reading watch directory {}", directory.display()))?;
+        found.push(directory);
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn ignored_watch_path(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|relative| {
+        relative
+            .components()
+            .any(|component| ignored_watch_component(component.as_os_str().to_str()))
+    })
+}
+
+fn ignored_watch_component(component: Option<&str>) -> bool {
+    matches!(component, Some("target" | ".git" | ".idea" | ".vscode"))
+}
+
+fn event_requires_restart(event: &Event, roots: &[PathBuf]) -> bool {
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    event.paths.iter().any(|path| restart_path(path, roots))
+}
+
+fn restart_path(path: &Path, roots: &[PathBuf]) -> bool {
+    let relative = roots.iter().find_map(|root| path.strip_prefix(root).ok());
+    let Some(relative) = relative else {
+        return false;
+    };
+    if relative.as_os_str().is_empty() {
+        return false;
+    }
+    if relative
+        .components()
+        .any(|component| ignored_watch_component(component.as_os_str().to_str()))
+    {
+        return false;
+    }
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    let temporary_extension = relative.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("swp") || extension.eq_ignore_ascii_case("tmp")
+    });
+    name != "Cargo.lock" && !name.ends_with('~') && !name.starts_with(".#") && !temporary_extension
+}
+
+fn drain_until_quiet(
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    quiet: Duration,
+    watcher: &mut DevWatcher,
+) {
+    let mut deadline = Instant::now().checked_add(quiet);
+    loop {
+        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(until) = deadline else {
+            return;
+        };
+        let remaining = until.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        let poll = remaining.min(Duration::from_millis(100));
+        match events.recv_timeout(poll) {
+            Ok(Ok(event)) => {
+                watcher.observe(&event);
+                if event_requires_restart(&event, roots) {
+                    deadline = Instant::now().checked_add(quiet);
+                }
+            }
+            Ok(Err(error)) => eprintln!("[qos-dev] watch error: {error}"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
+    let child = ProcessCommand::new(&plan.program)
+        .args(&plan.args)
+        .current_dir(&plan.app_dir)
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("starting {}", plan.program.to_string_lossy()))?;
+    eprintln!("[qos-dev] started (pid {})", child.id());
+    Ok(child)
+}
+
+fn spawn_dev_child_reported(plan: &CargoPlan) -> Option<Child> {
+    match spawn_dev_child(plan) {
+        Ok(child) => Some(child),
+        Err(error) => {
+            eprintln!("[qos-dev] {error:#}; waiting for a change");
+            None
+        }
+    }
+}
+
+fn spawn_dev_binary(app_dir: &Path, executable: &Path, forwarded: &[OsString]) -> Result<Child> {
+    let child = ProcessCommand::new(executable)
+        .args(forwarded)
+        .current_dir(app_dir)
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("starting rebuilt app {}", executable.display()))?;
+    eprintln!("[qos-dev] started (pid {})", child.id());
+    Ok(child)
+}
+
+fn spawn_dev_binary_reported(
+    app_dir: &Path,
+    executable: &Path,
+    forwarded: &[OsString],
+) -> Option<Child> {
+    match spawn_dev_binary(app_dir, executable, forwarded) {
+        Ok(child) => Some(child),
+        Err(error) => {
+            eprintln!("[qos-dev] {error:#}; waiting for a change");
+            None
+        }
+    }
+}
+
+fn report_child_exit(child: &mut Option<Child>) {
+    let Some(running) = child else {
+        return;
+    };
+    match running.try_wait() {
+        Ok(Some(status)) => {
+            eprintln!("[qos-dev] app exited ({status}); waiting for a change");
+            *child = None;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("[qos-dev] cannot inspect app process: {error}");
+            *child = None;
+        }
+    }
+}
+
+fn stop_dev_child(child: &mut Option<Child>) {
+    let Some(mut running) = child.take() else {
+        return;
+    };
+    if running.try_wait().ok().flatten().is_some() {
+        return;
+    }
+    let Ok(pid) = i32::try_from(running.id()) else {
+        let _ = running.kill();
+        let _ = running.wait();
+        return;
+    };
+    // SAFETY: both development spawn paths create a process group whose ID is
+    // the child PID. Negating that validated PID confines SIGTERM to it.
+    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGTERM) };
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
+        let _ = running.kill();
+        let _ = running.wait();
+        return;
+    };
+    while Instant::now() < deadline {
+        if running.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SAFETY: the same dedicated process-group invariant applies to SIGKILL.
+    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGKILL) };
+    let _ = running.wait();
+}
+
+extern "C" fn request_dev_stop(_signal: libc::c_int) {
+    DEV_STOP_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+struct DevSignalGuard {
+    previous_interrupt: libc::sighandler_t,
+    previous_terminate: libc::sighandler_t,
+}
+
+impl DevSignalGuard {
+    fn install() -> Result<Self> {
+        DEV_STOP_REQUESTED.store(false, Ordering::Relaxed);
+        // SAFETY: the handler only stores to a lock-free atomic and has the C
+        // signal-handler ABI. The previous disposition is retained for Drop.
+        let previous_interrupt = unsafe {
+            libc::signal(
+                libc::SIGINT,
+                request_dev_stop as *const () as libc::sighandler_t,
+            )
+        };
+        if previous_interrupt == libc::SIG_ERR {
+            bail!("installing Ctrl-C handler failed");
+        }
+        // SAFETY: identical invariant to the SIGINT registration above.
+        let previous_terminate = unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                request_dev_stop as *const () as libc::sighandler_t,
+            )
+        };
+        if previous_terminate == libc::SIG_ERR {
+            // SAFETY: restore the valid disposition returned by `signal`.
+            unsafe { libc::signal(libc::SIGINT, previous_interrupt) };
+            bail!("installing termination handler failed");
+        }
+        Ok(Self {
+            previous_interrupt,
+            previous_terminate,
+        })
+    }
+}
+
+impl Drop for DevSignalGuard {
+    fn drop(&mut self) {
+        // SAFETY: both values were returned by successful `signal` calls.
+        unsafe {
+            libc::signal(libc::SIGINT, self.previous_interrupt);
+            libc::signal(libc::SIGTERM, self.previous_terminate);
+        }
+    }
+}
+
+fn check_cargo_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Option<String> {
+    let path = app_dir.join("Cargo.toml");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "Cargo manifest",
+                detail: format!("{}: {error}", path.display()),
+            });
+            return None;
+        }
+    };
+    let manifest = match source.parse::<toml::Value>() {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "Cargo manifest",
+                detail: error.to_string(),
+            });
+            return None;
+        }
+    };
+    let name = manifest
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned);
+    checks.push(DoctorCheck {
+        status: if name.is_some() {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Fail
+        },
+        label: "Cargo manifest",
+        detail: name.as_ref().map_or_else(
+            || "missing [package].name".to_string(),
+            |name| format!("package {name}"),
+        ),
+    });
+    check_ui_dependency(app_dir, &manifest, checks);
+    name
+}
+
+fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Option<String> {
+    let path = app_dir.join("qos-app.toml");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "qOS manifest",
+                detail: format!("{}: {error}", path.display()),
+            });
+            return None;
+        }
+    };
+    let manifest = match pkg::Manifest::from_toml_str(&source) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "qOS manifest",
+                detail: error.to_string(),
+            });
+            return None;
+        }
+    };
+    if let Err(error) = pkg::validate_manifest(&manifest) {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "qOS manifest",
+            detail: error.to_string(),
+        });
+        return None;
+    }
+    checks.push(DoctorCheck {
+        status: DoctorStatus::Pass,
+        label: "qOS manifest",
+        detail: format!("{} is schema-valid", manifest.package.id),
+    });
+    Some(manifest.package.id)
+}
+
+fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<DoctorCheck>) {
+    let ui = manifest
+        .get("dependencies")
+        .and_then(|dependencies| dependencies.get("ui"));
+    let path = ui
+        .and_then(|dependency| dependency.get("path"))
+        .and_then(toml::Value::as_str);
+    let (status, detail) = match path {
+        Some(path) => {
+            let resolved = app_dir.join(path);
+            if resolved.join("Cargo.toml").is_file() {
+                (DoctorStatus::Pass, format!("{}", resolved.display()))
+            } else {
+                (
+                    DoctorStatus::Fail,
+                    format!("path {} has no Cargo.toml", resolved.display()),
+                )
+            }
+        }
+        None if ui.is_some() => (
+            DoctorStatus::Warning,
+            "non-path dependency; source checkout could not be verified".to_string(),
+        ),
+        None => (DoctorStatus::Fail, "missing dependency `ui`".to_string()),
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "UI dependency",
+        detail,
+    });
+}
+
+fn check_source_file(
+    app_dir: &Path,
+    relative: &'static str,
+    label: &'static str,
+    expected: &str,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let path = app_dir.join(relative);
+    let (status, detail) = match std::fs::read_to_string(&path) {
+        Ok(source) if source.contains(expected) => (DoctorStatus::Pass, relative.to_string()),
+        Ok(_) => (
+            DoctorStatus::Warning,
+            format!("{relative} does not use the generated {expected} contract"),
+        ),
+        Err(error) => (DoctorStatus::Fail, format!("{relative}: {error}")),
+    };
+    checks.push(DoctorCheck {
+        status,
+        label,
+        detail,
+    });
+}
+
+fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let files = match files_with_extension(&app_dir.join("ui"), "json") {
+        Ok(files) => files,
+        Err(detail) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "UI graphs",
+                detail,
+            });
+            return;
+        }
+    };
+    if files.is_empty() {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            label: "UI graphs",
+            detail: "no serialized screens".to_owned(),
+        });
+        return;
+    }
+    for path in files {
+        let detail = relative_artifact(app_dir, &path);
+        let result = std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|source| qos_ui_graph::UiDocument::from_json(&source).map_err(Into::into));
+        let (status, detail) = match result {
+            Ok(_) => (DoctorStatus::Pass, detail),
+            Err(error) => (DoctorStatus::Fail, format!("{detail}: {error}")),
+        };
+        checks.push(DoctorCheck {
+            status,
+            label: "UI graph",
+            detail,
+        });
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FluentEntryContract {
+    has_value: bool,
+    attributes: BTreeSet<String>,
+    value_variables: BTreeSet<String>,
+    attribute_variables: BTreeMap<String, BTreeSet<String>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FluentCatalogContract {
+    entries: BTreeMap<String, FluentEntryContract>,
+}
+
+fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
+    use fluent_syntax::ast::Entry;
+
+    let resource = fluent::FluentResource::try_new(source.to_owned())
+        .map_err(|(_, errors)| anyhow::anyhow!("{errors:?}"))?;
+    let mut entries = BTreeMap::new();
+    for entry in resource.entries() {
+        let (id, contract) = match entry {
+            Entry::Message(message) => (
+                message.id.name.to_owned(),
+                fluent_entry_contract(message.value.as_ref(), &message.attributes),
+            ),
+            Entry::Term(term) => (
+                format!("-{}", term.id.name),
+                fluent_entry_contract(Some(&term.value), &term.attributes),
+            ),
+            Entry::Comment(_)
+            | Entry::GroupComment(_)
+            | Entry::ResourceComment(_)
+            | Entry::Junk { .. } => continue,
+        };
+        if entries.insert(id.clone(), contract).is_some() {
+            bail!("duplicate Fluent entry {id:?}");
+        }
+    }
+    Ok(FluentCatalogContract { entries })
+}
+
+fn fluent_entry_contract(
+    value: Option<&fluent_syntax::ast::Pattern<&str>>,
+    attributes: &[fluent_syntax::ast::Attribute<&str>],
+) -> FluentEntryContract {
+    FluentEntryContract {
+        has_value: value.is_some(),
+        attributes: attributes
+            .iter()
+            .map(|attribute| attribute.id.name.to_owned())
+            .collect(),
+        value_variables: value.map_or_else(BTreeSet::new, fluent_pattern_variables),
+        attribute_variables: attributes
+            .iter()
+            .map(|attribute| {
+                (
+                    attribute.id.name.to_owned(),
+                    fluent_pattern_variables(&attribute.value),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn fluent_pattern_variables<S: AsRef<str>>(
+    pattern: &fluent_syntax::ast::Pattern<S>,
+) -> BTreeSet<String> {
+    use fluent_syntax::ast::PatternElement;
+
+    let mut variables = BTreeSet::new();
+    for element in &pattern.elements {
+        if let PatternElement::Placeable { expression } = element {
+            collect_fluent_expression_variables(expression, &mut variables);
+        }
+    }
+    variables
+}
+
+fn collect_fluent_expression_variables<S: AsRef<str>>(
+    expression: &fluent_syntax::ast::Expression<S>,
+    variables: &mut BTreeSet<String>,
+) {
+    use fluent_syntax::ast::Expression;
+
+    match expression {
+        Expression::Inline(inline) => collect_fluent_inline_variables(inline, variables),
+        Expression::Select { selector, variants } => {
+            collect_fluent_inline_variables(selector, variables);
+            for variant in variants {
+                variables.extend(fluent_pattern_variables(&variant.value));
+            }
+        }
+    }
+}
+
+fn collect_fluent_inline_variables<S: AsRef<str>>(
+    expression: &fluent_syntax::ast::InlineExpression<S>,
+    variables: &mut BTreeSet<String>,
+) {
+    use fluent_syntax::ast::InlineExpression;
+
+    match expression {
+        InlineExpression::VariableReference { id } => {
+            variables.insert(id.name.as_ref().to_owned());
+        }
+        InlineExpression::FunctionReference { arguments, .. } => {
+            collect_fluent_argument_variables(arguments, variables);
+        }
+        InlineExpression::TermReference {
+            arguments: Some(arguments),
+            ..
+        } => collect_fluent_argument_variables(arguments, variables),
+        InlineExpression::Placeable { expression } => {
+            collect_fluent_expression_variables(expression, variables);
+        }
+        InlineExpression::StringLiteral { .. }
+        | InlineExpression::NumberLiteral { .. }
+        | InlineExpression::MessageReference { .. }
+        | InlineExpression::TermReference {
+            arguments: None, ..
+        } => {}
+    }
+}
+
+fn collect_fluent_argument_variables<S: AsRef<str>>(
+    arguments: &fluent_syntax::ast::CallArguments<S>,
+    variables: &mut BTreeSet<String>,
+) {
+    for argument in &arguments.positional {
+        collect_fluent_inline_variables(argument, variables);
+    }
+    for argument in &arguments.named {
+        collect_fluent_inline_variables(&argument.value, variables);
+    }
+}
+
+fn fluent_contract_drift(
+    source: &FluentCatalogContract,
+    translation: &FluentCatalogContract,
+) -> Vec<String> {
+    let mut drift = Vec::new();
+    for (id, expected) in &source.entries {
+        let Some(actual) = translation.entries.get(id) else {
+            drift.push(format!("missing {id}"));
+            continue;
+        };
+        if expected.has_value && !actual.has_value {
+            drift.push(format!("{id} is missing its value"));
+        } else if !expected.has_value && actual.has_value {
+            drift.push(format!("{id} has an unexpected value"));
+        } else if expected.value_variables != actual.value_variables {
+            drift.push(format!(
+                "{id} variables are {} instead of {}",
+                fluent_variable_list(&actual.value_variables),
+                fluent_variable_list(&expected.value_variables)
+            ));
+        }
+        for attribute in expected.attributes.difference(&actual.attributes) {
+            drift.push(format!("missing {id}.{attribute}"));
+        }
+        for attribute in actual.attributes.difference(&expected.attributes) {
+            drift.push(format!("stale {id}.{attribute}"));
+        }
+        for attribute in expected.attributes.intersection(&actual.attributes) {
+            let Some(expected_variables) = expected.attribute_variables.get(attribute) else {
+                continue;
+            };
+            let Some(actual_variables) = actual.attribute_variables.get(attribute) else {
+                continue;
+            };
+            if expected_variables != actual_variables {
+                drift.push(format!(
+                    "{id}.{attribute} variables are {} instead of {}",
+                    fluent_variable_list(actual_variables),
+                    fluent_variable_list(expected_variables)
+                ));
+            }
+        }
+    }
+    for id in translation.entries.keys() {
+        if !source.entries.contains_key(id) {
+            drift.push(format!("stale {id}"));
+        }
+    }
+    drift
+}
+
+fn fluent_variable_list(variables: &BTreeSet<String>) -> String {
+    if variables.is_empty() {
+        "none".to_owned()
+    } else {
+        variables
+            .iter()
+            .map(|variable| format!("${variable}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn check_locale_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let registry_path = app_dir.join("src/locales.rs");
+    let files = match files_with_extension(&app_dir.join("locales"), "ftl") {
+        Ok(files) => files,
+        Err(detail) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "locales",
+                detail,
+            });
+            return;
+        }
+    };
+    if files.is_empty() && !registry_path.exists() {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            label: "locales",
+            detail: "no embedded catalogs".to_owned(),
+        });
+        return;
+    }
+    let mut catalog_ids = Vec::new();
+    let mut catalogs = BTreeMap::new();
+    for path in &files {
+        let relative = relative_artifact(app_dir, path);
+        let locale = path.file_stem().and_then(std::ffi::OsStr::to_str);
+        let result = locale
+            .ok_or_else(|| anyhow::anyhow!("filename is not valid UTF-8"))
+            .and_then(|locale| {
+                validate_locale(locale)?;
+                catalog_ids.push(locale.to_owned());
+                let source = std::fs::read_to_string(path)?;
+                let contract = parse_fluent_catalog(&source)?;
+                catalogs.insert(locale.to_owned(), contract);
+                Ok(())
+            });
+        let (status, detail) = match result {
+            Ok(()) => (DoctorStatus::Pass, relative),
+            Err(error) => (DoctorStatus::Fail, format!("{relative}: {error}")),
+        };
+        checks.push(DoctorCheck {
+            status,
+            label: "locale catalog",
+            detail,
+        });
+    }
+    if !catalog_ids.iter().any(|locale| locale == "en-US") {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "source locale",
+            detail: "missing locales/en-US.ftl".to_owned(),
+        });
+    } else if let Some(source) = catalogs.get("en-US") {
+        for (locale, catalog) in &catalogs {
+            if locale == "en-US" {
+                continue;
+            }
+            let drift = fluent_contract_drift(source, catalog);
+            checks.push(DoctorCheck {
+                status: if drift.is_empty() {
+                    DoctorStatus::Pass
+                } else {
+                    DoctorStatus::Warning
+                },
+                label: "locale contract",
+                detail: if drift.is_empty() {
+                    format!("locales/{locale}.ftl matches en-US")
+                } else {
+                    format!("locales/{locale}.ftl: {}", drift.join(", "))
+                },
+            });
+        }
+    }
+    check_locale_registry(&registry_path, &catalog_ids, checks);
+}
+
+fn check_locale_registry(
+    registry_path: &Path,
+    catalog_ids: &[String],
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let Ok(registry) = std::fs::read_to_string(registry_path) else {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Warning,
+            label: "locale registry",
+            detail: "src/locales.rs is absent or unreadable; app-owned setup was not inspected"
+                .to_owned(),
+        });
+        return;
+    };
+    if !registry.starts_with(LOCALE_REGISTRY_HEADER) {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Warning,
+            label: "locale registry",
+            detail: "src/locales.rs is app-owned and was not inspected".to_owned(),
+        });
+        return;
+    }
+    let registered = parse_locale_registry(&registry);
+    let result = registered.and_then(|registered| {
+        let expected = locale_registry_source(&registered);
+        if expected != registry {
+            bail!("generated source does not match its locale entries");
+        }
+        for locale in &registered {
+            if !catalog_ids.iter().any(|catalog| catalog == locale) {
+                bail!("registered locale {locale:?} has no locales/{locale}.ftl");
+            }
+        }
+        let unregistered: Vec<_> = catalog_ids
+            .iter()
+            .filter(|locale| !registered.iter().any(|entry| entry == *locale))
+            .cloned()
+            .collect();
+        if !unregistered.is_empty() {
+            bail!("catalogs are not registered: {}", unregistered.join(", "));
+        }
+        Ok(registered.len())
+    });
+    checks.push(DoctorCheck {
+        status: if result.is_ok() {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Fail
+        },
+        label: "locale registry",
+        detail: result.map_or_else(
+            |error| format!("src/locales.rs: {error}"),
+            |count| format!("{count} embedded catalog(s)"),
+        ),
+    });
+}
+
+fn check_headless_scenarios(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let mut files = Vec::new();
+    let conventional = app_dir.join("tests/headless-actions.json");
+    if conventional.is_file() {
+        files.push(conventional);
+    }
+    match files_with_extension(&app_dir.join("tests/scenarios"), "json") {
+        Ok(mut scenarios) => files.append(&mut scenarios),
+        Err(detail) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Warning,
+                label: "headless scenarios",
+                detail,
+            });
+            return;
+        }
+    }
+    if files.is_empty() {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            label: "headless scenarios",
+            detail: "no saved action sequences".to_owned(),
+        });
+        return;
+    }
+    for path in files {
+        let relative = relative_artifact(app_dir, &path);
+        let result = std::fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|source| qos_headless_schema::parse_actions(&source).map(|_| ()));
+        let (status, detail) = match result {
+            Ok(()) => (DoctorStatus::Pass, relative),
+            Err(error) => (DoctorStatus::Warning, format!("{relative}: {error}")),
+        };
+        checks.push(DoctorCheck {
+            status,
+            label: "headless scenario",
+            detail,
+        });
+    }
+}
+
+fn files_with_extension(directory: &Path, extension: &str) -> Result<Vec<PathBuf>, String> {
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("{}: {error}", directory.display()))?
+            .path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(extension))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn relative_artifact(app_dir: &Path, path: &Path) -> String {
+    path.strip_prefix(app_dir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+impl CreateOutcome {
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let action = if self.dry_run {
+            "Would create"
+        } else {
+            "Created"
+        };
+        let destination = shell_display_path(&self.destination);
+        let next = format!(
+            "qos-dev check {destination}\n  qos-dev test {destination}\n  qos-dev dev {destination}\n  qos-dev run {destination}\n  qos-dev scenario run --app {destination}\n  qos-dev shot {destination}\n  qos-dev inspect {destination}\n  qos-dev package {destination}"
+        );
+        format!(
+            "{action} {} ({}) in {}\n\nNext:\n  {next}",
+            self.package_name,
+            self.app_id,
+            self.destination.display()
+        )
+    }
+}
+
+#[derive(Debug)]
+struct AppSpec {
+    package_name: String,
+    crate_name: String,
+    title: String,
+    app_id: String,
+    ui_path: PathBuf,
+    workspace_member: bool,
+    template: Template,
+}
+
+/// Create an app, prompting for missing identity, title, and template fields
+/// when attached to a terminal.
+///
+/// # Errors
+///
+/// Returns an error for invalid input, a non-interactive missing name, an
+/// occupied destination, or any failed filesystem operation.
+pub fn create_app_interactive(request: NewAppRequest) -> Result<CreateOutcome> {
+    let interactive = io::stdin().is_terminal();
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    create_app_interactive_with(request, &mut stdin.lock(), &mut stdout.lock(), interactive)
+}
+
+fn create_app_interactive_with(
+    request: NewAppRequest,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    interactive: bool,
+) -> Result<CreateOutcome> {
+    let current_dir = std::env::current_dir().context("reading current directory")?;
+    create_app_interactive_from(&current_dir, request, input, output, interactive)
+}
+
+fn create_app_interactive_from(
+    current_dir: &Path,
+    mut request: NewAppRequest,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    interactive: bool,
+) -> Result<CreateOutcome> {
+    let full_wizard = request.name.is_none();
+    if full_wizard {
+        if !interactive {
+            bail!("an app name is required when stdin is not interactive");
+        }
+        writeln!(output, "Create a qOS app\n").context("showing wizard heading")?;
+        request.name = Some(prompt_validated(
+            input,
+            output,
+            "Package name",
+            None,
+            validate_package_name,
+        )?);
+    }
+    let name = request.name.as_deref().unwrap_or_default();
+    let default_title = title_from_name(name);
+    if request.title.is_none() && interactive {
+        request.title = Some(prompt(input, output, "App title", Some(&default_title))?);
+    }
+    if request.app_id.is_none() && full_wizard {
+        let default_id = format!("dev.qos.{}", name.replace('-', "."));
+        request.app_id = Some(prompt_validated(
+            input,
+            output,
+            "App id",
+            Some(&default_id),
+            validate_app_id,
+        )?);
+    }
+    if request.template.is_none() {
+        request.template = Some(if interactive {
+            prompt_template(input, output)?
+        } else {
+            Template::Starter
+        });
+    }
+    let repo = find_repo_root(current_dir);
+    if request.ui_path.is_none() && repo.is_none() && interactive {
+        let value = prompt_validated(input, output, "Toolkit ui path", None, |value| {
+            resolve_ui_dir(current_dir, None, Some(Path::new(value)))
+                .map(|_| ())
+                .context("invalid toolkit path")
+        })?;
+        request.ui_path = Some(PathBuf::from(value));
+    }
+    let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
+    if full_wizard {
+        let destination = new_app_destination(
+            current_dir,
+            repo.as_deref(),
+            request.name.as_deref().unwrap_or_default(),
+            request.directory.as_deref(),
+        );
+        let template = request.template.unwrap_or(Template::Starter);
+        writeln!(
+            output,
+            "\nReview:\n  App:         {}\n  Package:     {}\n  App id:      {}\n  Template:    {} — {}\n  Toolkit:     {}\n  Destination: {}",
+            request.title.as_deref().unwrap_or_default(),
+            request.name.as_deref().unwrap_or_default(),
+            request.app_id.as_deref().unwrap_or_default(),
+            template.name(),
+            template.description(),
+            ui_dir.display(),
+            destination.display(),
+        )
+        .context("showing app review")?;
+        if !prompt_confirm(input, output, "Create this app", true)? {
+            bail!("app creation cancelled");
+        }
+    }
+    create_app_from(current_dir, request)
+}
+
+/// Validate, render, and write a new app without prompting.
+///
+/// # Errors
+///
+/// Returns an error for invalid input, an occupied destination, or any failed
+/// filesystem/workspace-manifest operation.
+pub fn create_app(request: NewAppRequest) -> Result<CreateOutcome> {
+    let current_dir = std::env::current_dir().context("reading current directory")?;
+    create_app_from(&current_dir, request)
+}
+
+fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateOutcome> {
+    let package_name = request
+        .name
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("an app name is required"))?;
+    validate_package_name(package_name)?;
+
+    let repo = find_repo_root(current_dir);
+    let destination = new_app_destination(
+        current_dir,
+        repo.as_deref(),
+        package_name,
+        request.directory.as_deref(),
+    );
+    validate_destination(&destination)?;
+
+    let app_id = request
+        .app_id
+        .unwrap_or_else(|| format!("dev.qos.{}", package_name.replace('-', ".")));
+    validate_app_id(&app_id)?;
+    let title = request
+        .title
+        .unwrap_or_else(|| title_from_name(package_name));
+    if title.trim().is_empty() {
+        bail!("app title must not be empty");
+    }
+
+    let workspace_path = repo
+        .as_deref()
+        .and_then(|root| destination.strip_prefix(root).ok())
+        .filter(|path| path.components().next().is_some())
+        .map(Path::to_path_buf);
+    let workspace_member = workspace_path.is_some();
+    let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
+    let ui_path = relative_path(&destination, &ui_dir);
+    let spec = AppSpec {
+        package_name: package_name.to_string(),
+        crate_name: package_name.replace('-', "_"),
+        title,
+        app_id: app_id.clone(),
+        ui_path,
+        workspace_member,
+        template: request.template.unwrap_or(Template::Starter),
+    };
+    let rendered = render(&spec)?;
+    let files = rendered.iter().map(|(path, _)| path.clone()).collect();
+
+    if !request.dry_run {
+        let workspace_update = repo
+            .as_deref()
+            .zip(workspace_path.as_deref())
+            .map(|(root, member)| prepare_workspace_member(root, member))
+            .transpose()?
+            .flatten();
+        publish_new_app(&destination, &rendered, workspace_update.as_ref())?;
+    }
+
+    Ok(CreateOutcome {
+        destination,
+        package_name: spec.package_name,
+        app_id,
+        files,
+        dry_run: request.dry_run,
+        workspace_member,
+    })
+}
+
+fn new_app_destination(
+    current_dir: &Path,
+    repo: Option<&Path>,
+    package_name: &str,
+    directory: Option<&Path>,
+) -> PathBuf {
+    directory.map_or_else(
+        || {
+            repo.map_or_else(
+                || PathBuf::from(package_name),
+                |root| root.join("apps").join(package_name),
+            )
+        },
+        |path| {
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                current_dir.join(path)
+            }
+        },
+    )
+}
+
+#[derive(Debug)]
+struct WorkspaceUpdate {
+    path: PathBuf,
+    original: String,
+    updated: String,
+}
+
+fn prepare_workspace_member(root: &Path, workspace_path: &Path) -> Result<Option<WorkspaceUpdate>> {
+    let manifest_path = root.join("Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let member_path = workspace_path.to_string_lossy();
+    let member = format!("    {member_path:?},\n");
+    if manifest.contains(member.trim()) {
+        return Ok(None);
+    }
+    let Some(insert_at) = workspace_members_insert_at(&manifest) else {
+        bail!(
+            "{} has no [workspace] members list",
+            manifest_path.display()
+        );
+    };
+    let mut updated = String::with_capacity(manifest.len().saturating_add(member.len()));
+    updated.push_str(manifest.get(..insert_at).unwrap_or_default());
+    updated.push_str(&member);
+    updated.push_str(manifest.get(insert_at..).unwrap_or_default());
+    Ok(Some(WorkspaceUpdate {
+        path: manifest_path,
+        original: manifest,
+        updated,
+    }))
+}
+
+fn workspace_members_insert_at(manifest: &str) -> Option<usize> {
+    let mut offset = 0_usize;
+    let mut in_workspace = false;
+    for line in manifest.split_inclusive('\n') {
+        let syntax = line.split('#').next().unwrap_or_default().trim();
+        if syntax.starts_with('[') {
+            in_workspace = syntax == "[workspace]";
+        } else if in_workspace
+            && syntax
+                .split_once('=')
+                .is_some_and(|(key, value)| key.trim() == "members" && value.trim() == "[")
+        {
+            return Some(offset.saturating_add(line.len()));
+        }
+        offset = offset.saturating_add(line.len());
+    }
+    None
+}
+
+fn publish_new_app(
+    destination: &Path,
+    rendered: &[(PathBuf, String)],
+    workspace: Option<&WorkspaceUpdate>,
+) -> Result<()> {
+    validate_destination(destination)?;
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating app parent {}", parent.display()))?;
+    let destination_permissions = std::fs::metadata(destination)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let staging = tempfile::Builder::new()
+        .prefix(".qos-dev-new-")
+        .tempdir_in(parent)
+        .with_context(|| format!("staging new app beside {}", destination.display()))?;
+    for (relative, content) in rendered {
+        let path = staging.path().join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating staged directory {}", parent.display()))?;
+        }
+        let mut file = std::fs::File::create(&path)
+            .with_context(|| format!("creating staged app file {}", path.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("writing staged app file {}", path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing staged app file {}", path.display()))?;
+    }
+    if let Some(permissions) = destination_permissions.as_ref() {
+        std::fs::set_permissions(staging.path(), permissions.clone()).with_context(|| {
+            format!(
+                "preserving destination permissions for {}",
+                destination.display()
+            )
+        })?;
+    }
+    publish_staged_app_with(
+        staging.path(),
+        destination,
+        destination_permissions.as_ref(),
+        workspace,
+        |staged, destination| {
+            std::fs::rename(staged, destination)
+                .with_context(|| format!("publishing new app {}", destination.display()))?;
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .with_context(|| format!("syncing app parent {}", parent.display()))
+        },
+    )
+}
+
+fn publish_staged_app_with(
+    staged: &Path,
+    destination: &Path,
+    original_permissions: Option<&std::fs::Permissions>,
+    workspace: Option<&WorkspaceUpdate>,
+    publish: impl FnOnce(&Path, &Path) -> Result<()>,
+) -> Result<()> {
+    validate_destination(destination)?;
+    if let Some(update) = workspace
+        && let Err(error) = write_atomic(
+            &update.path,
+            update.updated.as_bytes(),
+            "workspace manifest",
+        )
+    {
+        let restore = write_atomic(
+            &update.path,
+            update.original.as_bytes(),
+            "workspace rollback",
+        );
+        return match restore {
+            Ok(()) => Err(error).context("registering app in workspace; manifest rolled back"),
+            Err(rollback) => bail!("{error:#}; workspace rollback was incomplete: {rollback:#}"),
+        };
+    }
+
+    let destination_existed = destination.exists();
+    let publication = (|| {
+        if destination_existed {
+            std::fs::remove_dir(destination).with_context(|| {
+                format!("preparing empty destination {}", destination.display())
+            })?;
+        }
+        publish(staged, destination)
+    })();
+    if let Err(error) = publication {
+        let mut rollback_failures = Vec::new();
+        if !staged.exists()
+            && destination.exists()
+            && let Err(rollback) = std::fs::remove_dir_all(destination)
+                .with_context(|| format!("removing generated app {}", destination.display()))
+        {
+            rollback_failures.push(rollback.to_string());
+        }
+        if destination_existed && !destination.exists() {
+            let restore = std::fs::create_dir(destination)
+                .with_context(|| format!("restoring empty {}", destination.display()))
+                .and_then(|()| {
+                    original_permissions.map_or(Ok(()), |permissions| {
+                        std::fs::set_permissions(destination, permissions.clone()).with_context(
+                            || format!("restoring permissions on {}", destination.display()),
+                        )
+                    })
+                });
+            if let Err(rollback) = restore {
+                rollback_failures.push(rollback.to_string());
+            }
+        }
+        if let Some(update) = workspace
+            && let Err(rollback) = write_atomic(
+                &update.path,
+                update.original.as_bytes(),
+                "workspace rollback",
+            )
+        {
+            rollback_failures.push(rollback.to_string());
+        }
+        if rollback_failures.is_empty() {
+            return Err(error).context("publishing new app; all external changes rolled back");
+        }
+        bail!(
+            "{error:#}; new-app rollback was incomplete: {}",
+            rollback_failures.join("; ")
+        );
+    }
+    Ok(())
+}
+
+fn prompt(
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    label: &str,
+    default: Option<&str>,
+) -> Result<String> {
+    match default {
+        Some(value) => write!(output, "{label} [{value}]: "),
+        None => write!(output, "{label}: "),
+    }
+    .context("showing prompt")?;
+    output.flush().context("showing prompt")?;
+    let mut value = String::new();
+    if input.read_line(&mut value).context("reading prompt")? == 0 {
+        bail!("input ended while reading {label}");
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        if let Some(default) = default {
+            return Ok(default.to_string());
+        }
+        bail!("{label} must not be empty");
+    }
+    Ok(value.to_string())
+}
+
+fn prompt_validated(
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    label: &str,
+    default: Option<&str>,
+    validate: impl Fn(&str) -> Result<()>,
+) -> Result<String> {
+    loop {
+        let value = prompt(input, output, label, default)?;
+        match validate(&value) {
+            Ok(()) => return Ok(value),
+            Err(error) => writeln!(output, "  ! {error}").context("showing validation error")?,
+        }
+    }
+}
+
+fn prompt_confirm(
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    label: &str,
+    default: bool,
+) -> Result<bool> {
+    let default_label = if default { "Y/n" } else { "y/N" };
+    loop {
+        let value = prompt(input, output, label, Some(default_label))?;
+        match value.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            "y/n" => return Ok(default),
+            _ => writeln!(output, "  ! answer `yes` or `no`")
+                .context("showing confirmation error")?,
+        }
+    }
+}
+
+fn prompt_optional(
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    label: &str,
+    default: Option<&str>,
+) -> Result<Option<String>> {
+    let shown = default.unwrap_or("none");
+    write!(output, "{label} [{shown}]: ").context("showing optional prompt")?;
+    output.flush().context("showing optional prompt")?;
+    let mut value = String::new();
+    if input
+        .read_line(&mut value)
+        .context("reading optional prompt")?
+        == 0
+    {
+        bail!("input ended while reading {label}");
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default.map(ToOwned::to_owned));
+    }
+    if value == "-" || value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    validate_artifact_name(value)?;
+    Ok(Some(value.to_owned()))
+}
+
+fn prompt_screen_template(
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<ScreenTemplate> {
+    writeln!(
+        output,
+        "\nScreen template:\n  1) blank        Title and starter body\n  2) form         Labeled inputs and save action\n  3) settings     Preferences and save action\n  4) empty-state  Explanation and recovery action"
+    )
+    .context("showing screen template choices")?;
+    loop {
+        let value = prompt(input, output, "Template", Some("1"))?;
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "blank" | "b" => return Ok(ScreenTemplate::Blank),
+            "2" | "form" | "f" => return Ok(ScreenTemplate::Form),
+            "3" | "settings" | "s" => return Ok(ScreenTemplate::Settings),
+            "4" | "empty-state" | "empty" | "e" => return Ok(ScreenTemplate::EmptyState),
+            _ => writeln!(
+                output,
+                "  ! unknown screen template {value:?}; choose 1-4 or `blank`, `form`, `settings`, or `empty-state`"
+            )
+            .context("showing screen template error")?,
+        }
+    }
+}
+
+fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
+    writeln!(
+        output,
+        "\nStarter template:\n  1) starter   Accessible form and standard lifecycle\n  2) data      Sparse table with retained cell controls\n  3) list      Sparse variable-height retained list\n  4) tree      Professional hierarchy browser\n  5) graph     Serialized UI graph and router\n  6) async     Restartable background task with cancellation\n  7) document  Durable synchronized editor with undo"
+    )
+    .context("showing template choices")?;
+    loop {
+        let value = prompt(input, output, "Template", Some("1"))?;
+        match parse_template(&value) {
+            Ok(template) => return Ok(template),
+            Err(error) => writeln!(output, "  ! {error}").context("showing template error")?,
+        }
+    }
+}
+
+fn parse_template(value: &str) -> Result<Template> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "starter" | "s" => Ok(Template::Starter),
+        "2" | "data" | "d" => Ok(Template::Data),
+        "3" | "list" | "l" => Ok(Template::List),
+        "4" | "tree" | "t" => Ok(Template::Tree),
+        "5" | "graph" | "g" | "builder" => Ok(Template::Graph),
+        "6" | "async" | "a" | "task" => Ok(Template::Async),
+        "7" | "document" | "doc" | "editor" => Ok(Template::Document),
+        _ => bail!(
+            "unknown template {value:?}; choose 1-7 or `starter`, `data`, `list`, `tree`, `graph`, `async`, or `document`"
+        ),
+    }
+}
+
+fn validate_package_name(name: &str) -> Result<()> {
+    let valid = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && name.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && !name.ends_with('-')
+        && !name.contains("--");
+    if !valid {
+        bail!(
+            "invalid package name {name:?}; use lowercase ASCII letters, digits, and single hyphens"
+        );
+    }
+    Ok(())
+}
+
+fn validate_app_id(id: &str) -> Result<()> {
+    let parts: Vec<&str> = id.split('.').collect();
+    let valid = parts.len() >= 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    if !valid {
+        bail!("invalid app id {id:?}; use at least three dot-separated DNS-style components");
+    }
+    Ok(())
+}
+
+fn validate_destination(path: &Path) -> Result<()> {
+    if path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        bail!("destination must not contain `..`: {}", path.display());
+    }
+    if !path.exists() {
+        return Ok(());
+    }
+    if !path.is_dir() {
+        bail!(
+            "destination {} already exists and is not a directory",
+            path.display()
+        );
+    }
+    let mut entries = std::fs::read_dir(path)
+        .with_context(|| format!("reading destination {}", path.display()))?;
+    if entries.next().transpose()?.is_some() {
+        bail!("destination {} is not empty", path.display());
+    }
+    Ok(())
+}
+
+fn title_from_name(name: &str) -> String {
+    name.split('-')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn find_repo_root(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|path| {
+        (path.join("ui/Cargo.toml").is_file() && path.join("apps").is_dir())
+            .then(|| path.to_path_buf())
+    })
+}
+
+fn resolve_ui_dir(
+    current_dir: &Path,
+    repo: Option<&Path>,
+    requested: Option<&Path>,
+) -> Result<PathBuf> {
+    let candidate = requested.map_or_else(
+        || repo.map(|root| root.join("ui")),
+        |path| {
+            Some(if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                current_dir.join(path)
+            })
+        },
+    );
+    let Some(candidate) = candidate else {
+        bail!("outside a qOS checkout; pass `--ui-path /path/to/quickdesktop/ui`");
+    };
+    if !candidate.join("Cargo.toml").is_file() {
+        bail!(
+            "UI path {} does not contain Cargo.toml",
+            candidate.display()
+        );
+    }
+    candidate
+        .canonicalize()
+        .with_context(|| format!("resolving UI path {}", candidate.display()))
+}
+
+fn relative_path(from_dir: &Path, target: &Path) -> PathBuf {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = target.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for component in to.iter().skip(common) {
+        out.push(component.as_os_str());
+    }
+    out
+}
+
+fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
+    let mut files = vec![
+        (PathBuf::from("Cargo.toml"), cargo_toml(spec)),
+        (PathBuf::from("src/lib.rs"), app_lib(spec)),
+        (
+            PathBuf::from("src/locales.rs"),
+            locale_registry_source(&["en-US".to_owned()]),
+        ),
+        (PathBuf::from("src/main.rs"), app_main(spec)),
+        (PathBuf::from("tests/app.rs"), app_test(spec)),
+        (
+            PathBuf::from("tests/headless-actions.json"),
+            headless_actions(spec),
+        ),
+        (PathBuf::from("qos-app.toml"), app_manifest(spec)),
+        (PathBuf::from("README.md"), app_readme(spec)),
+        (PathBuf::from("locales/en-US.ftl"), source_catalog()),
+    ];
+    if spec.template == Template::Graph {
+        files.push((PathBuf::from("ui/main.json"), graph_document(spec)?));
+        files.push((
+            PathBuf::from("src/screens.rs"),
+            screen_registry_source(&["main".into()]),
+        ));
+    }
+    Ok(files)
+}
+
+fn cargo_toml(spec: &AppSpec) -> String {
+    let lints = if spec.workspace_member {
+        "\n[lints]\nworkspace = true\n"
+    } else {
+        ""
+    };
+    let patches = if spec.workspace_member {
+        String::new()
+    } else {
+        let repo = spec.ui_path.parent().unwrap_or_else(|| Path::new(".."));
+        format!(
+            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\n",
+            repo.join("vendor/winit").to_string_lossy(),
+            repo.join("vendor/vello_encoding").to_string_lossy(),
+            repo.join("vendor/vello").to_string_lossy(),
+        )
+    };
+    let extras = format!("{lints}{patches}");
+    format!(
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{lints}",
+        name = spec.package_name,
+        crate_name = spec.crate_name,
+        ui_path = spec.ui_path.to_string_lossy(),
+        lints = extras,
+    )
+}
+
+fn app_lib(spec: &AppSpec) -> String {
+    let application = match spec.template {
+        Template::Starter => STARTER_APP_TEMPLATE.to_owned(),
+        Template::Data => DATA_APP_TEMPLATE.to_owned(),
+        Template::List => LIST_APP_TEMPLATE.to_owned(),
+        Template::Tree => TREE_APP_TEMPLATE.to_owned(),
+        Template::Graph => format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
+        Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
+        Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
+    };
+    format!(
+        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
+        spec.title,
+    )
+}
+
+fn source_catalog() -> String {
+    String::from(
+        "starter-title = Your first qOS app\n\
+starter-name-label = Your name\n\
+starter-name-placeholder = Type your name\n\
+starter-greeting = Hello, { $name }!\n\
+data-name-column = Name\n\
+data-actions-column = Actions\n\
+data-accessible-name = Results\n\
+data-open = Open\n\
+list-accessible-name = Activity\n\
+list-open = Open\n\
+list-loading = Loading activity…\n\
+tree-accessible-name = Workspace items\n\
+tree-row-action = More actions\n\
+graph-project-name = Project name\n\
+graph-create = Create\n\
+graph-create-tooltip = Create the project\n\
+task-title = Background work\n\
+task-run = Run task\n\
+task-cancel = Cancel\n\
+task-idle = Start a background task without polling\n\
+task-loading = Loading…\n\
+task-ready = Found { $count } entries\n\
+document-heading = Durable document\n\
+document-title-label = Title\n\
+document-title-placeholder = Untitled\n\
+document-body-label = Body\n\
+document-body-placeholder = Start writing…\n\
+document-preview-heading = Live preview\n",
+    )
+}
+
+fn app_main(spec: &AppSpec) -> String {
+    format!(
+        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
+        app_id = spec.app_id,
+        crate_name = spec.crate_name,
+    )
+}
+
+fn app_test(spec: &AppSpec) -> String {
+    let mut source = template_app_test(spec);
+    source.push_str(&initial_accessibility_app_test(&spec.crate_name));
+    source
+}
+
+fn template_app_test(spec: &AppSpec) -> String {
+    let crate_name = &spec.crate_name;
+    match spec.template {
+        Template::Starter => format!(
+            r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn app_responds_to_semantic_input() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 500),
+    );
+
+    app.perform_named("name-input", &Action::SetValue("Ada".into()))
+        .expect("the generated input remains addressable");
+
+    app.expect(
+        &SemanticExpectation::named("name-input")
+            .role(Role::TextInput)
+            .value("Ada"),
+    )
+    .expect("input semantics match");
+    app.expect(
+        &SemanticExpectation::named("greeting")
+            .role(Role::StaticText)
+            .name_contains("Ada"),
+    )
+    .expect("derived greeting semantics match");
+}}
+"#
+        ),
+        Template::Data => format!(
+            r#"use std::time::Duration;
+use ui::a11y::{{Action, Role}};
+use ui::headless::SemanticExpectation;
+
+#[test]
+fn app_exposes_a_virtualized_table() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 500),
+    );
+
+    app.perform_named("rows-table", &Action::Focus)
+        .expect("the generated table remains addressable");
+    app.wait_for_named("open-3", Duration::from_secs(1))
+        .expect("the first background page becomes ready");
+    app.perform_semantic_named("rows-table", Some("row:3:0"), &Action::Activate)
+        .expect("select a stable row id");
+    app.expect(
+        &SemanticExpectation::named("rows-table")
+            .semantic_target("row:3:0")
+            .role(Role::Row)
+            .selected(true),
+    )
+    .expect("selected row semantics match");
+
+    let semantics = app.inspection().root.semantics.expect("table semantics");
+    assert_eq!(semantics.role, Role::Table);
+    assert!(semantics.state.focused);
+    assert!(!semantics.children.is_empty(), "visible rows are semantic children");
+    let selected = semantics.children.iter()
+        .find(|row| row.action_target.as_deref() == Some("row:3:0"))
+        .expect("selected row remains in the semantic window");
+    assert!(selected.state.selected);
+    assert!(semantics.children.len() < 40, "only the sparse viewport is semantic");
+    assert_eq!(
+        semantics.children.first().and_then(|row| row.set_size),
+        Some(100_000_000),
+    );
+    app.perform_named("open-3", &Action::Activate)
+        .expect("the retained cell button remains addressable");
+    assert!(app.dump_json().contains("open-requested"));
+}}
+"#
+        ),
+        Template::List => list_app_test(crate_name),
+        Template::Tree => tree_app_test(crate_name),
+        Template::Graph => graph_app_test(crate_name),
+        Template::Async => async_app_test(crate_name),
+        Template::Document => document_app_test(crate_name),
+    }
+}
+
+fn graph_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{
+    UiGraphHandle, UiNode,
+    a11y::{{Action, Role}},
+    headless::SemanticExpectation,
+}};
+
+#[test]
+fn serialized_screen_is_interactive() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 500),
+    );
+
+    app.perform_named("name-input", &Action::SetValue("Atlas".into()))
+        .expect("the graph input remains addressable");
+    app.perform_named("create", &Action::Activate)
+        .expect("the graph button remains addressable");
+
+    app.expect(
+        &SemanticExpectation::named("name-preview")
+            .role(Role::StaticText)
+            .name("Atlas"),
+    )
+    .expect("document-bound preview semantics match");
+    assert!(app.dump_json().contains("create-requested"));
+}}
+
+#[test]
+fn serialized_graph_edits_have_shared_undo_history() {{
+    let graph = UiGraphHandle::from_json(include_str!("../ui/main.json"))
+        .expect("the generated graph is valid");
+    for next_label in ["Publ", "Publish"] {{
+        graph.update_node_grouped("create", "create-label", |node| {{
+            if let UiNode::Button {{ label, .. }} = node {{
+                *label = next_label.into();
+            }}
+        }}).expect("a valid grouped runtime edit is published");
+    }}
+    assert!(matches!(
+        graph.node("create"),
+        Ok(UiNode::Button {{ label, .. }}) if label == "Publish"
+    ));
+
+    assert!(graph.undo().expect("graph history remains available"));
+    assert!(matches!(
+        graph.node("create"),
+        Ok(UiNode::Button {{ label, .. }}) if label == "graph-create"
+    ));
+    assert!(!graph.can_undo(), "continuous typing created one undo step");
+    assert!(graph.redo().expect("the undone edit can be reapplied"));
+}}
+"#
+    )
+}
+
+fn initial_accessibility_app_test(crate_name: &str) -> String {
+    format!(
+        r#"
+#[test]
+fn initial_accessibility_contract_is_clean() {{
+    let app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 600),
+    );
+    let audit = app.accessibility_audit();
+    assert!(audit.is_clean(), "{{:#?}}", audit.issues);
+}}
+"#
+    )
+}
+
+fn document_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn document_fields_are_synchronized_and_undoable() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 600),
+    );
+
+    app.perform_named(
+        "document-title-input",
+        &Action::SetValue("Project Atlas".into()),
+    )
+    .expect("the durable title input remains addressable");
+    app.expect(
+        &SemanticExpectation::named("document-title-input")
+            .role(Role::TextInput)
+            .value("Project Atlas"),
+    )
+    .expect("input semantics match the document");
+    app.expect(
+        &SemanticExpectation::named("document-title-preview")
+            .role(Role::StaticText)
+            .name("Project Atlas"),
+    )
+    .expect("preview semantics match the same document field");
+
+    app.state_mut().undo(None, None).expect("the edit is undoable");
+    app.relayout();
+    let undone = app.inspection_json().expect("undone semantic snapshot");
+    assert!(!undone.contains("Project Atlas"), "{{undone}}");
+}}
+"#
+    )
+}
+
+fn tree_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::a11y::{{Action, Role}};
+use ui::headless::SemanticExpectation;
+
+#[test]
+fn app_exposes_an_accessible_tree() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 500),
+    );
+
+    app.perform_named("workspace-tree", &Action::Focus)
+        .expect("the generated tree remains addressable");
+    app.perform_semantic_named("workspace-tree", Some("node:2"), &Action::Collapse)
+        .expect("collapse a stable model node");
+    app.perform_semantic_named("workspace-tree", Some("node:2"), &Action::Expand)
+        .expect("expand a stable model node");
+    app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
+        .expect("select a stable model node");
+    app.expect(
+        &SemanticExpectation::named("workspace-tree")
+            .semantic_target("node:3")
+            .role(Role::TreeItem)
+            .selected(true),
+    )
+    .expect("selected tree row semantics match");
+    app.perform_named("more-4", &Action::Activate)
+        .expect("the retained row action remains independently addressable");
+
+    let semantics = app.inspection().root.semantics.expect("tree semantics");
+    assert_eq!(semantics.role, Role::Tree);
+    assert!(semantics.state.focused);
+    assert_eq!(semantics.name.as_deref(), Some("Workspace items"));
+    assert_eq!(semantics.value.as_deref(), Some("Desktop app"));
+    let projects = semantics.children.iter()
+        .find(|node| node.action_target.as_deref() == Some("node:2"))
+        .expect("Projects row");
+    let desktop = semantics.children.iter()
+        .find(|node| node.action_target.as_deref() == Some("node:3"))
+        .expect("Desktop app row");
+    let design = semantics.children.iter()
+        .find(|node| node.action_target.as_deref() == Some("node:4"))
+        .expect("Design system row");
+    assert_eq!(projects.state.expanded, Some(true));
+    assert!(desktop.state.selected);
+    assert!(!design.state.selected);
+    assert!(app.inspection_json().expect("widget inspection").contains("more-4"));
+    assert!(app.dump_json().contains("tree-row-action-requested"));
+}}
+"#
+    )
+}
+
+fn async_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use std::time::Duration;
+use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn app_starts_and_dispatches_typed_background_work() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 500),
+    );
+
+    let initial = app.inspection_json().expect("semantic snapshot");
+    assert!(initial.contains("Start a background task without polling"), "{{initial}}");
+    app.perform_named("run-task", &Action::Activate)
+        .expect("the generated task remains addressable");
+    app.expect(
+        &SemanticExpectation::named("task-result")
+            .role(Role::StaticText)
+            .name_contains("Found")
+            .within(Duration::from_secs(1)),
+    )
+    .expect("worker result arrives and its semantics match");
+}}
+"#
+    )
+}
+
+fn list_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use std::time::Duration;
+use ui::a11y::{{Action, Role}};
+use ui::headless::SemanticExpectation;
+
+#[test]
+fn app_exposes_a_sparse_interactive_virtual_list() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 500),
+    );
+
+    app.perform_named("activity-list", &Action::Focus)
+        .expect("the generated list remains addressable");
+    app.wait_for_named("open-0", Duration::from_secs(1))
+        .expect("the first background page becomes ready");
+    app.perform_semantic_named("activity-list", Some("key:3"), &Action::Activate)
+        .expect("select a stable model key");
+    app.expect(
+        &SemanticExpectation::named("activity-list")
+            .semantic_target("key:3")
+            .role(Role::ListItem)
+            .selected(true),
+    )
+    .expect("selected list row semantics match");
+    app.perform_named("open-0", &Action::Activate)
+        .expect("the interactive row delegate remains independently addressable");
+
+    let semantics = app.inspection().root.semantics.expect("list semantics");
+    assert_eq!(semantics.role, Role::List);
+    assert!(semantics.state.focused);
+    assert!(semantics.children.len() < 30, "only the viewport window is mounted");
+    assert_eq!(semantics.children[0].set_size, Some(100_000_000));
+    assert!(semantics.children.iter().any(|row| row.state.selected));
+    let first_height = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
+    let second_height = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
+    assert!((first_height - second_height).abs() > 1.0, "delegate measurements drive variable rows");
+    assert!(app.dump_json().contains("open-requested"));
+}}
+"#
+    )
+}
+
+fn app_manifest(spec: &AppSpec) -> String {
+    format!(
+        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"qos-runtime/2026.07\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"qos-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@1\"\nqos-fs = \"optional@1\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
+        app_id = spec.app_id,
+        title = spec.title,
+        package = spec.package_name,
+    )
+}
+
+fn headless_actions(spec: &AppSpec) -> String {
+    match spec.template {
+        Template::Starter => String::from(
+            "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Ada\"}},\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"focus\"}},\n  {\"expect\": {\"target\": \"name-input\", \"role\": \"text_input\", \"value\": \"Ada\", \"focused\": true}},\n  {\"expect\": {\"target\": \"greeting\", \"role\": \"static_text\", \"name_contains\": \"Ada\"}}\n]\n",
+        ),
+        Template::Data => String::from(
+            "[\n  {\"perform\": {\"target\": \"rows-table\", \"action\": \"focus\"}},\n  {\"perform\": {\"target\": \"rows-table\", \"semantic_target\": \"row:3:0\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"rows-table\", \"semantic_target\": \"row:3:0\", \"role\": \"row\", \"selected\": true}}\n]\n",
+        ),
+        Template::List => String::from(
+            "[\n  {\"perform\": {\"target\": \"activity-list\", \"action\": \"focus\"}},\n  {\"wait_for_named\": {\"target\": \"open-0\", \"timeout_ms\": 1000}},\n  {\"perform\": {\"target\": \"activity-list\", \"semantic_target\": \"key:3\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"activity-list\", \"semantic_target\": \"key:3\", \"role\": \"list_item\", \"selected\": true}},\n  {\"perform\": {\"target\": \"open-0\", \"action\": \"activate\"}}\n]\n",
+        ),
+        Template::Tree => String::from(
+            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"action\": \"focus\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:2\", \"action\": \"collapse\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:2\", \"action\": \"expand\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:3\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:3\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"perform\": {\"target\": \"more-4\", \"action\": \"activate\"}}\n]\n",
+        ),
+        Template::Graph => String::from(
+            "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Atlas\"}},\n  {\"expect\": {\"target\": \"name-preview\", \"role\": \"static_text\", \"name\": \"Atlas\"}},\n  {\"perform\": {\"target\": \"create\", \"action\": \"activate\"}}\n]\n",
+        ),
+        Template::Async => String::from(
+            "[\n  {\"perform\": {\"target\": \"run-task\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"task-result\", \"role\": \"static_text\", \"name_contains\": \"Found\", \"timeout_ms\": 1000}}\n]\n",
+        ),
+        Template::Document => String::from(
+            "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"static_text\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
+        ),
+    }
+}
+
+fn graph_document(spec: &AppSpec) -> Result<String> {
+    let document = qos_ui_graph::UiDocument::new(qos_ui_graph::UiNode::Column {
+        id: "root".into(),
+        children: vec![
+            qos_ui_graph::UiNode::Text {
+                id: "title".into(),
+                text: qos_ui_graph::UiTextSource::Static {
+                    value: spec.title.clone(),
+                },
+                role: qos_ui_graph::UiTextRole::Title,
+                size: None,
+            },
+            qos_ui_graph::UiNode::TextInput {
+                id: "name-input".into(),
+                accessible_name: "graph-project-name".into(),
+                placeholder: "graph-project-name".into(),
+                value_path: Some("name".into()),
+                initial_value: String::new(),
+                multiline: false,
+                disabled: false,
+            },
+            qos_ui_graph::UiNode::Text {
+                id: "name-preview".into(),
+                text: qos_ui_graph::UiTextSource::Document {
+                    path: "name".into(),
+                },
+                role: qos_ui_graph::UiTextRole::Body,
+                size: None,
+            },
+            qos_ui_graph::UiNode::Button {
+                id: "create".into(),
+                label: "graph-create".into(),
+                accessible_name: None,
+                tooltip: Some("graph-create-tooltip".into()),
+                on_click_path: Some("create-requested".into()),
+                click_value: Some("yes".into()),
+                navigate: None,
+                enabled: true,
+                style: qos_ui_graph::UiButtonStyle::Primary,
+            },
+        ],
+        gap: Some(8.0),
+        no_padding: false,
+        intrinsic_height: false,
+        fill_remaining_height: false,
+    });
+    let mut json = document
+        .to_json_pretty()
+        .context("serializing generated UI graph")?;
+    json.push('\n');
+    Ok(json)
+}
+
+fn app_readme(spec: &AppSpec) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# {}", spec.title);
+    let _ = writeln!(out, "\nGenerated by `qos-dev new`.\n");
+    let _ = writeln!(out, "```bash");
+    let _ = writeln!(out, "qos-dev check");
+    let _ = writeln!(out, "qos-dev test");
+    let _ = writeln!(out, "qos-dev dev");
+    let _ = writeln!(out, "qos-dev run");
+    let _ = writeln!(out, "qos-dev add screen settings --template settings");
+    let _ = writeln!(out, "qos-dev add scenario empty-state");
+    let _ = writeln!(out, "qos-dev scenario run");
+    let _ = writeln!(
+        out,
+        "qos-dev scenario run --artifacts target/scenario-artifacts"
+    );
+    let _ = writeln!(
+        out,
+        "qos-dev scenario run --audit --artifacts target/scenario-artifacts"
+    );
+    let _ = writeln!(out, "qos-dev add locale de-DE");
+    let _ = writeln!(out, "qos-dev locale sync");
+    let _ = writeln!(out, "qos-dev shot");
+    let _ = writeln!(out, "qos-dev inspect --actions tests/headless-actions.json");
+    let _ = writeln!(
+        out,
+        "qos-dev inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json"
+    );
+    let _ = writeln!(out, "qos-dev package");
+    let _ = writeln!(out, "```");
+    let _ = writeln!(
+        out,
+        "\nCargo remains available directly with `cargo test` and `cargo run`."
+    );
+    let _ = writeln!(
+        out,
+        "\n`qos-dev add screen account-settings` creates `ui/account-settings.json` and a callable `screens::account_settings(&theme)` constructor."
+    );
+    if spec.template == Template::Graph {
+        let _ = writeln!(
+            out,
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
+        );
+    }
+    if spec.template == Template::Async {
+        let _ = writeln!(
+            out,
+            "\nThe starter's `run-task` button creates a `LatestTask` completion capability for its worker. Starting again or using `cancel-task` makes older completions stale, so late work cannot overwrite newer UI state. An accepted completion wakes the app automatically, and `ModelView::from_state_by` swaps the loading/result/error subtree by a small structural key."
+        );
+    }
+    if spec.template == Template::Document {
+        let _ = writeln!(
+            out,
+            "\nThe title and body inputs write directly to the persisted Automerge document. Their preview reads the same fields without app-owned notifications; standard undo/redo, collaboration, inspection, and autosave all observe those edits."
+        );
+    }
+    let _ = writeln!(
+        out,
+        "\nUser-facing strings start in `locales/en-US.ftl`. `qos-dev add locale de-DE` creates and registers a complete editable copy of that message contract. After changing the source, `qos-dev locale sync` adds missing units without replacing translations; `qos-dev doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog."
+    );
+    let _ = writeln!(out, "\nApp id: `{}`", spec.app_id);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(dir: PathBuf) -> NewAppRequest {
+        NewAppRequest {
+            name: Some("reading-list".into()),
+            app_id: None,
+            title: None,
+            template: Some(Template::Starter),
+            directory: Some(dir),
+            ui_path: None,
+            dry_run: false,
+        }
+    }
+
+    fn minimal_app(root: &Path) {
+        std::fs::create_dir_all(root.join("src/nested")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("qos-app.toml"),
+            "[package]\nid = \"dev.qos.demo\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn app_root() {}\n").unwrap();
+    }
+
+    #[test]
+    fn add_screen_resolves_app_and_emits_a_valid_graph() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        let outcome = add_app_artifact(AddRequest {
+            start: app.join("src/nested"),
+            artifact: AddArtifact::Screen {
+                name: "account-settings".into(),
+                title: None,
+                template: ScreenTemplate::Blank,
+                link_from: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(outcome.app_dir, app.canonicalize().unwrap());
+        let graph_path = &outcome.files[0];
+        assert_eq!(
+            graph_path,
+            &app.canonicalize().unwrap().join("ui/account-settings.json")
+        );
+        assert_eq!(outcome.files.len(), 3);
+        assert_eq!(
+            outcome.next_command.as_deref(),
+            Some("qos-dev ui edit ui/account-settings.json")
+        );
+        let graph = load_ui_graph(graph_path).unwrap();
+        assert!(matches!(
+            graph.node("title"),
+            Some(qos_ui_graph::UiNode::Text {
+                text: qos_ui_graph::UiTextSource::Static { value },
+                ..
+            }) if value == "Account Settings"
+        ));
+        let registry = std::fs::read_to_string(app.join("src/screens.rs")).unwrap();
+        assert!(registry.contains("pub const NAMES"));
+        assert!(registry.contains("include_str!(\"../ui/account-settings.json\")"));
+        syn::parse_file(&registry).expect("generated registry is Rust");
+        assert!(
+            std::fs::read_to_string(app.join("src/lib.rs"))
+                .unwrap()
+                .contains("pub mod screens;")
+        );
+    }
+
+    #[test]
+    fn every_screen_template_is_valid_accessible_and_model_bound() {
+        for (template, expected) in [
+            (ScreenTemplate::Blank, "body"),
+            (ScreenTemplate::Form, "details-input"),
+            (ScreenTemplate::Settings, "notifications"),
+            (ScreenTemplate::EmptyState, "primary-action"),
+        ] {
+            let (document, messages) =
+                screen_template_document("account", "Account", template, true);
+            document.validate().expect("generated graph");
+            assert!(document.node(expected).is_some(), "missing {expected}");
+            assert!(document.nodes().iter().all(|node| !node.id().is_empty()));
+            assert_eq!(
+                messages
+                    .iter()
+                    .map(|message| message.id.as_str())
+                    .collect::<HashSet<_>>()
+                    .len(),
+                messages.len(),
+                "message ids must be unique"
+            );
+            assert!(matches!(
+                document.node("title"),
+                Some(qos_ui_graph::UiNode::Text {
+                    text: qos_ui_graph::UiTextSource::Static { value },
+                    ..
+                }) if value == "account-title"
+            ));
+        }
+    }
+
+    #[test]
+    fn screen_template_wires_locales_navigation_and_graph_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "main".into(),
+                title: Some("Home".into()),
+                template: ScreenTemplate::Blank,
+                link_from: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "account-settings".into(),
+                title: Some("Account \"advanced\"\nsettings".into()),
+                template: ScreenTemplate::Settings,
+                link_from: Some("main".into()),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert!(
+            outcome
+                .files
+                .iter()
+                .any(|path| path.ends_with("locales/en-US.ftl"))
+        );
+        assert!(
+            outcome
+                .files
+                .iter()
+                .any(|path| path.ends_with("locales/de-DE.ftl"))
+        );
+
+        let settings = load_ui_graph(&app.join("ui/account-settings.json")).unwrap();
+        assert!(matches!(
+            settings.node("notifications"),
+            Some(qos_ui_graph::UiNode::Toggle { value_path, .. })
+                if value_path == "account-settings-notifications"
+        ));
+        assert!(matches!(
+            settings.node("save"),
+            Some(qos_ui_graph::UiNode::Button {
+                on_click_path: Some(path),
+                style: qos_ui_graph::UiButtonStyle::Primary,
+                ..
+            }) if path == "account-settings-save-requested"
+        ));
+        let main = load_ui_graph(&app.join("ui/main.json")).unwrap();
+        assert!(matches!(
+            main.node("open-account-settings"),
+            Some(qos_ui_graph::UiNode::Button { label, .. })
+                if label == "account-settings-title"
+        ));
+
+        let source = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        let translation = std::fs::read_to_string(app.join("locales/de-DE.ftl")).unwrap();
+        let source_contract = parse_fluent_catalog(&source).unwrap();
+        let translation_contract = parse_fluent_catalog(&translation).unwrap();
+        assert!(
+            source_contract
+                .entries
+                .contains_key("account-settings-title")
+        );
+        assert!(
+            source_contract
+                .entries
+                .contains_key("account-settings-notifications")
+        );
+        assert!(fluent_contract_drift(&source_contract, &translation_contract).is_empty());
+
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+    }
+
+    #[test]
+    fn malformed_translation_prevents_all_screen_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        std::fs::write(app.join("locales/de.ftl"), "broken = { $value\n").unwrap();
+        let source_before = std::fs::read(app.join("locales/en-US.ftl")).unwrap();
+        let library_before = std::fs::read(app.join("src/lib.rs")).unwrap();
+
+        let error = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "settings".into(),
+                title: None,
+                template: ScreenTemplate::Settings,
+                link_from: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("de.ftl"), "{error:#}");
+        assert!(!app.join("ui/settings.json").exists());
+        assert!(!app.join("src/screens.rs").exists());
+        assert_eq!(
+            std::fs::read(app.join("src/lib.rs")).unwrap(),
+            library_before
+        );
+        assert_eq!(
+            std::fs::read(app.join("locales/en-US.ftl")).unwrap(),
+            source_before
+        );
+    }
+
+    #[test]
+    fn add_screen_extends_only_a_generated_registry() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        let mut outcomes = Vec::new();
+        for name in ["main", "settings"] {
+            outcomes.push(
+                add_app_artifact(AddRequest {
+                    start: app.clone(),
+                    artifact: AddArtifact::Screen {
+                        name: name.into(),
+                        title: None,
+                        template: ScreenTemplate::Blank,
+                        link_from: None,
+                    },
+                    force: false,
+                    dry_run: false,
+                })
+                .unwrap(),
+            );
+        }
+        assert_eq!(outcomes[0].updated.len(), 1);
+        assert!(outcomes[0].updated[0].ends_with("src/lib.rs"));
+        assert_eq!(outcomes[1].updated.len(), 1);
+        assert!(outcomes[1].updated[0].ends_with("src/screens.rs"));
+        let registry = std::fs::read_to_string(app.join("src/screens.rs")).unwrap();
+        assert_eq!(registry.matches("qos-dev:screen=").count(), 2);
+        assert!(registry.contains("\"main\""));
+        assert!(registry.contains("\"settings\""));
+        assert_eq!(
+            std::fs::read_to_string(app.join("src/lib.rs"))
+                .unwrap()
+                .matches("pub mod screens;")
+                .count(),
+            1
+        );
+
+        let custom = temp.path().join("custom");
+        minimal_app(&custom);
+        std::fs::write(custom.join("src/screens.rs"), "pub fn custom() {}\n").unwrap();
+        let original_library = std::fs::read(custom.join("src/lib.rs")).unwrap();
+        assert!(
+            add_app_artifact(AddRequest {
+                start: custom.clone(),
+                artifact: AddArtifact::Screen {
+                    name: "new".into(),
+                    title: None,
+                    template: ScreenTemplate::Blank,
+                    link_from: None,
+                },
+                force: false,
+                dry_run: false,
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("app-owned")
+        );
+        assert!(!custom.join("ui/new.json").exists());
+        assert_eq!(
+            std::fs::read(custom.join("src/lib.rs")).unwrap(),
+            original_library
+        );
+    }
+
+    #[test]
+    fn add_screen_can_wire_push_and_back_navigation_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "main".into(),
+                title: Some("Home".into()),
+                template: ScreenTemplate::Blank,
+                link_from: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "account-settings".into(),
+                title: Some("Account settings".into()),
+                template: ScreenTemplate::Blank,
+                link_from: Some("main".into()),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert!(
+            outcome
+                .updated
+                .iter()
+                .any(|path| path.ends_with("ui/main.json"))
+        );
+        let main = load_ui_graph(&app.join("ui/main.json")).unwrap();
+        assert!(matches!(
+            main.node("open-account-settings"),
+            Some(qos_ui_graph::UiNode::Button {
+                navigate: Some(qos_ui_graph::UiNavigation::Push { route }),
+                ..
+            }) if route == "account-settings"
+        ));
+        let settings = load_ui_graph(&app.join("ui/account-settings.json")).unwrap();
+        assert!(matches!(
+            settings.node("back"),
+            Some(qos_ui_graph::UiNode::Button {
+                navigate: Some(qos_ui_graph::UiNavigation::Back),
+                ..
+            })
+        ));
+
+        let main_before = std::fs::read(app.join("ui/main.json")).unwrap();
+        let registry_before = std::fs::read(app.join("src/screens.rs")).unwrap();
+        let error = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "account-settings".into(),
+                title: None,
+                template: ScreenTemplate::Blank,
+                link_from: Some("main".into()),
+            },
+            force: true,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("open-account-settings"));
+        assert_eq!(
+            std::fs::read(app.join("ui/main.json")).unwrap(),
+            main_before
+        );
+        assert_eq!(
+            std::fs::read(app.join("src/screens.rs")).unwrap(),
+            registry_before
+        );
+    }
+
+    #[test]
+    fn add_wizard_builds_a_reviewed_linked_settings_screen() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "main".into(),
+                title: Some("Home".into()),
+                template: ScreenTemplate::Blank,
+                link_from: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let mut input = std::io::Cursor::new(b"\naccount-settings\n\n3\n\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap();
+
+        assert!(
+            outcome
+                .files
+                .iter()
+                .any(|path| path.ends_with("ui/account-settings.json"))
+        );
+        let settings = load_ui_graph(&app.join("ui/account-settings.json")).unwrap();
+        assert!(settings.node("notifications").is_some());
+        assert!(settings.node("back").is_some());
+        let main = load_ui_graph(&app.join("ui/main.json")).unwrap();
+        assert!(main.node("open-account-settings").is_some());
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Grow "));
+        assert!(transcript.contains("3) locale"));
+        assert!(transcript.contains("Screen template:"));
+        assert!(
+            transcript
+                .contains("Artifact: screen \"account-settings\" (settings) linked from \"main\"")
+        );
+        assert!(transcript.contains("Add this artifact [Y/n]:"));
+    }
+
+    #[test]
+    fn add_wizard_cancels_before_writing_and_requires_a_terminal() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        let mut input = std::io::Cursor::new(b"3\nde-DE\nno\n".to_vec());
+        let mut output = Vec::new();
+
+        let error =
+            add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap_err();
+
+        assert_eq!(error.to_string(), "artifact creation cancelled");
+        assert!(!app.join("locales/de-DE.ftl").exists());
+        let noninteractive = add_app_artifact_interactive_with(
+            &app,
+            &mut std::io::Cursor::new(Vec::<u8>::new()),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            noninteractive
+                .to_string()
+                .contains("subcommand is required")
+        );
+    }
+
+    #[test]
+    fn generated_file_batch_rolls_back_an_earlier_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.txt");
+        std::fs::write(&first, "before\n").unwrap();
+        let second = temp.path().join("second.txt");
+        let writes = [
+            PendingWrite {
+                path: first.clone(),
+                source: "after\n".into(),
+                description: "test artifact",
+            },
+            PendingWrite {
+                path: second.clone(),
+                source: "never published\n".into(),
+                description: "test artifact",
+            },
+        ];
+        let mut attempt = 0;
+        let error = write_batch_with(&writes, |write| {
+            attempt += 1;
+            if attempt == 2 {
+                bail!("injected publication failure");
+            }
+            write_atomic(&write.path, write.source.as_bytes(), write.description)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "before\n");
+        assert!(!second.exists());
+    }
+
+    #[test]
+    fn screen_scenario_scaffolds_a_reachable_semantic_workflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("preferences");
+        let mut new_app = request(app.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "settings".into(),
+                title: None,
+                template: ScreenTemplate::Settings,
+                link_from: Some("main".into()),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app,
+            artifact: AddArtifact::Scenario {
+                name: "settings-smoke".into(),
+                screen: Some("settings".into()),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(
+            outcome.next_command.as_deref(),
+            Some("qos-dev scenario run settings-smoke")
+        );
+        let source = std::fs::read_to_string(&outcome.files[0]).unwrap();
+        let actions = qos_headless_schema::parse_actions(&source).unwrap();
+        assert_eq!(actions.len(), 5);
+        let value: serde_json::Value = serde_json::from_str(&source).unwrap();
+        let targets = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action["perform"]["target"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            [
+                "open-settings",
+                "notifications",
+                "compact",
+                "analytics",
+                "save"
+            ]
+        );
+    }
+
+    #[test]
+    fn screen_scenario_rejects_an_app_root_that_does_not_use_the_router() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("starter");
+        create_app(request(app.clone())).unwrap();
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Screen {
+                name: "settings".into(),
+                title: None,
+                template: ScreenTemplate::Settings,
+                link_from: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let scenario = app.join("tests/scenarios/settings-smoke.json");
+        let error = add_app_artifact(AddRequest {
+            start: app,
+            artifact: AddArtifact::Scenario {
+                name: "settings-smoke".into(),
+                screen: Some("settings".into()),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("screens::router"), "{error:#}");
+        assert!(!scenario.exists());
+    }
+
+    #[test]
+    fn scenario_planning_is_deterministic_and_prevalidates_the_suite() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("scenario-app");
+        let mut new_app = request(app.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+        let scenario_dir = app.join("tests/scenarios");
+        std::fs::create_dir_all(&scenario_dir).unwrap();
+        std::fs::write(scenario_dir.join("zeta.json"), "[]\n").unwrap();
+        std::fs::write(scenario_dir.join("alpha.json"), "[]\n").unwrap();
+
+        let plan = plan_scenario_suite(&ScenarioRunRequest {
+            start: app.clone(),
+            name: None,
+            viewport: None,
+            artifacts: None,
+            audit: false,
+        })
+        .unwrap();
+        assert_eq!(
+            plan.cases
+                .iter()
+                .map(|case| case.name.as_str())
+                .collect::<Vec<_>>(),
+            ["default", "alpha", "zeta"]
+        );
+
+        std::fs::write(scenario_dir.join("broken.json"), "{not json}\n").unwrap();
+        let artifacts = app.join("scenario-artifacts");
+        let error = plan_scenario_suite(&ScenarioRunRequest {
+            start: app,
+            name: None,
+            viewport: None,
+            artifacts: Some(artifacts.clone()),
+            audit: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("broken.json"), "{error:#}");
+        assert!(
+            !artifacts.exists(),
+            "prevalidation must finish before artifact publication"
+        );
+    }
+
+    #[test]
+    fn named_scenario_plan_carries_the_requested_viewport() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("scenario-app");
+        let mut new_app = request(app.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+        std::fs::create_dir_all(app.join("tests/scenarios")).unwrap();
+        std::fs::write(app.join("tests/scenarios/smoke.json"), "[]\n").unwrap();
+
+        let plan = plan_scenario_suite(&ScenarioRunRequest {
+            start: app,
+            name: Some("smoke".into()),
+            viewport: Some((1024, 768)),
+            artifacts: Some(PathBuf::from("target/scenario-artifacts")),
+            audit: true,
+        })
+        .unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(
+            plan.artifact_dir(),
+            Some(plan.app_dir.join("target/scenario-artifacts").as_path())
+        );
+        let payload = plan.cases[0].cargo.args.last().unwrap().to_string_lossy();
+        assert!(payload.contains("\"viewport\":[1024,768]"), "{payload}");
+        assert!(payload.contains("\"audit\":true"), "{payload}");
+        for artifact in [
+            "smoke.inspect.json",
+            "smoke.targets.json",
+            "smoke.document.json",
+            "smoke.audit.json",
+        ] {
+            assert!(payload.contains(artifact), "{payload}");
+        }
+    }
+
+    #[test]
+    fn scenario_execution_isolates_state_and_accumulates_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let case = |name: &str, script: &str| ScenarioCasePlan {
+            name: name.into(),
+            source: temp.path().join(format!("{name}.json")),
+            cargo: CargoPlan {
+                app_dir: temp.path().to_path_buf(),
+                program: OsString::from("/bin/sh"),
+                args: vec![OsString::from("-c"), OsString::from(script)],
+            },
+        };
+        let plan = ScenarioSuitePlan {
+            app_dir: temp.path().to_path_buf(),
+            artifact_dir: Some(temp.path().join("artifacts")),
+            cases: vec![
+                case(
+                    "isolated",
+                    "test -n \"$XDG_DATA_HOME\" && test -z \"$QOS_WORKSPACE_ID\"",
+                ),
+                case("failure", "exit 7"),
+                case("continued", "exit 0"),
+            ],
+        };
+
+        let outcome = plan.execute().unwrap();
+        assert!(temp.path().join("artifacts").is_dir());
+        assert_eq!(outcome.passed, ["isolated", "continued"]);
+        assert_eq!(outcome.failed.len(), 1);
+        assert_eq!(outcome.failed[0].name, "failure");
+        assert!(outcome.failed[0].detail.contains('7'));
+    }
+
+    #[test]
+    fn add_artifact_protects_work_and_dry_run_has_no_side_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        let scenario = || AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Scenario {
+                name: "empty-state".into(),
+                screen: None,
+            },
+            force: false,
+            dry_run: false,
+        };
+        let created = add_app_artifact(scenario()).unwrap();
+        let created_path = &created.files[0];
+        assert_eq!(std::fs::read_to_string(created_path).unwrap(), "[]\n");
+        std::fs::write(created_path, "[\"keep me\"]\n").unwrap();
+        assert!(add_app_artifact(scenario()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(created_path).unwrap(),
+            "[\"keep me\"]\n"
+        );
+
+        std::fs::create_dir_all(app.join("locales")).unwrap();
+        std::fs::write(app.join("locales/en-US.ftl"), source_catalog()).unwrap();
+        let registry = locale_registry_source(&["en-US".to_owned()]);
+        std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
+        let preview = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: true,
+        })
+        .unwrap();
+        assert!(preview.dry_run);
+        assert!(!preview.files[0].exists());
+        assert_eq!(preview.files.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(app.join("src/locales.rs")).unwrap(),
+            registry
+        );
+    }
+
+    #[test]
+    fn add_locale_is_immediately_registered_and_protects_app_owned_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(outcome.files.len(), 2);
+        assert!(app.join("locales/de-DE.ftl").is_file());
+        let generated_catalog = std::fs::read_to_string(app.join("locales/de-DE.ftl")).unwrap();
+        assert!(generated_catalog.starts_with("### de-DE translations."));
+        assert!(generated_catalog.contains("starter-greeting = Hello, { $name }!"));
+        assert!(
+            fluent_contract_drift(
+                &parse_fluent_catalog(
+                    &std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap()
+                )
+                .unwrap(),
+                &parse_fluent_catalog(&generated_catalog).unwrap(),
+            )
+            .is_empty(),
+            "new catalogs begin complete"
+        );
+        let registry_path = app.join("src/locales.rs");
+        let registry = std::fs::read_to_string(&registry_path).unwrap();
+        assert_eq!(
+            parse_locale_registry(&registry).unwrap(),
+            ["de-DE", "en-US"]
+        );
+        assert!(registry.contains("include_str!(\"../locales/de-DE.ftl\")"));
+        assert!(registry.contains("(\"de-DE\", CATALOG_0)"));
+        syn::parse_file(&registry).expect("generated locale registry is Rust");
+
+        let repeated = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: true,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(
+            repeated.files.len(),
+            1,
+            "an unchanged registry is not rewritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&registry_path)
+                .unwrap()
+                .matches(LOCALE_ENTRY_PREFIX)
+                .count(),
+            2
+        );
+        let source_before = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        for locale in ["en-US", "de-de"] {
+            let error = add_app_artifact(AddRequest {
+                start: app.clone(),
+                artifact: AddArtifact::Locale {
+                    locale: locale.into(),
+                },
+                force: true,
+                dry_run: false,
+            })
+            .unwrap_err();
+            assert!(
+                error.to_string().contains(if locale == "en-US" {
+                    "source catalog"
+                } else {
+                    "already registered"
+                }),
+                "{error:#}"
+            );
+            if locale == "en-US" {
+                assert_eq!(
+                    std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap(),
+                    source_before
+                );
+            } else {
+                assert!(!app.join(format!("locales/{locale}.ftl")).exists());
+            }
+        }
+
+        let app_owned = "pub fn install() {}\n";
+        std::fs::write(&registry_path, app_owned).unwrap();
+        let error = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "fr".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("app-owned"), "{error:#}");
+        assert!(!app.join("locales/fr.ftl").exists());
+        assert_eq!(std::fs::read_to_string(registry_path).unwrap(), app_owned);
+    }
+
+    #[test]
+    fn fluent_contract_reports_missing_and_stale_entries_and_attributes() {
+        let source = parse_fluent_catalog(
+            "title = Hello\n    .aria-label = Greeting\nbutton = Submit\ncount = { $count ->\n    [one] One\n   *[other] { NUMBER($count) }\n}\n-term = Brand\n",
+        )
+        .unwrap();
+        let translation = parse_fluent_catalog(
+            "title = Hallo\n    .tooltip = Hinweis\ncount = { $total }\nstale = Alt\n-term = Marke\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fluent_contract_drift(&source, &translation),
+            [
+                "missing button",
+                "count variables are $total instead of $count",
+                "missing title.aria-label",
+                "stale title.tooltip",
+                "stale stale",
+            ]
+        );
+    }
+
+    #[test]
+    fn add_locale_rejects_an_invalid_source_before_publishing() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        let registry_path = app.join("src/locales.rs");
+        let registry_before = std::fs::read(&registry_path).unwrap();
+        std::fs::write(app.join("locales/en-US.ftl"), "broken = { $value\n").unwrap();
+
+        let error = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "fr".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("source catalog"), "{error:#}");
+        assert!(!app.join("locales/fr.ftl").exists());
+        assert_eq!(std::fs::read(registry_path).unwrap(), registry_before);
+    }
+
+    #[test]
+    fn locale_sync_preserves_translations_and_can_explicitly_resolve_all_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source_path = app.join("locales/en-US.ftl");
+        let mut source = std::fs::read_to_string(&source_path).unwrap();
+        source.push_str(
+            "settings-title = Settings for { $account }\n    .aria-label = Settings for { $account }\n-brand = qOS\n",
+        );
+        std::fs::write(&source_path, source).unwrap();
+        let translation_path = app.join("locales/de-DE.ftl");
+        let translation = std::fs::read_to_string(&translation_path)
+            .unwrap()
+            .replace(
+                "starter-title = Your first qOS app",
+                "starter-title = Meine qOS-App",
+            )
+            .replace(
+                "starter-greeting = Hello, { $name }!",
+                "starter-greeting = Hallo, { $benutzer }!",
+            );
+        std::fs::write(&translation_path, format!("{translation}obsolete = Alt\n")).unwrap();
+
+        let preserved = sync_locale_catalogs(&LocaleSyncRequest {
+            start: app.clone(),
+            locale: Some("de-DE".into()),
+            prune: false,
+            reset_variables: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(preserved.checked, ["de-DE"]);
+        assert_eq!(
+            preserved.files.as_slice(),
+            std::slice::from_ref(&translation_path)
+        );
+        assert!(
+            preserved
+                .unresolved
+                .iter()
+                .any(|difference| difference.contains("$benutzer instead of $name"))
+        );
+        assert!(
+            preserved
+                .unresolved
+                .iter()
+                .any(|difference| difference.contains("stale obsolete"))
+        );
+        let synchronized = std::fs::read_to_string(&translation_path).unwrap();
+        assert!(synchronized.contains("starter-title = Meine qOS-App"));
+        assert!(synchronized.contains("starter-greeting = Hallo, { $benutzer }!"));
+        assert!(synchronized.contains("settings-title = Settings for { $account }"));
+        assert!(synchronized.contains(".aria-label = Settings for { $account }"));
+        assert!(synchronized.contains("-brand = qOS"));
+        assert!(synchronized.contains("obsolete = Alt"));
+
+        let before_dry_run = std::fs::read(&translation_path).unwrap();
+        let preview = sync_locale_catalogs(&LocaleSyncRequest {
+            start: app.clone(),
+            locale: None,
+            prune: true,
+            reset_variables: true,
+            dry_run: true,
+        })
+        .unwrap();
+        assert_eq!(
+            preview.files.as_slice(),
+            std::slice::from_ref(&translation_path)
+        );
+        assert!(preview.unresolved.is_empty());
+        assert_eq!(std::fs::read(&translation_path).unwrap(), before_dry_run);
+
+        let resolved = sync_locale_catalogs(&LocaleSyncRequest {
+            start: app.clone(),
+            locale: None,
+            prune: true,
+            reset_variables: true,
+            dry_run: false,
+        })
+        .unwrap();
+        assert!(resolved.unresolved.is_empty());
+        let synchronized = std::fs::read_to_string(&translation_path).unwrap();
+        assert!(synchronized.contains("starter-title = Meine qOS-App"));
+        assert!(synchronized.contains("starter-greeting = Hello, { $name }!"));
+        assert!(!synchronized.contains("obsolete"));
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(report.checks.iter().any(|check| {
+            check.label == "locale contract"
+                && check.status == DoctorStatus::Pass
+                && check.detail.contains("de-DE")
+        }));
+    }
+
+    #[test]
+    fn locale_sync_validates_every_catalog_before_publishing_any() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        for locale in ["de", "fr"] {
+            add_app_artifact(AddRequest {
+                start: app.clone(),
+                artifact: AddArtifact::Locale {
+                    locale: locale.into(),
+                },
+                force: false,
+                dry_run: false,
+            })
+            .unwrap();
+        }
+        let source_path = app.join("locales/en-US.ftl");
+        let mut source = std::fs::read_to_string(&source_path).unwrap();
+        source.push_str("new-unit = New\n");
+        std::fs::write(source_path, source).unwrap();
+        let de_path = app.join("locales/de.ftl");
+        let de_before = std::fs::read(&de_path).unwrap();
+        std::fs::write(app.join("locales/fr.ftl"), "broken = { $value\n").unwrap();
+
+        let error = sync_locale_catalogs(&LocaleSyncRequest {
+            start: app,
+            locale: None,
+            prune: false,
+            reset_variables: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("fr.ftl"), "{error:#}");
+        assert_eq!(
+            std::fs::read(de_path).unwrap(),
+            de_before,
+            "a later parse failure must prevent earlier catalog publication"
+        );
+    }
+
+    #[test]
+    fn add_locale_migrates_only_the_previous_generated_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        let library_path = app.join("src/lib.rs");
+        let current = std::fs::read_to_string(&library_path).unwrap();
+        assert_eq!(current.matches(GENERATED_LOCALE_SETUP).count(), 1);
+        std::fs::write(
+            &library_path,
+            current.replacen(GENERATED_LOCALE_SETUP, LEGACY_GENERATED_LOCALE_SETUP, 1),
+        )
+        .unwrap();
+        std::fs::remove_file(app.join("src/locales.rs")).unwrap();
+
+        let migrated = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "it-IT".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(migrated.files.len(), 3);
+        let library = std::fs::read_to_string(&library_path).unwrap();
+        assert!(library.contains(GENERATED_LOCALE_SETUP));
+        assert!(!library.contains("SOURCE_CATALOG"));
+        assert_eq!(
+            parse_locale_registry(&std::fs::read_to_string(app.join("src/locales.rs")).unwrap())
+                .unwrap(),
+            ["en-US", "it-IT"]
+        );
+
+        std::fs::remove_file(app.join("src/locales.rs")).unwrap();
+        let before = std::fs::read_to_string(&library_path).unwrap();
+        let error = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "nl".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("app-owned"), "{error:#}");
+        assert!(!app.join("locales/nl.ftl").exists());
+        assert_eq!(std::fs::read_to_string(library_path).unwrap(), before);
+    }
+
+    #[test]
+    fn add_artifact_rejects_traversal_and_non_app_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+        for name in ["../escape", "BadName", "two--parts", "with space"] {
+            assert!(
+                add_app_artifact(AddRequest {
+                    start: app.clone(),
+                    artifact: AddArtifact::Scenario {
+                        name: name.into(),
+                        screen: None,
+                    },
+                    force: false,
+                    dry_run: false,
+                })
+                .is_err(),
+                "accepted {name:?}"
+            );
+        }
+        for locale in ["../de", "EN_us", "en--GB", "e"] {
+            assert!(
+                add_app_artifact(AddRequest {
+                    start: app.clone(),
+                    artifact: AddArtifact::Locale {
+                        locale: locale.into(),
+                    },
+                    force: false,
+                    dry_run: false,
+                })
+                .is_err(),
+                "accepted {locale:?}"
+            );
+        }
+
+        let crate_only = temp.path().join("ordinary-crate");
+        std::fs::create_dir(&crate_only).unwrap();
+        std::fs::write(crate_only.join("Cargo.toml"), "[workspace]\n").unwrap();
+        assert!(
+            add_app_artifact(AddRequest {
+                start: crate_only,
+                artifact: AddArtifact::Scenario {
+                    name: "test".into(),
+                    screen: None,
+                },
+                force: false,
+                dry_run: false,
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("missing qos-app.toml")
+        );
+    }
+
+    #[test]
+    fn ui_graph_builder_round_trips_structural_edits_atomically() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let initial = load_ui_graph(&graph).expect("load initialized graph");
+        assert_eq!(initial.nodes().len(), 3);
+        assert_eq!(
+            ui_graph_tree(&graph).unwrap(),
+            "root (column)\n  title (text)\n  body (text)\n"
+        );
+
+        let button =
+            parse_ui_node(r#"{"type":"button","id":"create","label":"Create","style":"primary"}"#)
+                .expect("button node");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::Insert {
+                parent: "root".into(),
+                index: 2,
+                node: button,
+            },
+        )
+        .expect("insert button");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::Move {
+                id: "create".into(),
+                parent: "root".into(),
+                index: 1,
+            },
+        )
+        .expect("reorder button");
+        assert_eq!(
+            load_ui_graph(&graph)
+                .unwrap()
+                .nodes()
+                .iter()
+                .map(|node| node.id())
+                .collect::<Vec<_>>(),
+            ["root", "title", "create", "body"]
+        );
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let duplicate = parse_ui_node(r#"{"type":"spacer","id":"title"}"#).unwrap();
+        assert!(
+            edit_ui_graph(
+                &graph,
+                UiGraphEdit::Insert {
+                    parent: "root".into(),
+                    index: 0,
+                    node: duplicate,
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(&graph).unwrap(),
+            before_invalid,
+            "failed edit must not rewrite the source"
+        );
+
+        edit_ui_graph(&graph, UiGraphEdit::Remove { id: "body".into() }).expect("remove body");
+        format_ui_graph(&graph).expect("canonical format");
+        assert!(load_ui_graph(&graph).unwrap().node("body").is_none());
+        assert!(std::fs::read_to_string(&graph).unwrap().ends_with('\n'));
+    }
+
+    #[test]
+    fn explicit_ui_builder_plan_is_deterministic() {
+        let plan = ui_builder_plan(
+            Path::new("ui/main.json"),
+            Some(OsString::from("/opt/qos-ui-builder")),
+        )
+        .expect("builder plan");
+        assert_eq!(plan.program, OsString::from("/opt/qos-ui-builder"));
+        assert_eq!(plan.args, [OsString::from("ui/main.json")]);
+    }
+
+    #[test]
+    fn source_checkout_builder_manifest_is_discoverable() {
+        let current = std::env::current_exe().expect("test executable");
+        let manifest = find_ui_builder_manifest(Path::new("docs/app-development.md"), &current)
+            .expect("manifest search")
+            .expect("workspace builder manifest");
+        assert!(manifest.ends_with("crates/dev/ui-builder/Cargo.toml"));
+    }
+
+    #[test]
+    fn ui_graph_init_protects_existing_work_without_force() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("screen.json");
+        init_ui_graph(&graph, "First", false).unwrap();
+        assert_eq!(
+            std::fs::metadata(&graph).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        let first = std::fs::read(&graph).unwrap();
+        assert!(init_ui_graph(&graph, "Second", false).is_err());
+        assert_eq!(std::fs::read(&graph).unwrap(), first);
+        init_ui_graph(&graph, "Second", true).unwrap();
+        assert!(std::fs::read_to_string(&graph).unwrap().contains("Second"));
+
+        std::fs::set_permissions(&graph, std::fs::Permissions::from_mode(0o640)).unwrap();
+        format_ui_graph(&graph).unwrap();
+        assert_eq!(
+            std::fs::metadata(&graph).unwrap().permissions().mode() & 0o777,
+            0o640,
+            "atomic rewrites preserve source-file permissions"
+        );
+    }
+
+    #[test]
+    fn creates_complete_starter() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        let outcome = create_app(request(destination.clone())).expect("create app");
+        assert_eq!(outcome.app_id, "dev.qos.reading.list");
+        assert!(destination.join("Cargo.toml").is_file());
+        assert!(destination.join("src/main.rs").is_file());
+        assert!(destination.join("tests/app.rs").is_file());
+        assert!(destination.join("tests/headless-actions.json").is_file());
+        let catalog =
+            std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
+        assert!(catalog.contains("starter-greeting = Hello, { $name }!"));
+        let main = std::fs::read_to_string(destination.join("src/main.rs")).expect("main");
+        assert!(main.contains("ui::launch::LaunchSpec"));
+        let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
+        assert!(library.contains("LocalState::new"));
+        assert!(library.contains("Text::from_state"));
+        assert!(library.contains("with_id(\"name-input\")"));
+        assert!(library.contains("on_change(name.text_sink())"));
+        assert!(library.contains("pub mod locales;"));
+        assert!(library.contains("locales::install()"));
+        let locale_registry =
+            std::fs::read_to_string(destination.join("src/locales.rs")).expect("locale registry");
+        assert!(locale_registry.contains("I18nManager::install_system"));
+        assert_eq!(parse_locale_registry(&locale_registry).unwrap(), ["en-US"]);
+        let manifest = std::fs::read_to_string(destination.join("qos-app.toml")).expect("manifest");
+        assert!(manifest.contains("mode = \"off\""));
+        let app_test =
+            std::fs::read_to_string(destination.join("tests/app.rs")).expect("generated app test");
+        assert!(app_test.contains("perform_named(\"name-input\""));
+        assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
+        assert!(app_test.contains("name_contains(\"Ada\")"));
+
+        let report = doctor_app(&destination).expect("doctor generated app");
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(report.summary().contains("Ready for `qos-dev run`"));
+    }
+
+    #[test]
+    fn interactive_wizard_retries_invalid_fields_and_builds_the_selected_template() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        let mut req = request(destination.clone());
+        req.name = None;
+        req.title = None;
+        req.app_id = None;
+        req.template = None;
+        let mut input = std::io::Cursor::new(
+            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n9\n4\n\n".to_vec(),
+        );
+        let mut output = Vec::new();
+
+        let outcome = create_app_interactive_with(req, &mut input, &mut output, true).unwrap();
+        assert_eq!(outcome.package_name, "reading-list");
+        assert_eq!(outcome.app_id, "org.example.reading-list");
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Create a qOS app"));
+        assert!(transcript.contains("invalid package name \"Bad Name\""));
+        assert!(transcript.contains("invalid app id \"bad-id\""));
+        assert!(transcript.contains("1) starter"));
+        assert!(transcript.contains("5) graph"));
+        assert!(transcript.contains("unknown template \"9\""));
+        assert!(transcript.contains("Review:"));
+        assert!(transcript.contains("Template:    tree — Professional hierarchy browser"));
+        assert!(transcript.contains(&format!("Destination: {}", destination.display())));
+        assert!(transcript.contains("Create this app [Y/n]:"));
+        let source = std::fs::read_to_string(destination.join("src/lib.rs")).unwrap();
+        assert!(source.contains("TreeView::new"), "{source}");
+    }
+
+    #[test]
+    fn interactive_wizard_declines_before_publishing_any_files() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("notes");
+        let mut req = request(destination.clone());
+        req.name = None;
+        req.title = None;
+        req.app_id = None;
+        req.template = None;
+        let mut input = std::io::Cursor::new(b"notes\n\n\n1\nmaybe\nno\n".to_vec());
+        let mut output = Vec::new();
+
+        let error = create_app_interactive_with(req, &mut input, &mut output, true).unwrap_err();
+
+        assert_eq!(error.to_string(), "app creation cancelled");
+        assert!(!destination.exists());
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Review:"));
+        assert!(transcript.contains("answer `yes` or `no`"));
+    }
+
+    #[test]
+    fn standalone_wizard_prompts_and_retries_the_toolkit_path_before_review() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let toolkit = temp.path().join("toolkit-ui");
+        std::fs::create_dir(&toolkit).unwrap();
+        std::fs::write(
+            toolkit.join("Cargo.toml"),
+            "[package]\nname = \"ui\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let destination = temp.path().join("notes");
+        let mut req = request(destination.clone());
+        req.name = None;
+        req.title = None;
+        req.app_id = None;
+        req.template = None;
+        let mut input = std::io::Cursor::new(b"notes\n\n\n1\nmissing-ui\ntoolkit-ui\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            create_app_interactive_from(temp.path(), req, &mut input, &mut output, true).unwrap();
+
+        assert_eq!(outcome.destination, destination);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Toolkit ui path:"));
+        assert!(transcript.contains("invalid toolkit path"));
+        assert!(transcript.contains(&format!(
+            "Toolkit:     {}",
+            toolkit.canonicalize().unwrap().display()
+        )));
+        let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
+        assert!(manifest.contains("path = \"../toolkit-ui\""), "{manifest}");
+    }
+
+    #[test]
+    fn interactive_wizard_reports_end_of_input_as_cancellation() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut req = request(temp.path().join("cancelled"));
+        req.name = None;
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+        let error = create_app_interactive_with(req, &mut input, &mut output, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("input ended while reading Package name"),
+            "{error:#}"
+        );
+        assert!(!temp.path().join("cancelled").exists());
+    }
+
+    #[test]
+    fn new_app_preflights_workspace_registration_before_creating_files() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        std::fs::create_dir(root.join("apps")).unwrap();
+        std::fs::create_dir(root.join("ui")).unwrap();
+        std::fs::write(root.join("ui/Cargo.toml"), "[package]\nname = \"ui\"\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nresolver = \"3\"\n").unwrap();
+        let destination = root.join("apps/reading-list");
+        let error = create_app_from(root, request(destination.clone())).unwrap_err();
+        assert!(error.to_string().contains("members list"), "{error:#}");
+        assert!(
+            !destination.exists(),
+            "workspace failure must not leave a partial app"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Cargo.toml")).unwrap(),
+            "[workspace]\nresolver = \"3\"\n"
+        );
+    }
+
+    #[test]
+    fn new_app_publishes_complete_tree_and_workspace_member_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("apps/reading-list")).unwrap();
+        std::fs::set_permissions(
+            root.join("apps/reading-list"),
+            std::fs::Permissions::from_mode(0o750),
+        )
+        .unwrap();
+        std::fs::create_dir(root.join("ui")).unwrap();
+        std::fs::write(root.join("ui/Cargo.toml"), "[package]\nname = \"ui\"\n").unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package.metadata.fixture]\nmembers = [\n    \"do-not-touch\",\n]\n\n[workspace]\nresolver = \"3\"\ndefault-members = [\n    \"core\",\n]\nmembers = [\n]\n",
+        )
+        .unwrap();
+        let destination = root.join("apps/reading-list");
+
+        let outcome = create_app_from(root, request(destination.clone())).unwrap();
+        assert_eq!(outcome.destination, destination);
+        for relative in &outcome.files {
+            assert!(
+                destination.join(relative).is_file(),
+                "missing {}",
+                relative.display()
+            );
+        }
+        let workspace = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(
+            workspace
+                .starts_with("[package.metadata.fixture]\nmembers = [\n    \"do-not-touch\",\n]")
+        );
+        assert!(workspace.contains(
+            "default-members = [\n    \"core\",\n]\nmembers = [\n    \"apps/reading-list\","
+        ));
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        assert_eq!(
+            std::fs::read_dir(root.join("apps")).unwrap().count(),
+            1,
+            "the staging directory must not remain visible"
+        );
+    }
+
+    #[test]
+    fn staged_new_app_failure_restores_workspace_and_empty_destination() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        let manifest = root.join("Cargo.toml");
+        let original_manifest = "[workspace]\nmembers = [\n]\n";
+        std::fs::write(&manifest, original_manifest).unwrap();
+        let update = prepare_workspace_member(root, Path::new("apps/demo"))
+            .unwrap()
+            .expect("new workspace member");
+
+        let staging = tempfile::tempdir_in(root).unwrap();
+        std::fs::write(staging.path().join("Cargo.toml"), "generated").unwrap();
+        let destination = root.join("apps/demo");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let original_permissions = std::fs::metadata(&destination).unwrap().permissions();
+
+        let error = publish_staged_app_with(
+            staging.path(),
+            &destination,
+            Some(&original_permissions),
+            Some(&update),
+            |_, _| bail!("injected destination publication failure"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("rolled back"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            original_manifest
+        );
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        assert!(staging.path().join("Cargo.toml").is_file());
+    }
+
+    #[test]
+    fn doctor_accumulates_actionable_failures() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"broken\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo manifest");
+        std::fs::write(temp.path().join("qos-app.toml"), "not valid toml = [")
+            .expect("qOS manifest");
+
+        let report = doctor_app(temp.path()).expect("doctor report");
+        assert!(!report.is_ready());
+        assert!(
+            report
+                .checks
+                .iter()
+                .filter(|check| check.status == DoctorStatus::Fail)
+                .count()
+                >= 4,
+            "{:#?}",
+            report.checks
+        );
+        let summary = report.summary();
+        assert!(summary.contains("missing dependency `ui`"));
+        assert!(summary.contains("Not ready"));
+    }
+
+    #[test]
+    fn doctor_validates_generated_screens_locales_and_scenarios() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("project-maker");
+        let mut new_app = request(destination.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+        add_app_artifact(AddRequest {
+            start: destination.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        add_app_artifact(AddRequest {
+            start: destination.clone(),
+            artifact: AddArtifact::Scenario {
+                name: "empty-state".into(),
+                screen: None,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let healthy = doctor_app(&destination).unwrap();
+        assert!(healthy.is_ready(), "{}", healthy.summary());
+        assert!(
+            healthy
+                .checks
+                .iter()
+                .any(|check| check.label == "UI graph" && check.detail == "ui/main.json")
+        );
+        assert!(healthy.checks.iter().any(|check| {
+            check.label == "locale registry" && check.detail == "2 embedded catalog(s)"
+        }));
+
+        let translated_path = destination.join("locales/de-DE.ftl");
+        let complete_translation = std::fs::read_to_string(&translated_path).unwrap();
+        std::fs::write(
+            &translated_path,
+            complete_translation.replace("graph-create = Create\n", ""),
+        )
+        .unwrap();
+        let drifted = doctor_app(&destination).unwrap();
+        assert!(
+            drifted.is_ready(),
+            "source fallback keeps a structurally valid app runnable"
+        );
+        assert!(drifted.checks.iter().any(|check| {
+            check.label == "locale contract"
+                && check.status == DoctorStatus::Warning
+                && check.detail.contains("missing graph-create")
+        }));
+        std::fs::write(&translated_path, complete_translation).unwrap();
+
+        std::fs::write(destination.join("ui/main.json"), "{not json\n").unwrap();
+        std::fs::write(
+            destination.join("locales/de-DE.ftl"),
+            "broken = { $missing\n",
+        )
+        .unwrap();
+        std::fs::write(
+            destination.join("tests/scenarios/empty-state.json"),
+            r#"[{"unknown":"operation"}]"#,
+        )
+        .unwrap();
+
+        let broken = doctor_app(&destination).unwrap();
+        assert!(!broken.is_ready());
+        let summary = broken.summary();
+        assert!(summary.contains("ui/main.json"), "{summary}");
+        assert!(summary.contains("locales/de-DE.ftl"), "{summary}");
+        assert!(summary.contains("unknown action"), "{summary}");
+        assert!(broken.checks.iter().any(|check| {
+            check.label == "headless scenario" && check.status == DoctorStatus::Warning
+        }));
+    }
+
+    #[test]
+    fn dry_run_writes_nothing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("preview");
+        let mut req = request(destination.clone());
+        req.dry_run = true;
+        let outcome = create_app(req).expect("preview app");
+        assert!(outcome.dry_run);
+        assert!(!destination.exists());
+        assert_eq!(outcome.files.len(), 9);
+    }
+
+    #[test]
+    fn creation_summary_prints_copyable_commands_for_shell_unsafe_paths() {
+        let outcome = CreateOutcome {
+            destination: PathBuf::from("/tmp/O'Reilly app"),
+            package_name: "reading-list".into(),
+            app_id: "org.example.reading-list".into(),
+            files: Vec::new(),
+            dry_run: false,
+            workspace_member: false,
+        };
+        let summary = outcome.summary();
+        assert!(summary.contains("qos-dev check '/tmp/O'\\''Reilly app'"));
+        assert!(summary.contains("qos-dev dev '/tmp/O'\\''Reilly app'"));
+        assert!(summary.contains("qos-dev scenario run --app '/tmp/O'\\''Reilly app'"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unsafe_names() {
+        for name in ["BadName", "-leading", "two--hyphens", "with space", ""] {
+            assert!(validate_package_name(name).is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
+    fn computes_workspace_relative_ui_path() {
+        assert_eq!(
+            relative_path(Path::new("/repo/apps/demo"), Path::new("/repo/ui")),
+            PathBuf::from("../../ui")
+        );
+    }
+
+    #[test]
+    fn data_template_renders_cells_and_uses_stable_row_ids() {
+        let spec = AppSpec {
+            package_name: "log-browser".into(),
+            crate_name: "log_browser".into(),
+            title: "Log Browser".into(),
+            app_id: "dev.qos.log.browser".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Data,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("with_text(|row| row.name.clone())"));
+        assert!(source.contains("with_id(\"rows-table\")"));
+        assert!(source.contains("with_accessible_name(\"data-accessible-name\")"));
+        assert!(source.contains("impl TableModel for Rows"));
+        assert!(source.contains("const ROW_COUNT: usize = 100_000_000"));
+        assert!(source.contains("LatestRequest::new()"));
+        assert!(source.contains("std::thread::spawn"));
+        assert!(source.contains("fn poll_changes"));
+        assert!(source.contains("TableModelChange::RowsChanged"));
+        assert!(source.contains("completion.complete(rows)"));
+        assert!(source.contains("with_widget"));
+        assert!(source.contains("open-requested"));
+        assert!(source.contains("pub id: u64"));
+        let test = app_test(&spec);
+        assert!(test.contains("Role::Table"));
+        assert!(test.contains("row:3:0"));
+        assert!(test.contains("wait_for_named"));
+        assert!(test.contains("visible rows are semantic children"));
+    }
+
+    #[test]
+    fn template_prompt_accepts_names_and_shortcuts() {
+        assert_eq!(parse_template("1").unwrap(), Template::Starter);
+        assert_eq!(parse_template("starter").unwrap(), Template::Starter);
+        assert_eq!(parse_template("S").unwrap(), Template::Starter);
+        assert_eq!(parse_template("data").unwrap(), Template::Data);
+        assert_eq!(parse_template("3").unwrap(), Template::List);
+        assert_eq!(parse_template("d").unwrap(), Template::Data);
+        assert_eq!(parse_template("list").unwrap(), Template::List);
+        assert_eq!(parse_template("L").unwrap(), Template::List);
+        assert_eq!(parse_template("tree").unwrap(), Template::Tree);
+        assert_eq!(parse_template("T").unwrap(), Template::Tree);
+        assert_eq!(parse_template("graph").unwrap(), Template::Graph);
+        assert_eq!(parse_template("5").unwrap(), Template::Graph);
+        assert_eq!(parse_template("builder").unwrap(), Template::Graph);
+        assert_eq!(parse_template("async").unwrap(), Template::Async);
+        assert_eq!(parse_template("6").unwrap(), Template::Async);
+        assert_eq!(parse_template("task").unwrap(), Template::Async);
+        assert_eq!(parse_template("document").unwrap(), Template::Document);
+        assert_eq!(parse_template("7").unwrap(), Template::Document);
+        assert_eq!(parse_template("editor").unwrap(), Template::Document);
+        assert!(parse_template("dashboard").is_err());
+    }
+
+    #[test]
+    fn graph_template_generates_a_valid_editable_screen() {
+        let spec = AppSpec {
+            package_name: "project-maker".into(),
+            crate_name: "project_maker".into(),
+            title: "Project Maker".into(),
+            app_id: "dev.qos.project.maker".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Graph,
+        };
+        let files = render(&spec).unwrap();
+        let graph = files
+            .iter()
+            .find(|(path, _)| path == Path::new("ui/main.json"))
+            .expect("graph template emits source");
+        let document = qos_ui_graph::UiDocument::from_json(&graph.1).unwrap();
+        assert_eq!(document.nodes().len(), 5);
+        assert!(matches!(
+            document.node("create"),
+            Some(qos_ui_graph::UiNode::Button { .. })
+        ));
+        let registry = files
+            .iter()
+            .find(|(path, _)| path == Path::new("src/screens.rs"))
+            .expect("graph template emits a compiled screen registry");
+        assert!(registry.1.contains("include_str!(\"../ui/main.json\")"));
+        assert!(registry.1.contains("pub const NAMES"));
+        assert!(app_lib(&spec).contains("pub mod screens;"));
+        assert!(app_lib(&spec).contains("screens::router(\"main\", &Theme::default())"));
+        assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
+        assert!(app_readme(&spec).contains("qos-dev ui tree"));
+    }
+
+    #[test]
+    fn list_template_starts_sparse_variable_and_interactive() {
+        let spec = AppSpec {
+            package_name: "activity-feed".into(),
+            crate_name: "activity_feed".into(),
+            title: "Activity Feed".into(),
+            app_id: "dev.qos.activity.feed".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::List,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("ITEM_COUNT: usize = 100_000_000"));
+        assert!(source.contains("impl ListModel for ActivityModel"));
+        assert!(source.contains("LatestRequest::new()"));
+        assert!(source.contains("VirtualList::new_async"));
+        assert!(source.contains("ListRowState::Loading"));
+        assert!(source.contains("ListModelChange::RowsChanged"));
+        assert!(source.contains("with_semantic_key(u64::to_string)"));
+        assert!(source.contains("if index % 5 == 0"));
+        assert!(source.contains("Button::new"));
+        assert!(source.contains("with_id(\"activity-list\")"));
+        let test = app_test(&spec);
+        assert!(test.contains("Role::List"));
+        assert!(test.contains("key:3"));
+        assert!(test.contains("open-0"));
+        assert!(test.contains("wait_for_named"));
+        assert!(test.contains("first_height"));
+    }
+
+    #[test]
+    fn tree_template_uses_stable_ids_and_professional_tree_defaults() {
+        let spec = AppSpec {
+            package_name: "project-browser".into(),
+            crate_name: "project_browser".into(),
+            title: "Project Browser".into(),
+            app_id: "dev.qos.project.browser".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Tree,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("TreeNode::branch"));
+        assert!(source.contains("with_expanded([1, 2])"));
+        assert!(source.contains("multi_select(true)"));
+        assert!(source.contains("with_row_delegate"));
+        assert!(source.contains("Button::new"));
+        assert!(source.contains("reorderable()"));
+        assert!(source.contains("with_viewport(280.0, 36.0)"));
+        assert!(source.contains("with_accessible_name"));
+        assert!(source.contains("with_id(\"workspace-tree\")"));
+        let test = app_test(&spec);
+        assert!(test.contains("Role::Tree"));
+        assert!(test.contains("perform_semantic_named"));
+        assert!(test.contains("node:3"));
+        assert!(test.contains("more-4"));
+    }
+
+    #[test]
+    fn async_template_uses_typed_wakeup_and_keyed_result_views() {
+        let spec = AppSpec {
+            package_name: "repo-scan".into(),
+            crate_name: "repo_scan".into(),
+            title: "Repo Scan".into(),
+            app_id: "dev.qos.repo.scan".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Async,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("LatestTask::new(LoadState::Idle)"));
+        assert!(source.contains("run_task.begin(LoadState::Loading)"));
+        assert!(source.contains("completion.complete(result)"));
+        assert!(source.contains("cancel_task.cancel(LoadState::Idle)"));
+        assert!(source.contains("Button::new(\"cancel-task\""));
+        assert!(source.contains("std::thread::spawn"));
+        assert!(source.contains("ModelView::from_state_by"));
+        assert!(source.contains("with_arg(\"count\""));
+        assert!(source.contains("with_id(\"task-result\")"));
+        let test = app_test(&spec);
+        assert!(test.contains("app_starts_and_dispatches_typed_background_work"));
+        assert!(test.contains("run-task"));
+        assert!(test.contains("SemanticExpectation::named(\"task-result\")"));
+        assert!(test.contains("within(Duration::from_secs(1))"));
+        let actions = headless_actions(&spec);
+        assert!(actions.contains("\"action\": \"activate\""));
+        assert!(actions.contains("\"expect\""));
+        assert!(actions.contains("\"timeout_ms\": 1000"));
+    }
+
+    #[test]
+    fn document_template_uses_direct_durable_bindings_and_undo_contract() {
+        let spec = AppSpec {
+            package_name: "notes".into(),
+            crate_name: "notes".into(),
+            title: "Notes".into(),
+            app_id: "dev.qos.notes".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Document,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("TextInput::from_document_string(\"document-title\")"));
+        assert!(source.contains("Text::from_document_string(\"document-title\")"));
+        assert!(source.contains("multiline(true)"));
+        let test = app_test(&spec);
+        assert!(test.contains("document_fields_are_synchronized_and_undoable"));
+        assert!(test.contains("state_mut().undo"));
+    }
+
+    #[test]
+    fn generated_readme_commands_work_inside_workspace_or_standalone() {
+        for workspace_member in [false, true] {
+            let spec = AppSpec {
+                package_name: "notes".into(),
+                crate_name: "notes".into(),
+                title: "Notes".into(),
+                app_id: "dev.qos.notes".into(),
+                ui_path: PathBuf::from("../../ui"),
+                workspace_member,
+                template: Template::Starter,
+            };
+            let readme = app_readme(&spec);
+            assert!(readme.contains("qos-dev check\n"));
+            assert!(readme.contains("qos-dev test\n"));
+            assert!(readme.contains("qos-dev dev\n"));
+            assert!(readme.contains("qos-dev run\n"));
+            assert!(readme.contains("qos-dev scenario run\n"));
+            assert!(readme.contains("qos-dev scenario run --artifacts target/scenario-artifacts"));
+            assert!(
+                readme
+                    .contains("qos-dev scenario run --audit --artifacts target/scenario-artifacts")
+            );
+            assert!(readme.contains("qos-dev shot\n"));
+            assert!(readme.contains("qos-dev inspect --actions tests/headless-actions.json"));
+            assert!(readme.contains(
+                "qos-dev inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json"
+            ));
+            assert!(readme.contains("qos-dev package\n"));
+            assert!(readme.contains("`cargo test` and `cargo run`"));
+        }
+    }
+
+    #[test]
+    fn every_template_generates_valid_rust_and_actions() {
+        for template in [
+            Template::Starter,
+            Template::Data,
+            Template::List,
+            Template::Tree,
+            Template::Graph,
+            Template::Async,
+            Template::Document,
+        ] {
+            let spec = AppSpec {
+                package_name: "demo".into(),
+                crate_name: "demo".into(),
+                title: "Demo".into(),
+                app_id: "dev.qos.demo".into(),
+                ui_path: PathBuf::from("../../ui"),
+                workspace_member: true,
+                template,
+            };
+            let actions: serde_json::Value =
+                serde_json::from_str(&headless_actions(&spec)).expect("valid action JSON");
+            assert!(actions.is_array());
+            assert!(!actions.as_array().expect("actions").is_empty());
+            qos_headless_schema::parse_actions(&headless_actions(&spec))
+                .expect("generated actions satisfy the runtime grammar");
+            syn::parse_file(&app_lib(&spec)).expect("generated library is valid Rust syntax");
+            syn::parse_file(&app_main(&spec)).expect("generated binary is valid Rust syntax");
+            let generated_test = app_test(&spec);
+            assert!(generated_test.contains("initial_accessibility_contract_is_clean"));
+            assert!(generated_test.contains("accessibility_audit"));
+            syn::parse_file(&generated_test).expect("generated test is valid Rust syntax");
+            let rendered = render(&spec).expect("render complete app");
+            let locale_registry = rendered
+                .iter()
+                .find(|(path, _)| path == Path::new("src/locales.rs"))
+                .expect("generated locale registry");
+            syn::parse_file(&locale_registry.1)
+                .expect("generated locale registry is valid Rust syntax");
+            if template == Template::Graph {
+                syn::parse_file(&screen_registry_source(&["main".into()]))
+                    .expect("generated screen registry is valid Rust syntax");
+            }
+        }
+    }
+
+    #[test]
+    fn ui_path_is_explicit_outside_a_checkout() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let error = resolve_ui_dir(temp.path(), None, None).unwrap_err();
+        assert!(error.to_string().contains("--ui-path"));
+
+        let ui = temp.path().join("toolkit-ui");
+        std::fs::create_dir(&ui).expect("ui dir");
+        std::fs::write(ui.join("Cargo.toml"), "[package]\nname='ui'\n").expect("manifest");
+        assert_eq!(
+            resolve_ui_dir(temp.path(), None, Some(Path::new("toolkit-ui"))).unwrap(),
+            ui.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn app_task_plan_discovers_generated_app_and_forwards_after_separator() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let descendant = destination.join("src/lib.rs");
+        let forwarded = vec![OsString::from("--shots"), OsString::from("preview.png")];
+
+        let plan = plan_app_task(&descendant, AppTask::Run, &forwarded).expect("run plan");
+        assert_eq!(plan.app_dir, destination.canonicalize().unwrap());
+        assert_eq!(
+            plan.args,
+            vec![
+                OsString::from("run"),
+                OsString::from("--manifest-path"),
+                destination.join("Cargo.toml").into_os_string(),
+                OsString::from("--"),
+                OsString::from("--shots"),
+                OsString::from("preview.png"),
+            ]
+        );
+
+        let test = plan_app_task(&destination, AppTask::Test, &[]).expect("test plan");
+        assert_eq!(test.args[0], "test");
+        assert!(!test.args.iter().any(|arg| arg == "--"));
+    }
+
+    #[test]
+    fn app_task_refuses_to_spawn_when_doctor_fails() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname='broken'\nversion='0.1.0'\n",
+        )
+        .expect("manifest");
+
+        let error = plan_app_task(temp.path(), AppTask::Run, &[]).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("app preflight failed"), "{message}");
+        assert!(message.contains("missing dependency `ui`"), "{message}");
+        assert!(message.contains("qos-app.toml"), "{message}");
+    }
+
+    #[test]
+    fn shot_plan_uses_standard_launch_flags_and_forwards_app_options() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("gallery");
+        create_app(request(destination.clone())).expect("create app");
+
+        let plan = plan_app_shot(
+            &destination.join("src"),
+            ShotRequest {
+                output: PathBuf::from("artifacts/dark.png"),
+                viewport: Some((1440, 900)),
+                scenario: Some("populated".into()),
+                forwarded: vec![OsString::from("--theme"), OsString::from("dark")],
+            },
+        )
+        .expect("shot plan");
+
+        assert_eq!(
+            &plan.args[3..],
+            [
+                OsString::from("--"),
+                OsString::from("--shots"),
+                OsString::from("artifacts/dark.png"),
+                OsString::from("--viewport"),
+                OsString::from("1440x900"),
+                OsString::from("--scenario"),
+                OsString::from("populated"),
+                OsString::from("--theme"),
+                OsString::from("dark"),
+            ]
+        );
+    }
+
+    #[test]
+    fn inspection_plan_builds_strict_payload_from_an_actions_file() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("inspector");
+        create_app(request(destination.clone())).expect("create app");
+        let actions = destination.join("tests/actions.json");
+        std::fs::write(
+            &actions,
+            r#"[{"perform":{"target":"name-input","action":"set_value","value":"Ada"}}]"#,
+        )
+        .expect("actions file");
+
+        let plan = plan_app_inspection(
+            &destination.join("src/lib.rs"),
+            InspectRequest {
+                output: PathBuf::from("artifacts/inspect.json"),
+                viewport: Some((1280, 800)),
+                actions: Some(PathBuf::from("tests/actions.json")),
+                dump: Some(PathBuf::from("artifacts/state.json")),
+                targets: Some(PathBuf::from("artifacts/targets.json")),
+                audit: true,
+                audit_report: Some(PathBuf::from("artifacts/audit.json")),
+            },
+        )
+        .expect("inspection plan");
+
+        assert_eq!(plan.args[3], "--");
+        assert_eq!(plan.args[4], "--headless-drive");
+        let payload: serde_json::Value =
+            serde_json::from_str(plan.args[5].to_str().expect("inspection payload is UTF-8"))
+                .expect("inspection payload JSON");
+        assert_eq!(payload["inspect"], "artifacts/inspect.json");
+        assert_eq!(payload["viewport"], serde_json::json!([1280, 800]));
+        assert_eq!(payload["dump"], "artifacts/state.json");
+        assert_eq!(payload["targets"], "artifacts/targets.json");
+        assert_eq!(payload["audit"], true);
+        assert_eq!(payload["audit_report"], "artifacts/audit.json");
+        assert_eq!(payload["actions"].as_array().map(Vec::len), Some(1));
+        assert_eq!(payload["actions"][0]["perform"]["target"], "name-input");
+    }
+
+    #[test]
+    fn inspection_plan_rejects_a_non_array_actions_file() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("inspector");
+        create_app(request(destination.clone())).expect("create app");
+        let actions = temp.path().join("actions.json");
+        std::fs::write(&actions, r#"{"actions":[]}"#).expect("actions file");
+
+        let error = plan_app_inspection(
+            &destination,
+            InspectRequest {
+                output: PathBuf::from("inspect.json"),
+                viewport: None,
+                actions: Some(actions),
+                dump: None,
+                targets: None,
+                audit: false,
+                audit_report: None,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must contain a JSON array"));
+    }
+
+    #[test]
+    fn package_spec_uses_manifest_entrypoint_and_cargo_package_name() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+
+        let spec = load_app_package_spec(destination.clone()).expect("package spec");
+        assert_eq!(spec.app_dir, destination);
+        assert_eq!(spec.cargo_package, "reading-list");
+        assert_eq!(
+            spec.entrypoints,
+            [("reading-list".into(), PathBuf::from("bin/reading-list"))]
+        );
+    }
+
+    #[test]
+    fn cargo_artifact_collection_is_scoped_to_the_app_manifest() {
+        let manifest = PathBuf::from("/workspace/demo/Cargo.toml");
+        let executable = PathBuf::from("/workspace/target/release/demo");
+        let line = serde_json::json!({
+            "reason": "compiler-artifact",
+            "manifest_path": manifest,
+            "target": {"name": "demo", "kind": ["bin"]},
+            "executable": executable,
+        })
+        .to_string();
+        let mut artifacts = HashMap::new();
+        collect_cargo_message(&line, &manifest, &mut artifacts);
+        assert_eq!(artifacts.get("demo"), Some(&executable));
+
+        let dependency = serde_json::json!({
+            "reason": "compiler-artifact",
+            "manifest_path": "/workspace/dependency/Cargo.toml",
+            "target": {"name": "other", "kind": ["bin"]},
+            "executable": "/workspace/target/release/other",
+        })
+        .to_string();
+        collect_cargo_message(&dependency, &manifest, &mut artifacts);
+        assert!(!artifacts.contains_key("other"));
+    }
+
+    #[test]
+    fn package_refuses_to_replace_output_before_building() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        std::fs::create_dir(destination.join("dist")).expect("dist directory");
+        std::fs::write(destination.join("dist/reading-list.qpkg"), "existing")
+            .expect("existing package");
+
+        let error = package_app(
+            &destination.join("src/lib.rs"),
+            &PackageRequest {
+                output: None,
+                identity: None,
+                profile: "release".into(),
+                target: None,
+                features: Vec::new(),
+                no_default_features: false,
+                force: false,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("pass --force"));
+    }
+
+    #[test]
+    fn payload_overlay_copies_nested_files_and_rejects_symlinks() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        std::fs::create_dir_all(source.join("share/demo")).expect("source tree");
+        std::fs::create_dir(&destination).expect("destination");
+        std::fs::write(source.join("share/demo/message.txt"), "hello").expect("asset");
+        copy_payload_tree(&source, &destination).expect("copy overlay");
+        assert_eq!(
+            std::fs::read_to_string(destination.join("share/demo/message.txt")).expect("copy"),
+            "hello"
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("share/demo/message.txt", source.join("link"))
+                .expect("symlink");
+            let error = copy_payload_tree(&source, &destination).unwrap_err();
+            assert!(error.to_string().contains("unsupported symlink"));
+        }
+    }
+
+    #[test]
+    fn package_profile_names_are_safe_cargo_arguments() {
+        assert!(validate_profile_name("release").is_ok());
+        assert!(validate_profile_name("distribution-fast_2").is_ok());
+        for invalid in ["", "../release", "release build", "debug;echo"] {
+            assert!(
+                validate_profile_name(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_loop_watches_app_and_local_ui_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("watchable");
+        create_app(request(destination.clone())).expect("create app");
+
+        let roots = dev_watch_roots(&destination, true).expect("app and UI watch roots");
+        assert_eq!(roots[0], destination.canonicalize().unwrap());
+        assert_eq!(
+            roots[1],
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../ui")
+                .canonicalize()
+                .unwrap()
+        );
+
+        let app_only = dev_watch_roots(&destination, false).expect("app-only roots");
+        assert_eq!(app_only, roots[..1]);
+
+        std::fs::create_dir_all(destination.join("assets/icons")).expect("asset directories");
+        std::fs::create_dir_all(destination.join("target/debug/deps")).expect("target directories");
+        std::fs::create_dir_all(destination.join(".git/hooks")).expect("Git directories");
+        let watched = source_watch_directories(&destination).expect("source watch directories");
+        assert!(watched.contains(&destination));
+        assert!(watched.contains(&destination.join("src")));
+        assert!(watched.contains(&destination.join("assets/icons")));
+        assert!(
+            !watched
+                .iter()
+                .any(|path| path.starts_with(destination.join("target")))
+        );
+        assert!(
+            !watched
+                .iter()
+                .any(|path| path.starts_with(destination.join(".git")))
+        );
+    }
+
+    #[test]
+    fn dev_restart_filter_ignores_build_and_editor_noise() {
+        let root = PathBuf::from("/workspace/apps/demo");
+        let roots = [root.clone()];
+        let changed = |path: &str| {
+            Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(path))
+        };
+
+        assert!(event_requires_restart(&changed("src/main.rs"), &roots));
+        assert!(event_requires_restart(&changed("assets/icon.png"), &roots));
+        assert!(event_requires_restart(
+            &changed("assets/new-directory"),
+            &roots
+        ));
+        assert!(!event_requires_restart(
+            &changed("target/debug/demo"),
+            &roots
+        ));
+        assert!(!event_requires_restart(&changed("Cargo.lock"), &roots));
+        assert!(!event_requires_restart(&changed("src/main.rs.swp"), &roots));
+        assert!(!event_requires_restart(
+            &Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.clone()),
+            &roots
+        ));
+
+        let access = Event::new(EventKind::Access(notify::event::AccessKind::Any))
+            .add_path(root.join("src/main.rs"));
+        assert!(!event_requires_restart(&access, &roots));
+    }
+
+    #[test]
+    fn dev_build_drain_detects_a_newer_edit_without_reacting_to_noise() {
+        let root = PathBuf::from("/workspace/apps/demo");
+        let roots = [root.clone()];
+        let changed = |path: &str| {
+            Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(path))
+        };
+        let (sender, events) = mpsc::channel::<notify::Result<Event>>();
+        sender
+            .send(Ok(changed("target/debug/demo")))
+            .expect("queue build noise");
+        sender
+            .send(Ok(changed("src/app.rs")))
+            .expect("queue newer source edit");
+        drop(sender);
+
+        let mut observed = Vec::new();
+        assert!(drain_pending_restart_events(&events, &roots, |event| {
+            observed.extend(event.paths.iter().cloned());
+        }));
+        assert_eq!(observed.len(), 2, "the watcher observes every queued event");
+
+        let (sender, events) = mpsc::channel::<notify::Result<Event>>();
+        sender
+            .send(Ok(changed("Cargo.lock")))
+            .expect("queue ignored lock update");
+        drop(sender);
+        assert!(!drain_pending_restart_events(&events, &roots, |_| {}));
+    }
+
+    #[test]
+    fn dev_candidate_build_selects_default_binary_and_reports_failures() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let app = temp.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let manifest = app.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndefault-run = \"desktop\"\n",
+        )
+        .unwrap();
+        let manifest = manifest.canonicalize().unwrap();
+        let executable = app.join("target/debug/desktop");
+        let message = serde_json::json!({
+            "reason": "compiler-artifact",
+            "manifest_path": manifest,
+            "target": {"name": "desktop", "kind": ["bin"]},
+            "executable": executable,
+        });
+        let cargo = app.join("fake-cargo");
+        let argument_log = app.join("cargo-args.txt");
+        std::fs::write(
+            &cargo,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'QOS_JSON'\n{message}\nQOS_JSON\n",
+                argument_log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plan = CargoPlan {
+            app_dir: app.clone(),
+            program: cargo.into_os_string(),
+            args: Vec::new(),
+        };
+        assert_eq!(build_dev_candidate(&plan).unwrap(), executable);
+        assert_eq!(dev_binary_name(&manifest).unwrap(), "desktop");
+        let arguments = std::fs::read_to_string(argument_log).unwrap();
+        assert!(arguments.contains("--bin\ndesktop\n"), "{arguments}");
+
+        let failing_cargo = app.join("failing-cargo");
+        std::fs::write(&failing_cargo, "#!/bin/sh\nexit 9\n").unwrap();
+        std::fs::set_permissions(&failing_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = build_dev_candidate(&CargoPlan {
+            app_dir: app,
+            program: failing_cargo.into_os_string(),
+            args: Vec::new(),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("exit status: 9"), "{error:#}");
+    }
+
+    #[test]
+    fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output = temp.path().join("invocation.txt");
+        let executable = temp.path().join("app-bin");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$1\" \"$2\" > '{}'\n",
+                output.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = spawn_dev_binary(
+            temp.path(),
+            &executable,
+            &[OsString::from("--document"), OsString::from("A file.qdoc")],
+        )
+        .unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            format!("{}\n--document\nA file.qdoc\n", temp.path().display())
+        );
+    }
+}

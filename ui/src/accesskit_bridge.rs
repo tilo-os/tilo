@@ -65,6 +65,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::a11y::{AccessNode, Action, FnvHasher, Role};
 use crate::widget::Widget;
 
+type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
+type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+
 /// Reserved so no widget can collide with it: widget ids are offset by +1
 /// from their taffy node id, and structural fallback ids are large offsets
 /// — see [`widget_node_id`].
@@ -285,6 +288,10 @@ pub enum A11yTarget {
         /// for any node that sets an explicit key. Handing a positional
         /// implementor a key it never had is a silent mis-target.
         ordinal_path: Vec<usize>,
+        /// Opaque stable model identity supplied by the synthetic node. This
+        /// lets virtual collections route actions by record identity even
+        /// when the row moved since the last frame.
+        semantic_target: Option<String>,
     },
 }
 
@@ -345,17 +352,20 @@ fn search_synthetic(
 
     let mut key_path = Vec::new();
     let mut ordinal_path = Vec::new();
+    let mut semantic_target = None;
     find_synthetic_path(
         &access_node.children,
         owner_id,
         wanted,
         &mut key_path,
         &mut ordinal_path,
+        &mut semantic_target,
     )
     .then_some(A11yTarget::Synthetic {
         owner,
         key_path,
         ordinal_path,
+        semantic_target,
     })
 }
 
@@ -375,13 +385,18 @@ fn find_synthetic_path(
     wanted: AkNodeId,
     keys: &mut Vec<u64>,
     ordinals: &mut Vec<usize>,
+    semantic_target: &mut Option<String>,
 ) -> bool {
     for (ordinal, child) in children.iter().enumerate() {
         let key = child.key.unwrap_or(ordinal as u64);
         let id = synthetic_node_id(parent_id, key);
         keys.push(key);
         ordinals.push(ordinal);
-        if id == wanted || find_synthetic_path(&child.children, id, wanted, keys, ordinals) {
+        if id == wanted {
+            semantic_target.clone_from(&child.action_target);
+            return true;
+        }
+        if find_synthetic_path(&child.children, id, wanted, keys, ordinals, semantic_target) {
             return true;
         }
         keys.pop();
@@ -586,17 +601,28 @@ fn visit(
         apply_semantics(&mut ak, &access_node, w, scale);
 
         let mut my_children: Vec<AkNodeId> = Vec::new();
-        for child in w.children() {
-            visit(
-                child,
-                ptr_to_taffy,
-                scale,
-                focused,
-                walk_counter,
-                nodes,
-                &mut my_children,
-                active_descendant,
-            );
+        let mut hosted = HostedByIndex::new();
+        for (child_index, child) in w.children().into_iter().enumerate() {
+            if let Some(mut child_path) = w.accessibility_child_path(child_index)
+                && !child_path.is_empty()
+            {
+                let parent_index = child_path.remove(0);
+                hosted
+                    .entry(parent_index)
+                    .or_default()
+                    .push((child_path, child));
+            } else {
+                visit(
+                    child,
+                    ptr_to_taffy,
+                    scale,
+                    focused,
+                    walk_counter,
+                    nodes,
+                    &mut my_children,
+                    active_descendant,
+                );
+            }
         }
         // Synthetic children with no backing widget — a table's rows/cells, a
         // timeline's clips. Only the widget that actually holds keyboard focus
@@ -608,6 +634,11 @@ fn visit(
                 id,
                 ordinal,
                 owns_focus,
+                hosted.remove(&ordinal).unwrap_or_default(),
+                ptr_to_taffy,
+                scale,
+                focused,
+                walk_counter,
                 nodes,
                 &mut my_children,
                 active_descendant,
@@ -674,11 +705,20 @@ fn visit(
 /// `in_focused_widget` says whether the owning widget holds keyboard focus;
 /// only then may a node marked [`focused`](crate::a11y::AccessState::focused)
 /// claim `active_descendant`. The first such node in document order wins.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the keyed semantic walk threads geometry, hosted retained children, focus, ids, and output accumulators together so the exported and action-resolver trees cannot drift"
+)]
 fn visit_synthetic(
     access: &AccessNode,
     parent_id: AkNodeId,
     ordinal: usize,
     in_focused_widget: bool,
+    hosted: Vec<HostedWidget<'_>>,
+    ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
+    scale: f64,
+    focused: Option<TaffyNodeId>,
+    walk_counter: &mut u64,
     nodes: &mut Vec<(AkNodeId, AkNode)>,
     parent_children: &mut Vec<AkNodeId>,
     active_descendant: &mut Option<AkNodeId>,
@@ -687,22 +727,53 @@ fn visit_synthetic(
 
     let mut ak = AkNode::new(map_role(access.role));
     apply_semantics_common(&mut ak, access);
+    apply_synthetic_bounds(&mut ak, access, scale);
 
     if in_focused_widget && access.state.focused && active_descendant.is_none() {
         *active_descendant = Some(id);
     }
 
     let mut my_children: Vec<AkNodeId> = Vec::new();
-    for (i, child) in access.children.iter().enumerate() {
-        visit_synthetic(
-            child,
-            id,
-            i,
-            in_focused_widget,
-            nodes,
-            &mut my_children,
-            active_descendant,
-        );
+    let direct = hosted
+        .iter()
+        .filter(|(path, _)| path.is_empty())
+        .map(|(_, child)| *child)
+        .collect::<Vec<_>>();
+    if direct.is_empty() {
+        let mut nested = HostedByIndex::new();
+        for (mut path, child) in hosted {
+            let child_index = path.remove(0);
+            nested.entry(child_index).or_default().push((path, child));
+        }
+        for (i, child) in access.children.iter().enumerate() {
+            visit_synthetic(
+                child,
+                id,
+                i,
+                in_focused_widget,
+                nested.remove(&i).unwrap_or_default(),
+                ptr_to_taffy,
+                scale,
+                focused,
+                walk_counter,
+                nodes,
+                &mut my_children,
+                active_descendant,
+            );
+        }
+    } else {
+        for child in direct {
+            visit(
+                child,
+                ptr_to_taffy,
+                scale,
+                focused,
+                walk_counter,
+                nodes,
+                &mut my_children,
+                active_descendant,
+            );
+        }
     }
     ak.set_children(my_children);
 
@@ -720,6 +791,17 @@ fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: 
             r.y0 * scale,
             r.x1 * scale,
             r.y1 * scale,
+        ));
+    }
+}
+
+fn apply_synthetic_bounds(ak: &mut AkNode, access: &AccessNode, scale: f64) {
+    if let Some(bounds) = access.bounds {
+        ak.set_bounds(AkRect::new(
+            bounds.x0 * scale,
+            bounds.y0 * scale,
+            bounds.x1 * scale,
+            bounds.y1 * scale,
         ));
     }
 }
@@ -755,6 +837,10 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     }
 
     apply_state(ak, access);
+
+    if access.action_target.is_some() && access.bounds.is_some() && !access.state.disabled {
+        ak.add_action(AkAction::ScrollIntoView);
+    }
 
     if access.state.focusable && !access.state.disabled {
         ak.add_action(AkAction::Focus);
@@ -1687,6 +1773,7 @@ mod tests {
                 // coincides with the key path — spelled out rather than
                 // assumed, because they diverge as soon as one is set.
                 ordinal_path: vec![1],
+                semantic_target: None,
             }),
         );
         // A cell: row, then column.
@@ -1699,6 +1786,7 @@ mod tests {
                 // coincides with the key path — spelled out rather than
                 // assumed, because they diverge as soon as one is set.
                 ordinal_path: vec![1, 0],
+                semantic_target: None,
             }),
         );
         assert_eq!(
@@ -1710,6 +1798,7 @@ mod tests {
                 // coincides with the key path — spelled out rather than
                 // assumed, because they diverge as soon as one is set.
                 ordinal_path: vec![0, 1],
+                semantic_target: None,
             }),
         );
         // The widget itself and the window root still resolve to themselves.
@@ -1757,6 +1846,7 @@ mod tests {
                 // coincides with the key path — spelled out rather than
                 // assumed, because they diverge as soon as one is set.
                 ordinal_path: vec![0, 1],
+                semantic_target: None,
             }),
             "keyboard target and reader focus must be the same element"
         );

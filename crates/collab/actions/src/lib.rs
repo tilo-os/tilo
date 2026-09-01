@@ -96,6 +96,7 @@ pub mod context;
 pub mod door;
 pub mod envelope;
 pub mod executor;
+pub mod optimistic;
 pub mod params;
 pub mod registry;
 pub mod resource;
@@ -112,6 +113,7 @@ pub use executor::{
     apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
     dispatch_with_context, replay,
 };
+pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 pub use registry::ActionRegistry;
 pub use resource::{
