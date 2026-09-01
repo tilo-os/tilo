@@ -89,6 +89,12 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      # Main can add a required check tool one commit before the weekly builder
+      # refresh has published it. Keep that transition self-healing; once the
+      # refreshed image contains jq this is an inexpensive no-op.
+      - name: Ensure provenance test tooling
+        run: command -v jq >/dev/null || dnf install -y jq
+
       # These boundaries are mostly shell, image configuration, and workflow
       # policy, so Cargo's affected-package graph cannot select them. Keep the
       # cheap executable invariants on every PR instead of waiting for a release.
