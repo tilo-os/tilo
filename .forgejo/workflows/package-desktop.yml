@@ -128,12 +128,12 @@ jobs:
             arch: arm64
           - id: arch
             distro: arch
-            image: docker.io/menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
+            image: docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c
             revision: ""
             arch: amd64
           - id: arch
             distro: arch
-            image: docker.io/menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
+            image: docker.io/menci/archlinuxarm@sha256:e08f0be5d8da6c22c165026036508aabd91b004f972dd84799d76a7fdb911ccb
             revision: ""
             arch: arm64
           - id: nix
@@ -176,8 +176,11 @@ jobs:
           detail=none
           failure_file="dist/ci-output/${{ matrix.id }}-${{ matrix.arch }}/CI_FAILURE"
           if [[ -f $failure_file ]]; then
-            detail=$({ head -n 1 "$failure_file"; tail -n 3 "$failure_file"; } \
-              | tr '\n' ' ' | cut -c1-500)
+            detail=$({
+              head -n 1 "$failure_file"
+              grep -Ei 'error:|failed|not found|conflict|cannot ' "$failure_file" | tail -n 6 || true
+              tail -n 6 "$failure_file"
+            } | tr '\n' ' ' | cut -c1-1500)
           fi
           note_ref="refs/notes/qos-package-${{ matrix.id }}-${{ matrix.arch }}"
           git fetch origin "$note_ref:$note_ref" || true

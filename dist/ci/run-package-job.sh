@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run one packaging target in its own architecture-specific CI container.
-# The outer mode is invoked by Forgejo on the existing runner. ARM jobs copy a
-# pinned static QEMU interpreter into the target container, so they do not rely
-# on binfmt registration escaping the runner's own container namespace.
+# The outer mode is invoked by Forgejo on the existing runner. ARM jobs install
+# a pinned QEMU binfmt handler inside this same step before starting the target
+# container; a separate setup-action step lands in the wrong Kata namespace.
 set -euo pipefail
 
 usage() {
@@ -24,13 +24,9 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     mkdir -p "$output"
     log_dir=$(mktemp -d)
     container=
-    qemu_container=
     cleanup_container() {
         if [[ -n $container ]]; then
             docker rm --force "$container" >/dev/null 2>&1 || true
-        fi
-        if [[ -n $qemu_container ]]; then
-            docker rm --force "$qemu_container" >/dev/null 2>&1 || true
         fi
         rm -rf -- "$log_dir"
     }
@@ -46,20 +42,19 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     container_args=(-c "$inner_command")
     if [[ $arch == arm64 ]]; then
         qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-        if ! qemu_container=$(docker create --platform linux/amd64 "$qemu_image"); then
-            echo 'stage=create-qemu-helper status=1' > "$output/CI_FAILURE"
-            exit 1
+        binfmt_log=$log_dir/binfmt.log
+        set +e
+        docker run --rm --privileged --platform linux/amd64 \
+            "$qemu_image" --install arm64 2>&1 | tee "$binfmt_log"
+        binfmt_status=${PIPESTATUS[0]}
+        set -e
+        if (( binfmt_status != 0 )); then
+            {
+                printf 'stage=install-binfmt status=%s\n' "$binfmt_status"
+                tail -n 8 "$binfmt_log"
+            } > "$output/CI_FAILURE"
+            exit "$binfmt_status"
         fi
-        if ! docker cp "$qemu_container:/usr/bin/qemu-aarch64" "$log_dir/qemu-aarch64"; then
-            echo 'stage=extract-qemu status=1' > "$output/CI_FAILURE"
-            exit 1
-        fi
-        docker rm "$qemu_container" >/dev/null
-        qemu_container=
-        entrypoint=/qemu-aarch64
-        # This QEMU build preserves argv[0], so pass the target program twice:
-        # once as the executable and once as the guest's argv[0].
-        container_args=(/bin/sh /bin/sh -c "$inner_command")
     fi
 
     create_log=$log_dir/create.log
@@ -81,12 +76,6 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             tail -n 8 "$create_log"
         } > "$output/CI_FAILURE"
         exit "$container_status"
-    fi
-    if [[ $arch == arm64 ]]; then
-        if ! docker cp "$log_dir/qemu-aarch64" "$container:/qemu-aarch64"; then
-            echo 'stage=inject-qemu status=1' > "$output/CI_FAILURE"
-            exit 1
-        fi
     fi
     # docker cp works with Docker-in-Docker and socket-mounted runners where a
     # bind path inside the runner is not a real path from the daemon's view.
