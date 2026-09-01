@@ -125,6 +125,30 @@ fn main() -> std::process::ExitCode {
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
+    // Inspect process shape while startup is still single-threaded. Host
+    // packages pass an explicit installation context; deriving it from a
+    // distro name, desktop variable or backend would conflate independent
+    // facts and break on a different display manager.
+    let raw_args: Vec<String> = std::env::args().collect();
+    maybe_run_sandbox_exec(&raw_args);
+    let arg_refs: Vec<&str> = raw_args
+        .iter()
+        .skip(1)
+        .map(std::string::String::as_str)
+        .collect();
+    if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop {
+        match identity_provisioning::configure_host_identity_root() {
+            Ok(root) => eprintln!(
+                "qOS host session: device identity will be stored under {}",
+                root.display()
+            ),
+            Err(error) => {
+                eprintln!("error: cannot resolve host-session identity storage: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    }
+
     // Decide which GPU this session runs on before anything opens one — the
     // warmup thread below builds a wgpu context, and on a multi-GPU box its
     // adapter may disagree with what the compositor advertises to clients.
@@ -152,10 +176,6 @@ fn main() -> std::process::ExitCode {
             )
         });
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
-
-    // Landlock launcher shim: must short-circuit before any compositor setup.
-    let raw_args: Vec<String> = std::env::args().collect();
-    maybe_run_sandbox_exec(&raw_args);
 
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
@@ -223,8 +243,15 @@ fn main() -> std::process::ExitCode {
                 std::process::exit(1);
             }
             tracing::info!(
-                "no qOS identity found at {}; native compositor chrome will run first-login setup",
-                store.path().display()
+                "no qOS identity found at {}; native compositor chrome will run {} setup",
+                store.path().display(),
+                if compositor::parse_install_mode_from_args()
+                    == compositor::InstallMode::HostDesktop
+                {
+                    "the reduced host-session identity"
+                } else {
+                    "first-login"
+                }
             );
         }
         Ok(store) if provision_identity_requested => {
