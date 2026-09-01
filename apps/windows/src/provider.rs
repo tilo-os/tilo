@@ -745,7 +745,7 @@ fn catalogue_from_managed(
         .map(|application| {
             let installation = installations
                 .iter()
-                .find(|item| item.capsule_id == application.capsule_id);
+                .find(|item| application.capsule_id.as_deref() == Some(item.capsule_id.as_str()));
             app_from_managed(application, installation)
         })
         .collect::<Vec<_>>();
@@ -844,12 +844,27 @@ fn app_from_managed(
         route,
         recommended_route: route,
         runner: explanation.runner,
-        capsule: application.capsule_id,
-        prefix: "Private capsule · host path hidden".into(),
-        catalogue_source: explanation.catalogue_record.as_deref().map_or_else(
-            || "qOS safe default".to_string(),
-            |id| format!("qOS recipe · {id}"),
-        ),
+        capsule: if route == Route::Vm {
+            "Shared Windows appliance".into()
+        } else {
+            application
+                .capsule_id
+                .clone()
+                .unwrap_or_else(|| "Unavailable private capsule".into())
+        },
+        prefix: if route == Route::Vm {
+            "Guest-managed application data · no host capsule".into()
+        } else {
+            "Private capsule · host path hidden".into()
+        },
+        catalogue_source: if route == Route::Vm {
+            "Authenticated Windows guest catalogue".into()
+        } else {
+            explanation.catalogue_record.as_deref().map_or_else(
+                || "qOS safe default".to_string(),
+                |id| format!("qOS recipe · {id}"),
+            )
+        },
         confidence: match explanation.match_reason {
             MatchReason::DefaultWine => Confidence::Fallback,
             MatchReason::Executable | MatchReason::ProductPublisher => Confidence::Heuristic,
@@ -947,7 +962,7 @@ mod tests {
             app_id: "dev.qos.windows.editor".into(),
             display_name: "Editor".into(),
             publisher: "Vendor".into(),
-            capsule_id: "editor".into(),
+            capsule_id: None,
             program_id: "editor".into(),
             explanation: ExplainStatus {
                 route: RouteKind::Vm,
@@ -992,6 +1007,12 @@ mod tests {
             app.grants
                 .iter()
                 .any(|grant| grant.label == "Audio output" && !grant.enabled)
+        );
+        assert_eq!(app.capsule, "Shared Windows appliance");
+        assert!(app.prefix.contains("no host capsule"));
+        assert_eq!(
+            app.catalogue_source,
+            "Authenticated Windows guest catalogue"
         );
     }
 

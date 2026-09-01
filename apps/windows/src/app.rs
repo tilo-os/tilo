@@ -782,7 +782,11 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(info.x0 + PAD, info.y0 + 16.0),
-            &strings::t("windows-capsule-access"),
+            &strings::t(if app.route == Route::Vm {
+                "windows-appliance-access"
+            } else {
+                "windows-capsule-access"
+            }),
             14.0,
             theme.text_primary,
             TextWeight::Bold,
@@ -803,7 +807,11 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 71.0,
-            &strings::t("windows-capsule"),
+            &strings::t(if app.route == Route::Vm {
+                "windows-appliance"
+            } else {
+                "windows-capsule"
+            }),
             &app.capsule,
             theme,
         );
@@ -813,7 +821,11 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 96.0,
-            &strings::t("windows-private-data"),
+            &strings::t(if app.route == Route::Vm {
+                "windows-guest-storage"
+            } else {
+                "windows-private-data"
+            }),
             &app.prefix,
             theme,
         );
