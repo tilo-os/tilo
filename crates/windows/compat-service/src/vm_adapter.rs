@@ -8,6 +8,7 @@
 
 use compat_catalogue::Layer;
 use launcher::capabilities::CapabilityPlan;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{VmAvailability, VmDelegate, VmRouteRequest};
 
@@ -43,6 +44,29 @@ impl VmPortalAuthority for DenyAllVmPortalAuthority {
     ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError> {
         Ok(windows_vm::VmLaunchGrants::default())
     }
+}
+
+/// Lease broker for the app-focused SPICE fallback. That presentation cannot
+/// safely carry RDP redirectors, so it materializes an explicit empty lease
+/// instead of pretending requested host resources reached Windows.
+#[derive(Debug, Default)]
+pub struct DenyAllVmCapabilityBroker {
+    next: AtomicU64,
+}
+
+impl windows_vm::CapabilityBroker for DenyAllVmCapabilityBroker {
+    fn materialize(
+        &self,
+        _request: &windows_vm::LaunchRequest,
+    ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
+        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
+        Ok(windows_vm::BrokeredLaunch::deny_all(format!(
+            "spice-{}-{sequence}",
+            std::process::id()
+        )))
+    }
+
+    fn revoke(&self, _lease_id: &str) {}
 }
 
 /// Concrete delegate installed in qOS's privileged compatibility host.
@@ -95,6 +119,17 @@ where
                 "Ready for an explicit fallback launch using {}.",
                 self.presentation
             )),
+            Err(windows_vm::LaunchError::NotReady(state))
+                if matches!(
+                    state.phase,
+                    windows_vm::AppliancePhase::Installing { .. }
+                        | windows_vm::AppliancePhase::AwaitingGuestBridge
+                ) =>
+            {
+                VmAvailability::ready(
+                    "Prepared appliance; the next explicit fallback verifies the guest bridge.",
+                )
+            }
             Err(error) => VmAvailability::unavailable(error.to_string()),
         }
     }
@@ -157,6 +192,22 @@ mod tests {
         assert!(!grants.clipboard);
         assert!(!grants.microphone);
         assert!(grants.portal_documents.is_empty());
+    }
+
+    #[test]
+    fn app_focused_broker_materializes_an_explicit_empty_lease() {
+        use windows_vm::CapabilityBroker as _;
+        let broker = DenyAllVmCapabilityBroker::default();
+        let lease = broker
+            .materialize(&windows_vm::LaunchRequest {
+                workspace_id: "workspace".to_string(),
+                application_id: "published.app".to_string(),
+                grants: windows_vm::VmLaunchGrants::default(),
+            })
+            .unwrap();
+        lease.validate().unwrap();
+        assert!(!lease.network && !lease.clipboard && !lease.microphone);
+        assert!(lease.shares.is_empty());
     }
 
     #[test]

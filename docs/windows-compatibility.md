@@ -1,13 +1,14 @@
 # Windows compatibility: design target and status
 
-> **Status (2026-09): partial live implementation.** The catalogue,
+> **Status (2026-09): live implementation with explicit follow-up work.** The catalogue,
 > deterministic route resolver, capsule broker, authenticated compositor
 > session service, per-launch audio proxy, portal installer intake, and Windows
 > Apps lifecycle client are wired. Wine/UMU programs can be installed, listed,
 > launched, retried, unregistered, vendor-uninstalled, and deleted. The
-> privileged guest adapter, route-policy handoff, snapshots, migration/reset,
-> and failure-triggered fallback ordering remain
-> unavailable and are shown as such rather than simulated.
+> singleton VM delegate, pinned HTTPS guest bridge, and app-focused SPICE
+> fallback are composed by the session when the owner has provisioned Windows.
+> Route-policy mutation, snapshots, migration/reset, and automatic
+> failure-triggered fallback ordering remain unavailable and are shown as such.
 
 qOS is intended to present Windows programs as applications, not as prefixes,
 compatibility tools, or a second desktop. The target has three execution layers:
@@ -147,19 +148,20 @@ deterministic launch plan. A broker-managed ordered fallback plan, with an
 explicit decision recorded before advancing, is a target behavior rather than
 an automatic live flow.
 
-## The Windows appliance (design target)
+## The Windows appliance
 
-There is exactly one appliance per qOS user. It is a compatibility fallback,
-not an alternative session.
+There is exactly one appliance on the qOS system. It is a compatibility
+fallback, not an alternative session.
 
 Normal operation is headless:
 
 - a guest service publishes an allowlisted inventory of installed programs;
 - qOS creates program shortcuts from that inventory;
-- starting one uses a RemoteApp channel and adopts its individual surface into
-  the active qOS workspace;
-- closing the last program permits the appliance to suspend after a delay;
-- the Windows shell and desktop are not published.
+- the current Wayland session uses a clearly labelled, app-focused SPICE
+  surface and suppresses Explorer while the requested program runs;
+- the typed FreeRDP RAIL path is used only when qOS has a real RAIL-capable
+  local surface and the guest supports it;
+- the Windows desktop is not a normal application route.
 
 If RemoteApp publication or the guest service is unavailable, launch fails
 closed with repair and recovery actions. It does not reveal a desktop. A full
@@ -221,8 +223,9 @@ live service shows an unavailable/repair state. Further management targets are:
 - an explicit route override and a reset-to-catalogue action.
 
 Route-policy and remaining mutation controls stay disabled until they have a
-trusted action handoff. VM launch depends on the privileged authenticated
-guest adapter. Wine/Proton audio is available through the brokered,
+trusted action handoff. VM launch appears only when the provisioned singleton,
+owner-readable bridge authority, and authenticated guest are ready.
+Wine/Proton audio is available through the brokered,
 playback-only PipeWire/Pulse graph described above; microphone capture remains
 subject to the existing qOS microphone grant.
 
