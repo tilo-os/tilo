@@ -132,9 +132,9 @@ impl PeerSyncOverlay {
                 self.state.invite_for = None;
                 self.state.status = Some(format!("Invite failed: {error}"));
             }
-            (PeerSyncRequest::AcceptInvite(_), Ok(room)) => {
+            (PeerSyncRequest::AcceptInvite(_), Ok(workspace)) => {
                 self.state.connect_input = None;
-                self.state.status = Some(format!("Joined room {room}"));
+                self.state.status = Some(format!("Joined workspace {workspace}"));
             }
             (PeerSyncRequest::AcceptInvite(_), Err(error)) => {
                 self.state.status = Some(format!("Refused: {error}"));
@@ -684,7 +684,7 @@ fn draw_naming(
     );
     y = field.y1 + 12.0;
     let note = text.elide_to_width(
-        "The room will call them this, beside their cursor.",
+        "Shown beside their cursor throughout this workspace.",
         body,
         f64_to_f32(avail),
     );
