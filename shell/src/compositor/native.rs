@@ -6,11 +6,13 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
+use rand_core::{OsRng, RngCore};
 
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
@@ -1588,6 +1590,97 @@ fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
+/// Sequence for same-directory workspace-salt claim files. The final file is
+/// published with a hard link, so concurrent sessions can never replace the
+/// salt another session already used to mint durable object ids.
+static WORKSPACE_SALT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn read_workspace_salt(path: &Path) -> std::io::Result<u16> {
+    let bytes = std::fs::read(path)?;
+    let bytes: [u8; 2] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "workspace peer salt must contain exactly two bytes",
+        )
+    })?;
+    let salt = u16::from_be_bytes(bytes);
+    if salt == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "workspace peer salt must be non-zero",
+        ));
+    }
+    Ok(salt)
+}
+
+/// Load the namespace salt used for durable workspace object ids, creating a
+/// non-secret random one without creating or advertising a transport identity.
+/// Existing installations retain the salt derived from their existing device
+/// key on first migration.
+pub(super) fn load_or_create_workspace_salt(
+    state_path: &Path,
+    peer_key_path: &Path,
+) -> std::io::Result<u16> {
+    let parent = state_path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let path = parent.join("workspace-peer-salt");
+    if path.try_exists()? {
+        return read_workspace_salt(&path);
+    }
+
+    let salt = if peer_key_path.try_exists()? {
+        let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
+        crate::network::behaviour::peer_salt_from_keypair(&key).max(1)
+    } else {
+        let mut bytes = [0_u8; 2];
+        OsRng.fill_bytes(&mut bytes);
+        u16::from_be_bytes(bytes).max(1)
+    };
+
+    for _ in 0..16 {
+        let sequence = WORKSPACE_SALT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".workspace-peer-salt-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = file
+            .write_all(&salt.to_be_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        let claim = std::fs::hard_link(&temporary, &path);
+        let _ = std::fs::remove_file(&temporary);
+        match claim {
+            Ok(()) => {
+                std::fs::File::open(parent)?.sync_all()?;
+                return Ok(salt);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return read_workspace_salt(&path);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a workspace-salt claim file",
+    ))
+}
+
 /// Load this machine's desktop state and bring it up to the invariants
 /// later stages assume: a persist path, a durable room identity per
 /// workspace, and an owner per room — an unowned room has no administrators.
@@ -1615,14 +1708,24 @@ fn load_session_tree(
     // unsalted — identical on every machine, so two such peers joining one
     // room would collide. Re-seeding afterwards didn't help: it fixes ids minted *next*, not ones already in the tree.
     let mut peer_sync_possible = enable_peer_sync;
-    if enable_peer_sync {
-        match crate::network::behaviour::load_or_create_keypair(
-            &crate::shell::network::peer_key_path(),
-        ) {
+    let peer_key_path = crate::shell::network::peer_key_path();
+    match load_or_create_workspace_salt(&path, &peer_key_path) {
+        Ok(salt) => {
+            crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
+            tracing::info!("workspace id salt set to 0x{:04x}", salt);
+        }
+        Err(error) => {
+            peer_sync_possible = false;
+            tracing::error!(
+                %error,
+                "workspace id salt unavailable; peer sync stays off rather than using an unstable id namespace"
+            );
+        }
+    }
+    if peer_sync_possible {
+        match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
             Ok(kp) => {
-                let salt = crate::network::behaviour::peer_salt_from_keypair(&kp);
-                crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
-                tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+                tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
             }
             Err(e) => {
                 peer_sync_possible = false;
@@ -2050,7 +2153,45 @@ pub fn run() -> ! {
         (0, 0) => (1600, 900),
         size => size,
     };
-    let enable_peer_sync = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let peer_sync_requested = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let identity_store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "cannot resolve the user identity directory; refusing to start an identity-less desktop"
+            );
+            std::process::exit(1);
+        }
+    };
+    let onboarding_identity_dir =
+        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store) {
+            if let Some(identity_dir) = identity_store
+                .path()
+                .parent()
+                .map(std::path::Path::to_path_buf)
+            {
+                Some(identity_dir)
+            } else {
+                tracing::error!(
+                    path = %identity_store.path().display(),
+                    "identity path has no parent; refusing to start an identity-less desktop"
+                );
+                std::process::exit(1);
+            }
+        } else {
+            None
+        };
+    // A first-login compositor may allocate a non-secret workspace id
+    // namespace, but it must not create or advertise a transport identity
+    // before the person has completed the identity ceremony. Peer sync starts
+    // on the next session, after the certified device chain exists.
+    let enable_peer_sync = peer_sync_requested && onboarding_identity_dir.is_none();
+    if peer_sync_requested && !enable_peer_sync {
+        tracing::info!(
+            "peer-sync: deferred until the next session while first-login identity setup is active"
+        );
+    }
 
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
     // identity, owner and capability list all have to survive a restart.
@@ -2065,27 +2206,8 @@ pub fn run() -> ! {
     // cannot be a standalone winit app or a pre-graphical user unit. Host the
     // ceremony in trusted compositor chrome and withhold every desktop
     // affordance until it has produced a real identity.
-    match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
-        Ok(store) if crate::shell::identity_provisioning::needs_first_run_flow(&store) => {
-            match store.path().parent().map(std::path::Path::to_path_buf) {
-                Some(identity_dir) => frame_builder.enable_onboarding(identity_dir),
-                None => {
-                    tracing::error!(
-                        path = %store.path().display(),
-                        "identity path has no parent; refusing to start an identity-less desktop"
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::error!(
-                %error,
-                "cannot resolve the user identity directory; refusing to start an identity-less desktop"
-            );
-            std::process::exit(1);
-        }
+    if let Some(identity_dir) = onboarding_identity_dir {
+        frame_builder.enable_onboarding(identity_dir);
     }
     frame_builder.enable_configured_theme();
     if let Some(notice) = &state_notice {
@@ -3390,6 +3512,50 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn fresh_workspace_salt_does_not_create_a_transport_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_path = dir.path().join("config/state.json");
+        let peer_key_path = dir.path().join("system/device-key");
+
+        let first = load_or_create_workspace_salt(&state_path, &peer_key_path)
+            .expect("create workspace salt");
+        let second = load_or_create_workspace_salt(&state_path, &peer_key_path)
+            .expect("reload workspace salt");
+
+        assert_ne!(first, 0);
+        assert_eq!(first, second);
+        assert!(
+            !peer_key_path.exists(),
+            "allocating an object-id namespace must not mint a network identity"
+        );
+    }
+
+    #[test]
+    fn existing_transport_identity_keeps_its_historical_workspace_salt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_path = dir.path().join("config/state.json");
+        let peer_key_path = dir.path().join("system/device-key");
+        let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
+            .expect("create existing transport identity");
+        let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
+
+        let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
+            .expect("migrate historical salt");
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            read_workspace_salt(
+                &state_path
+                    .parent()
+                    .expect("fixture state path has a parent")
+                    .join("workspace-peer-salt"),
+            )
+            .expect("read persisted salt"),
+            expected
+        );
+    }
 
     #[test]
     fn onboarding_blocks_every_client_input_route() {
