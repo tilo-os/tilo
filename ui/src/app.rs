@@ -73,6 +73,25 @@ fn scroll_opt_disabled() -> bool {
     *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SCROLL_OPT").is_ok_and(|s| !s.is_empty()))
 }
 
+/// Whether an animation request should keep the event loop on its 60 Hz pump.
+/// Reduced-motion widgets paint their settled state without an animation
+/// redraw, so their raw demand must not keep an otherwise-idle app awake.
+const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
+    needs_frame && !reduce_motion
+}
+
+#[cfg(test)]
+mod animation_pump_tests {
+    use super::animation_pump_needed;
+
+    #[test]
+    fn reduced_motion_does_not_keep_the_idle_loop_awake() {
+        assert!(animation_pump_needed(true, false));
+        assert!(!animation_pump_needed(true, true));
+        assert!(!animation_pump_needed(false, false));
+    }
+}
+
 fn next_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -4451,7 +4470,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // own needs draining — a live collab socket, or a root still
         // wanting another frame.
         let fast_pump = app.collab_manager.is_connected()
-            || needs_frame
+            // A widget may keep reporting animation demand until it receives
+            // another paint. Under reduced motion we intentionally suppress
+            // that paint above, so counting the raw flag here would leave an
+            // otherwise-idle app waking at 60 Hz forever.
+            || animation_pump_needed(needs_frame, app.theme.reduce_motion)
             || tooltip_pending
             || typing_active
             || scheduled_due;
@@ -5699,9 +5722,10 @@ mod focus_trap_tests {
         let (mut app, _open) = host_app();
         app.init_layout();
         assert!(!app.focus_trap_active, "no trap while the modal is closed");
-        assert!(
-            app.focusable_order.len() >= 3,
-            "all focusables reachable when nothing traps"
+        assert_eq!(
+            app.focusable_order.len(),
+            2,
+            "closed modal controls stay out of the background focus order"
         );
     }
 
