@@ -105,6 +105,7 @@ members = [
     "apps/code_editor",
     "apps/contacts",
     "apps/containers",
+    "apps/windows",
     "apps/db_client",
     "apps/diffmerge",
     "apps/disks",
