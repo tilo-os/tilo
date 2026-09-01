@@ -210,7 +210,10 @@ mod tests {
             ),
         );
         let changes = doc.get_changes(&[]);
-        assert_eq!(changes.last().map(|change| change.actor_id()), Some(&actor));
+        assert_eq!(
+            changes.last().map(automerge::Change::actor_id),
+            Some(&actor)
+        );
     }
 
     #[test]

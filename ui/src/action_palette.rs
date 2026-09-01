@@ -58,7 +58,7 @@ const PER_GROUP_CAP: usize = 8;
 #[derive(Clone)]
 enum RowResolution {
     /// An exported action — dispatch through `qos_actions`.
-    Dispatch(ActionKind),
+    Dispatch(Box<ActionKind>),
     /// A search-provider hit — hand the opaque id back to the app to navigate.
     Navigate(String),
 }
@@ -288,23 +288,25 @@ impl ActionPalette {
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
         match self.index.get(id).cloned() {
-            Some(RowResolution::Dispatch(ActionKind::Immediate { encoded, context })) => {
-                self.pending_dispatch = Some((encoded, context));
-                self.open = false;
-            }
-            Some(RowResolution::Dispatch(ActionKind::Prompted {
-                prompt,
-                build,
-                context,
-            })) => {
-                // Repurpose the field to collect the argument; clear the result
-                // list so only the prompt shows.
-                self.field = SearchField::new();
-                self.field.set_placeholder(&prompt);
-                self.field.set_focused(true);
-                self.results.set_groups(Vec::new());
-                self.arg = Some(ArgState { build, context });
-            }
+            Some(RowResolution::Dispatch(kind)) => match *kind {
+                ActionKind::Immediate { encoded, context } => {
+                    self.pending_dispatch = Some((encoded, context));
+                    self.open = false;
+                }
+                ActionKind::Prompted {
+                    prompt,
+                    build,
+                    context,
+                } => {
+                    // Repurpose the field to collect the argument; clear the result
+                    // list so only the prompt shows.
+                    self.field = SearchField::new();
+                    self.field.set_placeholder(&prompt);
+                    self.field.set_focused(true);
+                    self.results.set_groups(Vec::new());
+                    self.arg = Some(ArgState { build, context });
+                }
+            },
             Some(RowResolution::Navigate(target)) => {
                 self.pending_nav = Some(target);
                 self.open = false;
@@ -356,7 +358,7 @@ impl ActionPalette {
                     context,
                 },
             };
-            index.insert(fa.key.clone(), RowResolution::Dispatch(kind));
+            index.insert(fa.key.clone(), RowResolution::Dispatch(Box::new(kind)));
             rows.push(r);
         }
 
