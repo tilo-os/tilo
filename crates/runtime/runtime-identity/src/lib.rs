@@ -111,6 +111,15 @@ pub mod wire {
         CollaborationJoin {
             workspace_id: String,
         },
+        /// Sign a pre-constructed `collab_types::SignedOp` only after the
+        /// workspace-bound broker verifies its route, certified device author,
+        /// document payload kind, policy class, timestamp, and live role.
+        CollaborationOp {
+            workspace_id: String,
+            app_id: String,
+            record_id: String,
+            unsigned_op: Vec<u8>,
+        },
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -997,6 +1006,41 @@ impl SigningIdentity {
         }
     }
 
+    /// Ask the workspace-bound identity broker to authorize and sign one
+    /// typed collaboration document operation. The broker parses the complete
+    /// unsigned envelope and checks that its route-derived artifact, author,
+    /// operation class, timestamp, and typed payload match this launch before
+    /// the certified device key signs it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
+    /// workspace-bound broker connection, the route or operation is invalid,
+    /// the current role cannot edit, or the device is untrusted/revoked.
+    pub fn sign_collaboration_op(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => sign_collaboration_op_via_broker(
+                stream,
+                workspace_id,
+                app_id,
+                record_id,
+                unsigned_op,
+            ),
+            SigningSource::Local(_) | SigningSource::Broker(_) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "certified collaboration operations require the workspace identity service",
+                )))
+            }
+        }
+    }
+
     fn sign_local(&self, message: &[u8]) -> io::Result<[u8; 64]> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
@@ -1130,6 +1174,28 @@ fn sign_collaboration_join_via_broker(
     read_signature_response(&mut stream)
 }
 
+fn sign_collaboration_op_via_broker(
+    stream: &Mutex<UnixStream>,
+    workspace_id: &str,
+    app_id: &str,
+    record_id: &str,
+    unsigned_op: &[u8],
+) -> Result<[u8; 64], NotAvailable> {
+    let mut stream = stream.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
+    write_frame(
+        &mut stream,
+        &wire::Request::CollaborationOp {
+            workspace_id: workspace_id.to_string(),
+            app_id: app_id.to_string(),
+            record_id: record_id.to_string(),
+            unsigned_op: unsigned_op.to_vec(),
+        },
+    )?;
+    read_signature_response(&mut stream)
+}
+
 fn read_signature_response(stream: &mut UnixStream) -> Result<[u8; 64], NotAvailable> {
     match read_frame::<wire::Response>(stream)? {
         wire::Response::Signature(bytes) if bytes.len() == 64 => {
@@ -1155,9 +1221,15 @@ fn write_frame<T: serde::Serialize>(
     stream: &mut UnixStream,
     value: &T,
 ) -> Result<(), NotAvailable> {
-    let bytes = serde_json::to_vec(value).map_err(|error| {
+    let bytes = postcard::to_allocvec(value).map_err(|error| {
         NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
     })?;
+    if bytes.len() > MAX_IDENTITY_FRAME_BYTES {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity frame exceeds 64 MiB",
+        )));
+    }
     let len = u32::try_from(bytes.len()).map_err(|_| {
         NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1174,18 +1246,24 @@ fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result
     let mut len = [0_u8; 4];
     stream.read_exact(&mut len)?;
     let len = u32::from_le_bytes(len) as usize;
-    if len > 1024 * 1024 {
+    if len > MAX_IDENTITY_FRAME_BYTES {
         return Err(NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::InvalidData,
-            "identity frame exceeds 1 MiB",
+            "identity frame exceeds 64 MiB",
         )));
     }
     let mut bytes = vec![0_u8; len];
     stream.read_exact(&mut bytes)?;
-    serde_json::from_slice(&bytes).map_err(|error| {
+    postcard::from_bytes(&bytes).map_err(|error| {
         NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
     })
 }
+
+/// Bound app-controlled broker traffic while allowing real document
+/// snapshots. Postcard keeps byte vectors compact; the preceding JSON wire
+/// represented every byte as a decimal number and hit its 1 MiB cap much
+/// earlier than the underlying document did.
+const MAX_IDENTITY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Same as [`load`] but reads from a caller-specified path — for tests, or
 /// apps that resolve the identity path themselves.
@@ -1392,6 +1470,32 @@ fn _static_no_serialize() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_frames_keep_multi_megabyte_document_bytes_compact() {
+        let (mut writer, mut reader) = UnixStream::pair().expect("socket pair");
+        let document = vec![0xa5; 2 * 1024 * 1024];
+        let sent = document.clone();
+        let sender = std::thread::spawn(move || {
+            write_frame(
+                &mut writer,
+                &wire::Request::CollaborationOp {
+                    workspace_id: "workspace".into(),
+                    app_id: "dev.qos.notes".into(),
+                    record_id: "record".into(),
+                    unsigned_op: sent,
+                },
+            )
+            .expect("compact action frame");
+        });
+        let wire::Request::CollaborationOp { unsigned_op, .. } =
+            read_frame::<wire::Request>(&mut reader).expect("action frame round trip")
+        else {
+            panic!("wrong request variant");
+        };
+        sender.join().expect("writer thread");
+        assert_eq!(unsigned_op, document);
+    }
 
     fn clear_env() {
         // SAFETY: tests in this module all touch QOS_USER_IDENTITY

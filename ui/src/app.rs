@@ -1277,6 +1277,30 @@ impl App {
         }
     }
 
+    fn apply_signed_document_envelope(&mut self, envelope: &collab_types::SignedOp) {
+        let applied = match collab_types::DocumentMutation::decode(&envelope.payload) {
+            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
+                if let Ok(mut incoming) = State::load(&data) {
+                    let _ = self.state.doc.merge(&mut incoming.doc);
+                    true
+                } else {
+                    false
+                }
+            }
+            Ok(collab_types::DocumentMutation::Incremental(data)) => {
+                self.state.load_incremental(&data).is_ok()
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
+                false
+            }
+        };
+        if applied {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+    }
+
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
@@ -1333,7 +1357,8 @@ impl App {
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
-                CollabEvent::SignedCRDTIncremental { envelope, .. } => {
+                CollabEvent::SignedCRDTIncremental { envelope, .. }
+                | CollabEvent::SignedCRDTUpdate { envelope, .. } => {
                     // The broker already validated the envelope (signature +
                     // role table + replay defence); the toolkit trusts it.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
@@ -1343,9 +1368,7 @@ impl App {
                             envelope.payload.len()
                         );
                     }
-                    let _ = self.state.load_incremental(&envelope.payload);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
+                    self.apply_signed_document_envelope(&envelope);
                 }
                 CollabEvent::ScrollbackBatch {
                     artifact: _,
@@ -1358,10 +1381,8 @@ impl App {
                         crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
-                        let _ = self.state.load_incremental(&envelope.payload);
+                        self.apply_signed_document_envelope(&envelope);
                     }
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
                 }
             }
         }
@@ -1451,9 +1472,9 @@ impl App {
                     self.needs_sync = true;
                 }
             }
-            CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                let _ = self.state.load_incremental(&envelope.payload);
-                self.needs_sync = true;
+            CollabEvent::SignedCRDTIncremental { envelope, .. }
+            | CollabEvent::SignedCRDTUpdate { envelope, .. } => {
+                self.apply_signed_document_envelope(&envelope);
             }
             _ => {}
         }
