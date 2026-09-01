@@ -398,16 +398,22 @@ math). A `ui::format` test asserts the unit label matches its base
   (`search_type.rs:compact_count`, `backend/live.rs:human_count`,
   `app/render.rs:human_count`) → `ui::format::compact_count`
 
-**Remaining adopters — checklist for follow-up** (each is a straight swap to the
-matching `ui::format` fn + delete the local copy; adjust the app's own test
-expectations to the IEC/canonical output):
+**Remaining adopters — checklist for follow-up** (each true equivalent is a
+straight swap to the matching `ui::format` fn + deletion of the local copy):
 
-- byte-size (9): `api_tester model.rs:human_size`, `imager model.rs:fmt_size`,
-  `maps app.rs:fmt_bytes`, `camera app.rs:human_size`,
-  `chat render_chat.rs:human_size`, `disks model.rs:fmt_size`,
-  `file-explorer model.rs:human_size`, `hex_editor view.rs:human_size`,
-  `monitor model.rs:fmt_bytes` — all base-1024, so all currently mis-label as
-  `KB/MB/GB`; `ui::format::bytes` fixes each.
+- [x] byte-size, base-1024 (5): `api_tester model.rs:human_size`, `maps
+  app.rs:fmt_bytes`, `chat render_chat.rs:human_size`, `hex_editor
+  view.rs:human_size`, `monitor model.rs:fmt_bytes` → `ui::format::bytes`. The
+  four copies that mislabeled binary values as `KB/MB/GB` now use canonical IEC
+  units; Monitor already used the correct labels.
+- [ ] byte-size, base-1000 (4): `imager model.rs:fmt_size`, `camera
+  app.rs:human_size`, `disks model.rs:fmt_size`, `file-explorer
+  model.rs:human_size`. These were incorrectly classified as base-1024 in the
+  original survey. Imager and Disks deliberately show vendor-style decimal
+  storage sizes, File Explorer explicitly selects `humansize::DECIMAL`, and
+  Camera also divides by 1000. Their precision and zero-value conventions do
+  not exactly match `ui::format::bytes_si`, so they remain until that API can
+  preserve the caller-visible formatting rather than changing it incidentally.
 - timecode (5): `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`,
   `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`.
 - compact-count (3): `tube util.rs:human_count`, inline in `monitor`,
