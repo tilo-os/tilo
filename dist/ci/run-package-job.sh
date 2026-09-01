@@ -18,14 +18,6 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     revision=${4:-}
     case "$arch" in amd64|arm64) ;; *) usage ;; esac
     execution_arch=$arch
-    if [[ $distro == nix && $arch == arm64 ]]; then
-        # qemu-user/PRoot is reliable for install-testing the FHS packages, but
-        # Nix's large store realization is repeatedly SIGKILLed inside it even
-        # on an otherwise idle 56 GiB runner. Nixpkgs supports a real
-        # aarch64-linux cross package, so build that from the native amd64 Nix
-        # userspace and still verify/export the ARM closure below.
-        execution_arch=amd64
-    fi
     if [[ $arch == arm64 ]]; then
         cargo_jobs=2
     else
@@ -103,34 +95,6 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             tail -n 8 "$create_log"
         } > "$output/CI_FAILURE"
         exit "$container_status"
-    fi
-    if [[ $distro == nix && $arch == arm64 ]]; then
-        # The package itself is cross-built natively, but its install test
-        # still executes the ARM launcher through a pinned static qemu. This
-        # catches an absent Nix interpreter or unresolved target closure.
-        qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-        qemu_log=$log_dir/nix-qemu.log
-        set +e
-        (
-            set -e
-            docker create --platform linux/amd64 "$qemu_image" \
-                > "$log_dir/tool-container-id"
-            tool_container=$(<"$log_dir/tool-container-id")
-            docker cp "$tool_container:/usr/bin/qemu-aarch64" "$log_dir/qemu-aarch64"
-            docker cp "$log_dir/qemu-aarch64" "$container:/qemu-aarch64"
-        ) > >(tee "$qemu_log") 2>&1
-        tool_status=$?
-        set -e
-        if [[ -s $log_dir/tool-container-id ]]; then
-            tool_container=$(<"$log_dir/tool-container-id")
-        fi
-        if (( tool_status != 0 )); then
-            {
-                printf 'stage=prepare-nix-arm-smoke status=%s\n' "$tool_status"
-                tail -n 8 "$qemu_log"
-            } > "$output/CI_FAILURE"
-            exit "$tool_status"
-        fi
     fi
     # docker cp works with Docker-in-Docker and socket-mounted runners where a
     # bind path inside the runner is not a real path from the daemon's view.
@@ -408,13 +372,16 @@ arch)
     ;;
 nix)
     nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
-    export NIX_CONFIG=$nix_config
-    package=qos-session
     if [[ $arch == arm64 ]]; then
-        package=qos-session-aarch64
+        # Nix's seccomp filter observes qemu-user's host syscalls rather than
+        # the emulated guest calls and can SIGKILL store realization. Disable
+        # only that filter in this architecture-emulated CI userspace; the
+        # build still uses the target-native Nixpkgs package and dependencies.
+        nix_config+=$'\nfilter-syscalls = false'
     fi
+    export NIX_CONFIG=$nix_config
     stage=build-nix
-    nix build --print-build-logs ".#$package"
+    nix build --print-build-logs .#qos-session
     stage=inspect-nix
     dist/ci/verify-nix-result.sh result "$arch"
     nix flake check --no-build --all-systems
