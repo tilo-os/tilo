@@ -5,17 +5,19 @@
 //! and workspace capabilities are re-read for every list and launch request.
 
 use std::collections::BTreeSet;
+use std::fs::File;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use compat_service::{
-    AudioIsolatedSpiceLauncher, BwrapExecutor, CapabilityAuthority, CapsuleStore,
-    CompatSessionHandle, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession,
-    LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths,
-    SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
-    VmDelegate, VmInventory, VmRouteRequest, load_shipped_catalogue, spawn_session_service,
+    load_shipped_catalogue, spawn_session_service, AudioIsolatedSpiceLauncher, BwrapExecutor,
+    CapabilityAuthority, CapsuleStore, CompatSessionHandle, DenyAllVmCapabilityBroker,
+    DenyAllVmPortalAuthority, HostSession, LauncherAuthenticator, LiveVmDelegate,
+    ManagedCompatibility, ShippedCataloguePaths, SystemResourceBroker, SystemRuntimeRegistry,
+    TrustedLauncherRegistry, VmAvailability, VmDelegate, VmInstallation, VmInstallerInput,
+    VmInventory, VmRouteRequest,
 };
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
@@ -172,6 +174,54 @@ impl VmDelegate for SessionVmDelegate {
         }
     }
 
+    fn install_from_portal(
+        &self,
+        input: VmInstallerInput,
+        source: File,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .install_from_portal(input, source)
+    }
+
+    fn installation_status(&self) -> Option<VmInstallation> {
+        self.get()
+            .ok()
+            .and_then(|delegate| delegate.installation_status())
+    }
+
+    fn refresh_installation_status(
+        &self,
+    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .refresh_installation_status()
+    }
+
+    fn publish_install_candidate(
+        &self,
+        entry_id: &str,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .publish_install_candidate(entry_id)
+    }
+
+    fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .remove_published_application(entry_id)
+    }
+
+    fn uninstall_published_application(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .uninstall_published_application(entry_id)
+    }
+
     fn launch(
         &self,
         request: VmRouteRequest<'_>,
@@ -308,4 +358,122 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
         service,
         registry_refresh,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    use super::*;
+
+    const INSTALLED: u8 = 1;
+    const STATUS: u8 = 2;
+    const REFRESHED: u8 = 4;
+    const PUBLISHED: u8 = 8;
+    const REMOVED: u8 = 16;
+    const UNINSTALLED: u8 = 32;
+
+    struct RecordingVmDelegate {
+        calls: AtomicU8,
+    }
+
+    impl RecordingVmDelegate {
+        fn installation() -> VmInstallation {
+            VmInstallation {
+                detail: "test installation".to_string(),
+                phase: compat_service::VmInstallationPhase::Completed,
+                exit_code: Some(0),
+                candidates: Vec::new(),
+            }
+        }
+    }
+
+    impl VmDelegate for RecordingVmDelegate {
+        fn install_from_portal(
+            &self,
+            _input: VmInstallerInput,
+            _source: File,
+        ) -> Result<VmInstallation, windows_vm::LaunchError> {
+            self.calls.fetch_or(INSTALLED, Ordering::AcqRel);
+            Ok(Self::installation())
+        }
+
+        fn installation_status(&self) -> Option<VmInstallation> {
+            self.calls.fetch_or(STATUS, Ordering::AcqRel);
+            Some(Self::installation())
+        }
+
+        fn refresh_installation_status(
+            &self,
+        ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+            self.calls.fetch_or(REFRESHED, Ordering::AcqRel);
+            Ok(Some(Self::installation()))
+        }
+
+        fn publish_install_candidate(
+            &self,
+            _entry_id: &str,
+        ) -> Result<VmInstallation, windows_vm::LaunchError> {
+            self.calls.fetch_or(PUBLISHED, Ordering::AcqRel);
+            Ok(Self::installation())
+        }
+
+        fn remove_published_application(
+            &self,
+            _entry_id: &str,
+        ) -> Result<(), windows_vm::LaunchError> {
+            self.calls.fetch_or(REMOVED, Ordering::AcqRel);
+            Ok(())
+        }
+
+        fn uninstall_published_application(
+            &self,
+            _entry_id: &str,
+        ) -> Result<(), windows_vm::LaunchError> {
+            self.calls.fetch_or(UNINSTALLED, Ordering::AcqRel);
+            Ok(())
+        }
+
+        fn launch(
+            &self,
+            _request: VmRouteRequest<'_>,
+        ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+            Err(windows_vm::AgentError::Unavailable.into())
+        }
+    }
+
+    #[test]
+    fn session_vm_delegate_forwards_vm_installer_lifecycle() {
+        let inner = Arc::new(RecordingVmDelegate {
+            calls: AtomicU8::new(0),
+        });
+        let delegate = SessionVmDelegate {
+            live: Mutex::new(Some(Arc::clone(&inner) as Arc<dyn VmDelegate>)),
+        };
+        let input = VmInstallerInput {
+            source_name: "setup.exe".to_string(),
+            display_name: "Setup".to_string(),
+            sha256: "a".repeat(64),
+            byte_len: 1,
+            kind: compat_service::VmInstallerKind::Exe,
+        };
+
+        delegate
+            .install_from_portal(input, File::open("/dev/null").unwrap())
+            .unwrap();
+        assert!(delegate.installation_status().is_some());
+        assert!(delegate.refresh_installation_status().unwrap().is_some());
+        delegate.publish_install_candidate("candidate").unwrap();
+        delegate
+            .remove_published_application("application")
+            .unwrap();
+        delegate
+            .uninstall_published_application("application")
+            .unwrap();
+
+        assert_eq!(
+            inner.calls.load(Ordering::Acquire),
+            INSTALLED | STATUS | REFRESHED | PUBLISHED | REMOVED | UNINSTALLED
+        );
+    }
 }
