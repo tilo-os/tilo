@@ -38,8 +38,9 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
 use crate::doc::PhotosDoc;
@@ -69,7 +70,15 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOp
 }
 
 fn operation(id: &str, label: &str, op: PhotosOperation) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, &op).ok()
+    let spec =
+        ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, &op).ok()?;
+    Some(match op {
+        PhotosOperation::OpenPicker => spec
+            .execution(ExecutionMode::Background { cancellable: true })
+            .retry_policy(RetryPolicy::Idempotent),
+        PhotosOperation::Copy => spec.retry_policy(RetryPolicy::Idempotent),
+        PhotosOperation::SaveSuggested => spec.retry_policy(RetryPolicy::AtMostOnce),
+    })
 }
 
 /// Every collaborative operation on the open photograph.
@@ -159,6 +168,7 @@ pub fn encode(action: &PhotosAction) -> EncodedAction {
 fn immediate_photos_spec(id: &str, label: &str, next: Edits) -> ActionSpec {
     ActionSpec::immediate(id, label, PHOTOS_ACTION_TYPE, &PhotosAction::set(&next))
         .expect("PhotosAction is always serializable")
+        .reversible()
 }
 
 /// Parse the `x,y,w,h` argument a prompted crop collects.
@@ -223,22 +233,31 @@ impl ResourceProvider for PhotosResources {
                     .with_description("Turn the photograph a quarter turn anticlockwise"),
             )
             .with_action(
-                ActionSpec::prompted(
+                ActionSpec::typed(
                     "crop",
                     "Crop to a region",
-                    "Region to keep, as x,y,w,h between 0 and 1",
                     "0.25,0.25,0.5,0.5",
                     ExecutionLocus::ClientLocal,
-                    move |arg| {
+                    vec![ActionParam::required(
+                        "region",
+                        ParamType::Text,
+                        "normalized x,y,width,height values between 0 and 1",
+                    )
+                    .with_schema(serde_json::json!({
+                        "type": "string",
+                        "pattern": "^[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*$"
+                    }))],
+                    move |args: &ActionArgs| {
                         // An unparseable argument leaves the photograph exactly
                         // as it is; it never crops to nothing.
-                        let next = match parse_crop_arg(arg) {
+                        let next = match args.text("region").and_then(parse_crop_arg) {
                             Some(rect) => edits.cropped_from_view(rect),
                             None => edits,
                         };
                         encode(&PhotosAction::set(&next))
                     },
                 )
+                .reversible()
                 .with_description(
                     "Keep a region of what is currently shown, in normalized coordinates",
                 ),
@@ -622,5 +641,22 @@ mod tests {
         let e = PhotosDoc::edits(&doc);
         assert!((e.crop.w - 0.5).abs() < 1e-9, "{:?}", e.crop);
         assert!((e.crop.h - 0.5).abs() < 1e-9, "{:?}", e.crop);
+    }
+
+    #[test]
+    fn exported_photo_operations_declare_arguments_and_execution_contracts() {
+        let res = PhotosResources.resources(&doc_with_image());
+        let crop = res[0].actions.iter().find(|a| a.id == "crop").unwrap();
+        assert_eq!(crop.params()[0].name.as_ref(), "region");
+        assert!(crop.params()[0].schema.is_some());
+        assert!(crop.contract.reversible);
+
+        let open = res[0].actions.iter().find(|a| a.id == "open").unwrap();
+        assert_eq!(
+            open.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
+        let copy = res[0].actions.iter().find(|a| a.id == "copy").unwrap();
+        assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
     }
 }
