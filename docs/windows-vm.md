@@ -89,10 +89,16 @@ the guest TLS fingerprint after authenticated enrollment; a change requires
 repair rather than an automatic trust update.
 
 The target bridge returns a fresh temporary RemoteApp account and password for
-one launch. The account is removed after ten minutes even if the client crashes.
-This limits credential reuse; it does not make two Windows programs inside the
-singleton VM mutually isolated. Files, clipboard, microphone, and egress are
-still granted by qOS's existing workspace broker, not by this guest setup.
+one launch when qOS has selected a native RAIL surface. The account is removed
+after ten minutes even if the client crashes. This limits credential reuse; it
+does not make two Windows programs inside the singleton VM mutually isolated.
+
+The current live presentation is app-focused SPICE. It is playback-only: files,
+clipboard, microphone, and egress do not reach the guest. qOS may offer those
+resources only after it has probed a local RAIL surface and installed a
+canonical workspace-capability broker that can materialise and revoke each
+redirect. A workspace grant by itself never makes a host resource visible to
+the shared VM.
 
 The full desktop is available only through the owner-authorised recovery action
 for installation or repair. qOS's privileged owner-authorisation backend may
