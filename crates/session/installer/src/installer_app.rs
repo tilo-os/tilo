@@ -245,6 +245,19 @@ pub fn valid_hostname(h: &str) -> bool {
         && !h.ends_with('-')
 }
 
+/// Whether `username` is portable across the Linux `useradd`
+/// implementations supported by the qOS installer.
+pub fn valid_username(username: &str) -> bool {
+    let bytes = username.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 32
+        && matches!(bytes[0], b'a'..=b'z' | b'_')
+        && bytes
+            .iter()
+            .skip(1)
+            .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
 /// forward; `Err(msg)` is a user-facing reason it isn't yet.
 ///
@@ -268,10 +281,15 @@ pub fn validate_step(
             }
         }
         Step::Account => {
-            if username.trim().is_empty() {
+            if username.is_empty() {
                 Err("Enter a username".to_string())
-            } else {
+            } else if valid_username(username) {
                 Ok(())
+            } else {
+                Err(
+                    "Use up to 32 lowercase letters, digits, _ or -; start with a letter or _"
+                        .to_string(),
+                )
             }
         }
         Step::Options => {
@@ -1914,6 +1932,23 @@ mod tests {
         assert!(validate_step(Step::Account, Some(0), "", "qos").is_err());
         assert!(validate_step(Step::Account, Some(0), "   ", "qos").is_err());
         assert!(validate_step(Step::Account, Some(0), "quinten", "qos").is_ok());
+        assert!(validate_step(Step::Account, Some(0), "lab-user_2", "qos").is_ok());
+        assert!(validate_step(Step::Account, Some(0), "2bad", "qos").is_err());
+        assert!(validate_step(Step::Account, Some(0), "has space", "qos").is_err());
+        assert!(validate_step(Step::Account, Some(0), "bad:name", "qos").is_err());
+    }
+
+    #[test]
+    fn username_validator_matches_backend_contract() {
+        assert!(valid_username("q"));
+        assert!(valid_username("_service"));
+        assert!(valid_username("lab-user_2"));
+        assert!(!valid_username(""));
+        assert!(!valid_username("Upper"));
+        assert!(!valid_username("2start"));
+        assert!(!valid_username(
+            "a_very_long_username_that_exceeds_32_chars"
+        ));
     }
 
     #[test]

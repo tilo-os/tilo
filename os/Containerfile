@@ -1405,6 +1405,11 @@ RUN systemctl enable qos-boot-entries.service && \
 # qos-install) on a schedule, so installed systems stay current.
 RUN systemctl enable bootc-fetch-apply-updates.timer
 
+# The installer and first-login experience expose NetworkManager-backed
+# connectivity controls. Enable it explicitly instead of depending on a base
+# image preset that may change independently of qOS.
+RUN systemctl enable NetworkManager.service
+
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop qOS (offline man-db caching), or a
 # `Wants=network-online.target` wait we don't need (nothing on the boot
