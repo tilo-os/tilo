@@ -941,8 +941,12 @@ impl MusicApp {
     /// `sync` reconciles it again on the next frame (so a palette dispatch shows
     /// up the same way).
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::MusicAction) {
-        self.actions
-            .dispatch(state, crate::actions::MUSIC_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::MUSIC_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's

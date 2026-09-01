@@ -1790,10 +1790,12 @@ impl CodeApp {
                 let id = self.session.project.add_file(root, &name, "");
                 self.sidebar.set_project(&self.session.project);
                 self.open_node(id);
-                self.actions.dispatch(
+                let action = actions::create_buffer_action(id as u64, "");
+                self.actions.dispatch_with_context(
                     doc,
                     actions::CODE_EDITOR_ACTION_TYPE,
-                    &actions::create_buffer_action(id as u64, ""),
+                    &action,
+                    actions::history_context(&action, &name),
                 );
             }
             Command::OpenFolder => self.request_open_folder(),
