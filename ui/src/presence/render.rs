@@ -753,6 +753,38 @@ fn draw_edge_mist(
     );
 }
 
+/// Paint already-resolved peer cursors in one coordinate space. On-screen
+/// peers get moving dots and collision-free name pills; off-screen peers
+/// become directional edge mist. This is the compositor-facing sibling of
+/// draw_remote_presence, which resolves cursors from a PresenceCtx.
+pub fn draw_peer_presence(
+    scene: &mut Scene,
+    transform: Affine,
+    viewport: vello::kurbo::Rect,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    peers: &[PeerCursor],
+) {
+    let mut on_screen = Vec::new();
+    for peer in peers {
+        let target = Point::new(peer.pos.0, peer.pos.1);
+        if let Some(mist) = super::geom::edge_mist_for(viewport, target) {
+            draw_edge_mist(
+                scene,
+                text_renderer,
+                theme,
+                viewport,
+                &mist,
+                peer.color,
+                &peer.label,
+            );
+        } else {
+            on_screen.push(peer.clone());
+        }
+    }
+    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+}
+
 /// The one call the app makes each frame to render all cross-process peer
 /// presence: on-screen peers get a dot + pill, off-screen peers get an edge
 /// mist. `viewport` is the visible rect in the same (logical) space as
@@ -1638,6 +1670,30 @@ mod tests {
         assert_eq!(
             ctx.hit_test_offscreen_mist(viewport, Point::new(50.0, 50.0)),
             None
+        );
+    }
+    #[test]
+    fn resolved_desktop_peer_outside_viewport_becomes_edge_mist() {
+        let theme = Theme::default();
+        let mut text = crate::text_render::TextRenderer::new();
+        let viewport = Rect::new(0.0, 0.0, 160.0, 120.0);
+        let peers = [PeerCursor {
+            pos: (300.0, 60.0),
+            label: "Ada".to_string(),
+            color: Color::from_rgb8(236, 72, 153),
+        }];
+        let mut scene = Scene::new();
+        draw_peer_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            viewport,
+            &mut text,
+            &theme,
+            &peers,
+        );
+        assert!(
+            scene.encoding().draw_tags.len() >= 4,
+            "an off-screen desktop peer produced no directional mist",
         );
     }
 }
