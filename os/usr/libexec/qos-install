@@ -86,10 +86,21 @@ kernel_lockdown_active() {
   esac
 }
 
+# Securely booting the live medium does not prove that the freshly installed
+# target will boot an equally sealed and trusted UKI. Short-PIN mode is enabled
+# only when a dedicated target-chain preflight exists and verifies that full
+# handoff. It is deliberately absent until installation-time UKI signing,
+# firmware trust enrollment and measured-target validation are integrated.
+target_verified_boot_ready() {
+  local preflight=/usr/libexec/qos-verified-boot-install-preflight
+  [ -x "$preflight" ] && "$preflight"
+}
+
 verified_tpm() {
   { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
     && secure_boot_enabled \
-    && kernel_lockdown_active
+    && kernel_lockdown_active \
+    && target_verified_boot_ready
 }
 
 # Updates are signature-required only for the official qOS repository in the
@@ -238,8 +249,9 @@ esac
 # Encryption does NOT require a TPM. The volume is created with a recovery key
 # and the TPM is one more slot on top of it, so a machine without one still gets
 # an encrypted disk that it unlocks by typing a secret. See qos-disk-encrypt.
-# A startup secret is mandatory. Short-PIN mode requires both TPM2 and verified
-# boot; otherwise the same input is a normal, stronger disk passphrase.
+# A startup secret is mandatory. Short-PIN mode requires TPM2 plus verified boot
+# of both the live medium and installed target; otherwise the same input is a
+# normal, stronger disk passphrase.
 [ "$WANT_PIN" -eq 1 ] \
   || die "native qOS requires --pin for its encrypted startup boundary"
 

@@ -350,15 +350,20 @@ Everything else is a slot layered on top of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
-| TPM + Secure Boot + kernel lockdown | recovery key, TPM2+PIN | type the PIN |
+| TPM + continuous target verified-boot preflight | recovery key, TPM2+PIN | type the PIN |
 | TPM without verified boot | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
 The installer and privileged backend both require a startup secret. A short PIN
-is accepted only when TPM2 and Secure Boot are active **and the running kernel
-reports integrity or confidentiality lockdown**. Checking the EFI variable
-without checking its runtime consequence would make a firmware flag sufficient
-evidence for a security boundary. TPM presence with unverified early boot instead
+is accepted only when TPM2 and Secure Boot are active, the running kernel
+reports integrity or confidentiality lockdown, **and a dedicated preflight
+proves the installed target retains that verified-boot boundary**. The current
+installer ships no such preflight, so it deliberately requires a strong
+passphrase even on a TPM-equipped machine until installation-time UKI signing
+and firmware trust enrollment are integrated. Checking the EFI variable
+without checking either its runtime consequence or the target handoff would
+make a live-medium firmware flag sufficient evidence for a security boundary.
+TPM presence with unverified early boot instead
 uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the
 PIN and must not be presented as hardware-backed protection.
