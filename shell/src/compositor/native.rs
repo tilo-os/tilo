@@ -2255,13 +2255,17 @@ pub fn run() -> ! {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                             }
-                            PeerSyncRequest::IssueInviteFor { name, role } => bridge_net
-                                .issue_invite_named_with_role(
-                                    active,
-                                    INVITE_EXPIRY_SECONDS,
-                                    &name,
-                                    role,
-                                ),
+                            PeerSyncRequest::IssueInviteFor {
+                                name,
+                                role,
+                                recipient_user_public_key,
+                            } => bridge_net.issue_invite_bound_with_role(
+                                active,
+                                INVITE_EXPIRY_SECONDS,
+                                &name,
+                                recipient_user_public_key,
+                                role,
+                            ),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
                                 .map(|room| room.to_string()),

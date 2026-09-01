@@ -1206,13 +1206,8 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(
-                        &PeerSyncRequest::IssueInviteFor {
-                            name,
-                            role: crate::network::invite::InviteRole::Editor,
-                        },
-                        copy,
-                    );
+                    let _ = copy;
+                    self.peer_sync_overlay.prompt_invite_for(name);
                 }
                 PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
@@ -10770,6 +10765,9 @@ mod palette_dispatch_tests {
             Some("bob"),
             "the field takes the name — the same keys that type a token"
         );
+        let mut snapshot = h.peer_sync_snapshot();
+        snapshot.invite_recipient_key = Some([0x42; 32]);
+        h.set_peer_sync_snapshot_for_tests(snapshot);
 
         assert!(
             h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
