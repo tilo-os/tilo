@@ -326,6 +326,12 @@ pub enum UiNode {
     },
     TextInput {
         id: String,
+        /// Optional visible Fluent label. When present it is also the
+        /// control's accessible name, so serialized forms have one source of
+        /// truth for both presentations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         accessible_name: String,
         #[serde(default)]
         placeholder: String,
@@ -340,6 +346,9 @@ pub enum UiNode {
     },
     Checkbox {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         accessible_name: String,
         value_path: String,
         #[serde(default = "default_true")]
@@ -347,6 +356,9 @@ pub enum UiNode {
     },
     Toggle {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         accessible_name: String,
         value_path: String,
         #[serde(default = "default_true")]
@@ -544,26 +556,29 @@ impl UiNode {
                 }
             }
             Self::TextInput {
+                label,
                 accessible_name,
                 value_path,
                 ..
             } => {
-                validate_accessible_name(accessible_name, id)?;
+                validate_form_label(label.as_deref(), accessible_name, id)?;
                 if let Some(binding) = value_path {
                     validate_binding(binding, id)?;
                 }
             }
             Self::Checkbox {
+                label,
                 accessible_name,
                 value_path,
                 ..
             }
             | Self::Toggle {
+                label,
                 accessible_name,
                 value_path,
                 ..
             } => {
-                validate_accessible_name(accessible_name, id)?;
+                validate_form_label(label.as_deref(), accessible_name, id)?;
                 validate_binding(value_path, id)?;
             }
             Self::Row { .. } | Self::Spacer { .. } => {}
@@ -583,6 +598,19 @@ impl UiNode {
 fn validate_accessible_name(name: &str, id: &str) -> Result<(), UiGraphError> {
     if name.trim().is_empty() {
         Err(UiGraphError::MissingAccessibleName(id.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_form_label(
+    label: Option<&str>,
+    accessible_name: &str,
+    id: &str,
+) -> Result<(), UiGraphError> {
+    validate_accessible_name(label.unwrap_or(accessible_name), id)?;
+    if label.is_some() && !accessible_name.trim().is_empty() {
+        Err(UiGraphError::ConflictingLabels(id.to_owned()))
     } else {
         Ok(())
     }
@@ -637,6 +665,8 @@ pub enum UiGraphError {
     TooManyNodes { max: usize },
     #[error("UI node {0:?} needs a visible label or accessible name")]
     MissingAccessibleName(String),
+    #[error("UI node {0:?} must use either label or accessible_name, not both")]
+    ConflictingLabels(String),
     #[error("UI node {id:?} has invalid model binding {binding:?}")]
     InvalidBinding { id: String, binding: String },
     #[error("UI node {id:?} has invalid {property}")]
@@ -776,6 +806,74 @@ mod tests {
         assert!(matches!(
             document.validate(),
             Err(UiGraphError::InvalidBinding { .. })
+        ));
+    }
+
+    #[test]
+    fn form_labels_are_single_visible_and_accessible_sources() {
+        let mut document = sample();
+        document
+            .insert_child(
+                "root",
+                1,
+                UiNode::TextInput {
+                    id: "name".into(),
+                    label: Some("profile-name-label".into()),
+                    accessible_name: String::new(),
+                    placeholder: String::new(),
+                    value_path: None,
+                    initial_value: String::new(),
+                    multiline: false,
+                    disabled: false,
+                },
+            )
+            .unwrap();
+        document
+            .insert_child(
+                "root",
+                2,
+                UiNode::Checkbox {
+                    id: "remember".into(),
+                    label: Some("profile-remember-label".into()),
+                    accessible_name: String::new(),
+                    value_path: "remember".into(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+
+        let json = document.to_json_pretty().unwrap();
+        assert!(json.contains(r#""label": "profile-name-label""#));
+        assert!(json.contains(r#""label": "profile-remember-label""#));
+        assert!(!json.contains("accessible_name"));
+        assert_eq!(UiDocument::from_json(&json).unwrap(), document);
+
+        if let Some(UiNode::TextInput {
+            accessible_name, ..
+        }) = document.node_mut("name")
+        {
+            *accessible_name = "duplicate-name".into();
+        }
+        assert!(matches!(
+            document.validate(),
+            Err(UiGraphError::ConflictingLabels(id)) if id == "name"
+        ));
+
+        if let Some(UiNode::TextInput {
+            accessible_name, ..
+        }) = document.node_mut("name")
+        {
+            accessible_name.clear();
+        }
+        if let Some(UiNode::Checkbox {
+            accessible_name, ..
+        }) = document.node_mut("remember")
+        {
+            *accessible_name = "duplicate-check-name".into();
+        }
+        assert!(matches!(
+            document.validate(),
+            Err(UiGraphError::ConflictingLabels(id)) if id == "remember"
         ));
     }
 }
