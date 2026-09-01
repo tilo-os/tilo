@@ -168,6 +168,9 @@ jobs:
           git push origin "$note_ref"
       - name: Build and install-test in the target userspace
         id: package-build
+        env:
+          # Runner-level cache credentials must never enter pull-request code.
+          QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
         run: >-
           dist/ci/run-package-job.sh
           "${{ matrix.distro }}"
