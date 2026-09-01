@@ -1,0 +1,11 @@
+{
+  "generation": 1,
+  "applications": [
+    {
+      "id": "example-notepad",
+      "name": "Example Notepad",
+      "path": "C:\\Windows\\System32\\notepad.exe",
+      "arguments": ""
+    }
+  ]
+}

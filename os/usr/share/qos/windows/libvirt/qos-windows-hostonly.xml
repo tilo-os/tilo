@@ -1,0 +1,22 @@
+<!--
+  The sole network for the qOS Windows appliance.
+
+  `forward mode='none'` is intentional: this bridge has no NAT, route, or
+  physical-interface attachment.  It only connects the host and the one guest
+  so the pinned, mutually authenticated RemoteApp channel can be reached.  Do
+  not turn this into libvirt's `default` network just to make an installer
+  download something; guest egress is a capability-broker operation.
+-->
+<network>
+  <name>qos-windows-hostonly</name>
+  <metadata>
+    <qos:windows-hostonly xmlns:qos="https://qos.dev/vm/1"/>
+  </metadata>
+  <forward mode="none"/>
+  <bridge name="virbr-qoswin" stp="on" delay="0"/>
+  <ip address="192.168.251.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.251.2" end="192.168.251.254"/>
+    </dhcp>
+  </ip>
+</network>
