@@ -730,6 +730,8 @@ pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
+mod form;
+pub use form::{FormControl, labeled_field};
 mod row;
 pub use row::Row;
 mod toggle;
