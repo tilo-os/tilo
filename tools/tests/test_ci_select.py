@@ -49,6 +49,7 @@ class SelectorTests(unittest.TestCase):
         plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2)
         self.assertIn("leaf", plan["selected"])
         self.assertNotIn("base", plan["selected"])
+        self.assertEqual(plan["shard_count"], 1)
 
     def test_build_input_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
@@ -66,6 +67,26 @@ class SelectorTests(unittest.TestCase):
         names = args[1::2]
         self.assertEqual(sorted(names), sorted(packages))
         self.assertEqual(len(names), len(set(names)))
+
+    def test_cost_threshold_adds_shards_only_when_useful(self) -> None:
+        packages, _ = ci_select.package_maps(self.metadata, self.root)
+        names = set(packages)
+        original = ci_select.SHARD_COST_BUDGET
+        try:
+            ci_select.SHARD_COST_BUDGET = 1
+            self.assertEqual(ci_select.useful_shard_count(names, packages, 2), 2)
+            ci_select.SHARD_COST_BUDGET = 10_000
+            self.assertEqual(ci_select.useful_shard_count(names, packages, 2), 1)
+        finally:
+            ci_select.SHARD_COST_BUDGET = original
+
+    def test_github_outputs_include_adaptive_shard_metrics(self) -> None:
+        plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2)
+        output = self.root / "github-output"
+        ci_select.emit_github(plan, output)
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(values["shard_count"], "1")
+        self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
 
 
 if __name__ == "__main__":
