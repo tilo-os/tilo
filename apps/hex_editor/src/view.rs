@@ -442,7 +442,10 @@ impl HexView {
                     self.finish_resource_io(result);
                 }
                 Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.open_rx = None,
+                Err(TryRecvError::Disconnected) => {
+                    self.open_rx = None;
+                    self.finish_resource_io(Err("file picker disconnected".into()));
+                }
             }
         }
         if let Some(rx) = self.save_rx.as_ref() {
@@ -460,7 +463,10 @@ impl HexView {
                     self.finish_resource_io(result);
                 }
                 Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.save_rx = None,
+                Err(TryRecvError::Disconnected) => {
+                    self.save_rx = None;
+                    self.finish_resource_io(Err("file picker disconnected".into()));
+                }
             }
         }
     }
