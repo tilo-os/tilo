@@ -10,6 +10,14 @@
 //! moving gradient, so a compositor that hashes buffers can't elide the
 //! work. Prints frame count and wall time on exit for the harness.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        reason = "parser tests compare exact input and default values"
+    )
+)]
+
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
