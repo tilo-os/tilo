@@ -2048,6 +2048,126 @@ impl GitClientApp {
             Screen::Panels => {}
         }
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single derived semantic inventory for the app's three mutually exclusive screens"
+    )]
+    fn accessibility_targets(&self) -> Vec<(Rect, ui::a11y::AccessNode)> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let button = |rect: Rect, label: String| {
+            (
+                rect,
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(rect),
+            )
+        };
+        if self.awaiting_repo {
+            let mut targets = Vec::new();
+            if self.open_input_rect.area() > 0.0 {
+                targets.push((
+                    self.open_input_rect,
+                    self.open_input
+                        .accessibility()
+                        .unwrap_or_else(|| {
+                            AccessNode::new(Role::TextInput).with_name("Repository path")
+                        })
+                        .with_bounds(self.open_input_rect),
+                ));
+            }
+            if self.open_button_rect.area() > 0.0 {
+                targets.push(button(self.open_button_rect, "Open repository".into()));
+            }
+            return targets;
+        }
+
+        let mut targets = Vec::new();
+        if self.hamburger_rect.area() > 0.0 {
+            targets.push(button(
+                self.hamburger_rect,
+                "Show repository navigation".into(),
+            ));
+        }
+        targets.extend(self.tab_rects.iter().map(|(screen, rect)| {
+            let label = TABS
+                .iter()
+                .find(|(candidate, _)| candidate == screen)
+                .map_or("Repository view", |(_, label)| *label);
+            (
+                *rect,
+                AccessNode::new(Role::Tab)
+                    .with_name(label)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(*screen == self.screen),
+                    )
+                    .with_bounds(*rect),
+            )
+        }));
+        if self.settings_seg.area() > 0.0 {
+            targets.push(button(self.settings_seg, "Diff layout".into()));
+        }
+        if self.settings_syn.area() > 0.0 {
+            targets.push(button(self.settings_syn, "Syntax highlighting".into()));
+        }
+        match self.screen {
+            Screen::Changes if self.commit_input.get_rect().area() > 0.0 => targets.push((
+                self.commit_input.get_rect(),
+                self.commit_input
+                    .accessibility()
+                    .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name("Commit message"))
+                    .with_bounds(self.commit_input.get_rect()),
+            )),
+            Screen::History => {
+                for (index, rect) in self.history_rows.iter().enumerate() {
+                    if let Some(commit) = self.model.commits.get(index) {
+                        targets.push((
+                            *rect,
+                            AccessNode::new(Role::ListItem)
+                                .with_name(format!(
+                                    "{} by {}, {}",
+                                    commit.summary, commit.author_name, commit.when
+                                ))
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .selected(index == self.selected_commit),
+                                )
+                                .with_bounds(*rect),
+                        ));
+                    }
+                }
+            }
+            Screen::Panels => {
+                if self.new_branch_input.area() > 0.0 {
+                    targets.push((
+                        self.new_branch_input,
+                        self.branch_input
+                            .accessibility()
+                            .unwrap_or_else(|| {
+                                AccessNode::new(Role::TextInput).with_name("New branch name")
+                            })
+                            .with_bounds(self.new_branch_input),
+                    ));
+                }
+                if self.new_branch_button.area() > 0.0 {
+                    targets.push(button(self.new_branch_button, "Create branch".into()));
+                }
+            }
+            Screen::Changes => {}
+        }
+        if self.discard_file_rect.area() > 0.0 {
+            targets.push(button(
+                self.discard_file_rect,
+                "Discard file changes".into(),
+            ));
+        }
+        targets
+    }
 }
 
 /// Whether `p` falls inside a non-empty `rect` (a zero-size rect never hits).
@@ -2236,6 +2356,41 @@ impl Widget for GitClientApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let children = self
+            .accessibility_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, node))| {
+                // Synthetic children need an opaque action target before the
+                // bridge advertises them as operable. The ordinal remains the
+                // geometry lookup key, so it must stay in lock-step with
+                // `synthetic_accessibility_rect` below.
+                node.with_key(index as u64)
+                    .with_action_target(format!("git-target:{index}"))
+            })
+            .collect();
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Git Client")
+                .with_description(if self.awaiting_repo {
+                    "Open a repository"
+                } else {
+                    "Repository changes, history, branches and remotes"
+                })
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, _)| *rect)
     }
 
     /// Publish the open repository and its view-preference actions to the
@@ -2706,5 +2861,33 @@ mod tests {
             dispatched, &palette_action,
             "the app-bar control and the Ctrl+K entry build one and the same action"
         );
+    }
+
+    #[test]
+    fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
+        let mut app = app_at(1_280.0, Screen::Changes);
+        app.tab_rects = vec![
+            (Screen::Changes, Rect::new(20.0, 8.0, 120.0, 40.0)),
+            (Screen::History, Rect::new(124.0, 8.0, 224.0, 40.0)),
+        ];
+        app.settings_seg = Rect::new(1_000.0, 8.0, 1_080.0, 40.0);
+        app.settings_syn = Rect::new(1_084.0, 8.0, 1_160.0, 40.0);
+        app.commit_input
+            .apply_layout_external(Rect::new(360.0, 700.0, 700.0, 736.0));
+
+        let node = Widget::accessibility(&app).expect("git client is semantic");
+        assert!(!node.children.is_empty());
+        for (index, child) in node.children.iter().enumerate() {
+            let expected_target = format!("git-target:{index}");
+            assert_eq!(
+                child.action_target.as_deref(),
+                Some(expected_target.as_str())
+            );
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&app, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "semantic control {index} must activate inside the visible control"
+            );
+        }
     }
 }

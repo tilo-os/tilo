@@ -3972,6 +3972,63 @@ impl MapsApp {
         y += 18.0;
         y
     }
+
+    /// Immediate-mode controls exported as one semantic list. Keeping this
+    /// derived from the same hit targets used by pointer routing prevents the
+    /// accessibility tree from advertising controls that are not on screen.
+    fn accessibility_targets(&self) -> Vec<(Rect, String)> {
+        use crate::map_controls::MapControlAction;
+
+        let mut targets = vec![
+            (
+                self.map_controls.rect(MapControlAction::ZoomIn),
+                "Zoom in".to_string(),
+            ),
+            (
+                self.map_controls.rect(MapControlAction::ZoomOut),
+                "Zoom out".to_string(),
+            ),
+            (
+                self.map_controls.rect(MapControlAction::Locate),
+                "Use my location".to_string(),
+            ),
+            (
+                self.map_controls.rect(MapControlAction::ToggleTraffic),
+                "Toggle traffic".to_string(),
+            ),
+        ];
+        targets.retain(|(rect, _)| rect.area() > 0.0);
+        targets.extend(self.click_targets.iter().filter_map(|(rect, hit)| {
+            let label = match hit {
+                Hit::Consume | Hit::Search(SearchHit::Consume) | Hit::CloseNav => return None,
+                Hit::Search(SearchHit::Field) => "Search places".to_string(),
+                Hit::Search(SearchHit::Clear) => "Clear search".to_string(),
+                Hit::Search(SearchHit::Result(index)) => format!("Search result {}", index + 1),
+                Hit::ToggleCollapse => "Collapse or expand panel".to_string(),
+                Hit::PanelBack => "Back to places".to_string(),
+                Hit::Mode(mode) => format!("Travel by {}", mode.label()),
+                Hit::SelectPlace(name) | Hit::Recent(name) => format!("Open {name}"),
+                Hit::SelectPoi(id) => format!("Open nearby place {id}"),
+                Hit::ClosePoi => "Close place details".to_string(),
+                Hit::PoiDirections => "Directions to this place".to_string(),
+                Hit::ToggleNav => "Open map navigation".to_string(),
+                Hit::Directions => "Directions".to_string(),
+                Hit::Transit => "Transit".to_string(),
+                Hit::ToggleSave => "Save or unsave place".to_string(),
+                Hit::ClearRoute => "Clear route".to_string(),
+                Hit::UseMyLocation => "Use my location".to_string(),
+                Hit::TransitTimeMode(TransitTimeMode::Depart) => "Leave at".to_string(),
+                Hit::TransitTimeMode(TransitTimeMode::Arrive) => "Arrive by".to_string(),
+                Hit::TransitTimeDelta(minutes) if *minutes < 0 => "Earlier".to_string(),
+                Hit::TransitTimeDelta(_) => "Later".to_string(),
+                Hit::TransitTimeNow => "Leave now".to_string(),
+                Hit::Journey(index) => format!("Journey option {}", index + 1),
+                Hit::ToggleOverflow => "More map options".to_string(),
+            };
+            (rect.area() > 0.0).then_some((*rect, label))
+        }));
+        targets
+    }
 }
 
 // ===========================================================================
@@ -4387,7 +4444,39 @@ impl Widget for MapsApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.info_sheet.accessibility()
+        if let Some(dialog) = self.info_sheet.accessibility() {
+            return Some(dialog);
+        }
+        let children = self
+            .accessibility_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (rect, label))| {
+                ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                    .with_name(label)
+                    .with_state(ui::a11y::AccessState::new().focusable(true))
+                    .with_key(index as u64)
+                    // A synthetic node is only operable when it carries its
+                    // own target. Activation falls back to this exact rect,
+                    // exercising the same click routing as pointer input.
+                    .with_action_target(format!("maps-target:{index}"))
+                    .with_bounds(rect)
+            })
+            .collect();
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Maps")
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, _)| *rect)
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -7161,5 +7250,24 @@ mod tests {
                 .any(|r| r.id == "r1"),
             "the document reflects the removal"
         );
+    }
+
+    #[test]
+    fn map_controls_are_operable_semantic_children_with_matching_geometry() {
+        let a = app_at(1_280.0, 800.0);
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        assert_eq!(node.children.len(), 4, "only drawn controls are exposed");
+        for (index, child) in node.children.iter().enumerate() {
+            let expected_target = format!("maps-target:{index}");
+            assert_eq!(
+                child.action_target.as_deref(),
+                Some(expected_target.as_str())
+            );
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&a, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "control {index} must activate at its visible bounds"
+            );
+        }
     }
 }

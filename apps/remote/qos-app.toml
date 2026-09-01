@@ -1,8 +1,8 @@
 # Remote Desktop — qOS application manifest.
 #
-# No transport is linked yet — the session list is CRDT state and the
-# app opens no socket. Baseline only; this manifest gains `net` the
-# moment a real RDP/VNC/qOS transport lands.
+# SSH and VNC are available behind the explicit live-session developer
+# switch. RDP and qOS Relay profiles remain readable but are not offered for
+# creation until their transports are implemented.
 #
 # Pack and install:
 #
