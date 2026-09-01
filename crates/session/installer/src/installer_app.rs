@@ -786,11 +786,12 @@ impl InstallerApp {
     }
 
     fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
+        let keyboard = profile.keyboard_display_name().to_string();
         self.hostname = profile.hostname;
         self.username = profile.username;
         self.full_name = profile.full_name;
         self.locale = profile.locale;
-        self.keymap = profile.keyboard_display_name().to_string();
+        self.keymap = keyboard;
         self.timezone = profile.timezone;
         self.selected_fs = FILESYSTEMS
             .iter()
@@ -3224,5 +3225,36 @@ mod tests {
                 .iter()
                 .any(|c| c.name() == "DiskRow" && c.is_focusable())
         );
+    }
+
+    #[test]
+    fn validated_media_profile_skips_already_configured_screens() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            schema: 1,
+            hostname: "studio".into(),
+            username: "ada".into(),
+            full_name: "ada Example".into(),
+            locale: "de_DE.UTF-8".into(),
+            keyboard: "de".into(),
+            timezone: "Europe/Berlin".into(),
+            filesystem: "ext4".into(),
+        });
+        app.tpm2 = false;
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(app.hostname, "studio");
+        assert_eq!(app.username, "ada");
+        assert_eq!(app.keymap, "German (QWERTZ)");
+        assert_eq!(app.filesystem(), "ext4");
+
+        app.selected_disk = Some(0);
+        app.go_next();
+        assert_eq!(app.step, Step::Account);
+        *app.password.lock().unwrap() = "correct horse battery staple".into();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        app.go_next();
+        assert_eq!(app.step, Step::Review, "configured Options is not repeated");
+        app.go_back();
+        assert_eq!(app.step, Step::Account);
     }
 }

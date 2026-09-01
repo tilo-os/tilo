@@ -1819,7 +1819,7 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let content = lay.content;
         if !self.customizable() {
-            Self::draw_step_title(scene, tr, theme, content, "Customize (optional)", "");
+            Self::draw_step_title(scene, tr, theme, content, "Prepare your setup", "");
             let card = Rect::new(
                 content.x0,
                 content.y0 + 60.0,
@@ -1864,9 +1864,9 @@ impl ImagerApp {
         let sub = if installing {
             "Set up the machine qOS will install — you can change any of this later."
         } else {
-            "Pre-configure the written media so it boots ready to use."
+            "These choices travel with the installer, so setup on the device is shorter."
         };
-        Self::draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
+        Self::draw_step_title(scene, tr, theme, content, "Prepare your setup", sub);
 
         // The whole form is the shared guided-customization panel.
         let removable = self.target().is_some_and(|d| d.removable);
@@ -3968,13 +3968,14 @@ mod tests {
     }
 
     #[test]
-    fn export_produces_headless_config() {
+    fn preview_shows_the_embedded_profile() {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 1);
         app.export_config(&mut doc);
         let text = app.export_dialog.text();
-        assert!(text.contains("[install]"));
-        assert!(text.contains("$QOS_USER_PASSWORD"));
+        assert!(text.contains("\"schema\": 1"));
+        assert!(text.contains("\"hostname\""));
+        assert!(!text.contains("password"));
         assert!(app.export_dialog.is_open());
     }
 

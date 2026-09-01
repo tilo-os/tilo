@@ -356,6 +356,21 @@ fn profile_contract() -> ActionContract {
 fn with_identity_fields(mut res: Resource) -> Resource {
     res = res.with_action(
         ActionSpec::prompted(
+            "locale",
+            "Set locale",
+            "Locale",
+            "en_US.UTF-8",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetLocale {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
             "hostname",
             "Set hostname",
             "Hostname",
