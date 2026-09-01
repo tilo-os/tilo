@@ -10,11 +10,12 @@
 //! while presentation / view state stays plain app code. The git client is a
 //! near-textbook case of a mostly-**external** app:
 //!
-//! - **External — never actions.** Every git operation — stage / unstage,
+//! - **External resource operations.** Every git operation — stage / unstage,
 //!   commit, branch create / switch / delete, checkout, fetch / pull / push,
 //!   stash, discard, per-hunk staging — mutates the *on-disk* repository through
-//!   libgit2 (see [`crate::repo`]). None of it touches the shared CRDT, so none
-//!   of it is an action. The live repository is *projected* into the in-memory
+//!   libgit2 (see [`crate::repo`]). They are exported as typed effects on the
+//!   repository resource rather than disguised as document actions. The live
+//!   repository is *projected* into the in-memory
 //!   [`RepoModel`](crate::model::RepoModel) and re-read after each op; that model
 //!   is not persisted to the document either.
 //!
@@ -45,14 +46,39 @@ use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::settings::{self, DiffLayout, Settings};
 
 /// Registry `type_id` for every git-client action.
 pub const GIT_CLIENT_ACTION_TYPE: &str = "git_client.action";
+pub const GIT_CLIENT_OPERATION_TYPE: &str = "git_client.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GitClientOperation {
+    ShowChanges,
+    ShowHistory,
+    ShowBranches,
+    StageAll,
+    UnstageAll,
+    Commit { message: String },
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: GitClientOperation) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, GIT_CLIENT_OPERATION_TYPE, &value)
+        .expect("GitClientOperation is always serializable");
+    match value {
+        GitClientOperation::ShowChanges
+        | GitClientOperation::ShowHistory
+        | GitClientOperation::ShowBranches => spec.retry_policy(RetryPolicy::Idempotent),
+        GitClientOperation::StageAll | GitClientOperation::UnstageAll => {
+            spec.reversible().retry_policy(RetryPolicy::Idempotent)
+        }
+        GitClientOperation::Commit { .. } => spec,
+    }
+}
 
 /// Every collaborative operation the git client exports on the shared document.
 ///
@@ -224,6 +250,58 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
         repo = repo.with_action(spec);
     }
 
+    for (id, label, operation) in [
+        (
+            "show-changes",
+            "Show changes",
+            GitClientOperation::ShowChanges,
+        ),
+        (
+            "show-history",
+            "Show history",
+            GitClientOperation::ShowHistory,
+        ),
+        (
+            "show-branches",
+            "Show branches and remotes",
+            GitClientOperation::ShowBranches,
+        ),
+    ] {
+        repo = repo.with_action(self::operation(id, label, OperationKind::View, operation));
+    }
+    repo = repo
+        .with_action(operation(
+            "stage-all",
+            "Stage all changes",
+            OperationKind::Effect,
+            GitClientOperation::StageAll,
+        ))
+        .with_action(operation(
+            "unstage-all",
+            "Unstage all changes",
+            OperationKind::Effect,
+            GitClientOperation::UnstageAll,
+        ))
+        .with_action(
+            ActionSpec::prompted_operation(
+                "commit",
+                "Commit staged changes",
+                "Commit message",
+                "summary",
+                OperationKind::Effect,
+                |message| {
+                    EncodedAction::encode_operation(
+                        GIT_CLIENT_OPERATION_TYPE,
+                        &GitClientOperation::Commit {
+                            message: message.to_string(),
+                        },
+                    )
+                    .expect("GitClientOperation is always serializable")
+                },
+            )
+            .with_description("Create a commit from the currently staged changes"),
+        );
+
     vec![repo]
 }
 
@@ -330,7 +408,13 @@ mod tests {
                 "diff-layout",
                 "syntax-highlight",
                 "show-whitespace",
-                "wrap-lines"
+                "wrap-lines",
+                "show-changes",
+                "show-history",
+                "show-branches",
+                "stage-all",
+                "unstage-all",
+                "commit",
             ],
         );
 

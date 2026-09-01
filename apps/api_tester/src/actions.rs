@@ -48,7 +48,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
 };
 
 use crate::doc::ApiDoc;
@@ -83,6 +83,17 @@ pub fn send_request_operation(collection_id: Uuid, request_id: Uuid) -> ActionSp
     )
     .expect("ApiTesterOperation is always serializable")
     .with_description("Send this saved request using the active environment")
+    .execution(ExecutionMode::Background { cancellable: false })
+    .returns(ResultSpec::Json {
+        schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "status": {"type": "integer"},
+                "duration_ms": {"type": "integer"},
+                "body": {"type": "string"}
+            }
+        }),
+    })
 }
 
 /// Every collaborative operation the API tester exports on its shared workspace.

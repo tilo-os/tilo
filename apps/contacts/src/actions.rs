@@ -37,8 +37,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -46,6 +46,33 @@ use crate::model::{Address, Birthday, Contact, ContactId, Labeled};
 
 /// Registry `type_id` for every contacts action.
 pub const CONTACTS_ACTION_TYPE: &str = "contacts.action";
+pub const CONTACTS_OPERATION_TYPE: &str = "contacts.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactsOperation {
+    Open { id: String },
+    ImportVcard,
+    ExportAllVcard,
+}
+
+fn contact_operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: ContactsOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, CONTACTS_OPERATION_TYPE, &operation)
+        .expect("ContactsOperation is always serializable");
+    match operation {
+        ContactsOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        ContactsOperation::ImportVcard => {
+            spec.execution(ExecutionMode::Background { cancellable: true })
+        }
+        ContactsOperation::ExportAllVcard => spec
+            .execution(ExecutionMode::Background { cancellable: true })
+            .destructive(),
+    }
+}
 
 /// A serializable snapshot of a contact's fields, in exactly the representation
 /// the document stores (id and birthday as strings, the repeated rows as the
@@ -254,6 +281,8 @@ pub fn set_favorite_action(id: impl Into<String>, favorite: bool) -> ContactsAct
 #[derive(Debug, Clone)]
 pub struct ContactsResourceCtx {
     pub contacts: Vec<Contact>,
+    pub import_busy: bool,
+    pub export_busy: bool,
 }
 
 /// Split a typed full name into first / rest-as-last, so a palette "New
@@ -283,6 +312,28 @@ fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec 
 /// on-screen affordance dispatches.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("contacts.book", "contacts.book", "Contacts");
+    let mut import = contact_operation(
+        "import-vcard",
+        "Import vCard",
+        OperationKind::Effect,
+        ContactsOperation::ImportVcard,
+    );
+    if ctx.import_busy {
+        import = import.unavailable("already_running", "A contact import is already in progress");
+    }
+    root = root.with_action(import);
+    let mut export = contact_operation(
+        "export-all-vcard",
+        "Export all contacts",
+        OperationKind::Effect,
+        ContactsOperation::ExportAllVcard,
+    );
+    if ctx.contacts.is_empty() {
+        export = export.unavailable("book_empty", "There are no contacts to export");
+    } else if ctx.export_busy {
+        export = export.unavailable("already_running", "A contact export is already in progress");
+    }
+    root = root.with_action(export);
 
     // Book-level: create a contact from a typed name. The uuid is minted once
     // when the argument is committed, then baked into the envelope, so replay
@@ -309,6 +360,12 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "contacts.contact",
             contact.display_name(),
         );
+        child = child.with_action(contact_operation(
+            "open",
+            "Open contact",
+            OperationKind::View,
+            ContactsOperation::Open { id: id.clone() },
+        ));
 
         // Rename — a prompted action carrying the rest of the record unchanged.
         let base = contact.clone();
@@ -359,11 +416,14 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
         ));
 
         // Delete.
-        child = child.with_action(immediate_spec(
-            "delete",
-            "Delete contact",
-            &delete_contact_action(id.clone()),
-        ));
+        child = child.with_action(
+            immediate_spec(
+                "delete",
+                "Delete contact",
+                &delete_contact_action(id.clone()),
+            )
+            .destructive(),
+        );
 
         root = root.with_child(child);
     }

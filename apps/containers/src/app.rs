@@ -22,7 +22,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::PathSegment;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionSpec, ExecutionMode, OperationKind, PermissionRequirement, Resource, ResultSpec,
+    RetryPolicy,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
@@ -1004,6 +1007,26 @@ impl Widget for ContainersApp {
                     "containers.container",
                     &payload,
                 ) {
+                    let mut spec = spec
+                        .requiring(PermissionRequirement::Admin)
+                        .privileged()
+                        .execution(ExecutionMode::Background { cancellable: false });
+                    if *verb == "remove" {
+                        spec = spec.destructive();
+                    } else if *verb != "restart" && *verb != "shell" {
+                        spec = spec.retry_policy(RetryPolicy::Idempotent);
+                    }
+                    if *verb == "shell" {
+                        spec = spec.returns(ResultSpec::Resource {
+                            resource_kind: "terminal.session".into(),
+                        });
+                    }
+                    if !self.live {
+                        spec = spec.unavailable(
+                            "engine_offline",
+                            "Container engine actions are unavailable in demo mode",
+                        );
+                    }
                     resource.actions.push(spec);
                 }
             }
@@ -1021,6 +1044,17 @@ impl Widget for ContainersApp {
                 "containers.image",
                 &payload,
             ) {
+                let mut spec = spec
+                    .requiring(PermissionRequirement::Admin)
+                    .privileged()
+                    .destructive()
+                    .execution(ExecutionMode::Background { cancellable: false });
+                if !self.live {
+                    spec = spec.unavailable(
+                        "engine_offline",
+                        "Container engine actions are unavailable in demo mode",
+                    );
+                }
                 resource.actions.push(spec);
             }
             root.children.push(resource);
@@ -1039,6 +1073,17 @@ impl Widget for ContainersApp {
                 "containers.volume",
                 &payload,
             ) {
+                let mut spec = spec
+                    .requiring(PermissionRequirement::Admin)
+                    .privileged()
+                    .destructive()
+                    .execution(ExecutionMode::Background { cancellable: false });
+                if !self.live {
+                    spec = spec.unavailable(
+                        "engine_offline",
+                        "Container engine actions are unavailable in demo mode",
+                    );
+                }
                 resource.actions.push(spec);
             }
             root.children.push(resource);
