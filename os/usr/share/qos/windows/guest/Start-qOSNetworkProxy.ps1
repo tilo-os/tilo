@@ -11,8 +11,8 @@ $ErrorActionPreference = 'Stop'
 $job = Get-Content -Raw -LiteralPath $JobPath | ConvertFrom-Json
 $HostEndpoint = [string]$job.networkProxy.endpoint; $LeaseToken = [string]$job.networkProxy.token
 if ($HostEndpoint -notmatch '^192\.168\.251\.1:([1-9][0-9]{0,4})$' -or [int]$Matches[1] -gt 65535) { throw 'qOS network proxy endpoint is not on the host-only gateway' }
-if ($LeaseToken -notmatch '^[A-Fa-f0-9]{64}$') { throw 'qOS network proxy lease token is invalid' }
 $hostPort = [int]$Matches[1]
+if ($LeaseToken -notmatch '^[A-Fa-f0-9]{64}$') { throw 'qOS network proxy lease token is invalid' }
 
 Add-Type -TypeDefinition @'
 using System; using System.IO; using System.Net; using System.Net.Sockets; using System.Text; using System.Threading;
