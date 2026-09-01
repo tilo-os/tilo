@@ -27,6 +27,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::{LocalState, local_state::LocalBinding};
 
 type Element = Box<dyn Widget>;
 
@@ -93,6 +94,9 @@ pub struct AppShell {
     nav: Element,
     content: Element,
     search: Option<Element>,
+    test_id: Option<String>,
+    back_accessible_name: String,
+    narrow_screen_binding: Option<LocalBinding<NarrowScreen>>,
 
     sidebar_width: f64,
     breakpoint: f64,
@@ -136,6 +140,9 @@ impl AppShell {
             nav,
             content,
             search: None,
+            test_id: None,
+            back_accessible_name: String::from("Back"),
+            narrow_screen_binding: None,
             sidebar_width: DEFAULT_SHELL_SIDEBAR_WIDTH,
             breakpoint: DEFAULT_SHELL_BREAKPOINT,
             narrow_screen: NarrowScreen::Content,
@@ -160,6 +167,35 @@ impl AppShell {
     #[must_use]
     pub fn with_search(mut self, search: Element) -> Self {
         self.search = Some(search);
+        self
+    }
+
+    /// Give the shell a stable address for inspection and semantic actions.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = Some(id.into());
+        self
+    }
+
+    /// Set the Fluent key (or literal fallback) announced for compact Back.
+    #[must_use]
+    pub fn with_back_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.back_accessible_name = name.into();
+        self
+    }
+
+    /// Bind compact list/content navigation to typed local presentation state.
+    ///
+    /// A navigation row can set [`NarrowScreen::Content`] without retaining a
+    /// handle to the shell; activating the shell's Back affordance publishes
+    /// [`NarrowScreen::List`] through the same state. Wide layouts keep both
+    /// panes visible while remembering which one a later collapse should show.
+    #[must_use]
+    pub fn with_narrow_screen_state(mut self, state: &LocalState<NarrowScreen>) -> Self {
+        let (screen, binding) = LocalBinding::new(state);
+        self.narrow_screen = screen;
+        self.last_active = screen;
+        self.narrow_screen_binding = Some(binding);
         self
     }
 
@@ -188,9 +224,20 @@ impl AppShell {
     /// so a later collapse honours this choice.
     #[must_use]
     pub fn with_narrow_screen(mut self, screen: NarrowScreen) -> Self {
+        self.set_narrow_screen(screen, true);
+        self
+    }
+
+    fn set_narrow_screen(&mut self, screen: NarrowScreen, publish: bool) {
+        let changed = self.narrow_screen != screen;
         self.narrow_screen = screen;
         self.last_active = screen;
-        self
+        if changed && self.layout == ShellLayout::Narrow {
+            self.pending_rebuild = true;
+        }
+        if publish && let Some(binding) = &mut self.narrow_screen_binding {
+            binding.publish(&screen);
+        }
     }
 
     pub fn set_nav(&mut self, nav: Element) {
@@ -206,21 +253,14 @@ impl AppShell {
     /// The host calls this after a nav item is chosen. No-op when wide
     /// (both are already visible).
     pub fn notify_selection(&mut self) {
-        self.last_active = NarrowScreen::Content;
-        if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List {
-            self.narrow_screen = NarrowScreen::Content;
-            self.pending_rebuild = true;
-        }
+        self.set_narrow_screen(NarrowScreen::Content, true);
     }
 
     /// Returns whether anything moved (false when wide, or already on the
     /// list).
     pub fn back(&mut self) -> bool {
         if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
-            self.narrow_screen = NarrowScreen::List;
-            // Respect the explicit ask, so a later collapse doesn't override it.
-            self.last_active = NarrowScreen::List;
-            self.pending_rebuild = true;
+            self.set_narrow_screen(NarrowScreen::List, true);
             true
         } else {
             false
@@ -539,6 +579,13 @@ fn paint_child(
 
 impl Widget for AppShell {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let next_screen = self
+            .narrow_screen_binding
+            .as_mut()
+            .and_then(LocalBinding::poll);
+        if let Some(screen) = next_screen {
+            self.set_narrow_screen(screen, false);
+        }
         if let Some(search) = &mut self.search {
             search.sync(state, path);
         }
@@ -719,11 +766,11 @@ impl Widget for AppShell {
                 if self.content_area_rect.width() > 0.0
                     && self.content_area_rect.contains(self.last_cursor)
                 {
-                    self.last_active = NarrowScreen::Content;
+                    self.set_narrow_screen(NarrowScreen::Content, true);
                 } else if self.sidebar_panel_rect.width() > 0.0
                     && self.sidebar_panel_rect.contains(self.last_cursor)
                 {
-                    self.last_active = NarrowScreen::List;
+                    self.set_narrow_screen(NarrowScreen::List, true);
                 }
             }
             WindowEvent::MouseInput {
@@ -829,6 +876,39 @@ impl Widget for AppShell {
 
     fn name(&self) -> &'static str {
         "AppShell"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+
+        if self.layout != ShellLayout::Narrow
+            || self.narrow_screen != NarrowScreen::Content
+            || self.back_rect.width() <= 0.0
+        {
+            return None;
+        }
+        let back = AccessNode::new(Role::Button)
+            .with_action_target("back")
+            .with_name(crate::i18n::I18nManager::lookup_plain(
+                &self.back_accessible_name,
+            ))
+            .with_state(AccessState::new().focusable(true))
+            .with_bounds(self.back_rect);
+        Some(AccessNode::new(Role::Group).with_children(vec![back]))
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        target == "back" && matches!(action, crate::a11y::Action::Activate) && self.back()
     }
 
     fn get_rect(&self) -> Rect {
@@ -1080,6 +1160,39 @@ mod tests {
             vec!["Text"],
             "content screen composes only the content"
         );
+    }
+
+    #[test]
+    fn bound_compact_navigation_and_accessible_back_share_one_state() {
+        let screen = LocalState::new(NarrowScreen::List);
+        let mut shell = shell()
+            .with_id("settings-shell")
+            .with_back_accessible_name("Go back")
+            .with_narrow_screen_state(&screen)
+            .with_width_hint(460.0);
+        lay(&mut shell, 460.0, 820.0);
+        assert_eq!(shell.narrow_screen(), NarrowScreen::List);
+
+        screen.set(NarrowScreen::Content);
+        let mut document = AutoCommit::new();
+        shell.sync(&mut document, &automerge::ROOT);
+        assert!(shell.take_structure_dirty());
+        lay(&mut shell, 460.0, 820.0);
+
+        let semantics = shell.accessibility().expect("compact shell semantics");
+        let back = semantics.children.first().expect("synthetic Back button");
+        assert_eq!(back.role, crate::a11y::Role::Button);
+        assert_eq!(back.name.as_deref(), Some("Go back"));
+        assert_eq!(back.action_target.as_deref(), Some("back"));
+        assert!(back.bounds.is_some());
+        assert!(shell.perform_semantic_action(
+            "back",
+            &crate::a11y::Action::Activate,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
+        assert!(shell.take_structure_dirty());
     }
 
     /// Narrow: the back arrow is the way from the content screen back to the
