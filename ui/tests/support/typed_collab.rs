@@ -27,8 +27,8 @@ use std::thread;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use runtime_collab::raw::{
-    OpKind, action_stream, channel_handle, collab_service, context_stream, presence_event,
-    presence_handle, presence_payload, presence_stream, stream,
+    action_stream, channel_handle, collab_service, context_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, stream,
 };
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -41,7 +41,6 @@ const TEST_APP_ID: &str = "ui-integration-test";
 struct Op {
     bytes: Vec<u8>,
     author: String,
-    kind: OpKind,
 }
 
 #[derive(Clone)]
@@ -249,7 +248,6 @@ impl channel_handle::Server for ChannelHandle {
             &Op {
                 bytes,
                 author: self.user_id.clone(),
-                kind: OpKind::Signed,
             },
         );
         Promise::ok(())
@@ -294,30 +292,20 @@ impl channel_handle::Server for ChannelHandle {
         Promise::ok(())
     }
 
-    fn send_unsigned_snapshot(
+    fn retired_unsigned_snapshot(
         self: Rc<Self>,
-        params: channel_handle::SendUnsignedSnapshotParams,
-        _results: channel_handle::SendUnsignedSnapshotResults,
+        _params: channel_handle::RetiredUnsignedSnapshotParams,
+        _results: channel_handle::RetiredUnsignedSnapshotResults,
     ) -> Promise<(), capnp::Error> {
-        self.send_unsigned(
-            params
-                .get()
-                .and_then(channel_handle::send_unsigned_snapshot_params::Reader::get_data),
-            OpKind::UnsignedSnapshot,
-        )
+        Promise::ok(())
     }
 
-    fn send_unsigned_incremental(
+    fn retired_unsigned_incremental(
         self: Rc<Self>,
-        params: channel_handle::SendUnsignedIncrementalParams,
-        _results: channel_handle::SendUnsignedIncrementalResults,
+        _params: channel_handle::RetiredUnsignedIncrementalParams,
+        _results: channel_handle::RetiredUnsignedIncrementalResults,
     ) -> Promise<(), capnp::Error> {
-        self.send_unsigned(
-            params
-                .get()
-                .and_then(channel_handle::send_unsigned_incremental_params::Reader::get_data),
-            OpKind::UnsignedIncremental,
-        )
+        Promise::ok(())
     }
 
     fn subscribe_context(
@@ -387,29 +375,6 @@ impl channel_handle::Server for ChannelHandle {
     }
 }
 
-impl ChannelHandle {
-    fn send_unsigned(
-        &self,
-        data: Result<capnp::data::Reader<'_>, capnp::Error>,
-        kind: OpKind,
-    ) -> Promise<(), capnp::Error> {
-        let bytes = match data {
-            Ok(value) => value.to_vec(),
-            Err(error) => return Promise::err(error),
-        };
-        self.hub.fanout_op(
-            &self.channel,
-            self.peer,
-            &Op {
-                bytes,
-                author: self.user_id.clone(),
-                kind,
-            },
-        );
-        Promise::ok(())
-    }
-}
-
 struct OpStream {
     rx: Rc<RefCell<mpsc::UnboundedReceiver<Op>>>,
 }
@@ -436,7 +401,7 @@ impl stream::Server for OpStream {
             let mut out = results.get();
             out.set_op(&value.bytes);
             out.set_from_user_id(&value.author);
-            out.set_kind(value.kind);
+            out.set_kind(runtime_collab::raw::OpKind::Signed);
             Ok(())
         })
     }

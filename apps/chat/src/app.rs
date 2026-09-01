@@ -205,8 +205,8 @@ pub(crate) enum Hit {
     AddCategory(Id),
     /// The "+" create-workspace button at the foot of the rail.
     AddWorkspace,
-    /// Confirm the inline rename editor.
-    RenameConfirm,
+    /// Focus/place the caret in the inline structural rename field.
+    FocusRename,
     Reaction {
         msg: Id,
         emoji: String,
@@ -229,6 +229,8 @@ pub(crate) enum Hit {
     EditSave,
     /// Discard the inline message editor without writing.
     EditCancel,
+    /// Focus/place the caret in the inline message editor.
+    FocusEdit,
     EmojiChoice(String),
     FocusMain,
     FocusThread,
@@ -294,10 +296,6 @@ pub struct ChatApp {
     pub(crate) active_ws: Id,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
-    /// Caret index for the in-memory inline editors only — the message-edit
-    /// working text (`editing`) and the inline rename (`rename`). The
-    /// composers own their own caret inside their `TextInput`.
-    pub(crate) caret: usize,
     pub(crate) scroll: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) emoji_open: bool,
@@ -305,10 +303,11 @@ pub struct ChatApp {
     pub(crate) emoji_anchor: Point,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
-    /// Inline message editor: the id of your own message being edited plus its
-    /// working text. `self.caret` indexes into this text. Enter/Save writes it
-    /// through [`ChatDoc::edit_message`]; Esc/Cancel discards it.
-    pub(crate) editing: Option<(Id, String)>,
+    /// Your own message currently being edited. The shared multiline input
+    /// owns its working text, caret, selection and IME composition until Save
+    /// writes through [`ChatDoc::edit_message`].
+    pub(crate) editing: Option<Id>,
+    pub(crate) edit_input: TextInput,
 
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
@@ -316,8 +315,10 @@ pub struct ChatApp {
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
-    /// Inline rename editor: the target being renamed + its working text.
-    pub(crate) rename: Option<(MenuTarget, String)>,
+    /// Channel/category currently being renamed. The shared single-line input
+    /// owns the transient working name; structural CRDT policy stays here.
+    pub(crate) rename: Option<MenuTarget>,
+    pub(crate) rename_input: TextInput,
     pub(crate) swipe: Option<RowSwipe>,
 
     // Call state.
@@ -500,7 +501,6 @@ impl ChatApp {
             active_ws: "ws_acme".into(),
             active_channel: "c_crit".into(),
             focus: Focus::Main,
-            caret: 0,
             scroll: 0.0,
             thread_open: Some("m_concept".into()),
             emoji_open: false,
@@ -509,10 +509,12 @@ impl ChatApp {
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
+            edit_input: Self::new_message_editor(),
             attach_open: false,
             attach_entries: Vec::new(),
             menu: None,
             rename: None,
+            rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
             overlay_drag: None,
@@ -599,8 +601,12 @@ impl ChatApp {
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
     pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: &ChatAction) {
-        self.actions
-            .dispatch(doc, actions::CHAT_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::CHAT_ACTION_TYPE,
+            action,
+            actions::history_context(action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -772,18 +778,17 @@ impl ChatApp {
                 // with an earlier message still carrying the static "(edited)"
                 // marker — the whole edit story in one frame. Ephemeral shot
                 // only: at seed time the messages aren't loaded yet, so the
-                // working text is set directly and the caret is clamped to its
-                // end by `reload`.
+                // working text is staged directly in the same shared input the
+                // live Edit action uses.
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
-                self.editing = Some((
-                    "m_me2".into(),
-                    "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it."
-                        .into(),
-                ));
+                let text = "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it.";
+                self.edit_input.set_text(text);
+                self.edit_input.set_cursor_pos(text.len());
+                self.editing = Some("m_me2".into());
                 self.focus = Focus::Main;
-                self.caret = usize::MAX; // clamped to the working text length on reload
+                self.set_composer_focus();
             }
             "composer" => {
                 // The composer mid-compose: a multi-line draft with the caret,
@@ -796,7 +801,8 @@ impl ChatApp {
                 self.shot_composer_draft = Some(
                     "Shipping the composer on the shared TextInput — real caret, \
                      selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
-                        .into(),
+                        .to_string()
+                        + "\nPlease check teh adress",
                 );
             }
             "msgmenu" => {
@@ -1034,6 +1040,13 @@ impl ChatApp {
     /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
+    #[cfg_attr(
+        not(feature = "live-media"),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "live-media mutates capture state; the default build keeps the same call API"
+        )
+    )]
     pub(crate) fn acquire_screen(&mut self) -> bool {
         if !self.call_allows(crate::call::CallAction::ShareScreen) {
             return false;
@@ -1069,6 +1082,14 @@ impl ChatApp {
 
     /// Tear down the local screen capture and stop publishing the screen track.
     /// The caller clears `call.sharing` + the shared voice membership.
+    #[cfg_attr(
+        not(feature = "live-media"),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            clippy::unused_self,
+            reason = "live-media tears down capture state; the default build keeps the same call API"
+        )
+    )]
     pub(crate) fn release_screen(&mut self) {
         #[cfg(feature = "live-media")]
         {
@@ -1357,6 +1378,25 @@ impl ChatApp {
         t
     }
 
+    /// A local working copy for editing a sent message. It deliberately stays
+    /// unbound until Save so peers never observe half-finished revisions.
+    fn new_message_editor() -> TextInput {
+        TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_plain_chrome()
+            .with_font_size(15.0)
+    }
+
+    /// A single-line local field for channel/category names. The host commits
+    /// the trimmed value through the target-specific CRDT action on submit.
+    fn new_rename_input() -> TextInput {
+        TextInput::local()
+            .with_enter_submits(true)
+            .with_plain_chrome()
+            .with_font_size(13.0)
+    }
+
     /// The composer for the surface the user is typing in.
     pub(crate) fn focused_composer(&self) -> &TextInput {
         match self.focus {
@@ -1381,6 +1421,8 @@ impl ChatApp {
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
+        ui::Widget::set_focus(&mut self.edit_input, self.editing.is_some());
+        ui::Widget::set_focus(&mut self.rename_input, self.rename.is_some());
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -1465,16 +1507,6 @@ impl ChatApp {
             self.draft_main = draft;
         }
         self.set_composer_focus();
-        // Clamp the caret to whatever text the inline editor currently indexes
-        // (message-edit working text, or the rename buffer). The composers own
-        // their own caret, so it is not clamped here.
-        let max = match &self.editing {
-            Some((_, text)) => text.chars().count(),
-            None => 0,
-        };
-        if self.editing.is_some() && self.caret > max {
-            self.caret = max;
-        }
     }
 
     /// Advance the local read watermark for the channel currently in view so
@@ -1847,10 +1879,18 @@ impl Widget for ChatApp {
                 ..Default::default()
             }
         };
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let video_node = taffy.new_leaf(video_style).unwrap();
         node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
         self.video_node = Some(video_node);
 
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `video_node` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "video_node was just created in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -1869,7 +1909,9 @@ impl Widget for ChatApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1913,7 +1955,7 @@ impl Widget for ChatApp {
         self.draw_header(scene, tf, tr, theme, &mut hits);
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
-        self.draw_messages(scene, tf, tr, theme, msg_area, &mut hits);
+        self.draw_messages(scene, tf, tr, theme, presence, msg_area, &mut hits);
         scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
@@ -1953,7 +1995,7 @@ impl Widget for ChatApp {
         }
         if self.left_flap_open() || self.left_flap.reveal() > 0.001 {
             self.draw_rail(scene, tf, tr, theme, &mut hits);
-            self.draw_sidebar(scene, tf, tr, theme, &mut hits);
+            self.draw_sidebar(scene, tf, tr, theme, presence, &mut hits);
         }
 
         // Flap toggle buttons (hamburger / members) float over the header in
@@ -2080,7 +2122,6 @@ impl Widget for ChatApp {
             self.thread_open = None;
             self.scroll = 0.0;
             self.focus = Focus::Main;
-            self.caret = 0;
         }
     }
 

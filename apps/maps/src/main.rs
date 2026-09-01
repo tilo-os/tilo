@@ -41,6 +41,9 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     // Install the rustls crypto provider before any HTTPS fetch. The tile worker
     // and the geocoding/routing client also call this, but doing it here at
@@ -61,6 +64,7 @@ pub fn main() {
                 "--traffic",
                 "--offline",
                 "--menu",
+                "--attribution",
             ])
             .allowed_options(&["--panel"])
             .configure_app(|app| maps::actions::register(app.action_registry_mut())),
@@ -115,6 +119,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     }
     if args.has("--menu") {
         app.set_demo_overflow();
+    }
+    if args.has("--attribution") {
+        app.set_demo_attribution();
     }
     Ok(Box::new(app))
 }

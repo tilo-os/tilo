@@ -170,6 +170,12 @@ impl ShellView {
         self.observed
     }
 
+    /// Whether trusted compositor chrome currently occludes client content
+    /// and owns the seat. Remote input must be denied while this is true.
+    pub fn chrome_captures_input(&self) -> bool {
+        self.chrome_captures
+    }
+
     /// The on-screen rect of `surface`, if it is currently on screen.
     pub fn rect(&self, surface: SurfaceId) -> Option<Rect> {
         self.tiles

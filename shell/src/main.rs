@@ -114,46 +114,58 @@ fn log_gpu_pin(gpu_pin: Option<&compositor::render_node::ProcessPin>) {
     }
 }
 
-/// Resolve/create the qOS signing identity for this session, matching
-/// `--provision-identity`'s "run the ceremony and exit" contract. Returns
-/// `Some(code)` if `main` should return immediately with that exit code (the
-/// ceremony ran, or a migration path exited); `None` to keep booting. Split
-/// out of `main` to keep it short.
-fn resolve_identity(provision_identity_requested: bool) -> Option<std::process::ExitCode> {
+fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode> {
     match identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
-            if provision_identity_requested {
-                return Some(run_identity_onboarding(
-                    store.path().parent().map(std::path::Path::to_path_buf),
-                ));
+            if provision_requested {
+                tracing::info!(
+                    path = %store.path().display(),
+                    "identity repair found no existing identity; interactive native setup will handle creation"
+                );
+                return Some(std::process::ExitCode::SUCCESS);
             }
-            tracing::warn!(
-                "no qOS identity found at {}; the desktop will boot without a signing \
-                 identity. Nothing you do will be attributable to you until \
-                 qos-identity.service has run in this session.",
-                store.path().display()
+            if compositor::parse_mode_from_args() == Mode::Hosted {
+                tracing::error!(
+                    path = %store.path().display(),
+                    "hosted mode cannot create the first identity; start a native qOS session once to complete setup"
+                );
+                return Some(std::process::ExitCode::FAILURE);
+            }
+            tracing::info!(
+                "no qOS identity found at {}; native compositor chrome will run {} setup",
+                store.path().display(),
+                if compositor::parse_install_mode_from_args()
+                    == compositor::InstallMode::HostDesktop
+                {
+                    "the reduced host-session identity"
+                } else {
+                    "first-login"
+                }
             );
         }
-        Ok(store) if provision_identity_requested => {
-            // Migrate older installs which have the personal signing record
-            // but not yet the certified device/Iroh identity chain.
+        Ok(store) => {
             let Some(identity_dir) = store.path().parent() else {
                 tracing::error!("identity record has no parent directory");
                 return Some(std::process::ExitCode::FAILURE);
             };
             let paths = firstboot::collaboration_identity_paths();
-            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                tracing::error!("could not provision collaboration identity: {e}");
+            if let Err(error) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
+                if provision_requested {
+                    tracing::error!("could not provision collaboration identity: {error}");
+                } else {
+                    tracing::error!("qOS identity chain is incomplete or invalid: {error}");
+                }
                 return Some(std::process::ExitCode::FAILURE);
             }
-            tracing::info!("qOS collaboration identity is provisioned");
-            return Some(std::process::ExitCode::SUCCESS);
-        }
-        Ok(store) => {
+            if provision_requested {
+                tracing::info!("qOS collaboration identity is provisioned");
+                return Some(std::process::ExitCode::SUCCESS);
+            }
             tracing::info!("loaded qOS identity from {}", store.path().display());
         }
-        Err(e) => {
-            tracing::warn!("could not initialise identity store: {e}");
+        Err(error) => {
+            tracing::error!("could not initialise identity store: {error}");
+            return Some(std::process::ExitCode::FAILURE);
         }
     }
     None
@@ -165,6 +177,30 @@ fn main() -> std::process::ExitCode {
     qos_startup_metrics::init();
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
+
+    // Inspect process shape while startup is still single-threaded. Host
+    // packages pass an explicit installation context; deriving it from a
+    // distro name, desktop variable or backend would conflate independent
+    // facts and break on a different display manager.
+    let raw_args: Vec<String> = std::env::args().collect();
+    maybe_run_sandbox_exec(&raw_args);
+    let arg_refs: Vec<&str> = raw_args
+        .iter()
+        .skip(1)
+        .map(std::string::String::as_str)
+        .collect();
+    if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop {
+        match identity_provisioning::configure_host_identity_root() {
+            Ok(root) => eprintln!(
+                "qOS host session: device identity will be stored under {}",
+                root.display()
+            ),
+            Err(error) => {
+                eprintln!("error: cannot resolve host-session identity storage: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    }
 
     // Decide which GPU this session runs on before anything opens one — the
     // warmup thread below builds a wgpu context, and on a multi-GPU box its
@@ -194,28 +230,41 @@ fn main() -> std::process::ExitCode {
         });
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
-    // Landlock launcher shim: must short-circuit before any compositor setup.
-    let raw_args: Vec<String> = std::env::args().collect();
-    maybe_run_sandbox_exec(&raw_args);
-
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
     log_gpu_pin(gpu_pin.as_ref());
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
+    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
     let provision_identity_requested = compositor::parse_provision_identity_from_args();
 
-    if portal_only && firstboot_requested {
+    if portal_only && (firstboot_requested || firstboot_only_requested) {
         eprintln!(
-            "error: --portal-server-only and --firstboot are mutually exclusive; \
+            "error: --portal-server-only and first-boot modes are mutually exclusive; \
              pick one (the systemd units never combine them)."
         );
         return std::process::ExitCode::from(2);
     }
 
+    if firstboot_requested && firstboot_only_requested {
+        eprintln!(
+            "error: --firstboot and --firstboot-only are mutually exclusive; \
+             --firstboot continues into the compositor while --firstboot-only exits."
+        );
+        std::process::exit(2);
+    }
+
     if portal_only {
         return run_portal_server_only();
+    }
+
+    if firstboot_only_requested {
+        if let Err(e) = firstboot::run() {
+            tracing::error!("firstboot-only: setup failed: {e}");
+            std::process::exit(1);
+        }
+        return std::process::ExitCode::SUCCESS;
     }
 
     if firstboot_requested && let Err(e) = firstboot::run() {
@@ -223,16 +272,15 @@ fn main() -> std::process::ExitCode {
         // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
         tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
     }
-    // Fall through to the normal compositor entry point — the systemd unit
-    // runs us as `Type=oneshot`, so the process exits at the bottom of `app.run()` as usual.
+    // `--firstboot` is the host-session wrapper hook: it performs setup then
+    // falls through to the normal compositor entry point. System units use
+    // `--firstboot-only` instead.
 
-    // A signing identity belongs to the person, so it's created here — in
-    // their session, never by the system unit running as root before anyone
-    // has logged in. `--provision-identity` is `qos-identity.service`'s
-    // **user**-unit entry point: it runs the ceremony and exits. Reaching
-    // this point without an identity and without that flag means something started the desktop directly.
-    if let Some(code) = resolve_identity(provision_identity_requested) {
-        return code;
+    // `--provision-identity` is migration/repair for an existing record.
+    // Creation is interactive and lives in trusted native-compositor chrome;
+    // a pre-graphical winit app has no display server to connect to.
+    if let Some(exit_code) = prepare_identity(provision_identity_requested) {
+        return exit_code;
     }
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
@@ -251,28 +299,6 @@ fn main() -> std::process::ExitCode {
             compositor::native::run();
         }
     }
-    std::process::ExitCode::SUCCESS
-}
-
-/// Host the first-login identity ceremony and block until finished. Runs
-/// as its own `ui::App` rather than inside the compositor, since this happens *before* a desktop exists.
-fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) -> std::process::ExitCode {
-    let Some(dir) = identity_dir else {
-        // No resolvable home means no right place for a signing key, and guessing one is how the key ended up in root's tree to begin with.
-        tracing::error!(
-            "cannot provision an identity: no user config directory resolved from \
-             $XDG_CONFIG_HOME or $HOME"
-        );
-        return std::process::ExitCode::FAILURE;
-    };
-    tracing::info!(
-        "running first-login identity onboarding into {}",
-        dir.display()
-    );
-    let state = ui::State::new();
-    let view = shell::onboarding_view::OnboardingView::new(dir);
-    let app = ui::App::new(state, Box::new(view));
-    app.run();
     std::process::ExitCode::SUCCESS
 }
 

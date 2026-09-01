@@ -565,7 +565,11 @@ impl FrameHarness {
         let (taffy_id, key_path) = match resolved {
             A11yTarget::Root => return Err("the window root cannot be operated".into()),
             A11yTarget::Widget(id) => (id, Vec::new()),
-            A11yTarget::Synthetic { owner, key_path } => (owner, key_path),
+            // Keys here: the driver dispatches through `perform_action_at`,
+            // which identifies a synthetic child by identity.
+            A11yTarget::Synthetic {
+                owner, key_path, ..
+            } => (owner, key_path),
         };
         // Operating an element inside a widget also moves the keyboard to that
         // widget, matching the App: the widget moves its own cursor, the host
@@ -687,11 +691,18 @@ impl FrameHarness {
         let root: *mut dyn Widget = self.root.as_mut();
         crate::undo::record_dispatched_action(&mut self.state, root, &self.node_map, &author);
         if self.root.needs_commit() {
-            // Authored, as `App::commit_action` is. An anonymous entry is
-            // invisible to author-scoped undo, so a scenario that pressed
-            // Ctrl+Z would find nothing where the user finds their last edit.
-            self.state
-                .commit_action_authored(None, None, Some(author.clone()));
+            // Authored *and* carrying the widget's commit context. An
+            // anonymous entry is invisible to author-scoped undo, so a
+            // scenario that pressed Ctrl+Z would find nothing where the user
+            // finds their last edit; dropping the context loses the
+            // provenance the history explorer reads.
+            let context = self.root.take_commit_context();
+            self.state.commit_action_authored_with_context(
+                None,
+                None,
+                Some(author.clone()),
+                context,
+            );
             self.root.on_commit();
         }
         // An Undo/Redo control the widget tree activated during that event.

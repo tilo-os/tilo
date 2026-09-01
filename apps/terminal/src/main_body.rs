@@ -887,11 +887,10 @@ impl TerminalWidget {
     /// and tests / headless screenshot scenarios feed canned VT sequences
     /// through the very same path.
     ///
-    /// # Panics
-    ///
-    /// Panics if `grid_id`, `alt_grid_id`, `cursor_id` or `links_id` are
-    /// still unset — an internal invariant `init_crdt`, called first here,
-    /// always establishes.
+    /// A no-op if `grid_id`, `alt_grid_id`, `cursor_id` or `links_id` are
+    /// still unset after `init_crdt` (called first here) — normally an
+    /// internal invariant it always establishes, but if the underlying doc
+    /// rejected a `put_object` there is nothing to feed into.
     pub fn feed(&mut self, state: &mut AutoCommit, root: &ObjId, bytes: &[u8]) {
         self.init_crdt(state, root);
 
@@ -905,12 +904,23 @@ impl TerminalWidget {
         // XTVERSION, DECRQM). Written back to the PTY after the parse — the
         // vte performer only reads, so it stages answers here.
         let mut responses: Vec<u8> = Vec::new();
+        // `init_crdt` just above always establishes these ids; if it somehow
+        // bailed out early (a `put_object` failure on the underlying doc),
+        // there is nothing to feed into.
+        let (Some(main_grid_id), Some(alt_grid_id), Some(cursor_id), Some(links_id)) = (
+            self.grid_id.clone(),
+            self.alt_grid_id.clone(),
+            self.cursor_id.clone(),
+            self.links_id.clone(),
+        ) else {
+            return;
+        };
         let mut performer = TerminalPerformer {
             state,
-            main_grid_id: self.grid_id.clone().unwrap(),
-            alt_grid_id: self.alt_grid_id.clone().unwrap(),
-            cursor_id: self.cursor_id.clone().unwrap(),
-            links_id: self.links_id.clone().unwrap(),
+            main_grid_id,
+            alt_grid_id,
+            cursor_id,
+            links_id,
             main_line_ids: &mut self.line_ids,
             alt_line_ids: &mut self.alt_line_ids,
             alt_active: &mut self.alt_active,
@@ -1053,12 +1063,17 @@ impl TerminalWidget {
             // app narrows it again.
             self.scroll_top = 0;
             self.scroll_bottom = new_height.saturating_sub(1);
-            let _ = self.pty_master.lock().unwrap().resize(PtySize {
-                rows: self.height as u16,
-                cols: self.width as u16,
-                pixel_width: grid_rect.width() as u16,
-                pixel_height: grid_rect.height() as u16,
-            });
+            // A poisoned lock means some other thread already panicked while
+            // holding it; skip the PTY resize rather than propagate that
+            // panic here too — the grid dimensions above are updated either way.
+            if let Ok(master) = self.pty_master.lock() {
+                let _ = master.resize(PtySize {
+                    rows: self.height as u16,
+                    cols: self.width as u16,
+                    pixel_width: grid_rect.width() as u16,
+                    pixel_height: grid_rect.height() as u16,
+                });
+            }
         }
     }
 
@@ -1067,18 +1082,18 @@ impl TerminalWidget {
             if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
                 self.grid_id = Some(id);
             } else {
-                let id = state
-                    .put_object(root, "terminal_grid", ObjType::List)
-                    .unwrap();
+                // If the doc rejects this `put_object` there is no grid to
+                // stand up; bail rather than unwrap into a panic.
+                let Ok(id) = state.put_object(root, "terminal_grid", ObjType::List) else {
+                    return;
+                };
                 self.grid_id = Some(id);
             }
         }
-        Self::ensure_lines(
-            state,
-            self.grid_id.as_ref().unwrap(),
-            self.height,
-            &mut self.line_ids,
-        );
+        let Some(grid_id) = self.grid_id.clone() else {
+            return;
+        };
+        Self::ensure_lines(state, &grid_id, self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::List), id))) =
@@ -1086,26 +1101,24 @@ impl TerminalWidget {
             {
                 self.alt_grid_id = Some(id);
             } else {
-                let id = state
-                    .put_object(root, "terminal_grid_alt", ObjType::List)
-                    .unwrap();
+                let Ok(id) = state.put_object(root, "terminal_grid_alt", ObjType::List) else {
+                    return;
+                };
                 self.alt_grid_id = Some(id);
             }
         }
-        Self::ensure_lines(
-            state,
-            self.alt_grid_id.as_ref().unwrap(),
-            self.height,
-            &mut self.alt_line_ids,
-        );
+        let Some(alt_grid_id) = self.alt_grid_id.clone() else {
+            return;
+        };
+        Self::ensure_lines(state, &alt_grid_id, self.height, &mut self.alt_line_ids);
 
         if self.links_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
                 self.links_id = Some(id);
             } else {
-                let id = state
-                    .put_object(root, "terminal_links", ObjType::Map)
-                    .unwrap();
+                let Ok(id) = state.put_object(root, "terminal_links", ObjType::Map) else {
+                    return;
+                };
                 self.links_id = Some(id);
             }
         }
@@ -1134,10 +1147,10 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else {
-                let cursor_id = state.put_object(root, "cursor", ObjType::Map).unwrap();
-                state.put(&cursor_id, "x", 0u64).unwrap();
-                state.put(&cursor_id, "y", 0u64).unwrap();
+            } else if let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
+                && state.put(&cursor_id, "x", 0u64).is_ok()
+                && state.put(&cursor_id, "y", 0u64).is_ok()
+            {
                 self.cursor_id = Some(cursor_id);
             }
         }
@@ -1161,8 +1174,13 @@ impl TerminalWidget {
             // when the cursor lands past its current end, so nothing depends
             // on the eager fill.
             for y in current_len..min_len {
-                let line_id = state.insert_object(grid_id, y, ObjType::Map).unwrap();
-                let _ = state.put_object(&line_id, "text", ObjType::Text).unwrap();
+                // A failed insert means the doc rejected this op; further
+                // inserts at later indices would only compound the
+                // misalignment, so stop rather than push on.
+                let Ok(line_id) = state.insert_object(grid_id, y, ObjType::Map) else {
+                    break;
+                };
+                let _ = state.put_object(&line_id, "text", ObjType::Text);
             }
         }
         let new_len = state.length(grid_id);
@@ -1300,6 +1318,15 @@ impl Widget for TerminalWidget {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1314,7 +1341,7 @@ impl Widget for TerminalWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1804,8 +1831,7 @@ impl TerminalWidget {
             bytes = Some(t.as_bytes().to_vec());
         }
         if let Some(b) = bytes {
-            {
-                let mut w = self.pty_write.lock().unwrap();
+            if let Ok(mut w) = self.pty_write.lock() {
                 let _ = w.write_all(&b);
                 let _ = w.flush();
             }
@@ -1854,13 +1880,15 @@ impl TerminalWidget {
         for (i, line_id) in line_ids.iter().enumerate().take(end).skip(start) {
             if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(line_id, "text")
                 && let Ok(text) = state.text(&text_id)
+                && let Some(slot) = self.grid.get_mut(i)
             {
-                self.grid[i] = text;
+                *slot = text;
             }
             if let Ok(Some((Value::Scalar(v), _))) = state.get(line_id, "attrs")
                 && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
+                && let Some(slot) = self.grid_attrs.get_mut(i)
             {
-                self.grid_attrs[i] = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
+                *slot = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
             }
         }
         self.mirror_valid = true;
@@ -1977,10 +2005,9 @@ impl TerminalWidget {
         {
             let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
             let attrs_idx = y + start_y;
-            if attrs_idx >= self.grid_attrs.len() {
+            let Some(attrs) = self.grid_attrs.get(attrs_idx) else {
                 continue;
-            }
-            let attrs = &self.grid_attrs[attrs_idx];
+            };
 
             let mut current_run = String::new();
             let mut current_attr: Option<Attr> = None;
@@ -1992,18 +2019,16 @@ impl TerminalWidget {
                 if cell_idx >= self.width {
                     break;
                 }
-                let attr = if cell_idx < attrs.len() {
-                    attrs[cell_idx]
-                } else {
-                    Attr::default()
-                };
+                let attr = attrs.get(cell_idx).copied().unwrap_or_default();
 
                 if Some(attr) != current_attr {
-                    if !current_run.is_empty() {
+                    if !current_run.is_empty()
+                        && let Some(prev_attr) = current_attr
+                    {
                         self.draw_run(
                             scene,
                             &current_run,
-                            current_attr.unwrap(),
+                            prev_attr,
                             py,
                             run_start_cell_idx as f64 * self.char_w + padding_x,
                             text_renderer,
@@ -2020,11 +2045,13 @@ impl TerminalWidget {
                 current_run.push(c);
                 cell_idx += c_w;
             }
-            if !current_run.is_empty() {
+            if !current_run.is_empty()
+                && let Some(prev_attr) = current_attr
+            {
                 self.draw_run(
                     scene,
                     &current_run,
-                    current_attr.unwrap(),
+                    prev_attr,
                     py,
                     run_start_cell_idx as f64 * self.char_w + padding_x,
                     text_renderer,
@@ -2980,7 +3007,12 @@ impl Perform for TerminalPerformer<'_> {
                 attrs,
             });
         }
-        let buf = self.print_buf.as_mut().expect("print_buf loaded above");
+        // `need_load` above always leaves `print_buf` populated by this
+        // point — unless the CRDT `get` inside it failed, in which case that
+        // branch already returned. Nothing left to print into either way.
+        let Some(buf) = self.print_buf.as_mut() else {
+            return;
+        };
 
         // Text edit, in char space (Automerge `Text` is char-addressed, so the
         // buffer mirrors that exactly). Lines grow on demand: pad with spaces
@@ -3012,15 +3044,17 @@ impl Perform for TerminalPerformer<'_> {
         // so a link and its styling compose.
         let mut cell_attr = self.current_attr;
         cell_attr.link_id = self.current_link_id;
-        buf.attrs[start..start + ATTR_BYTES].copy_from_slice(&cell_attr.pack());
+        if let Some(dest) = buf.attrs.get_mut(start..start + ATTR_BYTES) {
+            dest.copy_from_slice(&cell_attr.pack());
+        }
         if char_w > 1 {
             let mut cont = cell_attr;
             cont.is_wide_cont = true;
             let cont_packed = cont.pack();
             for i in 1..char_w {
                 let s = (self.cursor_x + i) * ATTR_BYTES;
-                if s + ATTR_BYTES <= buf.attrs.len() {
-                    buf.attrs[s..s + ATTR_BYTES].copy_from_slice(&cont_packed);
+                if let Some(dest) = buf.attrs.get_mut(s..s + ATTR_BYTES) {
+                    dest.copy_from_slice(&cont_packed);
                 }
             }
         }
@@ -3339,23 +3373,22 @@ impl TerminalPerformer<'_> {
     }
 
     /// Insert a fresh blank line object into the active grid at `idx`,
-    /// returning its id. Does not touch `line_ids`.
-    fn make_blank_line(&mut self, idx: usize) -> ObjId {
+    /// returning its id. Does not touch `line_ids`. Returns `None` if the
+    /// underlying doc rejected the insert (nothing sane to fall back to —
+    /// callers skip the line rather than fabricate an id).
+    fn make_blank_line(&mut self, idx: usize) -> Option<ObjId> {
         let grid_id = self.active_grid_id();
-        let line_id = self
-            .state
-            .insert_object(&grid_id, idx, ObjType::Map)
-            .unwrap();
+        let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
         let text_id = self
             .state
             .put_object(&line_id, "text", ObjType::Text)
-            .unwrap();
+            .ok()?;
         let _ = self
             .state
             .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
         let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
         let _ = self.state.put(&line_id, "attrs", attr_bytes);
-        line_id
+        Some(line_id)
     }
 
     fn newline(&mut self) {
@@ -3376,20 +3409,9 @@ impl TerminalPerformer<'_> {
             // Main buffer accumulates scrollback.
             let grid_id = self.main_grid_id.clone();
             let idx = self.main_line_ids.len();
-            let line_id = self
-                .state
-                .insert_object(&grid_id, idx, ObjType::Map)
-                .unwrap();
-            let text_id = self
-                .state
-                .put_object(&line_id, "text", ObjType::Text)
-                .unwrap();
-            let _ = self
-                .state
-                .splice_text(&text_id, 0, 0, &" ".repeat(self.width));
-            let attr_bytes: Vec<u8> = vec![Attr::default().pack(); self.width].concat();
-            let _ = self.state.put(&line_id, "attrs", attr_bytes);
-            self.main_line_ids.push(line_id);
+            if let Some(line_id) = self.make_blank_line(idx) {
+                self.main_line_ids.push(line_id);
+            }
 
             // Bound the retained scrollback. Trimming one line at a time on
             // every append made `Vec::remove(0)` an O(n) shift per output line
@@ -3426,8 +3448,9 @@ impl TerminalPerformer<'_> {
             let grid_id = self.active_grid_id();
             let _ = self.state.delete(&grid_id, top);
             self.active_line_ids_mut().remove(top);
-            let line = self.make_blank_line(bot);
-            self.active_line_ids_mut().insert(bot, line);
+            if let Some(line) = self.make_blank_line(bot) {
+                self.active_line_ids_mut().insert(bot, line);
+            }
         }
     }
 
@@ -3448,8 +3471,9 @@ impl TerminalPerformer<'_> {
             let grid_id = self.active_grid_id();
             let _ = self.state.delete(&grid_id, bot);
             self.active_line_ids_mut().remove(bot);
-            let line = self.make_blank_line(top);
-            self.active_line_ids_mut().insert(top, line);
+            if let Some(line) = self.make_blank_line(top) {
+                self.active_line_ids_mut().insert(top, line);
+            }
         }
     }
 
@@ -3469,8 +3493,9 @@ impl TerminalPerformer<'_> {
             let grid_id = self.active_grid_id();
             let _ = self.state.delete(&grid_id, bot);
             self.active_line_ids_mut().remove(bot);
-            let line = self.make_blank_line(at);
-            self.active_line_ids_mut().insert(at, line);
+            if let Some(line) = self.make_blank_line(at) {
+                self.active_line_ids_mut().insert(at, line);
+            }
         }
         self.cursor_x = 0;
     }
@@ -3491,8 +3516,9 @@ impl TerminalPerformer<'_> {
             let grid_id = self.active_grid_id();
             let _ = self.state.delete(&grid_id, at);
             self.active_line_ids_mut().remove(at);
-            let line = self.make_blank_line(bot);
-            self.active_line_ids_mut().insert(bot, line);
+            if let Some(line) = self.make_blank_line(bot) {
+                self.active_line_ids_mut().insert(bot, line);
+            }
         }
         self.cursor_x = 0;
     }
@@ -3630,8 +3656,8 @@ impl TerminalPerformer<'_> {
             let empty = Attr::default().pack();
             for i in from..(from + count) {
                 let s = i * ATTR_BYTES;
-                if s + ATTR_BYTES <= attr_bytes.len() {
-                    attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&empty);
+                if let Some(dest) = attr_bytes.get_mut(s..s + ATTR_BYTES) {
+                    dest.copy_from_slice(&empty);
                 }
             }
             let _ = self.state.put(line_obj, "attrs", attr_bytes);
@@ -3737,8 +3763,7 @@ impl TerminalPerformer<'_> {
             return;
         }
         let mut i = 0;
-        while i < groups.len() {
-            let group = &groups[i];
+        while let Some(group) = groups.get(i) {
             let code = group.first().copied().unwrap_or(0);
             match code {
                 0 => self.current_attr = Attr::default(),
@@ -3768,7 +3793,7 @@ impl TerminalPerformer<'_> {
                     let is_fg = code == 38;
                     if group.len() >= 2 {
                         // Colon subparam form: `38:2:..:r:g:b` or `38:5:n`.
-                        if let Some(col) = color_from_subparams(&group[1..]) {
+                        if let Some(col) = group.get(1..).and_then(color_from_subparams) {
                             if is_fg {
                                 self.current_attr.fg = col;
                             } else {
@@ -3958,11 +3983,10 @@ fn color_from_subparams(sub: &[u16]) -> Option<CellColor> {
         Some(2) => {
             let n = sub.len();
             if n >= 4 {
-                Some(CellColor::Rgb(
-                    sub[n - 3] as u8,
-                    sub[n - 2] as u8,
-                    sub[n - 1] as u8,
-                ))
+                let r = sub.get(n - 3).copied().unwrap_or(0) as u8;
+                let g = sub.get(n - 2).copied().unwrap_or(0) as u8;
+                let b = sub.get(n - 1).copied().unwrap_or(0) as u8;
+                Some(CellColor::Rgb(r, g, b))
             } else if n >= 2 {
                 // `38:2:r` style with too few components — treat what we have.
                 Some(CellColor::Rgb(sub.get(1).copied().unwrap_or(0) as u8, 0, 0))
@@ -4053,7 +4077,11 @@ pub(crate) fn cell_char_at(line: &str, col: usize) -> Option<char> {
 
 pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> Color {
     if code < 16 {
-        palette.ansi[code as usize]
+        palette
+            .ansi
+            .get(code as usize)
+            .copied()
+            .unwrap_or(palette.fg_default)
     } else if code < 232 {
         // 6x6x6 cube colors are deterministic ANSI math, not a themable
         // surface — the cube is defined by the ANSI 256 spec, not by the OS
@@ -4614,11 +4642,15 @@ impl TerminalWidget {
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
-                let mut r = reader.lock().unwrap();
+                // A poisoned lock means the reader is unrecoverable (some
+                // other thread panicked while holding it); nothing to do but
+                // stop this reader rather than panic here too.
+                let Ok(mut r) = reader.lock() else { break };
                 match std::io::Read::read(&mut *r, &mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if output_tx.send(buf[..n].to_vec()).is_err() {
+                        let Some(chunk) = buf.get(..n) else { break };
+                        if output_tx.send(chunk.to_vec()).is_err() {
                             break;
                         }
                         // Wake the event loop so `sync` drains the PTY. Coalesced

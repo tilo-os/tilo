@@ -8,7 +8,7 @@
 //! how the dialog is reviewed.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use qos_bluez::{PairingPrompt, PairingRequest};
 use shell::bluetooth_prompt::PairingPromptView;
@@ -37,7 +37,7 @@ const WIDTH_F32: f32 = WIDTH as f32;
 )]
 const HEIGHT_F32: f32 = HEIGHT as f32;
 
-fn shoot(theme: &Theme, out: PathBuf, name: &str, prompt: PairingPrompt) {
+fn shoot(theme: &Theme, out: &Path, name: &str, prompt: PairingPrompt) -> Result<(), String> {
     let mut state = State::new();
     let mut view = PairingPromptView::new(PairingRequest {
         device_path: "/org/bluez/hci0/dev_88_C9_E8_6F_B4_8B".into(),
@@ -63,7 +63,7 @@ fn shoot(theme: &Theme, out: PathBuf, name: &str, prompt: PairingPrompt) {
                 })
             },
         )
-        .unwrap_or_else(|e| panic!("compute_layout_with_measure: {e}"));
+        .map_err(|e| format!("compute_layout_with_measure: {e}"))?;
     view.apply_layout(&taffy, node, Point::ZERO);
     view.sync(&mut state.doc, &state.root);
 
@@ -72,44 +72,46 @@ fn shoot(theme: &Theme, out: PathBuf, name: &str, prompt: PairingPrompt) {
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
+    Ok(())
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("PAIRING_SHOTS_OUT").unwrap_or_else(|_| "target/pairing-shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create_dir_all({dir}): {e}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all({dir}): {e}"))?;
     let dir = PathBuf::from(dir);
 
     for (theme, suffix) in [(Theme::dark(), "dark"), (Theme::light(), "light")] {
         shoot(
             &theme,
-            dir.join(format!("confirm-{suffix}.png")),
+            &dir.join(format!("confirm-{suffix}.png")),
             "WH-1000XM4",
             PairingPrompt::ConfirmPasskey { passkey: 424_242 },
-        );
+        )?;
         shoot(
             &theme,
-            dir.join(format!("display-{suffix}.png")),
+            &dir.join(format!("display-{suffix}.png")),
             "MX KEYS S",
             PairingPrompt::DisplayPasskey {
                 passkey: 731_908,
                 entered: 3,
             },
-        );
+        )?;
         shoot(
             &theme,
-            dir.join(format!("entry-{suffix}.png")),
+            &dir.join(format!("entry-{suffix}.png")),
             "Keyboard Craft",
             PairingPrompt::RequestPasskey,
-        );
+        )?;
         shoot(
             &theme,
-            dir.join(format!("just-works-{suffix}.png")),
+            &dir.join(format!("just-works-{suffix}.png")),
             "Bose Mini II SoundLink",
             PairingPrompt::ConfirmPairing,
-        );
+        )?;
     }
+    Ok(())
 }

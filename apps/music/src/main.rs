@@ -73,6 +73,9 @@ const SHOT_SCENARIOS: &[&str] = &[
     "album-page",
 ];
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
 ///
 /// Returns an error if `--probe` fails: backend init, the search itself, a

@@ -14,6 +14,7 @@ name = "camera"
 path = "src/main.rs"
 
 [features]
+thin = ["dep:runtime-dylib"]
 # Live camera capture ships on by default: a normally-built `camera` opens the
 # real device (GStreamer v4l2src) and shows the live viewfinder. The capture
 # pipeline is only driven for the `Storage::Disk` (live) source — the sample
@@ -25,13 +26,13 @@ default = ["live-capture"]
 live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # The qOS ACTION model: Camera's `actions` module exports its gallery/scan
 # metadata operations as replayable actions the host's Ctrl+K palette dispatches.
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

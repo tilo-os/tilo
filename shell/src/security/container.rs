@@ -59,7 +59,8 @@ impl Container {
         cmd.arg("--chdir").arg("/project");
 
         // 5. Wayland Socket
-        let host_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or("/run/user/1000".into());
+        let host_runtime_dir =
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
         let host_socket_path = format!("{host_runtime_dir}/{wayland_socket}");
 
         let sandbox_runtime_dir = "/tmp/runtime";
@@ -105,6 +106,11 @@ impl Container {
         cmd
     }
 
+    /// # Errors
+    ///
+    /// Returns `Err` if the per-tab debug log file cannot be created, its
+    /// handle cannot be cloned for the stderr stream, or the `bwrap`
+    /// process itself fails to spawn.
     pub fn spawn(
         &self,
         app_command: &str,

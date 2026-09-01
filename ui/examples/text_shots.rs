@@ -144,7 +144,10 @@ pub fn run(_args: &[String]) {
         Some((6, 13)),
         "word selection is live"
     );
-    assert_eq!(ni.value(), 16.0, "number field seeded");
+    assert!(
+        (ni.value() - 16.0).abs() < f64::EPSILON,
+        "number field seeded"
+    );
     assert_eq!(cp.hex_string(), "#6366F1", "picker seeded to indigo");
     println!("OK: selection band + number field + color picker rendered");
 }

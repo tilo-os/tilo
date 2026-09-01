@@ -14,6 +14,7 @@ name = "tube"
 path = "src/main.rs"
 
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # Shared streaming + playback layer. The watch page's video surface is a
 # `ui::widget::VideoPlayer` driven by a `media::MediaEngine`, so real decode +
@@ -82,6 +83,7 @@ vello_encoding.workspace = true
 png.workspace = true
 
 [features]
+thin = ["dep:runtime-dylib"]
 # The real app ships on by default: `live` gives real YouTube data and `media`
 # gives real GStreamer decode/playback + audio out, so a normally-built `tube`
 # streams real video out of the box. `--shots` and tests stay hermetic at

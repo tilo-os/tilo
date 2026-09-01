@@ -149,7 +149,7 @@ impl AuthenticatorApp {
     fn with_mode(seed_mode: SeedMode) -> Self {
         Self {
             vault: Vault::new(),
-            search: TextInput::local(),
+            search: TextInput::local().with_kind(ui::widget::TextInputKind::Search),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
@@ -203,8 +203,16 @@ impl AuthenticatorApp {
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::TotpAction) {
-        self.actions
-            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::TOTP_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action(
+                "org.qos.Authenticator",
+                "Authenticator",
+                action,
+            ),
+        );
     }
 
     /// Re-project the in-memory vault from the now-authoritative document, and —

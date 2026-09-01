@@ -232,7 +232,7 @@ impl PdfApp {
     fn counter_text(&self, compact: bool) -> String {
         let n = self.match_count();
         if n == 0 {
-            return if self.query.is_empty() {
+            return if self.query().is_empty() {
                 String::new()
             } else if compact {
                 "0".to_string()
@@ -1552,7 +1552,7 @@ impl PdfApp {
     // ---- search strip ----------------------------------------------
 
     fn draw_search(
-        &self,
+        &mut self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -1572,10 +1572,9 @@ impl PdfApp {
         hits
     }
 
-    /// The search field background, glyph, typed query (or placeholder) and
-    /// its trailing caret indicator.
+    /// The PDF-specific field shell and magnifier around the shared editor.
     fn draw_search_field(
-        &self,
+        &mut self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -1600,32 +1599,20 @@ impl PdfApp {
             theme.text_dim,
         );
 
-        let shown = if self.query.is_empty() {
-            "Search document…".to_string()
-        } else {
-            self.query.clone()
-        };
-        let col = if self.query.is_empty() {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
-        tr.draw_text(
-            scene,
-            &shown,
-            13.0,
-            col,
-            base * Affine::translate((field.x0 + 32.0, vcenter(field, 13.0))),
-            Some((field.width() - 40.0) as f32),
-        );
-        // blinking-less caret indicator after the query text (clamped inside the
-        // field so a long query never paints the caret over the counter).
-        if !self.query.is_empty() {
-            let (qw, _) = tr.measure(&self.query, 13.0, None);
-            let cx = (field.x0 + 32.0 + f64::from(qw) + 1.0).min(field.x1 - 4.0);
-            let caret = Rect::new(cx, field.y0 + 6.0, cx + 1.5, field.y1 - 6.0);
-            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &caret);
+        let input = Rect::new(field.x0 + 32.0, field.y0, field.x1 - 5.0, field.y1);
+        self.search_input.apply_layout_external(input);
+        if self.search_input.value().is_empty() {
+            tr.draw_text(
+                scene,
+                "Search document…",
+                13.0,
+                theme.text_dim,
+                base * Affine::translate((input.x0, vcenter(input, 13.0))),
+                Some(input.width() as f32),
+            );
         }
+        self.search_input
+            .draw(scene, base, tr, theme, &PresenceCtx::empty());
     }
 
     /// Match counter, left-aligned just right of the field (already chosen

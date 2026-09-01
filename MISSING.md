@@ -1,6 +1,6 @@
 # MISSING.md
 
-Honest accounting of what's built vs. what's actually engaged in the running system. As of `7402705` on `main`.
+Honest accounting of what's built vs. what's actually engaged in the running system. This is a living release document; update it in the same change that closes a gap.
 
 The foundation crates are good and the tests prove the pieces work in isolation. **What's missing is the integration spine.** Right now we have a real foundation under a notes app that uses approximately zero of it.
 
@@ -32,8 +32,8 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 
 ### Phase 8 — Threshold identity
 
-- `~/.config/qos/identity/primary.json` exists on disk for users, mode 0600, threshold-shareable.
-- Nothing reads it. Notes uses `QUICK_APP_ID=alice` (a string) for presence attribution.
+- `~/.config/qos/identity/primary.json` exists as private public metadata. The signing share is migrated to Secret Service when available, with a private session-file fallback, and applications receive only a bounded signing broker descriptor.
+- The launcher and signing broker read the selected identity, but Notes still uses `QUICK_APP_ID=alice` (a string) for presence attribution.
 - No app signs an op with the persisted identity.
 - The pairing-channel for device enrolment is an in-memory shim — two real devices cannot pair across the network. The DKG-over-broker plumbing is documented TODO in the source.
 - Recovery share for single-device identities is a deterministic placeholder mnemonic; real recovery only works after upgrading to threshold mode (which the UI never triggers).
@@ -66,7 +66,7 @@ The socket had two independently-written path expressions on opposite sides of t
 - **No two-machine test has ever run.** Everything tested on localhost — including `scripts/two-session-collab-demo.py`, which drives two real compositors but on one box. `qos-relay` works in unit tests; no LAN deploy verified.
 - **No systemd unit for `qos-collab-link`.** Still foreground-only. The broker no longer needs one: it is part of the session process.
 - **Broker federation is the session's, not a daemon's.** Each session's broker bridges to peers through the `ShellNetwork` handle it is given, so fan-out reaches other machines over Iroh gossip and the authenticated workspace host. What has never been exercised is two physical machines.
-- **No xdg-desktop-portal / system-keyring integration for the on-disk identity.** It's plaintext JSON with `0600` as the only mitigation, called out as TODO Phase 8.5.
+- **Secret Service is supported but not guaranteed.** When no usable, unlocked Secret Service is available, qOS uses a mode-0600 secret file below the private identity directory. That fallback is neither encrypted nor hardware-backed, and the UI must continue to say so.
 - **Transport invites work across hosts; governance issuance is still incomplete.** Accepting a signed `qos://invite/...` adopts the room and dials its Iroh owner/hosts, but the flow still does not issue the corresponding `ChannelEvent::AttestationIssued` for the cryptographic role layer.
 
 ---
@@ -127,6 +127,14 @@ Every "everything composes" test is in-process — single binary spawns a broker
 - The broker's `BrokerChannels` starts every channel with empty `authorised_signers` until `register_channel_state` is called. **In production no caller registers anything**, so every signed op would be rejected with `UnauthorisedAttestation`. The validator is dormant.
 - `ChannelEvent` log replay is documented but **no broker replays event history on join.** Late joiners get a CRDT snapshot only.
 - `recovery_share.rs::SerializableIdentity::from_identity` for threshold-mode identities is a stub — it deliberately can't extract the threshold secret share because `qos_threshold_identity` doesn't expose it. Phase 8.5 follow-up.
+
+### OOBE status and remaining limits
+
+- **Built for the full qOS image:** the offline installer covers keyboard, disk, account, encryption, hostname and time zone; first login then withholds the desktop behind a trusted compositor-owned identity/import/backup ceremony. Network setup is optional because the OS payload installs offline. Signed bootc updates are enabled after installation and remain available in Settings rather than being disguised as an offline installer operation.
+- **Built for host distributions:** the package wrapper explicitly selects a reduced OOBE after the display-manager login. It stores device identity in the user's XDG data tree and does not claim to create a Linux user, replace PAM login, control the host boot chain, or install qOS update services.
+- **Still missing:** translated OOBE strings; verified AT-SPI/AccessKit output for the compositor-owned identity screens; a destructive VM acceptance test that installs, detaches the live medium, boots the target, and exercises the whole greeter-to-desktop path; and a two-physical-device identity/pairing test.
+- Identity mint/import/export work is still performed synchronously by the compositor-owned view. Slow Secret Service or backup KDF operations can briefly stop animation/input; move these jobs to an event-loop worker before presenting the ceremony as latency-independent.
+- Peer sync is intentionally held off in the session that creates the first identity. The completion screen says that one sign-out/sign-in is required; eliminating that restart needs a safe live broker reinitialisation path.
 
 ---
 

@@ -272,8 +272,12 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
-        self.actions
-            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DIFFMERGE_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
+        );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -653,6 +657,12 @@ impl Widget for DiffMergeApp {
             Mode::Merge => merge_node,
         };
 
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `content_child` and `content` were just built in this one.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "content_child was just created in this same tree"
+        )]
         let content = taffy
             .new_with_children(
                 Style {
@@ -667,6 +677,10 @@ impl Widget for DiffMergeApp {
             )
             .unwrap();
 
+        #[allow(
+            clippy::unwrap_used,
+            reason = "content was just created in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -686,7 +700,9 @@ impl Widget for DiffMergeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

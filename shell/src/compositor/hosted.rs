@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
+use crate::network::behaviour::load_or_create_keypair;
 use crate::shell::network::{ShellNetwork, peer_key_path};
 use crate::shell::state::WorkspaceTree;
 use crate::shell::{persist, sync_tab_presence_from_tree};
@@ -50,14 +50,14 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } = opts;
 
     let path = persist::state_json_path();
+    // Native and hosted sessions share this state file, so they must also
+    // share the durable namespace used for every newly-minted object id.
+    // Resolve it before loading: the default tree allocates ids while it is
+    // constructed, and changing the salt afterward cannot repair those ids.
+    let enable_peer_sync = prepare_workspace_namespace(enable_peer_sync, &path);
     // The notice is carried to the chrome rather than logged here: "your workspaces are gone" vs.
     // "this build declined to open them" look identical from the desk, and the journal isn't where the person is looking.
     let (mut tree, state_notice) = persist::load_or_default(&path);
-
-    // Must run BEFORE `load_or_default`'s `seed_next_id_from_self`, or the counter seeds off the
-    // previous (salt-0) run and the next `WorkspaceId::new()` collides with an unsalted id already
-    // in the tree; re-seeding after setting the salt is idempotent and fixes it.
-    let enable_peer_sync = apply_peer_sync_salt(enable_peer_sync, &mut tree);
 
     // Permissions must outlive the process: recording where to write the tree turns an `Always`
     // grant into a durable one, since every capability mutation flushes here. NOT set when the file
@@ -154,7 +154,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     // Local typed collaboration broker, held for the lifetime of `app.run()`.
     // When peer sync is enabled it also bridges app changes between machines.
-    let _collab_broker = spawn_collab_broker(peer_sync.as_ref());
+    let _collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
     let identity_socket = launcher::services::identity_socket();
     let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
@@ -190,27 +190,36 @@ pub fn run_with_full_options(opts: HostedOptions) {
     app.run();
 }
 
-/// Derives a deterministic 16-bit peer salt from the Iroh keypair and stamps it into every id
-/// `next_id` mints, so two peers no longer fold distinct workspaces into one row when counters
-/// overlap. Returns the (possibly downgraded) peer-sync flag: refused, not silently downgraded to
-/// salt-0, when the device key won't load — syncing an unsalted id space is what causes the
-/// collision this prevents. Legacy (peer-sync-off) path stays salt-0 for back-compat.
-fn apply_peer_sync_salt(enable_peer_sync: bool, tree: &mut WorkspaceTree) -> bool {
+/// Install the same durable object-id namespace used by native mode before
+/// loading the shared state file. Transport identity remains independent: it
+/// is created only when peer sync was explicitly requested.
+fn prepare_workspace_namespace(enable_peer_sync: bool, state_path: &std::path::Path) -> bool {
+    let key_path = peer_key_path();
+    let salt = match super::native::load_or_create_workspace_salt(state_path, &key_path) {
+        Ok(salt) => salt,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "workspace id salt unavailable; peer sync stays off rather than using an unstable id namespace"
+            );
+            return false;
+        }
+    };
+    WorkspaceTree::set_process_peer_salt(salt);
+    tracing::info!("workspace id salt set to 0x{:04x}", salt);
+
     if !enable_peer_sync {
         return false;
     }
-    match load_or_create_keypair(&peer_key_path()) {
-        Ok(kp) => {
-            let salt = peer_salt_from_keypair(&kp);
-            tree.set_peer_salt(salt);
-            tree.seed_next_id_from_self();
-            tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+    match load_or_create_keypair(&key_path) {
+        Ok(keypair) => {
+            tracing::info!(endpoint = %keypair.public(), "peer-sync: device identity loaded");
             true
         }
-        Err(e) => {
+        Err(error) => {
             tracing::error!(
-                "peer-sync: device key load failed ({e}); peer sync stays off \
-                 rather than syncing an unsalted id space"
+                "peer-sync: device key load failed ({error}); peer sync stays off \
+                 rather than syncing without a stable transport identity"
             );
             false
         }
@@ -229,12 +238,13 @@ fn adopt_tree_ownership(tree: &mut WorkspaceTree) {
         );
     }
 
-    // Someone has to own each room or nobody can grant anything in it; workspaces restored from a state file written before ownership existed carry no owner, so the local user adopts them here.
-    let local_user = crate::shell::state::local_user_id();
-    let adopted = tree.adopt_ownerless_workspaces(&local_user);
+    // Someone has to own each room or nobody can grant anything in it.
+    // Resolve per room so hosted mode uses the same selected identity that
+    // its certified collaboration join presents.
+    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
-            "capabilities: {} workspace(s) adopted by {local_user}",
+            "capabilities: {} workspace(s) adopted by their selected identities",
             adopted.len()
         );
     }
@@ -462,11 +472,16 @@ fn bring_up_portal(
 /// peer sync is enabled it also bridges app changes between machines.
 fn spawn_collab_broker(
     peer_sync: Option<&Arc<ShellNetwork>>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<crate::shell::collab_broker::BrokerHandle> {
     let path = std::env::var_os("QUICK_COLLAB_CAPNP_SOCK")?;
     let socket_path = std::path::PathBuf::from(path);
     let peer_sync_owned = peer_sync.cloned();
-    match crate::shell::collab_broker::spawn_native(socket_path.clone(), &peer_sync_owned) {
+    match crate::shell::collab_broker::spawn_native(
+        socket_path.clone(),
+        &peer_sync_owned,
+        membership,
+    ) {
         Ok(handle) => {
             tracing::info!(
                 "collab_broker: bound {} (capnp) — peer_sync={}",

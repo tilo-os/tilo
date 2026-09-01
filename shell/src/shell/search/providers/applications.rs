@@ -64,6 +64,7 @@ impl ApplicationsProvider {
                 &name_lower,
                 &id_lower,
                 category_lower.as_deref(),
+                None,
             ) else {
                 continue;
             };
@@ -116,11 +117,13 @@ impl ApplicationsProvider {
             let name_lower = app.display_name.to_lowercase();
             let id_lower = app.package_id.to_lowercase();
             let category_lower = app.category.as_deref().map(str::to_lowercase);
+            let description_lower = app.description.to_lowercase();
             let Some(score) = match_score(
                 &needle_lower,
                 &name_lower,
                 &id_lower,
                 category_lower.as_deref(),
+                Some(&description_lower),
             ) else {
                 continue;
             };
@@ -408,8 +411,10 @@ impl SearchProvider for ApplicationsProvider {
 
 /// Case-insensitive, first matching band wins in the order written below:
 /// name prefix 100, id in full or last segment 100, name substring 50, id
-/// prefix 60, id substring 25, category substring 20, fuzzy subsequence on
-/// the name 10. Empty needle matches everything at 0, so an empty palette
+/// prefix 60, id substring 25, category substring 20, description 15,
+/// fuzzy subsequence on the name 10. Multi-word queries may span metadata
+/// fields, so `office spreadsheet` can find an app whose category and
+/// description carry one word each. Empty needle matches everything at 0, so an empty palette
 /// lists installed apps. Category ranks below the id because it's a bucket,
 /// not an identity. Package ids score by how completely they were named,
 /// not flat "contains" — `hex-editor` typed for `dev.qos.hex-editor` is the
@@ -419,6 +424,7 @@ pub(crate) fn match_score(
     name: &str,
     package_id: &str,
     category: Option<&str>,
+    description: Option<&str>,
 ) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
@@ -441,6 +447,20 @@ pub(crate) fn match_score(
     }
     if category.is_some_and(|c| c.contains(needle)) {
         return Some(20);
+    }
+    if description.is_some_and(|d| d.contains(needle)) {
+        return Some(15);
+    }
+    let terms: Vec<&str> = needle.split_whitespace().collect();
+    if terms.len() > 1
+        && terms.iter().all(|term| {
+            name.contains(term)
+                || package_id.contains(term)
+                || category.is_some_and(|value| value.contains(term))
+                || description.is_some_and(|value| value.contains(term))
+        })
+    {
+        return Some(15);
     }
     if fuzzy_subsequence(needle, name) {
         return Some(10);
@@ -523,6 +543,35 @@ mod tests {
             out[0].subtitle.as_deref(),
             Some("Opens beside · dev.qos.hello · 0.1.0"),
             "the row names the package it will launch"
+        );
+    }
+
+    #[test]
+    fn available_apps_are_discoverable_by_description_and_cross_field_terms() {
+        let p = ApplicationsProvider::new();
+        let mut candidate = offered("dev.qos.ledger", "Ledger", Some("Office"));
+        candidate.description = "Fast collaborative spreadsheet".to_string();
+
+        let by_description = p.catalogue_results_for(
+            "spreadsheet",
+            vec![candidate.clone()],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(
+            by_description.first().map(|row| row.id.as_str()),
+            Some("dev.qos.ledger")
+        );
+
+        let across_fields = p.catalogue_results_for(
+            "office collaborative",
+            vec![candidate],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(
+            across_fields.first().map(|row| row.id.as_str()),
+            Some("dev.qos.ledger")
         );
     }
 

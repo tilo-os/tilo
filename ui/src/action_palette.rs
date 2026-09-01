@@ -11,7 +11,7 @@
 //! [`SearchField`](crate::widget::SearchField); results render through
 //! [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind.
 //! An action row resolves to its [`EncodedAction`] and
-//! [`dispatch`](qos_actions::dispatch)es through `qos_actions` — the same
+//! [`dispatch_with_context`](qos_actions::dispatch_with_context)es through `qos_actions` — the same
 //! path a remote peer replays — with a
 //! [`Prompted`](qos_actions::ActionInput::Prompted) action first collecting
 //! its argument in the field; a content row hands its opaque `action_id`
@@ -37,8 +37,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
-    ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction, Resource, dispatch,
-    flatten,
+    ActionContext, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
+    Resource, flatten,
 };
 
 /// The group header for the focused app's exported actions.
@@ -58,7 +58,7 @@ const PER_GROUP_CAP: usize = 8;
 #[derive(Clone)]
 enum RowResolution {
     /// An exported action — dispatch through `qos_actions`.
-    Dispatch(ActionKind),
+    Dispatch(Box<ActionKind>),
     /// A search-provider hit — hand the opaque id back to the app to navigate.
     Navigate(String),
 }
@@ -67,17 +67,22 @@ enum RowResolution {
 #[derive(Clone)]
 enum ActionKind {
     /// Fires immediately with this pre-encoded action.
-    Immediate(EncodedAction),
+    Immediate {
+        encoded: EncodedAction,
+        context: ActionContext,
+    },
     /// Collects a free-text argument in the field first, then builds the action.
     Prompted {
         prompt: String,
         build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
+        context: ActionContext,
     },
 }
 
 /// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
     build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
+    context: ActionContext,
 }
 
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
@@ -96,7 +101,8 @@ pub struct ActionPalette {
     /// `Some` while collecting a prompted action's argument in the field.
     arg: Option<ArgState>,
     /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
-    pending_dispatch: Option<EncodedAction>,
+    pending_dispatch: Option<(EncodedAction, ActionContext)>,
+    ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
     pending_nav: Option<String>,
     /// The palette's outer rect (field + results), set by `layout`.
@@ -130,6 +136,7 @@ impl ActionPalette {
             open: false,
             arg: None,
             pending_dispatch: None,
+            ambient_context: None,
             pending_nav: None,
             rect: Rect::ZERO,
             field_taffy: TaffyTree::new(),
@@ -145,6 +152,12 @@ impl ActionPalette {
         // `.to_string()` is load-bearing here, not redundant: it ends the
         // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
         #[allow(clippy::unnecessary_to_owned)]
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
+    }
+
+    pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
+        self.ambient_context = context;
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -241,8 +254,10 @@ impl ActionPalette {
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
-        let encoded = self.pending_dispatch.take()?;
-        Some(Self::dispatch_encoded(doc, &encoded, registry, transport))
+        let (encoded, context) = self.pending_dispatch.take()?;
+        Some(Self::dispatch_encoded(
+            doc, &encoded, registry, transport, context,
+        ))
     }
 
     /// Drain a completed content activation: the opaque `action_id` of the
@@ -256,27 +271,42 @@ impl ActionPalette {
         encoded: &EncodedAction,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
+        context: ActionContext,
     ) -> Result<Dispatched, qos_actions::ActionError> {
         let action = registry.decode(encoded)?;
-        dispatch(doc, action.as_ref(), encoded.clone(), transport)
+        let actor = doc.get_actor().to_bytes().to_vec();
+        qos_actions::dispatch_by_with_context(
+            doc,
+            action.as_ref(),
+            encoded.clone(),
+            transport,
+            Some(&actor),
+            context,
+        )
     }
 
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
         match self.index.get(id).cloned() {
-            Some(RowResolution::Dispatch(ActionKind::Immediate(enc))) => {
-                self.pending_dispatch = Some(enc);
-                self.open = false;
-            }
-            Some(RowResolution::Dispatch(ActionKind::Prompted { prompt, build })) => {
-                // Repurpose the field to collect the argument; clear the result
-                // list so only the prompt shows.
-                self.field = SearchField::new();
-                self.field.set_placeholder(&prompt);
-                self.field.set_focused(true);
-                self.results.set_groups(Vec::new());
-                self.arg = Some(ArgState { build });
-            }
+            Some(RowResolution::Dispatch(kind)) => match *kind {
+                ActionKind::Immediate { encoded, context } => {
+                    self.pending_dispatch = Some((encoded, context));
+                    self.open = false;
+                }
+                ActionKind::Prompted {
+                    prompt,
+                    build,
+                    context,
+                } => {
+                    // Repurpose the field to collect the argument; clear the result
+                    // list so only the prompt shows.
+                    self.field = SearchField::new();
+                    self.field.set_placeholder(&prompt);
+                    self.field.set_focused(true);
+                    self.results.set_groups(Vec::new());
+                    self.arg = Some(ArgState { build, context });
+                }
+            },
             Some(RowResolution::Navigate(target)) => {
                 self.pending_nav = Some(target);
                 self.open = false;
@@ -308,14 +338,27 @@ impl ActionPalette {
             if let Some(desc) = &fa.action.description {
                 r = r.with_subtitle(desc.clone());
             }
+            let mut context = ActionContext::for_resource(
+                &fa.action.label,
+                fa.resource_id.as_str(),
+                &fa.resource_kind,
+                &fa.resource_label,
+            );
+            if let Some(ambient) = self.ambient_context.as_ref() {
+                context = context.enriched_by(ambient);
+            }
             let kind = match &fa.action.input {
-                ActionInput::Immediate(enc) => ActionKind::Immediate(enc.clone()),
+                ActionInput::Immediate(enc) => ActionKind::Immediate {
+                    encoded: enc.clone(),
+                    context,
+                },
                 ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
                     prompt: prompt.clone(),
                     build: build.clone(),
+                    context,
                 },
             };
-            index.insert(fa.key.clone(), RowResolution::Dispatch(kind));
+            index.insert(fa.key.clone(), RowResolution::Dispatch(Box::new(kind)));
             rows.push(r);
         }
 
@@ -444,7 +487,7 @@ impl ActionPalette {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
                 if let Some(state) = self.arg.take() {
-                    self.pending_dispatch = Some((state.build)(&value));
+                    self.pending_dispatch = Some(((state.build)(&value), state.context));
                 }
                 self.open = false;
             } else {
@@ -701,6 +744,15 @@ mod tests {
             .expect("an action was pending")
             .expect("dispatch ok");
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
+        let context = d.envelope().context.as_ref().expect("palette provenance");
+        assert_eq!(context.action_label, "Mark done");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Thing")
+        );
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
@@ -711,6 +763,41 @@ mod tests {
         assert!(
             p.take_navigation().is_none(),
             "an action is not a navigation"
+        );
+    }
+
+    #[test]
+    fn ambient_task_context_reaches_palette_actions_without_overwriting_resource() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_ambient_context(Some(
+            ActionContext::default()
+                .with_app("org.qos.Agent", "Agent")
+                .with_purpose("Prepare launch")
+                .with_group("issue:42", "Launch", "issue"),
+        ));
+        p.open();
+        p.activate_selected();
+
+        let mut doc = AutoCommit::new();
+        let mut tx = LocalTransport::new();
+        let dispatched = p
+            .take_dispatch(&mut doc, &registry(), &mut tx)
+            .expect("action pending")
+            .expect("dispatch succeeds");
+        let context = dispatched.envelope().context.as_ref().expect("context");
+        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            context.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("test.thing:1"),
+            "the concrete palette resource wins over ambient provenance"
         );
     }
 

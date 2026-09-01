@@ -101,6 +101,9 @@ fn named_actor(prefix: &str) -> Option<String> {
     }
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
 ///
 /// Returns an error if `--shots` mode fails to lay out or render the
