@@ -133,8 +133,12 @@ fn build_and_restrict(
     created.restrict_self()
 }
 
-/// Apply a plan, logging the outcome. Never returns an error: Landlock
-/// is strictly defence-in-depth.
+/// Apply a plan and report the kernel's actual enforcement status.
+///
+/// The in-sandbox shim treats anything short of `FullyEnforced` as a launch
+/// refusal.  Keeping the status as data here makes that fail-closed decision
+/// independently testable and prevents logging from being confused with
+/// enforcement.
 pub fn apply_plan_or_log(plan: &[FsRule], net_restricted: bool) -> LandlockOutcome {
     match build_and_restrict(plan, net_restricted) {
         Ok(status) => {

@@ -4,6 +4,7 @@
 # Component Model `.wasm`, not a host-target library. Build it explicitly:
 # `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
 exclude = [
+    "fuzz",
     "crates/doc/qdoc-codec-markdown-wasm",
     "vendor/vello",
     "vendor/vello_encoding",

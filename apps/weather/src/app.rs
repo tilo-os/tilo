@@ -39,6 +39,7 @@ use winit::event::WindowEvent;
 
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Affordance, NavShell, ShellMode, Widget};
@@ -274,6 +275,49 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let core = self.core.borrow();
+        let mut root = Resource::new("weather", "weather.locations", "Weather");
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh forecasts",
+            OperationKind::Effect,
+            "weather.refresh",
+            &"",
+        ) {
+            root.actions.push(spec);
+        }
+        root.children
+            .extend(core.model.locations.iter().map(|location| {
+                Resource::new(
+                    format!("location:{}", location.id),
+                    "weather.location",
+                    location.name.clone(),
+                )
+            }));
+        vec![root]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        _payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "weather.refresh" {
+            return Ok(false);
+        }
+        if !self.live {
+            return Err("network refresh is disabled for this weather view".into());
+        }
+        self.ensure_service();
+        self.core.borrow_mut().refresh_all();
+        self.last_activity = Instant::now();
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded_doc {
             {

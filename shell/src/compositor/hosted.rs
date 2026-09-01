@@ -118,6 +118,14 @@ pub fn run_with_full_options(opts: HostedOptions) {
         crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
     let portal_pickers = crate::portal::FilePickerQueue::new();
     host.set_portal_queues(portal_prompts.clone(), portal_pickers.clone());
+    // Bind before erasing the concrete host behind `dyn Widget`, so the
+    // same live app-action provider exists in hosted and native sessions.
+    if let Some(action_broker) = collab_broker
+        .as_ref()
+        .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker)
+    {
+        host.attach_app_action_broker(action_broker);
+    }
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     qos_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);
@@ -295,10 +303,25 @@ fn attach_peer_sync_bridge(
             net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                 .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
-        crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor { name, role } => {
+        crate::shell::overlay_host::PeerSyncRequest::ExportIdentity => {
             let active = tree_for_bridge.read().active;
-            net.issue_invite_named_with_role(active, INVITE_EXPIRY_SECONDS, &name, role)
+            net.person_identity_card(active)
                 .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor {
+            name,
+            role,
+            recipient_user_public_key,
+        } => {
+            let active = tree_for_bridge.read().active;
+            net.issue_invite_bound_with_role(
+                active,
+                INVITE_EXPIRY_SECONDS,
+                &name,
+                recipient_user_public_key,
+                role,
+            )
+            .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().active;

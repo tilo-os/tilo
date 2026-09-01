@@ -35,23 +35,40 @@
 //!
 //! Document-mutating → an action: creating a buffer (New file). Presentation →
 //! never an action: which file is open, the tab order, the caret / selection /
-//! scroll, the sidebar flap, the active theme, the bottom-panel tab. External →
-//! never an action: the language server, the linter, the embedded terminal's PTY,
-//! find/replace *preview* (the applied replacement is native text splices, not an
-//! action).
+//! scroll, the sidebar flap, the active theme, the bottom-panel tab. Those local
+//! operations are still exported on file resources: opening a file is a view
+//! operation and saving its collaborative buffer to disk is an effect. The
+//! language server, linter, and embedded terminal remain app-owned services.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::EditorDoc;
 
 /// Registry `type_id` for every Code action.
 pub const CODE_EDITOR_ACTION_TYPE: &str = "code_editor.action";
+pub const CODE_EDITOR_OPERATION_TYPE: &str = "code_editor.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodeEditorOperation {
+    Open { node: u64 },
+    Save { node: u64 },
+}
+
+fn file_operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: CodeEditorOperation,
+) -> ActionSpec {
+    ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, &operation)
+        .expect("CodeEditorOperation is always serializable")
+}
 
 /// Every collaborative operation Code exports on the shared document.
 ///
@@ -141,6 +158,10 @@ pub fn create_buffer_action(node: u64, seed: &str) -> CodeEditorAction {
 pub struct OpenFileRef {
     pub node: u64,
     pub name: String,
+    /// Whether this buffer already has a filesystem destination. Scratch
+    /// buffers require a picker and therefore cannot honestly export Save as
+    /// an immediate effect.
+    pub can_save: bool,
 }
 
 /// The presentation context Code hands [`provide_resources`]: the project name,
@@ -204,11 +225,26 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
         } else {
             f.name.clone()
         };
-        project = project.with_child(Resource::new(
+        let mut file = Resource::new(
             format!("code_editor.file:{}", f.node),
             "code_editor.file",
             label,
+        )
+        .with_action(file_operation(
+            "open",
+            "Open file",
+            OperationKind::View,
+            CodeEditorOperation::Open { node: f.node },
         ));
+        if f.can_save {
+            file = file.with_action(file_operation(
+                "save",
+                "Save file",
+                OperationKind::Effect,
+                CodeEditorOperation::Save { node: f.node },
+            ));
+        }
+        project = project.with_child(file);
     }
 
     vec![project]
@@ -283,10 +319,12 @@ mod tests {
                 OpenFileRef {
                     node: 3,
                     name: "main.rs".into(),
+                    can_save: true,
                 },
                 OpenFileRef {
                     node: 5,
                     name: "lib.rs".into(),
+                    can_save: true,
                 },
             ],
         };
@@ -303,6 +341,19 @@ mod tests {
         assert_eq!(project.children[0].kind, "code_editor.file");
         assert_eq!(project.children[0].id.as_str(), "code_editor.file:3");
         assert_eq!(project.children[0].label, "main.rs");
+        let file_actions = &project.children[0].actions;
+        assert_eq!(
+            file_actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["open", "save"]
+        );
+        assert_eq!(file_actions[0].kind, OperationKind::View);
+        assert_eq!(file_actions[1].kind, OperationKind::Effect);
+        for action in file_actions {
+            assert_eq!(immediate_encode(action).type_id, CODE_EDITOR_OPERATION_TYPE);
+        }
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
