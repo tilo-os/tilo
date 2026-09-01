@@ -106,6 +106,10 @@ pub mod generated_list_component {
     include!(concat!(env!("OUT_DIR"), "/activity_list.rs"));
 }
 
+pub mod generated_table_component {
+    include!(concat!(env!("OUT_DIR"), "/results_table.rs"));
+}
+
 pub mod screens {
     use ui::widget::Widget;
     use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};

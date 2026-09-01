@@ -89,6 +89,8 @@ pub enum ComponentTemplate {
     Tree,
     /// A source-agnostic sparse variable-height list with retained delegates.
     List,
+    /// A source-agnostic sparse table with app-defined columns and cells.
+    Table,
 }
 
 #[derive(Debug)]
@@ -556,6 +558,7 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
         ComponentTemplate::Form => "form",
         ComponentTemplate::Tree => "tree",
         ComponentTemplate::List => "list",
+        ComponentTemplate::Table => "table",
     }
 }
 
@@ -1944,6 +1947,7 @@ fn component_source(
         ComponentTemplate::Form => form_component_source(name, module_name, type_name),
         ComponentTemplate::Tree => tree_component_source(name, module_name, type_name),
         ComponentTemplate::List => list_component_source(name, module_name, type_name),
+        ComponentTemplate::Table => table_component_source(name, module_name, type_name),
     }
 }
 
@@ -2356,6 +2360,176 @@ mod tests {{
         let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
         let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
         assert!((first - second).abs() > 1.0, "delegate heights drive geometry");
+        assert!(app.dump_json().contains("open-requested"));
+    }}
+}}
+"#
+    )
+}
+
+fn table_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let mut source = format!(
+        r#"use ui::selection::KeySelection;
+use ui::widget::data_table::{{ColumnDef, DataTable, TableModel}};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Config {{
+    pub accessible_name: String,
+    pub selection: KeySelection<u64>,
+    pub selectable: bool,
+    pub viewport_height: f32,
+    pub estimated_row_height: f32,
+}}
+
+impl Default for {type_name}Config {{
+    fn default() -> Self {{
+        Self {{
+            accessible_name: "{name}-accessible-name".into(),
+            selection: KeySelection::new(),
+            selectable: true,
+            viewport_height: 480.0,
+            estimated_row_height: 32.0,
+        }}
+    }}
+}}
+
+/// Build one reusable `{name}` over any resident, database, or paged table model.
+///
+/// App-defined columns retain text, custom paint, or real child-widget cells.
+/// The concrete return type preserves sorting, resizing, activation, targeted
+/// model notifications, measurement, scrolling, and selection methods.
+pub fn {module_name}<Row, M>(
+    id: &str,
+    columns: Vec<ColumnDef<Row>>,
+    model: M,
+    config: &{type_name}Config,
+) -> DataTable<Row>
+where
+    M: TableModel<Row = Row> + 'static,
+{{
+    DataTable::from_model(columns, model)
+        .with_id(id)
+        .with_accessible_name(&config.accessible_name)
+        .selectable(config.selectable)
+        .with_model_selection(config.selection.clone())
+        .with_viewport(config.viewport_height, config.estimated_row_height)
+}}
+"#
+    );
+    source.push_str(&table_component_test_source(module_name, type_name));
+    (source, vec![accessible_name])
+}
+
+fn table_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use ui::a11y::{{Action, Role}};
+    use ui::headless::SemanticExpectation;
+    use ui::widget::Button;
+    use ui::widget::data_table::{{ColumnWidth, TableRowState}};
+
+    struct Row {{
+        name: String,
+    }}
+
+    struct SparseRows {{
+        count: usize,
+        resident: Row,
+    }}
+
+    impl TableModel for SparseRows {{
+        type Row = Row;
+
+        fn len(&self) -> usize {{
+            self.count
+        }}
+
+        fn key_at(&self, index: usize) -> Option<u64> {{
+            (index < self.count)
+                .then_some(index)
+                .and_then(|index| u64::try_from(index).ok())
+        }}
+
+        fn index_of(&self, key: u64) -> Option<usize> {{
+            usize::try_from(key).ok().filter(|index| *index < self.count)
+        }}
+
+        fn row_state(&self, index: usize) -> TableRowState<'_, Row> {{
+            if index < self.count {{
+                TableRowState::Ready(&self.resident)
+            }} else {{
+                TableRowState::Error("Row outside the model")
+            }}
+        }}
+    }}
+
+    #[test]
+    fn component_keeps_sparse_variable_interactive_table_rows() {{
+        const ROW_COUNT: usize = 100_000_000;
+        let columns = vec![
+            ColumnDef::<Row>::new("name", "Name", ColumnWidth::Flex(1.0))
+                .with_text(|row| row.name.clone()),
+            ColumnDef::<Row>::new("actions", "Actions", ColumnWidth::Fixed(112.0))
+                .with_widget(|_row, index| {{
+                    Box::new(
+                        Button::new(
+                            &format!("open-{{index}}"),
+                            "Open",
+                            Some("open-requested"),
+                        )
+                        .with_click_value(index.to_string())
+                        .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
+                    )
+                }}),
+        ];
+        let mut selection = KeySelection::new();
+        selection.select_only(3);
+        let config = {type_name}Config {{
+            selection,
+            ..{type_name}Config::default()
+        }};
+        let table = {module_name}(
+            "example-table",
+            columns,
+            SparseRows {{
+                count: ROW_COUNT,
+                resident: Row {{ name: "Resident row".into() }},
+            }},
+            &config,
+        );
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(table),
+            (720, 420),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("example-table")
+                .semantic_target("row:3:0")
+                .role(Role::Row)
+                .selected(true),
+        )
+        .expect("restored stable-key row selection");
+        app.perform_semantic_named("example-table", Some("row:4:0"), &Action::Activate)
+            .expect("visible stable row remains selectable");
+        app.perform_named("open-3", &Action::Activate)
+            .expect("retained cell control remains independently interactive");
+
+        let semantics = app.inspection().root.semantics.expect("table semantics");
+        assert_eq!(semantics.role, Role::Table);
+        assert!(semantics.children.len() < 40, "only the viewport is mounted");
+        assert_eq!(semantics.children[0].set_size, Some(ROW_COUNT));
+        let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
+        let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
+        assert!((first - second).abs() > 1.0, "measured rows drive geometry");
         assert!(app.dump_json().contains("open-requested"));
     }}
 }}
@@ -5137,7 +5311,7 @@ fn prompt_component_template(
 ) -> Result<ComponentTemplate> {
     writeln!(
         output,
-        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows"
+        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows\n  5) table    Any TableModel with app-defined columns and cells"
     )
     .context("showing component template choices")?;
     loop {
@@ -5147,9 +5321,10 @@ fn prompt_component_template(
             "2" | "form" | "f" => return Ok(ComponentTemplate::Form),
             "3" | "tree" | "t" => return Ok(ComponentTemplate::Tree),
             "4" | "list" | "l" => return Ok(ComponentTemplate::List),
+            "5" | "table" | "data" => return Ok(ComponentTemplate::Table),
             _ => writeln!(
                 output,
-                "  ! unknown component template {value:?}; choose 1-4 or `display`, `form`, `tree`, or `list`"
+                "  ! unknown component template {value:?}; choose 1-5 or `display`, `form`, `tree`, `list`, or `table`"
             )
             .context("showing component template error")?,
         }
@@ -5930,6 +6105,7 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "qos-dev add component profile-card --template form");
     let _ = writeln!(out, "qos-dev add component project-tree --template tree");
     let _ = writeln!(out, "qos-dev add component activity-list --template list");
+    let _ = writeln!(out, "qos-dev add component results-table --template table");
     let _ = writeln!(out, "qos-dev add screen settings --template settings");
     let _ = writeln!(out, "qos-dev add scenario empty-state");
     let _ = writeln!(out, "qos-dev scenario run");
@@ -6520,6 +6696,18 @@ mod tests {
     }
 
     #[test]
+    fn component_wizard_exposes_the_sparse_table_template() {
+        let mut input = std::io::Cursor::new(b"5\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::Table);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Any TableModel"));
+    }
+
+    #[test]
     fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -6659,6 +6847,38 @@ mod tests {
     }
 
     #[test]
+    fn add_table_component_preserves_the_generic_column_and_model_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "results-table".into(),
+                template: ComponentTemplate::Table,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source = std::fs::read_to_string(app.join("src/components/results_table.rs")).unwrap();
+        syn::parse_file(&source).unwrap();
+        assert!(source.contains("pub struct ResultsTableConfig"));
+        assert!(source.contains("M: TableModel<Row = Row>"));
+        assert!(source.contains("columns: Vec<ColumnDef<Row>>"));
+        assert!(source.contains("DataTable::from_model"));
+        assert!(source.contains("with_model_selection(config.selection.clone())"));
+        let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
+        assert_eq!(
+            parse_component_registry(&registry).unwrap(),
+            ["results-table"]
+        );
+        assert!(registry.contains("pub mod results_table;"));
+    }
+
+    #[test]
     fn component_generation_is_dry_run_safe_and_localizes_template_copy() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
@@ -6722,6 +6942,22 @@ mod tests {
         let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
         assert!(
             catalog.contains("activity-list-accessible-name = { \"Activity List\" }"),
+            "{catalog}"
+        );
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "results-table".into(),
+                template: ComponentTemplate::Table,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains("results-table-accessible-name = { \"Results Table\" }"),
             "{catalog}"
         );
     }
@@ -8229,6 +8465,7 @@ mod tests {
             assert!(readme.contains("qos-dev add component profile-card --template form"));
             assert!(readme.contains("qos-dev add component project-tree --template tree"));
             assert!(readme.contains("qos-dev add component activity-list --template list"));
+            assert!(readme.contains("qos-dev add component results-table --template table"));
             assert!(readme.contains("qos-dev scenario run\n"));
             assert!(readme.contains("qos-dev scenario run --artifacts target/scenario-artifacts"));
             assert!(

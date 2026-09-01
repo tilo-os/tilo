@@ -78,6 +78,7 @@ qos-dev add
 qos-dev add component profile-card --template form
 qos-dev add component project-tree --template tree
 qos-dev add component activity-list --template list
+qos-dev add component results-table --template table
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -91,10 +92,11 @@ With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
 containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
-typed-props display, a typed-state form, a source-agnostic virtualized tree, or
-a sparse variable-height list. The wizard reviews the resolved artifact before
-entering the same atomic publication path as the explicit commands. Scripts
-and CI should continue to use the fully specified subcommands.
+typed-props display, a typed-state form, a source-agnostic virtualized tree, a
+sparse variable-height list, or a model-backed table. The wizard reviews the
+resolved artifact before entering the same atomic publication path as the
+explicit commands. Scripts and CI should continue to use the fully specified
+subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -176,6 +178,33 @@ anchoring when rows change above the viewport. Its generated stress test uses a
 100-million-row model without allocating its rows, verifies that fewer than 30
 delegates are mounted, checks variable geometry and restored selection, and
 activates a button inside a row independently of row selection.
+
+`add component results-table --template table` completes the reusable
+collection set. It accepts app-defined `ColumnDef<Row>` values and any
+`TableModel<Row = Row>`, so ordinary text, custom-painted cells, and real
+interactive child widgets can be mixed without coupling the table to a data
+source:
+
+```rust
+let table = results_table(
+    "search-results",
+    columns,
+    remote_results,
+    &ResultsTableConfig::default(),
+)
+.on_activate(open_result);
+```
+
+The generated configuration restores and validates stable-key selection and
+controls the localized accessible name, selectable behavior, viewport height,
+and initial row-height estimate. The returned `DataTable` retains column
+sorting and resizing, loading/error row semantics, targeted asynchronous model
+notifications, interactive cell widgets, variable row measurements, keyboard
+and pointer selection, momentum and drag scrolling, and stable anchoring across
+inserts, removals, moves, and remote sorts. Its generated test exposes 100
+million logical rows from constant model storage, keeps the mounted semantic
+window below 40 rows, restores selection, measures a non-default row height,
+and independently activates a retained cell button.
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
