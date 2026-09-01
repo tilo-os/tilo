@@ -1595,7 +1595,9 @@ impl ContactsApp {
 
         self.draw_toolbar(scene, transform, tr, theme);
 
-        if self.narrow {
+        if self.store.is_empty() && self.mode == Mode::View {
+            self.draw_first_run_state(scene, transform, tr, theme);
+        } else if self.narrow {
             // Single-pane push: clip both slabs to the content area below the
             // toolbar so the off-screen pane (sliding in/out) never bleeds
             // past the edges, and skip whichever pane is fully off-screen.
@@ -1816,28 +1818,75 @@ impl ContactsApp {
             hov(self.hit.import),
             false,
         );
-        toolbar_button(
+        // First run has one obvious primary action in the content area. Keep
+        // Import available as the alternate path, but do not duplicate Create
+        // or offer an Export action that cannot succeed yet.
+        if !self.store.is_empty() {
+            toolbar_button(
+                scene,
+                t,
+                tr,
+                theme,
+                self.hit.export,
+                "Export",
+                false,
+                hov(self.hit.export),
+                false,
+            );
+            toolbar_button(
+                scene,
+                t,
+                tr,
+                theme,
+                self.hit.new,
+                "+ New",
+                true,
+                hov(self.hit.new),
+                false,
+            );
+        }
+    }
+
+    /// A genuinely empty address book is one app-wide first-run state, not an
+    /// empty list beside a second, contradictory empty detail pane.
+    fn draw_first_run_state(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let area = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + TOOLBAR_H,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        self.empty_action_rect = EmptyState::paint(
             scene,
             t,
             tr,
             theme,
-            self.hit.export,
-            "Export",
-            false,
-            hov(self.hit.export),
-            false,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            self.hit.new,
-            "+ New",
-            true,
-            hov(self.hit.new),
-            false,
-        );
+            area,
+            Some(Icon::FileText),
+            "No contacts yet",
+            Some("Create a contact, or import an existing vCard address book."),
+            Some("Create contact"),
+            self.last_mouse,
+        )
+        .unwrap_or(Rect::ZERO);
+
+        if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
+            scene.stroke(
+                &Stroke::new(2.0),
+                t,
+                theme.tokens.colors.border_focus,
+                None,
+                &RoundedRect::from_rect(self.empty_action_rect.inflate(3.0, 3.0), 11.0),
+            );
+        }
+        self.detail_content_h = 0.0;
+        self.website_link = None;
     }
 
     /// Draw the list pane: sort/group chips, every visible row, and the
@@ -3569,14 +3618,15 @@ impl Widget for ContactsApp {
             return Some(dialog);
         }
 
-        let toolbar = AccessNode::new(Role::Toolbar)
-            .with_name("Contact actions")
-            .with_children(vec![
-                AccessNode::new(Role::Button)
-                    .with_name("Import contacts")
-                    .with_action_target("contacts.import")
-                    .with_bounds(self.hit.import)
-                    .with_state(AccessState::new().focusable(true)),
+        let mut toolbar_actions = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Import contacts")
+                .with_action_target("contacts.import")
+                .with_bounds(self.hit.import)
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        if !self.store.is_empty() {
+            toolbar_actions.extend([
                 AccessNode::new(Role::Button)
                     .with_name("Export contacts")
                     .with_action_target("contacts.export")
@@ -3588,6 +3638,10 @@ impl Widget for ContactsApp {
                     .with_bounds(self.hit.new)
                     .with_state(AccessState::new().focusable(true)),
             ]);
+        }
+        let toolbar = AccessNode::new(Role::Toolbar)
+            .with_name("Contact actions")
+            .with_children(toolbar_actions);
 
         let visible = self.visible_ids();
         let list_children = if visible.is_empty() && self.store.is_empty() {
@@ -3633,6 +3687,18 @@ impl Widget for ContactsApp {
                 })
                 .collect()
         };
+
+        if self.store.is_empty() && self.mode == Mode::View {
+            let first_run = AccessNode::new(Role::Group)
+                .with_name("No contacts yet")
+                .with_description("Create a contact, or import an existing vCard address book.")
+                .with_children(list_children);
+            return Some(
+                AccessNode::new(Role::Window)
+                    .with_name("Contacts")
+                    .with_children(vec![toolbar, first_run]),
+            );
+        }
 
         let search = AccessNode::new(Role::TextInput)
             .with_name("Search contacts")
@@ -4017,6 +4083,12 @@ impl ContactsApp {
     ) {
         let p = self.last_mouse;
 
+        if self.store.is_empty() && self.mode == Mode::View && self.empty_action_rect.contains(p) {
+            self.begin_new_contact();
+            *handled = true;
+            return;
+        }
+
         if self.handle_click_toolbar_and_header(p) {
             *handled = true;
             return;
@@ -4086,12 +4158,12 @@ impl ContactsApp {
             self.request_import();
             return true;
         }
-        if self.hit.export.contains(p) {
+        if !self.store.is_empty() && self.hit.export.contains(p) {
             self.open_export_dialog();
             self.dirty = true;
             return true;
         }
-        if self.hit.new.contains(p) {
+        if !self.store.is_empty() && self.hit.new.contains(p) {
             self.begin_new_contact();
             return true;
         }
@@ -7783,12 +7855,25 @@ mod tests {
 
         assert!(app.store.is_empty());
         assert!(app.empty_action_rect.width() >= 44.0);
-        assert!(app.list_body.contains(app.empty_action_rect.center()));
+        let first_run_area = Rect::new(
+            app.rect.x0,
+            app.rect.y0 + TOOLBAR_H,
+            app.rect.x1,
+            app.rect.y1,
+        );
+        assert!(first_run_area.contains(app.empty_action_rect.center()));
 
         let root = app
             .accessibility()
             .expect("Contacts exposes a semantic window");
         assert_eq!(root.role, ui::a11y::Role::Window);
+        assert!(
+            root.children
+                .iter()
+                .flat_map(|node| node.children.iter())
+                .all(|node| node.action_target.as_deref() != Some("contacts.export")),
+            "an empty address book does not advertise a meaningless export action",
+        );
         let action = root
             .children
             .iter()
