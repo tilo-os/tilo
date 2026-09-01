@@ -263,7 +263,7 @@ impl Widget for ConfirmBody {
             t,
             cmd_box,
             f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
             1.0,
         );
         text_w(
@@ -1083,7 +1083,7 @@ impl VpnApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
             None,
             &Line::new(Point::new(h.x0, h.y1), Point::new(h.x1, h.y1)),
         );
@@ -1228,7 +1228,7 @@ impl VpnApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
             None,
             &Line::new(Point::new(l.x1, l.y0), Point::new(l.x1, l.y1)),
         );
@@ -1291,7 +1291,7 @@ impl VpnApp {
                 1.0,
             );
         } else if hovered {
-            fill_round(scene, t, *row, radius, theme.tokens.colors.surface_white_5);
+            fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.35));
         }
 
         // status dot
@@ -1571,7 +1571,10 @@ impl VpnApp {
                     t,
                     *r,
                     f64::from(theme.tokens.radii.md),
-                    theme.tokens.colors.border_white_10,
+                    ui::tokens::colors::Colors::hairline_on(
+                        theme.tokens.colors.surfaces.raised,
+                        26,
+                    ),
                     1.0,
                 );
             }
@@ -1700,7 +1703,7 @@ impl VpnApp {
                 t,
                 r,
                 f64::from(theme.tokens.radii.lg),
-                theme.tokens.colors.border_white_10,
+                ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
                 1.0,
             );
             text_w(
@@ -1864,7 +1867,8 @@ impl VpnApp {
             scene.stroke(
                 &Stroke::new(1.0),
                 t,
-                theme.tokens.colors.border_white_10.multiply_alpha(0.5),
+                ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26)
+                    .multiply_alpha(0.5),
                 None,
                 &Line::new(
                     Point::new(content.x0, ry + 30.0),
@@ -1915,7 +1919,7 @@ impl VpnApp {
             t,
             card,
             f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
             1.0,
         );
         let text = render_config_text(c);
@@ -1974,7 +1978,7 @@ impl VpnApp {
             t,
             card,
             f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
             1.0,
         );
         let xfer = self.throughput.get(&c.id).and_then(TransferHistory::latest);
@@ -2042,7 +2046,7 @@ impl VpnApp {
             t,
             card,
             f64::from(theme.tokens.radii.xl),
-            theme.tokens.colors.border_white_20,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 51),
             1.0,
         );
         self.draw_add_modal(scene, tr, t, theme, presence, card);

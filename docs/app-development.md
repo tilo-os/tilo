@@ -24,6 +24,22 @@ or test harness:
 qos-dev test -- --nocapture
 ```
 
+Every app using the shared `LaunchSpec` runner also gets a standard responsive
+acceptance capture without app-specific argument parsing:
+
+```bash
+my-app --responsive-matrix target/responsive
+my-app --responsive-matrix target/responsive-expanded --pseudo-locale
+my-app --responsive-matrix target/responsive-large-type --text-scale 2
+```
+
+The matrix renders phone portrait (390×844), tablet (768×1024), laptop
+(1366×768), and large desktop (1920×1080) images from the same scenario. The
+pseudo locale lengthens translated strings and invalidates retained text layout,
+so reviewers see clipped labels and fixed-width assumptions before catalogs are
+complete. The text-scale pass exercises the supported 200% accessibility size.
+Pseudo-localization is a layout audit mode, not a language presented to users.
+
 `qos-dev check` is the copyable local/CI quality gate. It reports the complete
 structural `doctor` result, runs the app's Rust and generated accessibility
 tests, then executes every saved scenario in isolated state with accessibility
@@ -40,7 +56,7 @@ diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
 With no name, `qos-dev new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents eight
+name, window title, application ID, and starter shape. It presents nine
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
@@ -61,7 +77,17 @@ cargo run -p qos-dev -- new activity-feed --template list
 cargo run -p qos-dev -- new qr-code --template qr
 cargo run -p qos-dev -- new repo-scan --template async
 cargo run -p qos-dev -- new notes --template document
+cargo run -p qos-dev -- new project-workspace --template workspace
 ```
+
+Use `--template workspace` for a composed professional starting point rather
+than an isolated widget example. It creates a resizable master-detail shell
+with stable tree selection, a keyed detail view, and directly document-bound
+fields for each item. Switching items preserves independent edits, while the
+standard app document supplies persistence, collaboration, inspection, and
+undo without app-owned synchronization callbacks. The generated headless
+scenario exercises navigation and editing, and the normal generated test
+includes the initial accessibility audit.
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
@@ -1702,6 +1728,28 @@ the visible window, while an error row issues a `TreeLoadReason::Retry`
 request when clicked or activated with Enter or Space. Sources that cannot
 wake the application may return `true` from `needs_poll`; idle workers should
 prefer `LatestRequest`.
+
+Use `with_slot_delegate` to replace the built-in placeholder copy with
+localized retained widgets. The delegate receives the stable `TreeSlot`, its
+depth, and `TreeSlotState::Loading` or `TreeSlotState::Error`. Only unresolved
+rows in the virtual window are mounted. The tree keeps the outer tree-item
+semantics, marks loading rows busy and error rows invalid, measures variable
+placeholder heights, and preserves click/keyboard activation as retry:
+
+```rust
+tree.with_slot_delegate(|_, slot, _depth, state| {
+    let message = match state {
+        TreeSlotState::Loading => "project-tree-loading",
+        TreeSlotState::Error { .. } => "project-tree-load-error",
+    };
+    Box::new(Text::new(message).with_id(format!("tree-slot-{}", slot.index)))
+});
+```
+
+Generated tree components install this localized delegate by default. Replace
+it with a progress indicator, diagnostic detail, or a retry button when the app
+needs richer loading UI; ordinary child-widget focus and accessibility remain
+nested beneath the slot's `TreeItem` semantic node.
 
 When a slot changes state, send `TreeModelChange::SlotsChanged`. The tree
 invalidates request deduplication and transfers focus, measured height, and the

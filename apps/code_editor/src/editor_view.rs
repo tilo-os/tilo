@@ -1330,7 +1330,7 @@ impl EditorView {
             // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
                 let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + LINE_HEIGHT);
-                scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &hl);
+                scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &hl);
             }
 
             // Find-bar matches on this line, under the selection so a selected

@@ -44,7 +44,22 @@ document-preview-heading = Live preview\n\
 qr-title = QR code generator\n\
 qr-input-label = Content\n\
 qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n";
+qr-output-alt = QR code for { $payload }\n\
+workspace-root = Workspace\n\
+workspace-projects = Projects\n\
+workspace-archive = Archive\n\
+workspace-desktop-app = Desktop app\n\
+workspace-design-system = Design system\n\
+workspace-first-prototype = First prototype\n\
+workspace-unknown-item = Selected item\n\
+workspace-tree-name = Workspace items\n\
+workspace-navigation-heading = Projects\n\
+workspace-title-label = Title\n\
+workspace-title-placeholder = Untitled item\n\
+workspace-notes-label = Notes\n\
+workspace-notes-placeholder = Add project notes…\n\
+workspace-preview-heading = Live preview\n\
+workspace-share = Share\n";
 
     pub const IDS: &[&str] = &["de-DE", "en-US"];
 
@@ -88,6 +103,10 @@ pub mod document {
 
 pub mod qr {
     include!("../../qos-dev/templates/qr.rs");
+}
+
+pub mod workspace {
+    include!("../../qos-dev/templates/workspace.rs");
 }
 
 pub mod generated_form_component {
@@ -276,7 +295,7 @@ mod tests {
     #[test]
     fn every_generated_template_has_a_clean_initial_accessibility_audit() {
         type TemplateCase = (&'static str, Box<dyn ui::widget::Widget>, (u32, u32));
-        let templates: [TemplateCase; 8] = [
+        let templates: [TemplateCase; 9] = [
             ("starter", super::starter::app_root(), (800, 500)),
             ("data", super::data::app_root(), (800, 500)),
             ("list", super::list::app_root(), (800, 500)),
@@ -285,6 +304,7 @@ mod tests {
             ("async", super::async_task::app_root(), (800, 500)),
             ("document", super::document::app_root(), (800, 600)),
             ("qr", super::qr::app_root(), (800, 600)),
+            ("workspace", super::workspace::app_root(), (1000, 640)),
         ];
         for (name, root, viewport) in templates {
             let driver = ui::headless::Driver::new(ui::State::new(), root, viewport);
@@ -399,6 +419,71 @@ mod tests {
         app.relayout();
         let undone = app.inspection_json().expect("undone semantic snapshot");
         assert!(!undone.contains("Project Atlas"), "{undone}");
+    }
+
+    #[test]
+    fn generated_workspace_switches_isolated_durable_detail_views() {
+        let mut app =
+            ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (1000, 640));
+        app.expect(
+            &SemanticExpectation::named("workspace-selected-item")
+                .role(Role::Heading { level: 1 })
+                .name("Desktop app"),
+        )
+        .expect("default detail is addressable");
+        let targets = app.targets();
+        for target in [
+            "workspace-selected-item",
+            "workspace-title-input",
+            "workspace-notes-input",
+            "workspace-share",
+        ] {
+            let rect = targets
+                .get(target)
+                .unwrap_or_else(|| panic!("missing {target}"));
+            assert!(
+                rect.width() > 0.0 && rect.height() > 0.0,
+                "{target}: {rect:?}"
+            );
+            assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{target}: {rect:?}");
+        }
+        app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+            .expect("select design system");
+        app.expect(
+            &SemanticExpectation::named("workspace-selected-item")
+                .role(Role::Heading { level: 1 })
+                .name("Design system"),
+        )
+        .expect("detail follows master selection");
+        app.perform_named(
+            "workspace-title-input",
+            &Action::SetValue("Design tokens".into()),
+        )
+        .expect("edit the selected item");
+        app.expect(
+            &SemanticExpectation::named("workspace-title-preview")
+                .role(Role::Heading { level: 2 })
+                .name("Design tokens"),
+        )
+        .expect("bound preview follows input");
+
+        app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
+            .expect("switch item");
+        app.expect(
+            &SemanticExpectation::named("workspace-title-input")
+                .role(Role::TextInput)
+                .value(""),
+        )
+        .expect("the second item's binding is isolated");
+        app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+            .expect("return to first item");
+        app.expect(
+            &SemanticExpectation::named("workspace-title-input")
+                .role(Role::TextInput)
+                .value("Design tokens"),
+        )
+        .expect("the original detail remains synchronized");
+        assert!(app.dump_json().contains("workspace-item-4-title"));
     }
 
     #[test]

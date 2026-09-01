@@ -230,7 +230,7 @@ impl Topbar {
                     fill_round(
                         scene,
                         transform,
-                        colors.surface_white_5,
+                        colors.lift(0.35),
                         cell.inflate(-3.0, -3.0),
                         7.0,
                     );
