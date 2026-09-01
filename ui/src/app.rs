@@ -1600,10 +1600,12 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let changed = self.state.commit_action_authored(
+        let context = self.root_widget.take_commit_context();
+        let changed = self.state.commit_action_authored_with_context(
             self.last_stable_focus_idx,
             self.last_stable_metadata.clone(),
             Some(self.local_author.clone()),
+            context,
         );
         self.last_stable_focus_idx = self
             .focused_node
