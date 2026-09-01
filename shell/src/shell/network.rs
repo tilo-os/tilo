@@ -95,6 +95,8 @@ struct PendingIdentityAdmission {
     room: crate::shell::state::RoomId,
     name: String,
     role: crate::network::invite::InviteRole,
+    #[serde(default)]
+    recipient_user_public_key: Option<[u8; 32]>,
     expiry_unix_seconds: u64,
 }
 
@@ -943,6 +945,7 @@ impl ShellNetwork {
             expiry_seconds_from_now,
             None,
             crate::network::invite::InviteRole::Editor,
+            None,
         )
     }
 
@@ -975,7 +978,28 @@ impl ShellNetwork {
         invitee: &str,
         role: crate::network::invite::InviteRole,
     ) -> Result<String, String> {
-        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee), role)
+        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee), role, None)
+    }
+
+    /// Mint a recipient-bound invite. Possessing its link does not grant
+    /// admission unless the joining device presents a certificate for the
+    /// selected person identity. This is the safe form for offline hosted
+    /// admission.
+    pub fn issue_invite_bound_with_role(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        expiry_seconds_from_now: u64,
+        invitee: &str,
+        recipient_user_public_key: [u8; 32],
+        role: crate::network::invite::InviteRole,
+    ) -> Result<String, String> {
+        self.issue_invite_for(
+            local,
+            expiry_seconds_from_now,
+            Some(invitee),
+            role,
+            Some(recipient_user_public_key),
+        )
     }
 
     fn issue_invite_for(
@@ -984,6 +1008,7 @@ impl ShellNetwork {
         expiry_seconds_from_now: u64,
         invitee: Option<&str>,
         role: crate::network::invite::InviteRole,
+        recipient_user_public_key: Option<[u8; 32]>,
     ) -> Result<String, String> {
         let ws = {
             let replica = self
@@ -1020,13 +1045,16 @@ impl ShellNetwork {
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
-            let token = crate::network::invite::make_invite_token_with_identity_and_role(
+            let signed_invitee = recipient_user_public_key.and(invitee);
+            let token = crate::network::invite::make_invite_token_with_recipient(
                 &self.keypair,
                 &ws,
                 &addr,
                 &hosts,
                 Some(device_cert),
                 role,
+                recipient_user_public_key,
+                signed_invitee,
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
@@ -1066,6 +1094,7 @@ impl ShellNetwork {
                     room,
                     name: invitee.unwrap_or("Member").to_string(),
                     role,
+                    recipient_user_public_key,
                     expiry_unix_seconds: parsed.expiry_unix_seconds,
                 },
             )
@@ -1722,6 +1751,17 @@ impl ShellNetwork {
             }
             return;
         }
+        if admission
+            .recipient_user_public_key
+            .is_some_and(|recipient| recipient != cert.user_public_key)
+        {
+            tracing::warn!(
+                room = %room,
+                peer = %peer,
+                "refusing invite redemption by a different person identity"
+            );
+            return;
+        }
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
@@ -2030,6 +2070,7 @@ mod tests {
             room: RoomId::new(),
             name: "Ada".into(),
             role: crate::network::invite::InviteRole::Commenter,
+            recipient_user_public_key: None,
             expiry_unix_seconds: InviteAdmissionLedger::now() + 600,
         };
         let mut ledger = InviteAdmissionLedger::load(path.clone()).expect("new ledger");
@@ -2061,6 +2102,7 @@ mod tests {
             room: RoomId::new(),
             name: "Lin".into(),
             role: crate::network::invite::InviteRole::Viewer,
+            recipient_user_public_key: None,
             expiry_unix_seconds: InviteAdmissionLedger::now() + 600,
         };
         let mut ledger = InviteAdmissionLedger::load(path.clone()).expect("new ledger");
@@ -2166,10 +2208,49 @@ mod tests {
                     room,
                     name: "Ada".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             )
             .expect("persist pending invite");
+
+        let attacker_root = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
+        let attacker_device = iroh::SecretKey::from_bytes(&[84; 32]);
+        let mut attacker_cert = DeviceCert {
+            user_public_key: attacker_root.verifying_key().to_bytes(),
+            device_public_key: *attacker_device.public().as_bytes(),
+            device_label: "Link thief".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut attacker_cert, &attacker_root).expect("attacker certificate");
+        net.redeem_invited_identity(
+            room_topic_id(room),
+            [2; 32],
+            &attacker_device.public(),
+            &attacker_cert,
+        );
+        let collab_types::caps::Principal::Person(attacker_person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(attacker_cert.user_public_key),
+            )
+        else {
+            unreachable!()
+        };
+        assert!(
+            net.replica
+                .lock()
+                .expect("replica")
+                .tree
+                .read()
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .is_some_and(|workspace| workspace.role_of(&attacker_person).is_none()),
+            "possession must not redeem an invite bound to a different person"
+        );
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.event_tx
@@ -2445,6 +2526,7 @@ mod tests {
                     room,
                     name: "Vi".into(),
                     role: crate::network::invite::InviteRole::Viewer,
+                    recipient_user_public_key: Some(cert.user_public_key),
                     expiry_unix_seconds: u64::MAX,
                 },
             )
@@ -2633,6 +2715,7 @@ mod tests {
                     room,
                     name: "Vera".into(),
                     role: crate::network::invite::InviteRole::Viewer,
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
@@ -2642,6 +2725,7 @@ mod tests {
                     room,
                     name: "Eli".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
@@ -2834,6 +2918,7 @@ mod tests {
                     room: our_room,
                     name: "Peer".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    recipient_user_public_key: None,
                     expiry_unix_seconds: u64::MAX,
                 },
             )
