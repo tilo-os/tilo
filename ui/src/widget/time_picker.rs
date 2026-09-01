@@ -60,6 +60,8 @@ type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
 /// Three-spinner time picker. See module docs.
 pub struct TimePicker {
+    /// Fluent message id spoken for the complete time control.
+    accessible_name: Option<String>,
     hours: u8,           // 0..=23
     minutes: u8,         // 0..=59
     seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
@@ -88,6 +90,7 @@ impl TimePicker {
     /// constructor.
     pub fn new(hours: u8, minutes: u8) -> Self {
         Self {
+            accessible_name: None,
             hours: hours.min(HOUR_MAX),
             minutes: minutes.min(MINSEC_MAX),
             seconds: None,
@@ -107,6 +110,13 @@ impl TimePicker {
     /// tests; the chrome reads this for visual focus highlighting.
     pub fn focused_cell(&self) -> Option<TimeCell> {
         self.focused_cell
+    }
+
+    /// Name the time picker for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// Current per-cell digit accumulator (visible while typing).
@@ -544,6 +554,7 @@ impl Widget for TimePicker {
         };
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(value)
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
