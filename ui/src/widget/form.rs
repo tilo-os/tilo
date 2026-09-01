@@ -1,7 +1,7 @@
 //! Form composition that keeps visible and accessible labels in one contract.
 
 use super::{
-    Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Slider, Text, TextInput,
+    Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider, Text, TextInput,
     TimePicker, Toggle, Widget,
 };
 use crate::tokens::TextRole;
@@ -72,6 +72,12 @@ impl FormControl for ColorPicker {
     }
 }
 
+/// A boolean form control conventionally paired with an inline label.
+pub trait CheckControl: FormControl {}
+
+impl CheckControl for Checkbox {}
+impl CheckControl for Toggle {}
+
 /// Compose a visible semantic label with the control it names.
 ///
 /// `label` is normally a Fluent message key. Both the [`Text`] and control
@@ -97,6 +103,29 @@ where
     let label = label.into();
     let control = control.with_form_accessible_name(&label);
     crate::column![Text::new(&label).with_role(TextRole::Label), control,].with_no_padding()
+}
+
+/// Compose a checkbox or toggle with one inline visible and accessible label.
+///
+/// The control comes first, matching platform form conventions. `label` is a
+/// Fluent message key resolved live by both the semantic [`Text`] and the
+/// control's accessibility node.
+///
+/// ```
+/// use ui::widget::{Checkbox, labeled_check};
+///
+/// let remember = labeled_check(
+///     "account-remember-label",
+///     Checkbox::new("remember", "remember-value"),
+/// );
+/// ```
+pub fn labeled_check<C>(label: impl Into<String>, control: C) -> Row
+where
+    C: CheckControl + 'static,
+{
+    let label = label.into();
+    let control = control.with_form_accessible_name(&label);
+    crate::row![control, Text::new(&label).with_role(TextRole::Label),].no_wrap()
 }
 
 #[cfg(test)]
@@ -195,5 +224,23 @@ mod tests {
             assert_eq!(control.role, expected_role);
             assert_eq!(control.name.as_deref(), Some("advanced-label"));
         }
+    }
+
+    #[test]
+    fn inline_check_uses_one_key_for_visible_and_spoken_labels() {
+        let check = labeled_check(
+            "remember-label",
+            Checkbox::new("remember", "remember-value"),
+        );
+        let children = Widget::children(&check);
+        let control = children[0].accessibility().expect("checkbox semantics");
+        let label = children[1]
+            .accessibility()
+            .expect("visible label semantics");
+
+        assert_eq!(control.role, Role::Checkbox);
+        assert_eq!(control.name.as_deref(), Some("remember-label"));
+        assert_eq!(label.role, Role::StaticText);
+        assert_eq!(label.name.as_deref(), Some("remember-label"));
     }
 }
