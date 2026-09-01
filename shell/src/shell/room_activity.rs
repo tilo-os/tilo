@@ -1282,7 +1282,7 @@ impl RoomActivityPane {
             let capacity = (((left.y1 - 6.0 - y) / 32.0).floor() as usize).max(1);
             let remaining = candidates.len().saturating_sub(self.lens_offset);
             let shown = remaining.min(if remaining > capacity {
-                capacity.saturating_sub(1).max(1)
+                capacity.saturating_sub(1)
             } else {
                 capacity
             });
@@ -1296,7 +1296,7 @@ impl RoomActivityPane {
                     "First lenses…"
                 };
                 self.lens_more_rect = draw_more_row(scene, transform, tr, theme, left, y, label);
-                self.lens_more_advance = shown;
+                self.lens_more_advance = shown.max(1);
             }
         }
 
