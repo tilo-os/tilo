@@ -1689,7 +1689,7 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &RoundedRect::from_rect(tooltip.inflate(-0.5, -0.5), 13.5),
         );
@@ -2222,9 +2222,9 @@ impl CaptureStudio {
             if active {
                 active_fill
             } else if hovered {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(r, 10.0),
@@ -2277,9 +2277,9 @@ impl CaptureStudio {
             if on {
                 c.accent[5]
             } else if hovered {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(r, 10.0),
@@ -2578,9 +2578,9 @@ impl CaptureStudio {
             if active {
                 colors.accent[5]
             } else if hovered {
-                colors.surface_white_10
+                colors.lift(0.72)
             } else {
-                colors.surface_white_5
+                colors.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(rect, 10.0),
@@ -2646,9 +2646,9 @@ impl CaptureStudio {
             if active {
                 c.accent[5]
             } else if hovered {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(rect, 9.0),
@@ -2795,7 +2795,7 @@ impl CaptureStudio {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &RoundedRect::from_rect(track, 1.0),
         );
@@ -2971,7 +2971,7 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &RoundedRect::from_rect(pill.inflate(-0.5, -0.5), radius - 0.5),
         );
@@ -3101,7 +3101,7 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &RoundedRect::from_rect(border_rect, radius - if compact { 0.0 } else { 0.5 }),
         );
@@ -3318,11 +3318,11 @@ impl CaptureStudio {
             Fill::NonZero,
             transform,
             if self.pause_pending || self.stop_pending {
-                colors.surface_white_5
+                colors.lift(0.35)
             } else if pause_hovered {
                 colors.semantic.info.with_alpha_factor(0.22)
             } else {
-                colors.surface_white_5
+                colors.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(pause, pause.height() / 2.0),
@@ -3370,7 +3370,7 @@ impl CaptureStudio {
             Fill::NonZero,
             transform,
             if self.stop_pending {
-                colors.surface_white_5
+                colors.lift(0.35)
             } else if hovered {
                 colors.semantic.danger.with_alpha_factor(0.24)
             } else {
@@ -3480,7 +3480,8 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.surface_white_10.with_alpha_factor(background_alpha),
+            crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26)
+                .with_alpha_factor(background_alpha),
             None,
             &RoundedRect::from_rect(border_rect, radius - if compact { 0.0 } else { 0.5 }),
         );
@@ -3526,11 +3527,11 @@ impl CaptureStudio {
                 if hovered && accent {
                     colors.semantic.success.with_alpha_factor(0.20 * alpha)
                 } else if hovered {
-                    colors.surface_white_10.with_alpha_factor(alpha)
+                    colors.lift(0.72).with_alpha_factor(alpha)
                 } else if icon == Icon::X {
                     Color::TRANSPARENT
                 } else {
-                    colors.surface_white_5.with_alpha_factor(alpha)
+                    colors.lift(0.35).with_alpha_factor(alpha)
                 },
                 None,
                 &RoundedRect::from_rect(rect, rect.height() / 2.0),
@@ -3660,7 +3661,8 @@ impl CaptureStudio {
             if preview_hovered {
                 colors.accent[4].with_alpha_factor(0.72 * content_alpha)
             } else {
-                colors.surface_white_10.with_alpha_factor(alpha)
+                crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26)
+                    .with_alpha_factor(alpha)
             },
             None,
             &RoundedRect::from_rect(preview.inflate(-0.5, -0.5), 4.5),
@@ -3734,7 +3736,7 @@ impl CaptureStudio {
                 } else if pin_hovered {
                     colors.accent[4].with_alpha_factor(0.20 * content_alpha)
                 } else {
-                    colors.surface_white_5.with_alpha_factor(content_alpha)
+                    colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
                 None,
                 &RoundedRect::from_rect(pin, pin.height() / 2.0),
@@ -3758,7 +3760,7 @@ impl CaptureStudio {
                 if copy_hovered {
                     colors.accent[4].with_alpha_factor(0.20 * content_alpha)
                 } else {
-                    colors.surface_white_5.with_alpha_factor(content_alpha)
+                    colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
                 None,
                 &RoundedRect::from_rect(copy, copy.height() / 2.0),
@@ -3778,7 +3780,7 @@ impl CaptureStudio {
                 if hovered {
                     colors.accent[4].with_alpha_factor(0.20 * content_alpha)
                 } else {
-                    colors.surface_white_5.with_alpha_factor(content_alpha)
+                    colors.lift(0.35).with_alpha_factor(content_alpha)
                 },
                 None,
                 &RoundedRect::from_rect(reveal, reveal.height() / 2.0),
@@ -3797,7 +3799,7 @@ impl CaptureStudio {
             Fill::NonZero,
             transform,
             if dismiss_hovered {
-                colors.surface_white_10.with_alpha_factor(content_alpha)
+                colors.lift(0.72).with_alpha_factor(content_alpha)
             } else {
                 Color::TRANSPARENT
             },
@@ -3930,7 +3932,7 @@ impl CaptureStudio {
                     if hovered {
                         colors.semantic.success.with_alpha_factor(0.22)
                     } else {
-                        colors.surface_white_5
+                        colors.lift(0.35)
                     },
                     None,
                     &RoundedRect::from_rect(rect, rect.height() / 2.0),
@@ -3957,7 +3959,7 @@ impl CaptureStudio {
                 if save_hovered {
                     colors.semantic.info.with_alpha_factor(0.22)
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.35)
                 },
                 None,
                 &RoundedRect::from_rect(save, save.height() / 2.0),
@@ -3996,7 +3998,7 @@ impl CaptureStudio {
             if stop_hovered {
                 colors.semantic.danger.with_alpha_factor(0.22)
             } else {
-                colors.surface_white_5
+                colors.lift(0.35)
             },
             None,
             &RoundedRect::from_rect(stop, stop.height() / 2.0),
@@ -4486,7 +4488,7 @@ impl Widget for CaptureStudio {
                     if selected {
                         selection_color
                     } else if hovered {
-                        c.surface_white_10
+                        c.lift(0.72)
                     } else {
                         c.surfaces.raised
                     },
@@ -4678,7 +4680,11 @@ impl Widget for CaptureStudio {
             };
             let danger_action = self.mode == CaptureMode::Recording && i == 2;
             let foreground = if danger_action && active {
-                Color::WHITE
+                c.ink_on(
+                    c.semantic.danger,
+                    c.text_primary,
+                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                )
             } else if active {
                 c.text_primary
             } else {
@@ -4694,9 +4700,9 @@ impl Widget for CaptureStudio {
                         CaptureMode::Pip => c.semantic.info,
                     }
                 } else if hovered {
-                    c.surface_white_10
+                    c.lift(0.72)
                 } else {
-                    c.surface_white_5
+                    c.lift(0.35)
                 },
                 None,
                 &RoundedRect::from_rect(r, 10.0),

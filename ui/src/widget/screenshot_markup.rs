@@ -632,7 +632,7 @@ impl Widget for ScreenshotMarkup {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(c.surfaces.base, 26),
             None,
             &RoundedRect::from_rect(canvas_frame.inflate(-0.5, -0.5), 7.5),
         );
@@ -663,7 +663,7 @@ impl Widget for ScreenshotMarkup {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             None,
             &RoundedRect::from_rect(self.toolbar.inflate(-0.5, -0.5), 25.5),
         );
@@ -680,7 +680,7 @@ impl Widget for ScreenshotMarkup {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                c.surface_white_10,
+                crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                 None,
                 &RoundedRect::from_rect(palette.inflate(-0.5, -0.5), 21.5),
             );
@@ -690,7 +690,7 @@ impl Widget for ScreenshotMarkup {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                c.surface_white_5,
+                c.lift(0.35),
                 None,
                 &RoundedRect::from_rect(badge, badge.height() / 2.0),
             );
@@ -729,7 +729,7 @@ impl Widget for ScreenshotMarkup {
                     } else if selected {
                         c.accent[4].with_alpha_factor(0.22)
                     } else {
-                        c.surface_white_10
+                        c.lift(0.72)
                     },
                     None,
                     &RoundedRect::from_rect(r, r.height() / 2.0),
@@ -864,7 +864,7 @@ impl Widget for ScreenshotMarkup {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                c.surface_white_10,
+                crate::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                 None,
                 &RoundedRect::from_rect(tooltip.inflate(-0.5, -0.5), 12.5),
             );
