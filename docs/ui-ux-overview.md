@@ -32,6 +32,17 @@ to infer present product behaviour.
   screenshot-only claim.
 - Shared empty states, permission prompts, keyboard focus and reduced-motion
   behaviour are available in the redesigned shell journeys.
+- A production-fresh workspace has a visible, keyboard- and assistive-
+  technology-accessible “Open an app” route into the Applications palette; it
+  no longer relies on knowing the `Super+N` shortcut.
+- Shared empty-state actions use one semantic action path for pointer,
+  keyboard, and accessibility activation. Closed dialogs remove their hidden
+  descendants from both focus traversal and the accessibility tree.
+- First-login completion keeps its desktop exit action outside the scrolling
+  content region, including the supported laptop viewport at 130% text scale.
+- Settings category chrome uses theme-driven vector icons instead of optional
+  private-use font glyphs, so its navigation remains legible in deterministic
+  rendering and minimal installations.
 - Chat has exactly two contextual destinations: the active qOS Workspace and a
   system Inbox that groups cross-workspace messages by their source. Chat no
   longer creates a second, contradictory kind of "workspace".

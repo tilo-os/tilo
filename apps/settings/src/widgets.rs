@@ -9,7 +9,8 @@
 //! the OS reads identically and tracks the theme; the helpers here just bundle
 //! the settings-specific row/section shapes on top of it.
 
-use ui::widget::{Badge, Button, Column, Container, Row, Spacer, Text, Widget};
+use ui::icons::Icon;
+use ui::widget::{Badge, Column, Container, IconWidget, Row, Spacer, Text, Widget};
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
 pub type El = Box<dyn Widget>;
@@ -181,13 +182,6 @@ pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
     setting_row_described(label, description, compact_control(control))
 }
 
-/// A compact, square icon button — a [`ui::widget::Button`] sized down from
-/// its default 120×40 pill to a 34×34 icon target. Use for row-level actions
-/// (remove, edit) where a full pill would dominate the row.
-pub fn icon_button(id: &str, glyph: &str, key: &str) -> El {
-    Box::new(Button::new(id, glyph, Some(key)).with_size(34.0, 34.0))
-}
-
 /// A small rounded status chip (e.g. "Connected", "Paired", "Offline").
 /// Backed by the toolkit's [`Badge::pill`] so the tint carries the meaning
 /// and the shape is consistent with the rest of the system.
@@ -195,10 +189,10 @@ pub fn status_pill(label: &str, tint: vello::peniko::Color) -> El {
     Box::new(Badge::pill(label, tint))
 }
 
-/// A prominent identity block for a pane's first card: a large accent glyph,
+/// A prominent identity block for a pane's first card: a large accent icon,
 /// a bold title, and a dim one-line subtitle stacked beside it. Used where a
 /// pane benefits from a hero (About's device identity, Power's battery).
-pub fn hero(glyph: &str, title: &str, subtitle: &str) -> El {
+pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
     let accent = ui::Theme::dark().accent_primary;
     let text_block = Column::new()
         .with_no_padding()
@@ -209,9 +203,7 @@ pub fn hero(glyph: &str, title: &str, subtitle: &str) -> El {
             Text::new(subtitle).with_size(12.0).with_color(dim()),
         ));
     let row = Row::new()
-        .push(Box::new(
-            Text::new(glyph).with_size(34.0).with_color(accent),
-        ))
+        .push(Box::new(IconWidget::new(icon, 34.0).with_color(accent)))
         .push(hgap(14.0))
         .push(Box::new(text_block))
         .push(Box::new(Spacer::new()));
