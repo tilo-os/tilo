@@ -118,16 +118,27 @@ function Start-FocusedApplication($app) {
     return @{ user = $user; taskName = $taskName; applicationId = $app.id }
 }
 
+function Get-PublishedManifest() {
+    $source = Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json
+    $generationText = [string]$source.generation
+    if ($generationText -notmatch '^[0-9]{1,19}$') {
+        throw 'published application catalogue has an invalid generation'
+    }
+    try { $generation = [UInt64]$generationText }
+    catch { throw 'published application catalogue generation is out of range' }
+    return @{ generation = $generation; applications = @($source.applications) }
+}
+
 function Get-PublishedCatalog() {
     # The administrator-owned manifest carries executable paths and arguments,
     # but those never leave the Windows SYSTEM bridge. The host receives only
     # opaque published ids and aliases that `WindowsAppliance` validates.
-    $source = Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json
+    $source = Get-PublishedManifest
     $published = @()
     foreach ($app in @($source.applications)) {
         $published += @{ id = [string]$app.id; displayName = [string]$app.name; remoteAppAlias = [string]$app.id; associations = @() }
     }
-    return @{ generation = 1; applications = $published }
+    return @{ generation = $source.generation; applications = $published }
 }
 
 # Generate a VM-local TLS identity once. The certificate has no host trust
@@ -157,15 +168,16 @@ while ($listener.IsListening) {
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
                 $interactiveUser = Get-ManagedInteractiveUser
+                $catalog = Get-PublishedCatalog
                 $bootId = [string]$os.LastBootUpTime.ToUniversalTime().ToFileTimeUtc()
                 $certificateDerBase64 = [Convert]::ToBase64String($cert.RawData)
-                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; certificateDerBase64 = $certificateDerBase64; license = $license; catalogGeneration = 1; guestBootId = $bootId; presentationBackend = $presentation; appFocusedSpiceAvailable = ($null -ne $interactiveUser); appFocusedSpiceUnavailableReason = if ($null -eq $interactiveUser) { 'no managed interactive session' } else { $null } }; break
+                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; certificateDerBase64 = $certificateDerBase64; license = $license; catalogGeneration = $catalog.generation; guestBootId = $bootId; presentationBackend = $presentation; appFocusedSpiceAvailable = ($null -ne $interactiveUser); appFocusedSpiceUnavailableReason = if ($null -eq $interactiveUser) { 'no managed interactive session' } else { $null } }; break
             }
             'GET /v1/catalog' { Write-Json $context (Get-PublishedCatalog); break }
             'POST /v1/launch' {
                 $request = $body | ConvertFrom-Json
                 if ($request.applicationId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or $request.launchNonce -notmatch '^[A-Za-z0-9-]{16,128}$') { throw 'invalid launch request' }
-                $app = (Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json).applications | Where-Object { $_.id -eq $request.applicationId } | Select-Object -First 1
+                $app = (Get-PublishedManifest).applications | Where-Object { $_.id -eq $request.applicationId } | Select-Object -First 1
                 if ($null -eq $app) { throw 'application is not published' }
                 $requestedPresentation = [string]$request.presentationBackend
                 if ([string]::IsNullOrWhiteSpace($requestedPresentation)) { $requestedPresentation = 'native_rail' }
