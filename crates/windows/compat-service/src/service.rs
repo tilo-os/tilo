@@ -100,6 +100,17 @@ pub struct VmCandidatePublication {
     pub published_entry_id: String,
 }
 
+/// Status of one guest-authorized vendor uninstall. The guest operation ID
+/// remains in the privileged delegate; clients use only the published host
+/// entry ID that they were already authorized to manage.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmUninstallation {
+    pub entry_id: String,
+    pub detail: String,
+    pub phase: VmInstallationPhase,
+    pub exit_code: Option<u32>,
+}
+
 /// A local confirmation is required before the exact portal file is streamed
 /// to Windows. It is the only outcome that can select the VM installer path.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -311,6 +322,21 @@ pub trait VmDelegate: Send + Sync {
         Err(windows_vm::AgentError::InstallerUnsupported.into())
     }
 
+    /// Passive status query for an active guest uninstaller. It must not
+    /// accept a guest operation ID or wake the appliance.
+    fn uninstallation_status(&self, _workspace_id: &str) -> Option<VmUninstallation> {
+        None
+    }
+
+    /// Explicitly refreshes the active guest uninstaller without allowing a
+    /// client to probe arbitrary guest operation IDs.
+    fn refresh_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
+        Ok(self.uninstallation_status(workspace_id))
+    }
+
     /// Removes only the guest publication, preserving the Windows install.
     fn remove_published_application(&self, _entry_id: &str) -> Result<(), windows_vm::LaunchError> {
         Err(windows_vm::AgentError::InstallerUnsupported.into())
@@ -320,8 +346,9 @@ pub trait VmDelegate: Send + Sync {
     /// application. The client never supplies a path or uninstall command.
     fn uninstall_published_application(
         &self,
+        _workspace_id: &str,
         _entry_id: &str,
-    ) -> Result<(), windows_vm::LaunchError> {
+    ) -> Result<VmUninstallation, windows_vm::LaunchError> {
         Err(windows_vm::AgentError::InstallerUnsupported.into())
     }
 
@@ -368,15 +395,27 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
         (**self).publish_install_candidate(workspace_id, entry_id)
     }
 
+    fn uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
+        (**self).uninstallation_status(workspace_id)
+    }
+
+    fn refresh_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
+        (**self).refresh_uninstallation_status(workspace_id)
+    }
+
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
         (**self).remove_published_application(entry_id)
     }
 
     fn uninstall_published_application(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<(), windows_vm::LaunchError> {
-        (**self).uninstall_published_application(entry_id)
+    ) -> Result<VmUninstallation, windows_vm::LaunchError> {
+        (**self).uninstall_published_application(workspace_id, entry_id)
     }
 
     fn launch(
@@ -424,15 +463,27 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Arc<T> {
         (**self).publish_install_candidate(workspace_id, entry_id)
     }
 
+    fn uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
+        (**self).uninstallation_status(workspace_id)
+    }
+
+    fn refresh_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
+        (**self).refresh_uninstallation_status(workspace_id)
+    }
+
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
         (**self).remove_published_application(entry_id)
     }
 
     fn uninstall_published_application(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<(), windows_vm::LaunchError> {
-        (**self).uninstall_published_application(entry_id)
+    ) -> Result<VmUninstallation, windows_vm::LaunchError> {
+        (**self).uninstall_published_application(workspace_id, entry_id)
     }
 
     fn launch(
@@ -553,6 +604,20 @@ where
     ) -> Result<Option<VmInstallation>, ServiceError> {
         self.vm
             .refresh_installation_status(workspace_id)
+            .map_err(Into::into)
+    }
+
+    #[must_use]
+    pub fn vm_uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
+        self.vm.uninstallation_status(workspace_id)
+    }
+
+    pub fn refresh_vm_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<VmUninstallation>, ServiceError> {
+        self.vm
+            .refresh_uninstallation_status(workspace_id)
             .map_err(Into::into)
     }
 
@@ -780,10 +845,15 @@ where
             .map_err(Into::into)
     }
 
-    pub fn uninstall_vm_published_application(&self, entry_id: &str) -> Result<(), ServiceError> {
+    pub fn uninstall_vm_published_application(
+        &self,
+        workspace_id: &str,
+        entry_id: &str,
+    ) -> Result<VmUninstallation, ServiceError> {
+        validate_launch_id("workspace id", workspace_id)?;
         validate_launch_id("Windows application", entry_id)?;
         self.vm
-            .uninstall_published_application(entry_id)
+            .uninstall_published_application(workspace_id, entry_id)
             .map_err(Into::into)
     }
 
