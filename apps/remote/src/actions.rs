@@ -21,10 +21,10 @@
 //!   replica. A stray action against a missing connection is a **no-op**, never
 //!   an error, so a bad replay can't wedge a peer.
 //!
-//! - **External — never actions.** Opening / closing a live session, the remote
-//!   framebuffer + input stream, and credential auth are one-off network side
-//!   effects against a real transport (`russh` / RFB); they touch no CRDT (see
-//!   [`crate::app`]). And presentation — which screen is showing, the selected
+//! - **External operations.** Opening a live session is exported as an explicit
+//!   effect on its connection resource. The framebuffer, input stream, and
+//!   credential auth remain app-owned one-off I/O and touch no CRDT. And
+//!   presentation — which screen is showing, the selected
 //!   row, the in-progress add/edit draft, scale / fullscreen, the nav rail — is
 //!   per-peer view state. None of it is an action.
 //!
@@ -35,8 +35,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::RemoteDoc;
@@ -44,6 +44,19 @@ use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presenc
 
 /// Registry `type_id` for every Remote action.
 pub const REMOTE_ACTION_TYPE: &str = "remote.action";
+pub const REMOTE_CONNECT_OPERATION_TYPE: &str = "remote.operation.connect";
+
+fn connect_spec(id: ConnectionId) -> ActionSpec {
+    ActionSpec::operation(
+        "connect",
+        "Connect",
+        OperationKind::Effect,
+        REMOTE_CONNECT_OPERATION_TYPE,
+        &id,
+    )
+    .expect("RemoteOperation is always serializable")
+    .with_description("Open a live session to this saved connection")
+}
 
 /// Every collaborative operation Remote exports on the shared document. Each
 /// mutates the saved-connection store in `root["connections"]`; each carries
@@ -230,6 +243,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 "remote.connection",
                 label,
             )
+            .with_action(connect_spec(id))
             .with_action(ActionSpec::prompted(
                 "rename",
                 "Rename connection",
@@ -416,7 +430,7 @@ mod tests {
     }
 
     /// Ctrl+K publishes one resource per saved connection, each exporting the
-    /// rename / favourite / delete actions, and the one palette lists them.
+    /// connect / rename / favourite / delete operations, and the one palette lists them.
     /// Drives the real resource-builder and the real [`ui::ActionPalette`].
     #[test]
     fn ctrl_k_publishes_a_resource_per_connection() {
@@ -431,13 +445,23 @@ mod tests {
         assert_eq!(r.label, "Build Box");
         assert_eq!(r.id.as_str(), &format!("remote.connection:{id}"));
         let ids: Vec<&str> = r.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["rename", "favorite", "delete"]);
+        assert_eq!(ids, vec!["connect", "rename", "favorite", "delete"]);
+        let connect = r
+            .actions
+            .iter()
+            .find(|action| action.id == "connect")
+            .unwrap();
+        assert_eq!(connect.kind, OperationKind::Effect);
+        let encoded = immediate_encode(connect);
+        assert_eq!(encoded.type_id, REMOTE_CONNECT_OPERATION_TYPE);
+        assert_eq!(encoded.payload, format!("\"{id}\"").into_bytes());
 
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Rename")), "{labels:?}");
+        assert!(labels.iter().any(|l| l.contains("Connect")), "{labels:?}");
         assert!(
             labels.iter().any(|l| l.contains("favourites")),
             "{labels:?}"
