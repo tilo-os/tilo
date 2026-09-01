@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -211,6 +211,24 @@ enum UiCommand {
         index: usize,
         #[command(flatten)]
         source: NodeSourceArgs,
+    },
+    /// Insert an app-owned component without hand-writing a complete node.
+    Component {
+        file: PathBuf,
+        /// Registered kebab-case component factory name.
+        name: String,
+        /// Stable semantic node id. Defaults to the component name, made unique.
+        #[arg(long)]
+        id: Option<String>,
+        /// Row or column that receives the component.
+        #[arg(long, default_value = "root")]
+        parent: String,
+        /// Child position. Defaults to appending to the parent.
+        #[arg(long)]
+        index: Option<usize>,
+        /// Component props as one JSON object.
+        #[arg(long, default_value = "{}")]
+        props: String,
     },
     /// Remove a node and its subtree.
     Remove {
@@ -744,6 +762,23 @@ fn run_ui(args: UiArgs) -> Result<()> {
             )?;
             println!("Updated {}", file.display());
         }
+        UiCommand::Component {
+            file,
+            name,
+            id,
+            parent,
+            index,
+            props,
+        } => run_ui_component(
+            &file,
+            qos_dev::UiComponentInsert {
+                name,
+                id,
+                parent,
+                index,
+                props,
+            },
+        )?,
         UiCommand::Remove { file, id } => {
             qos_dev::edit_ui_graph(&file, qos_dev::UiGraphEdit::Remove { id })?;
             println!("Updated {}", file.display());
@@ -780,15 +815,24 @@ fn run_ui(args: UiArgs) -> Result<()> {
             qos_dev::edit_ui_graph(&file, graph_edit)?;
             println!("Updated {}", file.display());
         }
-        UiCommand::Apply { file, edits } => {
-            let source = std::fs::read_to_string(&edits)
-                .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
-            let edits = qos_dev::parse_ui_graph_edits(&source)?;
-            let count = edits.len();
-            qos_dev::edit_ui_graph_batch(&file, edits)?;
-            println!("Applied {count} edits to {}", file.display());
-        }
+        UiCommand::Apply { file, edits } => run_ui_apply(&file, &edits)?,
     }
+    Ok(())
+}
+
+fn run_ui_component(file: &Path, request: qos_dev::UiComponentInsert) -> Result<()> {
+    let id = qos_dev::insert_ui_component(file, request)?;
+    println!("Inserted {id} in {}", file.display());
+    Ok(())
+}
+
+fn run_ui_apply(file: &Path, edits: &Path) -> Result<()> {
+    let source = std::fs::read_to_string(edits)
+        .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
+    let edits = qos_dev::parse_ui_graph_edits(&source)?;
+    let count = edits.len();
+    qos_dev::edit_ui_graph_batch(file, edits)?;
+    println!("Applied {count} edits to {}", file.display());
     Ok(())
 }
 
@@ -1465,6 +1509,37 @@ mod tests {
         assert_eq!(index, 2);
         assert!(source.node.is_some());
         assert!(source.node_file.is_none());
+
+        let component = Cli::try_parse_from([
+            "qos-dev",
+            "ui",
+            "component",
+            "ui/main.json",
+            "profile-card",
+            "--props",
+            r#"{"title":"Ada","detail":"Owner"}"#,
+        ])
+        .expect("UI component command");
+        let Command::Ui(UiArgs {
+            command:
+                UiCommand::Component {
+                    file,
+                    name,
+                    id,
+                    parent,
+                    index,
+                    props,
+                },
+        }) = component.command
+        else {
+            panic!("expected UI component command");
+        };
+        assert_eq!(file, PathBuf::from("ui/main.json"));
+        assert_eq!(name, "profile-card");
+        assert_eq!(id, None);
+        assert_eq!(parent, "root");
+        assert_eq!(index, None);
+        assert!(props.contains("Ada"));
 
         assert!(
             Cli::try_parse_from(["qos-dev", "ui", "replace", "ui/main.json", "--id", "body",])
