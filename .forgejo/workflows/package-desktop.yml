@@ -151,12 +151,6 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
-      - name: Enable ARM64 containers on the CI runner
-        if: matrix.arch == 'arm64'
-        id: qemu
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
       - name: Build and install-test in the target userspace
         id: package-build
         run: >-
@@ -175,7 +169,6 @@ jobs:
         if: always() && github.ref == 'refs/heads/codex/package-desktop-release'
         env:
           BUILD_OUTCOME: ${{ steps.package-build.outcome }}
-          QEMU_OUTCOME: ${{ steps.qemu.outcome }}
           UPLOAD_OUTCOME: ${{ steps.artifact-upload.outcome }}
         run: |
           git config user.name 'qOS Forgejo CI'
@@ -189,7 +182,7 @@ jobs:
           note_ref="refs/notes/qos-package-${{ matrix.id }}-${{ matrix.arch }}"
           git fetch origin "$note_ref:$note_ref" || true
           git notes --ref="${note_ref#refs/notes/}" add -f \
-            -m "build=$BUILD_OUTCOME qemu=$QEMU_OUTCOME upload=$UPLOAD_OUTCOME detail=$detail run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
+            -m "build=$BUILD_OUTCOME upload=$UPLOAD_OUTCOME detail=$detail run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
             "$GITHUB_SHA"
           git push origin "$note_ref"
 
