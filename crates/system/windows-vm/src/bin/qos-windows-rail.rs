@@ -1,8 +1,8 @@
-//! Run FreeRDP's X11 RAIL client through one private rootless Xwayland bridge.
+//! Run `FreeRDP`'s X11 RAIL client through one private rootless Xwayland bridge.
 //!
 //! qOS does not implement an XWM in its compositor. `xwayland-satellite` is a
 //! deliberately small Wayland client/XWM which maps each X11 window to an
-//! `xdg_toplevel`; that lets FreeRDP RAIL windows participate in the ordinary
+//! `xdg_toplevel`; that lets `FreeRDP` RAIL windows participate in the ordinary
 //! qOS layout instead of placing a nested Windows desktop in one host window.
 
 use std::env;
@@ -140,7 +140,7 @@ fn private_launch_root(runtime: &Path) -> Result<PathBuf, String> {
                 )?;
                 return Ok(candidate);
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(format!(
                     "could not create a private launch directory: {error}"
@@ -154,7 +154,7 @@ fn private_launch_root(runtime: &Path) -> Result<PathBuf, String> {
 fn reserve_display(runtime: &Path) -> Result<(u16, DisplayReservation), String> {
     let mut random = [0_u8; 2];
     rand::rngs::OsRng.fill_bytes(&mut random);
-    let first = 1000 + (u16::from_be_bytes(random) % 20_000);
+    let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
     for offset in 0..DISPLAY_ATTEMPTS {
         let display = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
         let x_socket = PathBuf::from(format!("/tmp/.X11-unix/X{display}"));
@@ -170,14 +170,14 @@ fn reserve_display(runtime: &Path) -> Result<(u16, DisplayReservation), String> 
             .open(&path)
         {
             Ok(file) => return Ok((display, DisplayReservation { path, _file: file })),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(format!("could not reserve an X display: {error}")),
         }
     }
     Err("no private X display number is available".to_string())
 }
 
-/// Write one FamilyWild MIT-MAGIC-COOKIE-1 record without putting the cookie
+/// Write one `FamilyWild` MIT-MAGIC-COOKIE-1 record without putting the cookie
 /// in argv. Xauthority uses network byte order and length-prefixed fields.
 fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
     let mut cookie = [0_u8; 16];
@@ -209,7 +209,9 @@ fn push_u16(buffer: &mut Vec<u8>, value: u16) {
 }
 
 fn wait_for_xwayland(child: &mut Child, socket: &Path) -> Result<(), String> {
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let deadline = Instant::now()
+        .checked_add(STARTUP_TIMEOUT)
+        .ok_or_else(|| "could not calculate the Xwayland startup deadline".to_string())?;
     loop {
         if socket.exists() {
             return Ok(());
