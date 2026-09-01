@@ -245,7 +245,7 @@ impl PeerPresence {
         // held across both — the network thread's own use of the lock
         // is short, and holding it through an unrelated write extends
         // every contending wait by however long that write takes.
-        let rows = {
+        let (active, rows) = {
             let Ok(replica) = self.net.replica.lock() else {
                 return false;
             };
@@ -261,19 +261,27 @@ impl PeerPresence {
             let mut arrived = handles_seen_in(presence, &ws.room.to_string());
             arrived.extend(replica.participants_in(ws.room));
             let rows = room_roster(ws, &labels, &arrived, local);
-            let unchanged = tree.collaborators == rows;
+            let unchanged = ws.collaborators == rows && tree.collaborators == rows;
+            let active = ws.id;
             // Drop the read guard as soon as it's no longer needed, rather
             // than holding it to the end of the block below.
             drop(tree);
             if unchanged {
                 return false;
             }
-            rows
+            (active, rows)
         };
         let Ok(replica) = self.net.replica.lock() else {
             return false;
         };
-        replica.tree.write().collaborators = rows;
+        let mut tree = replica.tree.write();
+        if let Some(workspace) = tree.workspaces.iter_mut().find(|ws| ws.id == active) {
+            workspace.collaborators.clone_from(&rows);
+        }
+        // Keep the migration-era cache in sync for older readers. New shell
+        // chrome always reads the active workspace directly, so this cache
+        // cannot leak another workspace's presence into the top bar.
+        tree.collaborators = rows;
         true
     }
 }
@@ -1233,7 +1241,9 @@ mod two_sessions {
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) -> Vec<(String, Option<String>, bool)> {
         tree.read()
-            .collaborators
+            .active_workspace()
+            .map(|workspace| workspace.collaborators.as_slice())
+            .unwrap_or_default()
             .iter()
             .map(|c| (c.name.clone(), c.role_id.clone(), c.invited))
             .collect()
@@ -1456,6 +1466,7 @@ mod two_sessions {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
                         .expect("empty heads serialise"),
                     room: room.to_string(),
+                    invite_id: None,
                 },
             );
         }

@@ -30,7 +30,8 @@ use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::{PathSegment, PresenceCtx, PresenceKey};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
 use crate::document_status::{DocumentStatus, DocumentStatusView};
@@ -49,6 +50,8 @@ use crate::review_overlay::{
 use crate::ruler::RulerMarker;
 use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
+use crate::style_menu::{StyleMenu, StyleMenuAction};
+use crate::template_picker::TemplatePicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 #[cfg(test)]
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
@@ -504,16 +507,6 @@ enum PanelHit {
     ImageFlipH,
     /// Mirror the selected image vertically (top↔bottom).
     ImageFlipV,
-}
-
-/// A row in the paragraph-style context menu (right-click a style chip). Custom
-/// styles offer Delete + Duplicate; built-in styles offer Duplicate only.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum StyleMenuAction {
-    /// Delete this custom style (built-ins are never offered this row).
-    Delete(String),
-    /// Duplicate this style under a fresh id.
-    Duplicate(String),
 }
 
 /// An in-progress drag-to-scrub on a numeric field.
@@ -1688,13 +1681,8 @@ pub struct WordProcessorWidget {
     chrome: ChromeColors,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
-    // ---- new-from-template picker -----------------------------------------
-    /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
-    /// only while the user is choosing a template; a selection replaces the open
-    /// document's content with the chosen template in place.
-    new_menu: ContextMenu,
-    /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
-    new_menu_templates: Vec<crate::Template>,
+    /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
+    template_picker: TemplatePicker,
     /// An in-flight host file request: `Some` means the XDG chooser is open on a
     /// worker thread; the path is drained each frame in [`Self::drain_portal`].
     /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
@@ -1703,11 +1691,8 @@ pub struct WordProcessorWidget {
     /// save the current one, or insert an image). Set alongside `portal_rx`.
     portal_purpose: Option<PortalPurpose>,
     // ---- paragraph-style context menu -------------------------------------
-    /// Right-click-a-style menu (Delete / Duplicate). Reuses the shared
-    /// [`ContextMenu`] primitive; painted in the overlay pass.
-    style_menu: ContextMenu,
-    /// Per-row action parallel to `style_menu`'s items (selection dispatch).
-    style_menu_actions: Vec<StyleMenuAction>,
+    /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
+    style_menu: StyleMenu,
     // ---- transient status toast -------------------------------------------
     /// A transient confirmation message (e.g. "Table of contents updated"),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
@@ -1797,12 +1782,10 @@ impl WordProcessorWidget {
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
             recovery: RecoveryBanner::default(),
-            new_menu: ContextMenu::new(),
-            new_menu_templates: Vec::new(),
+            template_picker: TemplatePicker::default(),
             portal_rx: None,
             portal_purpose: None,
-            style_menu: ContextMenu::new(),
-            style_menu_actions: Vec::new(),
+            style_menu: StyleMenu::default(),
             toast: None,
             color_picker: StyleColorPicker::default(),
         }
@@ -4151,19 +4134,20 @@ impl WordProcessorWidget {
         let Some(msg) = self.toast.as_deref() else {
             return;
         };
-        let approx = num::f64_of_usize(msg.chars().count()) * 7.4 + 32.0;
-        let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
-        let h = 40.0;
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let y1 = self.rect.y1 - LAYOUT_BAR_H - 14.0;
-        let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        ui::widget::toast::paint_card(
+        let area = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1 - LAYOUT_BAR_H,
+        );
+        paint_transient(
             scene,
             transform,
             tr,
             theme,
-            r,
-            &ui::widget::toast::ToastCard::new(msg, ui::widget::toast::ToastKind::Success),
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Success),
         );
     }
 }
@@ -4234,7 +4218,7 @@ fn draw_btn(
 /// via [`WordProcessorWidget::accessibility_tree`], with this struct as the carrier;
 /// `accessibility` returns this tree's root so the host still sees a focusable
 /// `Document`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct A11yTreeNode {
     /// The local semantics of this element.
     pub node: ui::a11y::AccessNode,
@@ -6610,11 +6594,8 @@ impl WordProcessorWidget {
         // "panel is chrome, ignore" rule kicks in.
         if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
             if let Some(id) = self.style_chip_at(self.pointer) {
-                let pos = [
-                    num::f32_of_f64(self.pointer.x),
-                    num::f32_of_f64(self.pointer.y),
-                ];
-                self.open_style_menu(&id, pos);
+                self.style_menu.open(&id, self.pointer);
+                self.dirty = true;
                 *handled = true;
             }
             return;
@@ -6690,14 +6671,10 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // Likewise route the press to the "New ▾" template menu when open:
-        // a row applies that template; a click elsewhere dismisses it.
-        if self.new_menu.is_open() {
-            let point = [self.pointer.x, self.pointer.y];
-            if let Some(idx) = self.new_menu.item_at(point) {
-                self.dispatch_new_menu(idx, state);
-            } else {
-                self.new_menu.close();
+        // Likewise route the press to the "New ▾" template picker when open.
+        if self.template_picker.is_open() {
+            if let Some(template) = self.template_picker.click(self.pointer) {
+                self.apply_template(state, template);
             }
             self.dirty = true;
             *handled = true;
@@ -6706,11 +6683,8 @@ impl WordProcessorWidget {
         // The paragraph-style menu (Delete / Duplicate) captures the press
         // the same way: a row runs its action, an outside click dismisses.
         if self.style_menu.is_open() {
-            let point = [self.pointer.x, self.pointer.y];
-            if let Some(idx) = self.style_menu.item_at(point) {
-                self.dispatch_style_menu(idx, state);
-            } else {
-                self.style_menu.close();
+            if let Some(action) = self.style_menu.click(self.pointer) {
+                self.dispatch_style_menu(action, state);
             }
             self.dirty = true;
             *handled = true;
@@ -7235,11 +7209,13 @@ impl WordProcessorWidget {
         }
         // Escape dismisses an open context / style menu before anything else.
         if matches!(logical_key, Key::Named(NamedKey::Escape))
-            && (self.context_menu.is_open() || self.style_menu.is_open() || self.new_menu.is_open())
+            && (self.context_menu.is_open()
+                || self.style_menu.is_open()
+                || self.template_picker.is_open())
         {
             self.context_menu.close();
             self.style_menu.close();
-            self.new_menu.close();
+            self.template_picker.close();
             self.dirty = true;
             *handled = true;
             return true;
@@ -7792,26 +7768,10 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
-        if self.new_menu.is_open() {
-            Widget::draw(
-                &mut self.new_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
-        if self.style_menu.is_open() {
-            Widget::draw(
-                &mut self.style_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
+        self.template_picker
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.style_menu
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.find.is_open() {
             self.find
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -8329,7 +8289,7 @@ impl WordProcessorWidget {
                 }
             }
             ToolAction::InsertToc => self.generate_toc(state),
-            ToolAction::NewMenu => self.open_new_menu(),
+            ToolAction::NewMenu => self.open_template_picker(),
         }
     }
 
@@ -8641,19 +8601,14 @@ impl WordProcessorWidget {
             return;
         }
         let (plain, blocks) = self.inner.copy_fragment(state);
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(plain.clone());
-        }
+        clipboard_copy(&plain);
         self.rich_clip = Some((plain, blocks));
     }
 
     /// Paste with formatting when the system clipboard still holds our last rich
     /// copy; otherwise paste the clipboard's plain text (e.g. from another app).
     fn clipboard_paste(&mut self, state: &mut AutoCommit) {
-        let Some(sys) = arboard::Clipboard::new()
-            .ok()
-            .and_then(|mut cb| cb.get_text().ok())
-        else {
+        let Some(sys) = clipboard_paste() else {
             return;
         };
         let rich = self
@@ -8669,10 +8624,7 @@ impl WordProcessorWidget {
 
     /// Paste plain text only (Ctrl+Shift+V), stripping all formatting.
     fn clipboard_paste_plain(&mut self, state: &mut AutoCommit) {
-        if let Some(t) = arboard::Clipboard::new()
-            .ok()
-            .and_then(|mut cb| cb.get_text().ok())
-        {
+        if let Some(t) = clipboard_paste() {
             self.inner.insert_multiline(state, &t);
         }
     }
@@ -8875,10 +8827,7 @@ impl WordProcessorWidget {
     /// (when the clipboard holds text) and always Select All.
     fn push_clipboard_rows(&self, menu: &mut ContextMenu, actions: &mut Vec<Option<CtxAction>>) {
         let has_sel = self.inner.has_selection();
-        let can_paste = arboard::Clipboard::new()
-            .ok()
-            .and_then(|mut cb| cb.get_text().ok())
-            .is_some_and(|s| !s.is_empty());
+        let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
         if has_sel {
             menu.push(MenuItem::action(t("menu-cut"), || {}));
             actions.push(Some(CtxAction::Cut));
@@ -8958,78 +8907,45 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Open the style-management context menu for `style_id`. Custom styles get
-    /// **Delete** + **Duplicate**; built-in styles get **Duplicate** only (they
-    /// are the document's permanent baseline component set and can't be removed).
-    fn open_style_menu(&mut self, style_id: &str, pos: [f32; 2]) {
-        let mut menu = ContextMenu::new();
-        let mut actions: Vec<StyleMenuAction> = Vec::new();
-        if !crate::styles::StyleSheet::is_builtin(style_id) {
-            menu.push(MenuItem::action(t("style-menu-delete"), || {}));
-            actions.push(StyleMenuAction::Delete(style_id.to_string()));
-        }
-        menu.push(MenuItem::action(t("style-menu-duplicate"), || {}));
-        actions.push(StyleMenuAction::Duplicate(style_id.to_string()));
-        menu.open_at(pos);
-        self.style_menu = menu;
-        self.style_menu_actions = actions;
-        self.dirty = true;
-    }
-
-    /// Dispatch the style-menu row at `idx`: delete a custom style (reassigning
-    /// its blocks to the default) or duplicate any style under a fresh id. Then
-    /// close the menu.
-    fn dispatch_style_menu(&mut self, idx: usize, state: &mut AutoCommit) {
-        if let Some(action) = self.style_menu_actions.get(idx).cloned() {
-            match action {
-                StyleMenuAction::Delete(id) => {
-                    if self.inner.delete_style(state, &id) {
-                        self.sheet = self.inner.stylesheet(state);
-                        self.refresh_blocks(state);
-                        self.needs_commit = true;
-                        self.modified = true;
-                        self.toast = Some(t("toast-style-deleted"));
-                    }
+    /// Apply a typed style-menu outcome. The component owns presentation and
+    /// hit-testing; document mutation remains editor policy.
+    fn dispatch_style_menu(&mut self, action: StyleMenuAction, state: &mut AutoCommit) {
+        match action {
+            StyleMenuAction::Delete(id) => {
+                if self.inner.delete_style(state, &id) {
+                    self.sheet = self.inner.stylesheet(state);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.toast = Some(t("toast-style-deleted"));
                 }
-                StyleMenuAction::Duplicate(id) => {
-                    if let Some(new_id) = self.inner.duplicate_style(state, &id) {
-                        // Apply the copy to the caret block so the panel focuses it.
-                        self.inner.set_block_style(state, &new_id);
-                        self.sheet = self.inner.stylesheet(state);
-                        self.refresh_blocks(state);
-                        self.needs_commit = true;
-                        self.modified = true;
-                        self.toast = Some(t("toast-style-duplicated"));
-                    }
+            }
+            StyleMenuAction::Duplicate(id) => {
+                if let Some(new_id) = self.inner.duplicate_style(state, &id) {
+                    // Apply the copy to the caret block so the panel focuses it.
+                    self.inner.set_block_style(state, &new_id);
+                    self.sheet = self.inner.stylesheet(state);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.toast = Some(t("toast-style-duplicated"));
                 }
             }
         }
-        self.style_menu.close();
         self.dirty = true;
     }
 
     // ---- new-from-template picker -----------------------------------------
 
-    /// Open the "New ▾" template picker: build a [`ContextMenu`] listing every
-    /// [`crate::Template`] by `title()`, anchored just under the toolbar's leading
-    /// edge. A selection (left-click on a row) replaces the open document's
-    /// content with the chosen template in place (see [`Self::apply_template`]).
-    fn open_new_menu(&mut self) {
-        let mut menu = ContextMenu::new();
-        let mut templates = Vec::new();
-        for &tpl in crate::Template::all() {
-            menu.push(MenuItem::action(tpl.display_title(), || {}));
-            templates.push(tpl);
-        }
+    /// Open the "New ▾" picker below the toolbar's leading edge.
+    fn open_template_picker(&mut self) {
         // Anchor below the toolbar's left edge (where the "New ▾" button lives).
         let anchor_x = self
             .toolbar
             .first()
             .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
-        menu.open_at([num::f32_of_f64(anchor_x), num::f32_of_f64(anchor_y)]);
-        self.new_menu = menu;
-        self.new_menu_templates = templates;
+        self.template_picker.open_at(Point::new(anchor_x, anchor_y));
         self.dirty = true;
     }
 
@@ -9053,16 +8969,6 @@ impl WordProcessorWidget {
             // A wholesale content swap is a strong autosave trigger.
             self.note_edit_for_autosave(state);
         }
-    }
-
-    /// Dispatch the new-menu row at `idx`: apply the chosen template, then close
-    /// the menu. Out-of-range rows are ignored.
-    fn dispatch_new_menu(&mut self, idx: usize, state: &mut AutoCommit) {
-        if let Some(&t) = self.new_menu_templates.get(idx) {
-            self.apply_template(state, t);
-        }
-        self.new_menu.close();
-        self.dirty = true;
     }
 
     // ---- autosave / crash-recovery ----------------------------------------
@@ -9270,7 +9176,7 @@ impl WordProcessorWidget {
             ToolAction::NewMenu,
             &t("toolbar-new"),
             64.0,
-            self.new_menu.is_open(),
+            self.template_picker.is_open(),
         );
         add(ToolAction::Bold, "B", 34.0, bold_a);
         add(ToolAction::Italic, "I", 30.0, italic_a);
@@ -9681,7 +9587,7 @@ mod tests {
         wp.needs_commit = true;
 
         let context = wp.take_commit_context().expect("native edit provenance");
-        assert_eq!(context.label, "Edit document");
+        assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
             Some("org.qos.Writer")
@@ -11952,6 +11858,80 @@ mod tests {
         assert_eq!(wp.inner.current_text(&state.doc), "teh");
     }
 
+    #[test]
+    fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+
+        // Copy without a selection remains a no-op.
+        clipboard_copy("sentinel");
+        wp.clipboard_copy(&state.doc);
+        assert_eq!(clipboard_paste().as_deref(), Some("sentinel"));
+
+        wp.inner.insert_str(&mut state.doc, "hello");
+
+        // Copy a bold selection. The system-facing clipboard carries plain text;
+        // the widget's matching sidecar carries the qdoc marks.
+        wp.inner.caret.offset = 0;
+        wp.inner.set_anchor();
+        wp.inner.caret.offset = 5;
+        wp.inner.toggle_mark(&mut state.doc, "strong");
+        wp.inner.caret.offset = 0;
+        wp.inner.clear_anchor();
+        wp.inner.set_anchor();
+        wp.inner.caret.offset = 5;
+        wp.clipboard_copy(&state.doc);
+        assert_eq!(clipboard_paste().as_deref(), Some("hello"));
+
+        // A normal paste of the unchanged clipboard finds the sidecar and keeps
+        // the mark.
+        wp.inner.clear_anchor();
+        wp.inner.move_end(&state.doc);
+        wp.clipboard_paste(&mut state.doc);
+        let containers = wp.inner.containers.clone().expect("bound document");
+        let block = wp.inner.caret.block.clone();
+        assert_eq!(wp.inner.current_text(&state.doc), "hellohello");
+        assert!(qdoc::model::has_mark_over(
+            &state.doc,
+            &containers,
+            &block,
+            5,
+            10,
+            "strong"
+        ));
+
+        // Paste-as-plain reads through the same shared backend but deliberately
+        // ignores that matching rich sidecar. Use a fresh paragraph so the
+        // destination's own active character style cannot affect the assertion.
+        wp.inner.enter(&mut state.doc);
+        wp.clipboard_paste_plain(&mut state.doc);
+        let block = wp.inner.caret.block.clone();
+        assert_eq!(wp.inner.current_text(&state.doc), "hello");
+        assert!(!qdoc::model::has_mark_over(
+            &state.doc,
+            &containers,
+            &block,
+            0,
+            5,
+            "strong"
+        ));
+
+        // Replacing the clipboard from another app invalidates the sidecar key,
+        // so an ordinary paste also falls back to plain text.
+        clipboard_copy("external");
+        wp.clipboard_paste(&mut state.doc);
+        assert_eq!(wp.inner.current_text(&state.doc), "helloexternal");
+        assert!(!qdoc::model::has_mark_over(
+            &state.doc,
+            &containers,
+            &block,
+            5,
+            13,
+            "strong"
+        ));
+    }
+
     // ---- right-click context menu -----------------------------------------
 
     /// A content-space point at the very start of the first laid block's text
@@ -12971,9 +12951,8 @@ mod tests {
         );
     }
 
-    /// Opening the "New ▾" menu lists every template by title; selecting one
-    /// replaces the document content with that template's first heading — driven
-    /// through the production `apply_tool` → menu → `dispatch_new_menu` path.
+    /// Selecting from the "New ▾" picker replaces the document content with that
+    /// template's first heading through the production pointer-routing path.
     #[test]
     fn selecting_a_template_replaces_the_document_content() {
         let (mut state, mut wp) = bound();
@@ -12987,35 +12966,31 @@ mod tests {
             "the document starts with the user's own text"
         );
 
-        // Open the picker via the real toolbar action.
+        // Draw once to establish the real toolbar anchor, then open the picker
+        // via the toolbar action.
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
-        assert!(wp.new_menu.is_open(), "the New ▾ menu opens");
-        let labels: Vec<String> = wp
-            .new_menu
-            .items()
-            .iter()
-            .filter_map(|i| i.label().map(str::to_string))
-            .collect();
-        // The menu lists every template by its localized display title (the real
-        // production path), in order. Under the default (en-US) locale these
-        // match `title()`, but we assert against `display_title()` so the test
-        // tracks the production code, not a hard-coded English literal.
-        let titles: Vec<String> = crate::Template::all()
-            .iter()
-            .map(|tpl| tpl.display_title())
-            .collect();
-        assert_eq!(
-            labels, titles,
-            "the menu lists every template by title, in order"
-        );
+        assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
 
-        // Select "Report" (its first heading is a known, stable string).
+        // Select "Report" (its first heading is a known, stable string). Shared
+        // ContextMenu rows start after 6 px padding and are 28 px tall.
         let report_idx = crate::Template::all()
             .iter()
             .position(|t| *t == crate::Template::Report)
             .unwrap();
-        wp.dispatch_new_menu(report_idx, &mut state.doc);
-        assert!(!wp.new_menu.is_open(), "the menu closes after a selection");
+        let anchor_x = wp.toolbar.first().map(|(_, rect)| rect.x0).unwrap();
+        let anchor_y = wp.rect.y0 + wp.toolbar_height(wp.rect.width());
+        wp.pointer = Point::new(
+            anchor_x + 10.0,
+            anchor_y + 6.0 + num::f64_of_usize(report_idx) * 28.0 + 1.0,
+        );
+        let mut handled = false;
+        assert!(wp.handle_left_press_menu_routing(&mut state.doc, &mut handled));
+        assert!(handled);
+        assert!(
+            !wp.template_picker.is_open(),
+            "the picker closes after a selection"
+        );
 
         let first = first_block(&wp, &state).expect("the templated document has a first block");
         assert_eq!(
@@ -14639,41 +14614,6 @@ mod tests {
         (wp, state, new_id)
     }
 
-    /// The style menu offers Delete + Duplicate for a custom style, but Duplicate
-    /// only for a built-in.
-    #[test]
-    fn style_menu_offers_delete_only_for_custom_styles() {
-        let (mut wp, _state, custom_id) = doc_with_custom_style();
-
-        wp.open_style_menu(&custom_id, [10.0, 10.0]);
-        assert!(
-            wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Delete(_))),
-            "a custom style offers Delete"
-        );
-        assert!(
-            wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Duplicate(_))),
-            "a custom style offers Duplicate"
-        );
-
-        wp.open_style_menu("body", [10.0, 10.0]);
-        assert!(
-            !wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Delete(_))),
-            "a built-in style offers NO Delete"
-        );
-        assert!(
-            wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Duplicate(_))),
-            "a built-in style still offers Duplicate"
-        );
-    }
-
     /// Deleting a custom style removes it from the document's sheet and reassigns
     /// the block that used it (so no dangling style ref remains).
     #[test]
@@ -14684,14 +14624,8 @@ mod tests {
             "custom style present before delete"
         );
 
-        // Open the style menu on the custom chip and click its Delete row.
-        wp.open_style_menu(&custom_id, [10.0, 10.0]);
-        let del_idx = wp
-            .style_menu_actions
-            .iter()
-            .position(|a| matches!(a, StyleMenuAction::Delete(_)))
-            .expect("Delete row present for a custom style");
-        wp.dispatch_style_menu(del_idx, &mut state.doc);
+        // Apply the typed outcome produced by the extracted menu component.
+        wp.dispatch_style_menu(StyleMenuAction::Delete(custom_id.clone()), &mut state.doc);
         wp.sync(&mut state.doc, &state.root);
 
         assert!(
@@ -14984,10 +14918,10 @@ mod tests {
                 .panel_hits
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == &custom_id))
-                .map_or([950.0, 240.0], |(r, _)| {
-                    [num::f32_of_f64(r.x0) + 10.0, num::f32_of_f64(r.y1) + 2.0]
+                .map_or(Point::new(950.0, 240.0), |(r, _)| {
+                    Point::new(r.x0 + 10.0, r.y1 + 2.0)
                 });
-            wp.open_style_menu(&custom_id, anchor);
+            wp.style_menu.open(&custom_id, anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-custom");
         }
 
@@ -14998,10 +14932,10 @@ mod tests {
                 .panel_hits
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == "body"))
-                .map_or([950.0, 240.0], |(r, _)| {
-                    [num::f32_of_f64(r.x0) + 10.0, num::f32_of_f64(r.y1) + 2.0]
+                .map_or(Point::new(950.0, 240.0), |(r, _)| {
+                    Point::new(r.x0 + 10.0, r.y1 + 2.0)
                 });
-            wp.open_style_menu("body", anchor);
+            wp.style_menu.open("body", anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-builtin");
         }
 

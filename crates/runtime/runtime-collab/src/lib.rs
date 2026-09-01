@@ -409,6 +409,8 @@ impl ChannelHandle {
                 row.set_resource_label(&a.resource_label);
                 row.set_action_label(&a.action_label);
                 row.set_description(a.description.as_deref().unwrap_or(""));
+                row.set_operation_kind(&a.operation_kind);
+                row.set_params_json(&a.params_json);
                 let mut input = row.init_input();
                 match &a.input {
                     ExportedInput::None => input.set_none(()),
@@ -712,6 +714,10 @@ pub struct ExportedAction {
     pub resource_label: String,
     pub action_label: String,
     pub description: Option<String>,
+    /// `document`, `effect`, or `view`.
+    pub operation_kind: String,
+    /// JSON encoding of the canonical typed parameter descriptors.
+    pub params_json: String,
     pub input: ExportedInput,
 }
 
@@ -870,6 +876,30 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish a transient range the local participant just inserted.
+    /// Unlike a selection, receivers render this as a fading event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn publish_typing(
+        &self,
+        key_bytes: &[u8],
+        start: u64,
+        end: u64,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_typing_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_start(start);
+            b.set_end(end);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish "the local user has arrived at the keyed object".
     ///
     /// # Errors
@@ -940,6 +970,10 @@ pub enum PresencePayload {
         start: u64,
         end: u64,
     },
+    Typing {
+        start: u64,
+        end: u64,
+    },
     Arrived,
     Left,
 }
@@ -1006,6 +1040,10 @@ fn decode_presence_payload(
             start: r.get_start(),
             end: r.get_end(),
         },
+        W::Typing(r) => PresencePayload::Typing {
+            start: r.get_start(),
+            end: r.get_end(),
+        },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })
@@ -1037,6 +1075,10 @@ pub struct Collaborator {
 pub struct ChannelContext {
     pub collaborators: Vec<Collaborator>,
     pub permissions: Vec<String>,
+    /// `Some` only for a session-local Follow control frame. The inner
+    /// `None` means stop following; ordinary context snapshots keep this
+    /// field at `None` and replace roster/permissions as before.
+    pub follow_changed: Option<Option<String>>,
 }
 
 /// Client-pulled channel-context stream.
@@ -1091,9 +1133,17 @@ impl ContextStream {
                     .to_owned(),
             );
         }
+        let follow_changed = ctx.get_follow_changed().then(|| {
+            ctx.get_follow_target()
+                .ok()
+                .and_then(|target| target.to_str().ok())
+                .filter(|target| !target.is_empty())
+                .map(str::to_owned)
+        });
         Ok(ChannelContext {
             collaborators,
             permissions,
+            follow_changed,
         })
     }
 }

@@ -17,7 +17,8 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
@@ -222,6 +223,13 @@ pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
     }
     None
 }
+
+const FILES_PACKAGE_ID: &str = "dev.qos.file-explorer";
+const TRUSTED_IDENTITIES_FILE: &str = "trusted-identities.json";
+static PROJECTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TRUSTED_IDENTITY_PROJECTIONS: LazyLock<
+    Mutex<std::collections::HashMap<RoomId, qos_user_identity::TrustedIdentityProjectionV2>>,
+> = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// One installed application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -498,6 +506,129 @@ pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
 /// the sandbox: the app never sees its own permission record.
 fn capabilities_dir() -> PathBuf {
     runtime_dir().join("qos").join("capabilities")
+}
+
+/// Host-only staging directory for Files' identity projection. It is outside
+/// the app's writable directory and only the final file is bind-mounted into
+/// the sandbox.
+fn trusted_identities_dir() -> PathBuf {
+    runtime_dir().join("qos").join("identity-projections")
+}
+
+/// Atomically stage a bounded governance projection for one room.
+///
+/// The session owns both directory and file. A temporary 0600 inode is fully
+/// written and synced before rename, so Files sees either the previous whole
+/// snapshot or the next whole snapshot, never a prefix. This function accepts
+/// only the typed governance format; Contacts and presence payloads cannot be
+/// accidentally serialized through it.
+///
+/// # Errors
+///
+/// Returns an I/O error when validation, serialization, bounded staging, or
+/// the atomic durable replacement fails.
+pub fn write_trusted_identities_projection(
+    room: RoomId,
+    projection: &qos_user_identity::TrustedIdentityProjectionV2,
+) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+    if let Err(error) = projection.validate() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid trusted identity projection: {error}"),
+        ));
+    }
+    let bytes = serde_json::to_vec(projection).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("serialising trusted identities: {error}"),
+        )
+    })?;
+    if bytes.len() as u64 > qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "trusted identity projection exceeds its byte bound",
+        ));
+    }
+
+    let directory = trusted_identities_dir().join(room.to_string());
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&directory)?;
+    // Tighten a pre-existing directory as well; create_dir_all's mode applies
+    // only to newly-created components.
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+
+    let final_path = directory.join(TRUSTED_IDENTITIES_FILE);
+    let sequence = PROJECTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp_path = directory.join(format!(
+        ".{TRUSTED_IDENTITIES_FILE}.{}.{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp_path, &final_path)?;
+        std::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::File::open(&directory)?.sync_all()?;
+        Ok(final_path.clone())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// Publish a complete accepted room-governance projection for later Files
+/// launches. Callers derive this from `WorkspaceTree`'s accepted room document,
+/// never Contacts or presence.
+pub fn set_trusted_identity_projection(
+    room: RoomId,
+    projection: &qos_user_identity::TrustedIdentityProjectionV2,
+) {
+    if projection.validate().is_err() {
+        return;
+    }
+    if let Ok(mut projections) = TRUSTED_IDENTITY_PROJECTIONS.lock() {
+        projections.insert(room, projection.clone());
+    }
+    // Existing Files sandboxes bind the containing directory, so this atomic
+    // replacement becomes visible to them as well as to later launches.
+    if let Err(error) = write_trusted_identities_projection(room, projection) {
+        tracing::warn!(%room, %error, "could not publish live governed identity projection");
+    }
+}
+
+fn stage_current_trusted_identities(room: RoomId) -> std::io::Result<PathBuf> {
+    let projection = TRUSTED_IDENTITY_PROJECTIONS
+        .lock()
+        .ok()
+        .and_then(|projections| projections.get(&room).cloned())
+        .unwrap_or_default();
+    write_trusted_identities_projection(room, &projection)
+}
+
+fn attach_trusted_identities_projection(
+    app: &InstalledApp,
+    room: RoomId,
+    command: &mut LaunchCommand,
+) -> std::io::Result<()> {
+    if app.package_id != FILES_PACKAGE_ID {
+        return Ok(());
+    }
+    let path = stage_current_trusted_identities(room)?;
+    command.args.push("--trusted-identities".to_string());
+    command.args.push(path.display().to_string());
+    Ok(())
 }
 
 /// Write `capabilities` where `qos-launcher --capabilities` will read
@@ -1049,6 +1180,13 @@ fn launch_with_context(
                 detail: format!("serialising tool context: {e}"),
             })?;
         command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
+    }
+    if let Err(error) = attach_trusted_identities_projection(&app, room, &mut command) {
+        eprintln!(
+            "[launch {}] could not stage the governance identity projection ({error}); \
+             Files will use an empty directory",
+            app.package_id
+        );
     }
     remember_launch(&app);
     spawn_detached(app.clone(), command);
@@ -2129,5 +2267,131 @@ mod tests {
         let second = set_windows_compat_entry_ids(vec!["windows-two".into()]);
         assert_eq!(unchanged, first);
         assert!(second > first);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn governance_projection_is_atomic_bounded_and_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+
+        let room = RoomId::new();
+        let path = write_trusted_identities_projection(
+            room,
+            &qos_user_identity::TrustedIdentityProjectionV2::empty(),
+        )
+        .expect("stage projection");
+        let bytes = std::fs::read(&path).unwrap();
+        let decoded: qos_user_identity::TrustedIdentityProjectionV2 =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            decoded,
+            qos_user_identity::TrustedIdentityProjectionV2::empty()
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert!(
+            std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")),
+            "an atomic publish leaves no staging inode"
+        );
+
+        // Replacing a complete snapshot keeps the stable path and remains a
+        // complete decodable document.
+        let again = write_trusted_identities_projection(
+            room,
+            &qos_user_identity::TrustedIdentityProjectionV2::empty(),
+        )
+        .unwrap();
+        assert_eq!(again, path);
+        serde_json::from_slice::<qos_user_identity::TrustedIdentityProjectionV2>(
+            &std::fs::read(&again).unwrap(),
+        )
+        .unwrap();
+
+        // A network/governance update publishes immediately; it is not merely
+        // cached for the next application launch.
+        std::fs::remove_file(&again).unwrap();
+        set_trusted_identity_projection(
+            room,
+            &qos_user_identity::TrustedIdentityProjectionV2::empty(),
+        );
+        assert!(again.exists());
+
+        // SAFETY: restore the process-global environment under the same lock.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn files_launch_receives_only_the_staged_projection_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let room = RoomId::new();
+        let files = test_app(FILES_PACKAGE_ID);
+        let mut command = build_launch_command(
+            &files,
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            room,
+            None,
+            None,
+            None,
+            None,
+        );
+        attach_trusted_identities_projection(&files, room, &mut command).unwrap();
+        let position = command
+            .args
+            .iter()
+            .position(|arg| arg == "--trusted-identities")
+            .unwrap();
+        let projection = PathBuf::from(&command.args[position + 1]);
+        assert_eq!(projection.file_name().unwrap(), TRUSTED_IDENTITIES_FILE);
+        assert!(projection.starts_with(tmp.path()));
+
+        let other = test_app("dev.qos.contacts");
+        let mut other_command = command.clone();
+        other_command.args.truncate(position);
+        attach_trusted_identities_projection(&other, room, &mut other_command).unwrap();
+        assert!(
+            !other_command
+                .args
+                .iter()
+                .any(|arg| arg == "--trusted-identities"),
+            "the member directory is scoped to Files"
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
     }
 }

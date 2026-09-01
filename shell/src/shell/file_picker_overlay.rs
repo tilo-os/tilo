@@ -270,6 +270,10 @@ fn constrain_selection(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic overlay geometry fixtures use exactly representable values"
+)]
 mod tests {
     use super::*;
 

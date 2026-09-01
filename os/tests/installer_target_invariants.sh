@@ -6,26 +6,30 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
+encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 containerfile="$repo_root/os/Containerfile.installer"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
+preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 karg_deletes="$(grep -c -- '--karg-delete qos.installer=1' "$backend" || true)"
-if [ "$karg_deletes" -eq 2 ]; then
-  ok "both encrypted and unencrypted installs remove qos.installer=1"
+if [ "$karg_deletes" -eq 3 ]; then
+  ok "encrypted, erase, and alongside installs remove qos.installer=1"
 else
-  bad "expected two target karg deletions, found $karg_deletes"
+  bad "expected three target karg deletions, found $karg_deletes"
 fi
 
 if grep -Fq 'COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml' "$containerfile" \
-   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
-  ok "normal greetd configuration is restored in the target"
+   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
+   && grep -Fq '[initial_session]' "$backend" \
+   && grep -Fq 'user = "%s"' "$backend"; then
+  ok "encrypted startup hands off directly to the installed user's session"
 else
-  bad "normal greetd configuration is not bundled and restored"
+  bad "installed system would ask for a second login after disk authentication"
 fi
 
 if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"' "$backend"; then
@@ -57,6 +61,40 @@ else
   bad "live-medium disk guard still relies on path-string equality"
 fi
 
+if grep -Fq 'ENCRYPT=1' "$backend" \
+   && grep -Fq 'native qOS requires --pin' "$backend" \
+   && grep -Fq 'if verified_tpm; then' "$backend" \
+   && grep -Fq 'ENROL_ARGS+=(--passphrase)' "$backend" \
+   && grep -Fq '&& kernel_lockdown_active' "$backend" \
+   && grep -Fq '&& target_verified_boot_ready' "$backend" \
+   && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && grep -Fq -- '--prepare-target "$target_root"' "$backend" \
+   && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
+   && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
+  ok "native qOS requires encryption and target-verified short-PIN startup"
+else
+  bad "native qOS installer can bypass encryption or the startup secret"
+fi
+
+if [ -x "$preflight" ] \
+   && grep -Fq 'owner_db_is_enrolled' "$preflight" \
+   && grep -Fq 'qos-secureboot verify' "$preflight" \
+   && grep -Fq 'qos-secureboot sign' "$preflight" \
+   && grep -Fq 'missing sealed {required} section' "$preflight" \
+   && grep -Fq 'composefs=sha' "$preflight"; then
+  ok "TPM PIN preflight carries enrolled owner trust into sealed target UKIs"
+else
+  bad "target verified-boot preflight does not prove and sign the complete UKI chain"
+fi
+
+disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
+if grep -Fq -- '--passphrase) force_passphrase=1' "$disk_encrypt" \
+   && grep -Fq 'have_tpm2 && [ "$force_passphrase" -eq 0 ]' "$disk_encrypt"; then
+  ok "TPM short-PIN enrollment requires a verified-boot decision"
+else
+  bad "disk helper can create a misleading TPM slot while boot is unverified"
+fi
+
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
    && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
    && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
@@ -85,6 +123,25 @@ if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
   ok "live-only SSH state is removed from the installed target"
 else
   bad "live-medium SSH mask/enablement can leak into the target"
+fi
+
+if grep -Fq -- '--alongside' "$backend" \
+   && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
+   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
+   && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
+   && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'existing OS partitions are preserved' "$backend" \
+   && ! grep -Fq 'mkfs.vfat -n EFI-SYSTEM "$EFI_PARTITION"' "$backend"; then
+  ok "alongside install fails closed on signed roots and never formats the shared ESP"
+else
+  bad "alongside install can overwrite an occupied root or shared ESP"
+fi
+
+if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
+   && grep -Fq 'ROOT_FS_UUID=' "$backend"; then
+  ok "encrypted and unencrypted alongside paths preserve the partition table"
+else
+  bad "alongside mode is not wired through both encryption paths"
 fi
 
 exit "$fail"

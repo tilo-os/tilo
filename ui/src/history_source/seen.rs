@@ -74,7 +74,9 @@ mod tests {
             author: HistoryAuthor::new("Ada", 0.0, "ada"),
             op_class: OpClass::EditMeta,
             artifact_kind: ArtifactKind::File,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(timestamp))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
             summary: "Changed".into(),
             text_delta: None,
             diff_payload: None,

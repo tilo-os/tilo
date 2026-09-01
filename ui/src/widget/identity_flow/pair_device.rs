@@ -1,8 +1,8 @@
 //! Screen 4 — pair this device with an existing identity.
 //!
-//! Counterpart of screen 3. Shows a 6-box monospace code input, a textarea
-//! fallback for pasting the QR payload JSON (no camera in the test env, so
-//! a scanner isn't wired up), and status + error banners.
+//! Counterpart of screen 3. Shows a 6-box monospace code input and a manual
+//! pairing-payload field. The existing device provides both values; this
+//! device accepts a copied payload without pretending a camera scanner exists.
 //!
 //! On submit: verify the code matches the payload's derived short code
 //! (defence against typing the wrong code into the right payload), decode
@@ -37,6 +37,7 @@ use crate::widget::identity_flow::{
 
 /// The pairing code is exactly six digits, one per input box.
 const CODE_LEN: usize = 6;
+const PAYLOAD_PLACEHOLDER: &str = "Paste the pairing payload from your other device";
 
 /// Composes `transform` with a translation to `(x, y)` for one draw call.
 /// Goes through `Affine::pre_translate` so the composition stays inside
@@ -97,7 +98,7 @@ impl PairDeviceScreen {
         }
     }
 
-    /// Inject the 6-digit code (used by tests + the QR-scanner shim).
+    /// Inject the 6-digit code (used by tests and the manual pairing flow).
     pub fn set_code(&mut self, code: &str) {
         let digits = code.chars().filter(char::is_ascii_digit);
         for (slot, entered) in self
@@ -313,7 +314,7 @@ impl PairDeviceScreen {
             // owns; the screen exposes `perform_pairing` for the shell to
             // call. A click here just checks both fields are filled.
             if self.parse_code().is_none() || self.payload_text.is_empty() {
-                self.error = Some("Enter both the code and the QR payload.".to_string());
+                self.error = Some("Enter both the code and pairing payload.".to_string());
             }
             return ScreenOutcome::Stay;
         }
@@ -475,7 +476,7 @@ impl PairDeviceScreen {
         }
     }
 
-    /// The QR-payload textarea fallback, showing its placeholder when empty.
+    /// The manual pairing-payload field, showing its placeholder when empty.
     fn draw_payload_field(
         &self,
         scene: &mut Scene,
@@ -501,8 +502,8 @@ impl PairDeviceScreen {
             None,
             &RoundedRect::from_rect(self.payload_rect, 8.0),
         );
-        let placeholder = if self.payload_text.is_empty() {
-            "Paste the QR payload here (TODO: real scanner)"
+        let payload = if self.payload_text.is_empty() {
+            PAYLOAD_PLACEHOLDER
         } else {
             self.payload_text.as_str()
         };
@@ -513,7 +514,7 @@ impl PairDeviceScreen {
         };
         text_renderer.draw_text(
             scene,
-            placeholder,
+            payload,
             13.0,
             color,
             at(
@@ -650,6 +651,14 @@ impl Widget for PairDeviceScreen {
 
         self.draw_card(scene, transform, text_renderer, theme, card, pad);
         self.draw_code_boxes(scene, transform, text_renderer, theme);
+        text_renderer.draw_text(
+            scene,
+            "Pairing payload",
+            13.0,
+            theme.tokens.colors.text_primary,
+            at(transform, self.payload_rect.x0, self.payload_rect.y0 - 24.0),
+            None,
+        );
         self.draw_payload_field(scene, transform, text_renderer, theme);
         self.draw_submit_and_error(scene, transform, text_renderer, theme, card, pad);
     }
@@ -709,6 +718,13 @@ mod tests {
         assert!(s.parse_code().is_none());
         s.set_code("000042");
         assert_eq!(s.parse_code(), Some(42));
+    }
+
+    #[test]
+    fn manual_payload_copy_is_the_only_advertised_input() {
+        assert!(PAYLOAD_PLACEHOLDER.contains("Paste the pairing payload"));
+        assert!(!PAYLOAD_PLACEHOLDER.contains("scanner"));
+        assert!(!PAYLOAD_PLACEHOLDER.contains("TODO"));
     }
 
     #[test]

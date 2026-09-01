@@ -85,7 +85,16 @@ pub fn main() {
         &LaunchSpec::new("dev.qos.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
-                "narrow", "compact", "starter", "context", "attach", "edit", "composer",
+                "narrow",
+                "compact",
+                "starter",
+                "people",
+                "thread-narrow",
+                "collaboration",
+                "context",
+                "attach",
+                "edit",
+                "composer",
             ])
             .open_state(open_state)
             .configure_app(|app| chat::actions::register(app.action_registry_mut())),

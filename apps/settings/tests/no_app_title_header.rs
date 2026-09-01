@@ -1,13 +1,15 @@
 //! The OS draws the window chrome; the app must NOT draw its own title / app-
 //! name header (that would duplicate the compositor's window-group pill). This
-//! guards the removal of the old in-pane "title + subtitle + toggle" header and
-//! the sidebar's "Personal Settings" title.
+//! guards the removal of the old in-pane **app-name** title and the sidebar's
+//! "Personal Settings" title. A category page heading is intentional: it says
+//! where the detail screen is, especially after a narrow-screen back affordance.
 //!
 //! It asserts on the real composed tree: it walks every widget's accessibility
 //! node (a `Text`'s accessible name *is* its rendered string) and proves the
-//! app name and the category subtitle are not painted anywhere, while the title
-//! is still exposed the sanctioned way — through `AppWidget::app_title`, which
-//! the OS reads for the pill.
+//! app name is not painted anywhere, while the title is still exposed the
+//! sanctioned way — through `AppWidget::app_title`, which the OS reads for the
+//! pill. The selected category's label and subtitle are deliberately rendered
+//! as the content page's hierarchy, not as a duplicate app header.
 
 #![allow(
     clippy::unwrap_used,
@@ -101,9 +103,10 @@ fn app_title_is_exposed_only_through_app_widget() {
 }
 
 #[test]
-fn no_pane_draws_the_app_name_or_a_subtitle_header() {
+fn no_pane_draws_the_app_name_but_each_page_names_its_destination() {
     // Across a representative set of categories, the app must never paint its
-    // own name or the per-category subtitle as a header.
+    // own name. It must paint the selected destination and its explanatory
+    // subtitle so the detail pane stands on its own outside the sidebar.
     for &cat in &[
         Category::Network,
         Category::ExternalAccounts,
@@ -120,9 +123,13 @@ fn no_pane_draws_the_app_name_or_a_subtitle_header() {
              (the OS pill carries it); rendered names were {names:?}"
         );
         assert!(
-            !names.iter().any(|n| n == cat.subtitle()),
-            "{cat:?}: the app must not draw the category subtitle as a page \
-             header (that was the removed in-pane title band)"
+            names.iter().any(|n| n == cat.label()),
+            "{cat:?}: the selected settings destination needs an in-content heading; \
+             rendered names were {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == cat.subtitle()),
+            "{cat:?}: the heading needs its explanatory subtitle; rendered names were {names:?}"
         );
     }
 }

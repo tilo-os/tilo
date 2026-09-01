@@ -6,7 +6,7 @@
 //! breadcrumb:
 //!
 //!   1. **Keyboard** — pick a layout before typing any secrets.
-//!   2. **Network** — optionally connect through NetworkManager; offline is valid.
+//!   2. **Network** — optionally connect through `NetworkManager`; offline is valid.
 //!   3. **Disk** — pick a target disk (from `lsblk`).
 //!   4. **Account** — choose a username + confirmed password.
 //!   5. **Options** — filesystem, hostname, time zone.
@@ -59,5 +59,5 @@ pub mod status_log;
 pub mod step_indicator;
 pub mod timezones;
 
-pub use disks::{Disk, parse_lsblk, read_disks};
+pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};
 pub use installer_app::{InstallState, InstallerApp, Step};

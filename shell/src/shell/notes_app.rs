@@ -314,7 +314,7 @@ impl Widget for NotesApp {
                 self.rect,
                 Some(Icon::PenTool),
                 "This note is empty",
-                Some("Jot anything here — shared live with collaborators in the workspace."),
+                Some("Jot anything here. Changes are saved as you type."),
                 Some("Start writing"),
                 self.last_mouse,
             )
@@ -876,6 +876,10 @@ impl AppWidget for NotesApp {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact note viewport geometry is the behavior under test"
+)]
 mod tests {
     use super::*;
     use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};

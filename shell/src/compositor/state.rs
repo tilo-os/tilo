@@ -1853,6 +1853,10 @@ mod osk_identity_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic compositor tick geometry is the behavior under test"
+)]
 mod tick_hook_tests {
     use super::*;
     use crate::collab::flatpak_share::SharedFlatpakSession;

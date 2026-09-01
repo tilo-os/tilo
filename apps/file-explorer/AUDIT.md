@@ -147,3 +147,84 @@ As of Task 18, every AUDIT.md item above has a corresponding parity test in
 - [x] U1 — `sort_entries_always_places_directories_first`
 
 Run `cargo test -p file-explorer --test parity` to re-verify.
+
+## Accessibility runtime smoke
+
+The widget-level accessibility tests run without a display and cover Files'
+list, sidebar, breadcrumbs, loading/empty/error announcements, and modal
+collaboration sheet. Linux's final AccessKit-to-AT-SPI bridge is covered by the
+opt-in `tests/atspi_smoke.sh` script. It launches the real application and
+checks the session accessibility bus for the `Files activity`, `Breadcrumbs`,
+and `Places` nodes.
+
+Run it from an active graphical Linux login with toolkit accessibility enabled:
+
+```sh
+apps/file-explorer/tests/atspi_smoke.sh
+```
+
+The smoke is not part of `cargo test`: headless CI generally has neither an
+AT-SPI session bus nor a GPU adapter capable of presenting the wgpu window.
+
+## Locale-sensitive presentation
+
+Files embeds complete `en-US` and `de-DE` Fluent catalogs. Locale negotiation
+selects German for the `de` language family (including regional variants such
+as `de-AT` and `de-CH`) and otherwise falls back per message to `en-US`.
+Catalog tests require exact key parity, valid Fluent syntax, and identical
+variables and selector branches; every German key must exist in the primary
+bundle, preventing a complete German release from silently showing English.
+
+Files resolves visible copy and pluralized counts through Fluent. Modified,
+history, and share-expiry timestamps use ICU4X's compiled CLDR data with the
+active Files locale after Chrono converts an instant to local wall-clock time.
+Human file sizes retain decimal SI thresholds and symbols (`B` through `EB`),
+while ICU4X supplies locale digits and decimal separators. The number and unit
+are joined with a non-breaking space so they cannot wrap independently.
+
+## Collaborative sharing and search completion gate
+
+Files' sharing controls now carry a typed, fully specified request from the
+keyboard-accessible/context-key menu to the owner-only share service. Named
+human roots and bearer links expose View/Edit; named grants expose 24-hour,
+7-day, 30-day, and no-expiry choices; bearer links expose the three finite
+deadlines plus one-use or an explicitly bounded reusable ten-use choice. The
+authority client rejects unbounded links, zero/out-of-range use limits, and
+link-only controls on named grants before I/O. Display names remain
+presentation-only. Named delivery targets come only from the active
+governance-validated identity projection, are de-duplicated, and are bounded
+to 32; people without a certified delivery device are not offered an unusable
+named action. Creation and revocation continue on the app's background worker,
+and the UI adopts only the bounded result during polling. Named creation
+reports `Pending` or `Delivered` rather than claiming transport completion.
+
+Global search retains the ordinary Places provider unchanged and adds a
+separate live collaborative-record provider. It de-duplicates and caps a
+projection snapshot at 256 records. Its action token is `record:<UUID>`; the
+current path is visible provenance and searchable text, never identity.
+Activation resolves the UUID through the latest live entries, so a renamed
+record is still the same result target.
+
+Focused evidence:
+
+The focused gate completed 16/16 assertions (6 provider tests, 4 share-wire
+tests, and 6 command/localization/accessibility tests), with the Files
+all-target compile and diff-format check also green.
+
+- `sharing::tests::composer_preserves_permission_expiry_and_bounded_link_use_on_wire`
+- `sharing::tests::composer_rejects_unbounded_links_and_link_controls_on_named_grants`
+- `sharing::tests::named_share_sends_the_human_root_and_no_display_name`
+- `sharing::tests::one_time_link_explicitly_requests_exactly_one_redemption`
+- `search_provider::tests::collaborative_results_use_stable_record_identity_and_path_as_provenance`
+- `search_provider::tests::collaborative_projection_is_deduplicated_and_bounded`
+- `files_app::command_path_tests::named_recipient_menu_uses_identity_label_but_commands_the_root_key`
+- `files_app::command_path_tests::collaborative_search_activation_resolves_the_latest_path_by_record_id`
+- `files_app::command_path_tests::share_composer_authority_round_trip_never_blocks_the_ui_command`
+- `files_app::command_path_tests::named_share_status_distinguishes_pending_from_delivered`
+- `i18n::tests::german_catalog_is_valid_complete_and_structurally_matches_source`
+- `accessibility_tests::collaboration_sheet_is_a_focused_modal_semantic_subtree`
+
+Invalid locale identifiers fall back to `en-US`; missing ICU data uses its CLDR
+locale fallback chain. A numeric ISO timestamp is retained as the last-resort
+failure path rather than hiding metadata. Deterministic unit tests cover
+`en-US`, `de-DE`, invalid-locale fallback, rounding boundaries, and `u64::MAX`.

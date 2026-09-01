@@ -18,7 +18,6 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
 # The qOS ACTION model: the imager's guided-customization install profile (the
 # only user-authored config in the shared document) is exported as replayable
 # actions the shell's Ctrl+K palette dispatches — the same actions its on-screen
@@ -31,6 +30,12 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ui = { path = "../../ui", features = ["portal"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ui = { path = "../../ui" }
 
 [lints]
 workspace = true

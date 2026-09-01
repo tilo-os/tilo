@@ -22,6 +22,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::icons::Icon;
+use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::button::{Button, ButtonFace, ButtonStyle};
@@ -160,10 +161,11 @@ pub struct ModalSpec<'a> {
     /// of that, on by default because a surface whose only way out is a key
     /// nobody can see is the defect this widget exists to stop repeating.
     pub closable: bool,
-    /// Actions in **visual left-to-right order**. The group is right aligned,
-    /// so the last entry lands at the right edge — put the primary action
-    /// last, which is where every platform puts it.
+    /// Actions in semantic authoring order. Geometry follows
+    /// [`Self::platform`], so callers do not branch on native button order.
     pub actions: &'a [ModalAction<'a>],
+    /// Native shortcut and dialog presentation conventions.
+    pub platform: PlatformConventions,
     /// Height the caller's body content wants, in logical pixels.
     pub body_height: f64,
     /// Widest the card may be drawn. Defaults to [`MODAL_MAX_WIDTH`].
@@ -183,6 +185,7 @@ impl Default for ModalSpec<'_> {
             title: "",
             closable: true,
             actions: &[],
+            platform: PlatformConventions::default(),
             body_height: 0.0,
             max_width: MODAL_MAX_WIDTH,
             close_hovered: false,
@@ -202,6 +205,11 @@ impl<'a> ModalSpec<'a> {
     #[must_use]
     pub fn actions(mut self, actions: &'a [ModalAction<'a>]) -> Self {
         self.actions = actions;
+        self
+    }
+    #[must_use]
+    pub fn platform_conventions(mut self, platform: PlatformConventions) -> Self {
+        self.platform = platform;
         self
     }
     #[must_use]
@@ -400,20 +408,38 @@ impl ModalFrame {
             (card.y1 - action_h - MODAL_PAD).max(card.y0 + MODAL_TITLE_ROW_H),
         );
 
-        // Laid out right-to-left so the group hugs the right edge, then
-        // reversed, so `actions[i]` matches `spec.actions[i]`.
-        let mut actions: Vec<Rect> = Vec::with_capacity(spec.actions.len());
+        // Keep geometry indexed by the authored action while ordering its
+        // visual positions from semantic emphasis and platform convention.
+        let mut actions = vec![Rect::ZERO; spec.actions.len()];
         if !spec.actions.is_empty() {
             let by = card.y1 - MODAL_PAD - ACTION_H;
             let mut bx = card.x1 - MODAL_PAD;
-            for a in spec.actions.iter().rev() {
+            let mut visual_order: Vec<usize> = (0..spec.actions.len()).collect();
+            visual_order.sort_by_key(|&index| {
+                let primary = spec.actions.get(index).is_some_and(|action| {
+                    matches!(
+                        action.emphasis,
+                        ModalEmphasis::Primary | ModalEmphasis::Danger
+                    )
+                });
+                match spec.platform.dialog_action_order() {
+                    DialogActionOrder::PrimaryFirst => !primary,
+                    DialogActionOrder::PrimaryLast => primary,
+                }
+            });
+            for &index in visual_order.iter().rev() {
+                let Some(a) = spec.actions.get(index) else {
+                    continue;
+                };
                 let (tw, _) = text_renderer.measure(a.label, body_size, None);
                 let bw = (f64::from(tw) + ACTION_PAD_X).max(ACTION_MIN_W);
                 let r = Rect::new(bx - bw, by, bx, by + ACTION_H);
-                actions.push(r);
+                let Some(action_rect) = actions.get_mut(index) else {
+                    continue;
+                };
+                *action_rect = r;
                 bx = r.x0 - ACTION_GAP;
             }
-            actions.reverse();
         }
 
         let primary = spec.actions.iter().position(|a| {
@@ -709,8 +735,8 @@ mod tests {
         );
     }
 
-    /// Actions are given left-to-right and the last one lands at the right
-    /// edge, which is where the primary action belongs.
+    /// The default Linux convention puts the primary action at the trailing
+    /// edge while preserving authored indices for event dispatch.
     #[test]
     fn actions_are_left_to_right_with_the_last_at_the_right_edge() {
         let actions = [
@@ -735,6 +761,37 @@ mod tests {
             l.card.x1 - MODAL_PAD,
         );
         assert_eq!(l.primary, Some(1), "Enter should fire the primary action");
+    }
+
+    #[test]
+    fn action_geometry_follows_platform_order_without_changing_indices() {
+        use crate::platform::{Platform, PlatformConventions};
+
+        // Intentionally author primary first: semantic emphasis, rather than
+        // slice position, determines visual order.
+        let actions = [
+            ModalAction::primary("Save"),
+            ModalAction::secondary("Cancel"),
+        ];
+        let mac = ModalSpec::new("Save changes?")
+            .actions(&actions)
+            .platform_conventions(PlatformConventions::new(Platform::MacOs));
+        let mac_layout = lay(&mac, &Theme::dark());
+        assert!(mac_layout.actions[0].x0 > mac_layout.actions[1].x0);
+        assert_eq!(
+            mac_layout.hit(mac_layout.actions[0].center()),
+            Some(ModalHit::Action(0))
+        );
+
+        let windows = ModalSpec::new("Save changes?")
+            .actions(&actions)
+            .platform_conventions(PlatformConventions::new(Platform::Windows));
+        let windows_layout = lay(&windows, &Theme::dark());
+        assert!(windows_layout.actions[0].x0 < windows_layout.actions[1].x0);
+        assert_eq!(
+            windows_layout.hit(windows_layout.actions[0].center()),
+            Some(ModalHit::Action(0))
+        );
     }
 
     #[test]

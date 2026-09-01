@@ -27,6 +27,9 @@ pub enum UserEvent {
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
+    /// Synchronize and redraw after typed state was changed by a worker.
+    /// Created automatically by [`crate::LocalStateWriter`].
+    Wake,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     AccessKit(accesskit_winit::WindowEvent),
 }
@@ -241,6 +244,9 @@ pub struct App {
     last_theme_store_check: Instant,
     modifiers: winit::event::Modifiers,
 
+    interaction: crate::interaction::InteractionEnvironment,
+    platform: crate::platform::PlatformConventions,
+
     nav_gestures: crate::gesture::NavGestureRecognizer,
 
     // Stable state for Undo/Redo tracking
@@ -325,6 +331,7 @@ pub struct App {
     action_palette: Option<crate::action_palette::ActionPalette>,
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
+    last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
     semantic_tree: crate::a11y_tree::SemanticTree,
 
     profiler: Option<crate::profiling::FrameProfiler>,
@@ -379,6 +386,8 @@ impl App {
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             last_theme_store_check: Instant::now(),
             modifiers: winit::event::Modifiers::default(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
+            platform: crate::platform::PlatformConventions::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager,
@@ -431,6 +440,7 @@ impl App {
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
+            last_published_actions: None,
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
@@ -471,8 +481,191 @@ impl App {
         self.action_transport = transport;
     }
 
-    pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+    fn collect_declared_resources(&self) -> Vec<qos_actions::Resource> {
         self.root_widget.resources(&self.state.doc)
+    }
+
+    /// The complete machine-driveable surface: domain resources declared by
+    /// the app plus ordinary controls projected from its retained semantic
+    /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
+    pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+        let mut resources = self.collect_declared_resources();
+        let mut semantics = crate::a11y_tree::SemanticTree::new();
+        semantics.refresh(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            self.focused_node,
+            &[],
+        );
+        resources.extend(semantics.action_resources());
+        resources
+    }
+
+    fn invoke_semantic_operation_encoded(
+        &mut self,
+        encoded: &qos_actions::EncodedAction,
+    ) -> Result<bool, String> {
+        if encoded.type_id != crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::a11y_tree::SemanticOperation =
+            serde_json::from_slice(&encoded.payload).map_err(|error| error.to_string())?;
+        self.refresh_semantic_tree();
+        self.invoke_semantic_action(
+            &crate::a11y_tree::SemanticId(operation.node),
+            &operation.action,
+            operation.value.as_deref(),
+        )
+    }
+
+    /// Publish the live resource/action tree through the session broker.
+    /// Level-triggered at the wire, diffed here so an unchanged frame emits
+    /// nothing; publishing an empty list explicitly withdraws a closed tree.
+    fn publish_action_surface(&mut self) {
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let descriptors = qos_actions::door::survey(&self.collect_resources());
+        if self.last_published_actions.as_ref() == Some(&descriptors) {
+            return;
+        }
+        let actions = descriptors
+            .iter()
+            .map(|descriptor| crate::collaboration::ExportedAction {
+                resource: descriptor.address.resource.clone(),
+                action: descriptor.address.action.clone(),
+                resource_kind: descriptor.resource_kind.clone(),
+                resource_label: descriptor.resource_label.clone(),
+                action_label: descriptor.action_label.clone(),
+                description: descriptor.description.clone(),
+                operation_kind: descriptor.kind.as_str().to_string(),
+                params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
+                input: match &descriptor.input {
+                    qos_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
+                    qos_actions::InputSpec::Text {
+                        prompt,
+                        placeholder,
+                        collects,
+                    } => crate::collaboration::ExportedInput::Text {
+                        prompt: prompt.clone(),
+                        placeholder: placeholder.clone(),
+                        wants_content: *collects == qos_actions::Collects::Content,
+                    },
+                },
+            })
+            .collect();
+        self.collab_manager.send(CollabRequest::PublishActions {
+            app_id: crate::collaboration::local_app_id(),
+            actions,
+        });
+        self.last_published_actions = Some(descriptors);
+    }
+
+    fn invoke_published_action(
+        &mut self,
+        id: u64,
+        resource: String,
+        action: String,
+        argument: Option<String>,
+        actor: String,
+    ) {
+        let address = qos_actions::ActionAddress::new(resource, action);
+        let result = self.invoke_resource_action(&address, argument.as_deref(), &actor);
+        let (code, message) = match result {
+            Ok(()) => (String::new(), String::new()),
+            Err(error) => (error.code().to_string(), error.to_string()),
+        };
+        self.collab_manager
+            .send(CollabRequest::CompleteInvocation { id, code, message });
+    }
+
+    fn invoke_resource_action(
+        &mut self,
+        address: &qos_actions::ActionAddress,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<(), qos_actions::DoorError> {
+        let resources = self.collect_resources();
+        let typed_arguments = argument
+            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+            .map(|json| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+            })
+            .transpose()?;
+        let kind = qos_actions::door::resolve(&resources, address)
+            .map(|spec| spec.kind)
+            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()));
+        kind.and_then(|kind| {
+            if kind == qos_actions::OperationKind::Document {
+                let before = self.state.doc.get_heads();
+                let dispatched = if let Some(arguments) = &typed_arguments {
+                    qos_actions::door::invoke_json(
+                        &mut self.state.doc,
+                        &resources,
+                        address,
+                        arguments,
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    )?
+                } else {
+                    qos_actions::door::invoke(
+                        &mut self.state.doc,
+                        &resources,
+                        address,
+                        argument,
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    )?
+                };
+                if dispatched.mutated_local() {
+                    self.state.record_committed_action_authored(
+                        before,
+                        None,
+                        None,
+                        Some(crate::permissions::UserId(actor.to_string())),
+                    );
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                }
+                Ok(())
+            } else {
+                let encoded = if let Some(arguments) = &typed_arguments {
+                    qos_actions::door::encode_json(&resources, address, arguments)?
+                } else {
+                    qos_actions::door::encode(&resources, address, argument)?
+                };
+                if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
+                    let handled = self
+                        .invoke_semantic_operation_encoded(&encoded)
+                        .map_err(qos_actions::DoorError::Failed)?;
+                    if !handled {
+                        return Err(qos_actions::DoorError::Unknown(address.clone()));
+                    }
+                    self.commit_action();
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                    return Ok(());
+                }
+                let handled = self
+                    .root_widget
+                    .invoke_resource_operation(
+                        kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                        &self.state.doc,
+                        &self.state.root,
+                    )
+                    .map_err(qos_actions::DoorError::Failed)?;
+                if !handled {
+                    return Err(qos_actions::DoorError::Unknown(address.clone()));
+                }
+                self.layout_dirty = true;
+                Ok(())
+            }
+        })
     }
 
     pub fn open_action_palette(&mut self) {
@@ -500,23 +693,63 @@ impl App {
         let root = self.state.root.clone();
         let before = self.state.doc.get_heads();
         let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
-        // An action row may have fired: drain + dispatch through qos_actions.
-        let dispatched = self.action_palette.as_mut().and_then(|p| {
-            p.take_dispatch(
-                &mut self.state.doc,
-                &self.action_registry,
-                self.action_transport.as_mut(),
-            )
-        });
-        if let Some(result) = dispatched {
-            match result {
-                Ok(d) if d.mutated_local() => {
-                    self.state.record_committed_action(before, None, None);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
+        // An operation row may have fired. Document mutations go through the
+        // deterministic executor; effects/views route to the owning widget.
+        let pending = self
+            .action_palette
+            .as_mut()
+            .and_then(crate::action_palette::ActionPalette::take_operation);
+        if let Some(pending) = pending {
+            if pending.kind == qos_actions::OperationKind::Document {
+                let result = self
+                    .action_registry
+                    .decode(&pending.encoded)
+                    .and_then(|action| {
+                        let actor = self.state.doc.get_actor().to_bytes().to_vec();
+                        qos_actions::dispatch_by_with_context(
+                            &mut self.state.doc,
+                            action.as_ref(),
+                            pending.encoded,
+                            self.action_transport.as_mut(),
+                            Some(&actor),
+                            pending.context,
+                        )
+                    });
+                match result {
+                    Ok(d) if d.mutated_local() => {
+                        self.state.record_committed_action(before, None, None);
+                        self.needs_sync = true;
+                        self.layout_dirty = true;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
                 }
-                Ok(_) => {} // submitted to host; no local mutation
-                Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
+            } else {
+                let result = if pending.encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE
+                {
+                    self.invoke_semantic_operation_encoded(&pending.encoded)
+                } else {
+                    self.root_widget.invoke_resource_operation(
+                        pending.kind,
+                        &pending.encoded.type_id,
+                        &pending.encoded.payload,
+                        &self.state.doc,
+                        &root,
+                    )
+                };
+                match result {
+                    Ok(true) => {
+                        self.commit_action();
+                        self.layout_dirty = true;
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            type_id = %pending.encoded.type_id,
+                            "no widget handled exported resource operation"
+                        );
+                    }
+                    Err(error) => tracing::warn!(%error, "resource operation failed"),
+                }
             }
         }
         // A content row may have fired: hand its id to the app to navigate,
@@ -673,6 +906,39 @@ impl App {
         self.rebuild_theme();
         self.layout_dirty = true;
         self.structure_dirty = true;
+    }
+
+    /// Override the host-detected input environment. Useful for platform
+    /// shells and deterministic tests; normal apps do not need to call it.
+    pub fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction == environment {
+            return;
+        }
+        self.interaction = environment;
+        self.root_widget.set_interaction_environment(environment);
+        self.layout_dirty = true;
+    }
+
+    pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
+        self.interaction
+    }
+
+    /// Override platform HIG conventions for a native shell or deterministic
+    /// cross-platform test. Ordinary apps use the host default.
+    pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        if self.platform == conventions {
+            return;
+        }
+        self.platform = conventions;
+        self.root_widget.set_platform_conventions(conventions);
+        self.layout_dirty = true;
+    }
+
+    pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
+        self.platform
     }
 
     pub fn high_contrast(&self) -> bool {
@@ -1018,6 +1284,9 @@ impl App {
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
+        if !self.interaction.supports_hover() {
+            return None;
+        }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
         for &w_ptr in self.node_map.values() {
             // SAFETY: identical invariant to `resolve_cursor` — `node_map`
@@ -1312,6 +1581,10 @@ impl App {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
                 }
+                CollabEvent::FollowChanged { peer_id } => match peer_id {
+                    Some(peer_id) => self.follow(peer_id),
+                    None => self.unfollow(),
+                },
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
                         cursor.x = x;
@@ -1360,6 +1633,13 @@ impl App {
                         self.apply_signed_document_envelope(&envelope);
                     }
                 }
+                CollabEvent::Invocation {
+                    id,
+                    resource,
+                    action,
+                    argument,
+                    actor,
+                } => self.invoke_published_action(id, resource, action, argument, actor),
             }
         }
         any
@@ -1439,6 +1719,17 @@ impl App {
             CollabEvent::Document { envelope, .. } => {
                 self.apply_signed_document_envelope(&envelope);
             }
+            CollabEvent::FollowChanged { peer_id } => match peer_id {
+                Some(peer_id) => self.follow(peer_id),
+                None => self.unfollow(),
+            },
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => self.invoke_published_action(id, resource, action, argument, actor),
             _ => {}
         }
     }
@@ -1907,56 +2198,98 @@ impl App {
     /// `scale` is the window scale factor so bounds land in physical pixels
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
-        crate::accesskit_bridge::build_tree_update(
+        let resources = self.collect_declared_resources();
+        crate::accesskit_bridge::build_tree_update_with_resources(
             self.root_widget.as_ref(),
             &self.node_map,
             self.focused_node,
             scale,
+            &resources,
         )
     }
 
-    /// `target` is a `taffy::NodeId` encoded as `taffy_id + 1`, `0` reserved
-    /// for the synthetic window root (see [`crate::accesskit_bridge`]). Gives
-    /// the widget first refusal via
-    /// [`Widget::perform_action`](crate::widget::Widget::perform_action); if
-    /// it declines, `Action::Focus` moves keyboard focus and any other verb
-    /// returns click coordinates for the caller to inject.
+    /// Resolves both retained AccessKit nodes and synthetic semantic children
+    /// (virtual rows/cells) to their owning widget. The widget gets first
+    /// refusal; synthetic children additionally carry an opaque stable target
+    /// produced by that widget. If a retained widget declines, `Action::Focus`
+    /// moves keyboard focus and activation returns click coordinates.
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
-        let raw = target.0;
-        if raw == 0 {
-            return None;
-        }
-        if raw >= crate::accesskit_bridge::SYNTHETIC_ID_BASE
-            && let Some((owner, path)) =
-                crate::accesskit_bridge::resolve_synthetic_target(self.root_widget.as_ref(), target)
-        {
-            // The resolver's immutable walk has ended; `owner` points into
-            // `root_widget`, which this `&mut self` owns exclusively here.
-            let owner = unsafe { &mut *(owner as *mut dyn Widget) };
-            return match action {
-                Action::Focus => {
-                    if owner.focus_synthetic_accessibility(&path) {
-                        self.needs_sync = true;
-                    }
-                    None
+        use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
+
+        let argument = match action {
+            Action::Activate | Action::ToggleCheck => Some(None),
+            Action::SetValue(value) => Some(Some(value.as_str())),
+            _ => None,
+        };
+        if let Some(argument) = argument {
+            let resources = self.collect_declared_resources();
+            fn find_resource_action(
+                resources: &[qos_actions::Resource],
+                target: accesskit::NodeId,
+            ) -> Option<qos_actions::ActionAddress> {
+                resources.iter().find_map(|resource| {
+                    resource
+                        .actions
+                        .iter()
+                        .find(|spec| {
+                            crate::accesskit_bridge::resource_action_node_id(
+                                resource.id.as_str(),
+                                &spec.id,
+                            ) == target
+                        })
+                        .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
+                        .or_else(|| find_resource_action(&resource.children, target))
+                })
+            }
+            if let Some(address) = find_resource_action(&resources, target) {
+                let actor = crate::collaboration::local_user_id().0;
+                if self
+                    .invoke_resource_action(&address, argument, &actor)
+                    .is_ok()
+                {
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
                 }
-                Action::Activate | Action::ToggleCheck => owner
-                    .synthetic_accessibility_rect(&path)
-                    .map(|rect| (rect.center().x, rect.center().y)),
-                _ => None,
-            };
+                return None;
+            }
         }
-        let taffy_id = NodeId::from(raw.saturating_sub(1));
+
+        let resolved = resolve_node_id(self.root_widget.as_ref(), &self.node_map, target)?;
+        let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
+            A11yTarget::Root => return None,
+            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
+            A11yTarget::Synthetic {
+                owner,
+                key_path,
+                ordinal_path,
+                semantic_target,
+            } => (owner, key_path, ordinal_path, semantic_target, true),
+        };
         let &w_ptr = self.node_map.get(&taffy_id)?;
 
-        let handled =
-            unsafe { (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root) };
+        let handled = unsafe {
+            if let Some(semantic_target) = semantic_target.as_deref() {
+                (*w_ptr).perform_semantic_action(
+                    semantic_target,
+                    action,
+                    &mut self.state.doc,
+                    &self.state.root,
+                )
+            } else if synthetic {
+                (*w_ptr).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
+            } else {
+                (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
+            }
+        };
         if handled {
+            if matches!(action, Action::Focus) {
+                self.set_focused_node(Some(taffy_id));
+            }
             self.needs_sync = true;
             self.layout_dirty = true;
             return None;
@@ -1964,11 +2297,19 @@ impl App {
 
         match action {
             Action::Focus => {
+                if synthetic && !ordinal_path.is_empty() {
+                    unsafe { (*w_ptr).focus_synthetic_accessibility(&ordinal_path) };
+                }
                 self.set_focused_node(Some(taffy_id));
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                let rect = unsafe { (*w_ptr).get_rect() };
+                let rect = if synthetic {
+                    unsafe { (*w_ptr).synthetic_accessibility_rect(&ordinal_path) }
+                        .unwrap_or_else(|| unsafe { (*w_ptr).get_rect() })
+                } else {
+                    unsafe { (*w_ptr).get_rect() }
+                };
                 let c = rect.center();
                 Some((c.x, c.y))
             }
@@ -1976,10 +2317,62 @@ impl App {
         }
     }
 
+    /// Complete an accessibility activation for legacy hand-hit-tested
+    /// controls that do not implement `perform_action` yet. The semantic
+    /// target has already resolved to this exact point; routing the usual
+    /// move/press/release sequence through the widget tree preserves the same
+    /// behavior as hardware input instead of reporting a false success.
+    fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(root_node) = self.root_node else {
+            return false;
+        };
+        let events = [
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: PhysicalPosition::new(x, y),
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ];
+        let mut handled_any = false;
+        for event in events {
+            let mut handled = false;
+            let mut focus_target = None;
+            self.root_widget.handle_event(
+                &event,
+                1.0,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus_target,
+                root_node,
+                &self.taffy,
+            );
+            if let Some(id) = focus_target {
+                self.set_focused_node(Some(id));
+            }
+            handled_any |= handled;
+        }
+        if handled_any {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        handled_any
+    }
+
     /// Node identity is preserved for everything that recurred, so a
     /// consumer reacts to just the diff.
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
-        let resources = self.collect_resources();
+        let resources = self.collect_declared_resources();
         self.semantic_tree.refresh(
             self.root_widget.as_ref(),
             &self.node_map,
@@ -2026,15 +2419,46 @@ impl App {
                 self.dispatch_encoded_semantic(encoded)
             }
             SemanticActionKind::Verb(verb) => {
-                let Some(taffy_raw) = self.semantic_tree.node(id).and_then(|n| n.widget_taffy_id)
+                let verb = match verb {
+                    crate::a11y::Action::SetValue(_) => {
+                        crate::a11y::Action::SetValue(arg.unwrap_or_default().to_string())
+                    }
+                    other => other,
+                };
+                let Some((taffy_raw, semantic_target)) =
+                    self.semantic_tree.node(id).and_then(|n| {
+                        n.widget_taffy_id
+                            .map(|taffy| (taffy, n.semantic_target.clone()))
+                    })
                 else {
                     return Ok(false);
                 };
+                if let Some(semantic_target) = semantic_target {
+                    let taffy_id = NodeId::from(taffy_raw);
+                    let Some(&widget) = self.node_map.get(&taffy_id) else {
+                        return Ok(false);
+                    };
+                    let handled = unsafe {
+                        (*widget).perform_semantic_action(
+                            &semantic_target,
+                            &verb,
+                            &mut self.state.doc,
+                            &self.state.root,
+                        )
+                    };
+                    if handled {
+                        if matches!(verb, crate::a11y::Action::Focus) {
+                            self.set_focused_node(Some(taffy_id));
+                        }
+                        self.needs_sync = true;
+                        self.layout_dirty = true;
+                    }
+                    return Ok(handled);
+                }
                 let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
-                // A `Some((x, y))` result means the widget self-activates only
-                // via a pointer click, needing the windowed input path; we
-                // surface the verb as dispatched either way.
-                let _pending_click = self.dispatch_a11y_action(ak, &verb);
+                if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {
+                    return Ok(self.dispatch_semantic_click(x, y));
+                }
                 Ok(true)
             }
         }
@@ -2330,6 +2754,7 @@ impl App {
     {
         let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
         let proxy = event_loop.create_proxy();
+        let _state_wake = crate::local_state::install_event_loop_proxy(proxy.clone());
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
@@ -2344,6 +2769,8 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            touch_pointer: crate::interaction::TouchPointerEmulator::default(),
+            dispatching_touch_pointer: false,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
@@ -2461,6 +2888,12 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    /// Maps one-finger taps onto the existing pointer event contract so every
+    /// standard and app-local control gets touch without bespoke branches.
+    touch_pointer: crate::interaction::TouchPointerEmulator,
+    /// Synthetic mouse events must retain touch modality rather than making
+    /// the host immediately classify them as a fine pointer.
+    dispatching_touch_pointer: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2495,6 +2928,7 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
+    app.root_widget.native_view_frame_start();
     app.root_widget.draw_with_presence(
         scene,
         transform,
@@ -2908,6 +3342,13 @@ impl AppHandler {
         app.record_tick();
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        // Drain model notifications and advance update-driven widgets before
+        // synchronization. A worker's `Wake` event reaches this pass without
+        // requiring the app to own a proxy or poll inside its model.
+        if app.root_widget.update(&mut app.state.doc, &app.state.root) {
+            app.needs_sync = true;
+            app.layout_dirty = true;
+        }
         if app.needs_sync {
             app.root_widget.sync(&mut app.state.doc, &app.state.root);
             app.needs_sync = false;
@@ -2929,6 +3370,10 @@ impl AppHandler {
         let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
         if app.structure_dirty {
             app.rebuild_structure();
+        }
+        if structure_rebuilt {
+            app.root_widget
+                .mount_native_views(&crate::widget::NativeViewHost::live(window, app.platform));
         }
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
@@ -3063,6 +3508,30 @@ impl AppHandler {
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
         let event = other;
         let app = &mut self.app;
+        let detected_interaction = if self.dispatching_touch_pointer {
+            None
+        } else {
+            match &event {
+                WindowEvent::Touch(_) => Some(crate::interaction::InteractionEnvironment::TOUCH),
+                WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. } => {
+                    Some(crate::interaction::InteractionEnvironment::POINTER)
+                }
+                WindowEvent::KeyboardInput {
+                    event:
+                        winit::event::KeyEvent {
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                    ..
+                } => Some(app.interaction.with_keyboard_modality()),
+                _ => None,
+            }
+        };
+        if let Some(environment) = detected_interaction {
+            app.set_interaction_environment(environment);
+        }
         let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
         // RUST_LOG=ui::app=debug: pointer-move spam is intentionally
         // not throttled here — when the bug is "no clicks work", you
@@ -3120,7 +3589,10 @@ impl AppHandler {
 
         let mut handled = false;
         let mut focus_target = None;
-        let mut is_undo_redo = false;
+        // A synthesized hover-clear may be handled by a control, but it is
+        // presentation state and must not create an empty undo boundary.
+        let mut is_undo_redo =
+            self.dispatching_touch_pointer && matches!(event, WindowEvent::CursorMoved { .. });
 
         // The palette owns the keyboard while open; Ctrl+K itself is
         // handled below, so let it through.
@@ -3135,7 +3607,7 @@ impl AppHandler {
                     },
                     ..
                 } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app.modifiers.state().control_key()
+                    && app.platform.command_modifier_down(app.modifiers.state())
             );
             if !is_ctrl_k
                 && matches!(event, WindowEvent::KeyboardInput { .. })
@@ -3191,7 +3663,7 @@ impl AppHandler {
         }
 
         if !handled
-            && app.modifiers.state().control_key()
+            && app.platform.command_modifier_down(app.modifiers.state())
             && let WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -3203,56 +3675,49 @@ impl AppHandler {
             } = event
         {
             let shift = app.modifiers.state().shift_key();
-            // Otherwise round-tripping undo/redo loses caret
-            // position.
-            let current_meta = app.root_widget.get_state();
-            let current_focus_idx = app
-                .focused_node
-                .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-            match c.as_str() {
-                // winit delivers Ctrl+Shift+Z as character "Z"
-                // with shift held, so check the modifier, not
-                // the capital-letter cue.
-                "z" | "Z" if shift => {
-                    if let Some(e) =
-                        app.state
-                            .redo_as(Some(&app.local_author), current_focus_idx, current_meta)
-                    {
-                        app.apply_undo_entry(e);
+            let history_request = crate::undo::shortcut(c, true, shift);
+            if let Some(request) = history_request {
+                if app.root_widget.handle_local_undo_request(request) {
+                    app.needs_sync = true;
+                    window.request_redraw();
+                } else {
+                    // Otherwise round-tripping document undo/redo loses caret
+                    // position.
+                    let current_meta = app.root_widget.get_state();
+                    let current_focus_idx = app
+                        .focused_node
+                        .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
+                    let entry = match request {
+                        crate::undo::UndoRequest::Undo => app.state.undo_as(
+                            Some(&app.local_author),
+                            current_focus_idx,
+                            current_meta,
+                        ),
+                        crate::undo::UndoRequest::Redo => app.state.redo_as(
+                            Some(&app.local_author),
+                            current_focus_idx,
+                            current_meta,
+                        ),
+                    };
+                    if let Some(entry) = entry {
+                        app.apply_undo_entry(entry);
                     }
-                    is_undo_redo = true;
-                    handled = true;
                 }
-                "z" | "Z" => {
-                    if let Some(e) =
-                        app.state
-                            .undo_as(Some(&app.local_author), current_focus_idx, current_meta)
-                    {
-                        app.apply_undo_entry(e);
+                is_undo_redo = true;
+                handled = true;
+            } else {
+                match c.as_str() {
+                    // A second Ctrl+K closes the palette.
+                    "k" | "K" => {
+                        if app.action_palette.is_some() {
+                            app.close_action_palette();
+                        } else {
+                            app.open_action_palette();
+                        }
+                        handled = true;
                     }
-                    is_undo_redo = true;
-                    handled = true;
+                    _ => {}
                 }
-                "y" | "Y" => {
-                    if let Some(e) =
-                        app.state
-                            .redo_as(Some(&app.local_author), current_focus_idx, current_meta)
-                    {
-                        app.apply_undo_entry(e);
-                    }
-                    is_undo_redo = true;
-                    handled = true;
-                }
-                // A second Ctrl+K closes the palette.
-                "k" | "K" => {
-                    if app.action_palette.is_some() {
-                        app.close_action_palette();
-                    } else {
-                        app.open_action_palette();
-                    }
-                    handled = true;
-                }
-                _ => {}
             }
         }
 
@@ -3301,7 +3766,7 @@ impl AppHandler {
         }
 
         // Two-finger swipe / edge pull; delivered via `on_nav_gesture`.
-        if !handled {
+        if !handled && !self.dispatching_touch_pointer {
             use crate::gesture::GesturePhase;
             let map_phase = |p: winit::event::TouchPhase| match p {
                 winit::event::TouchPhase::Started => GesturePhase::Begin,
@@ -3448,7 +3913,7 @@ impl AppHandler {
             } = event
         {
             use crate::a11y::Action;
-            let ctrl = app.modifiers.state().control_key();
+            let ctrl = app.platform.command_modifier_down(app.modifiers.state());
             let shift = app.modifiers.state().shift_key();
             // (action to repeat, how many times)
             let (action, times) = match named {
@@ -3511,6 +3976,7 @@ impl AppHandler {
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
+        app.publish_action_surface();
 
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
@@ -3578,6 +4044,7 @@ impl AppHandler {
                 ..
             } | WindowEvent::MouseWheel { .. }
                 | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
                 | WindowEvent::CursorLeft { .. }
         ) && app.tooltip_host.dismiss()
         {
@@ -3639,6 +4106,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.root_widget
                     .on_external_event(&payload, &mut app.state.doc, &app.state.root);
                 app.needs_sync = true;
+                window.request_redraw();
+            }
+            UserEvent::Wake => {
+                self.app.needs_sync = true;
                 window.request_redraw();
             }
             UserEvent::AccessKit(ak_event) => {
@@ -3746,6 +4217,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             &window,
             self.a11y_proxy.clone(),
         ));
+        self.app
+            .root_widget
+            .mount_native_views(&crate::widget::NativeViewHost::live(
+                &window,
+                self.app.platform,
+            ));
         window.set_visible(true);
 
         self.app.layout_dirty = true;
@@ -3763,6 +4240,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.app.autosave_flush();
+        self.app.root_widget.unmount_native_views();
         if let Some(mut render) = self.render.take() {
             render.shutdown_and_join();
         }
@@ -3784,6 +4262,41 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(&window, &event);
         }
+        if let WindowEvent::Touch(touch) = &event {
+            self.app
+                .set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+            let pointer_events = self.touch_pointer.events(touch);
+            self.dispatching_touch_pointer = true;
+            for pointer_event in pointer_events {
+                let pointer_event = match pointer_event {
+                    crate::interaction::TouchPointerEvent::Move(position) => {
+                        WindowEvent::CursorMoved {
+                            device_id: touch.device_id,
+                            position,
+                        }
+                    }
+                    crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
+                        device_id: touch.device_id,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                    crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
+                        device_id: touch.device_id,
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                    },
+                    crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
+                        WindowEvent::MouseWheel {
+                            device_id: touch.device_id,
+                            delta: winit::event::MouseScrollDelta::PixelDelta(delta),
+                            phase,
+                        }
+                    }
+                };
+                self.handle_other_window_event(&window, pointer_event);
+            }
+            self.dispatching_touch_pointer = false;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_size) => {
@@ -3795,6 +4308,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The render path reads `window.scale_factor()` each frame,
                 // so we just need to invalidate layout and redraw.
+                self.app
+                    .root_widget
+                    .mount_native_views(&crate::widget::NativeViewHost::live(
+                        &window,
+                        self.app.platform,
+                    ));
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
@@ -3895,6 +4414,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        let scheduled_deadline = app.root_widget.next_wake_deadline();
+        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
+        if scheduled_due {
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
         let tooltip_pending = app.tooltip_host.needs_frame();
@@ -3924,16 +4450,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // ~60 Hz tick only while something no winit event surfaces on its
         // own needs draining — a live collab socket, or a root still
         // wanting another frame.
-        if app.collab_manager.is_connected() || needs_frame || tooltip_pending || typing_active {
-            // `Instant::checked_add` is the non-panicking form; 16ms from now can only
-            // fail to represent right at the end of time, in which case waking
-            // immediately is a harmless fallback.
-            let next_tick = Instant::now()
-                .checked_add(Duration::from_millis(16))
-                .unwrap_or_else(Instant::now);
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
-        } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+        let fast_pump = app.collab_manager.is_connected()
+            || needs_frame
+            || tooltip_pending
+            || typing_active
+            || scheduled_due;
+        match (fast_pump, scheduled_deadline) {
+            (true, _) => {
+                // `checked_add` is non-panicking at the end of Instant's range.
+                let next_tick = Instant::now()
+                    .checked_add(Duration::from_millis(16))
+                    .unwrap_or_else(Instant::now);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
+            }
+            (false, Some(deadline)) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+            (false, None) => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
@@ -4080,6 +4613,7 @@ mod window_title_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // These tests assert exact values assigned without computation.
 mod pointer_broadcast_tests {
     use super::*;
 
@@ -5293,6 +5827,7 @@ mod focus_trap_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Exact preference values are part of the test contract.
 mod low_vision_tests {
     use super::*;
     use crate::a11y::contrast_ratio;
@@ -5670,7 +6205,7 @@ mod fullscreen_tests {
 #[cfg(test)]
 mod action_palette_tests {
     use super::*;
-    use crate::widget::Widget;
+    use crate::widget::{Button, Widget};
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
     use qos_actions::{Action, ActionError, ActionSpec, Doc, Resource};
@@ -5891,6 +6426,22 @@ mod action_palette_tests {
             "navigation marks a redraw"
         );
     }
+
+    #[test]
+    fn ctrl_k_invokes_a_projected_semantic_control() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+            captured.set(captured.get().saturating_add(1));
+        });
+        let mut app = App::new(State::new(), Box::new(button));
+        app.init_layout();
+        app.open_action_palette();
+        app.action_palette.as_mut().unwrap().set_query("activate");
+
+        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert_eq!(presses.get(), 1, "Ctrl+K reaches the real control");
+    }
 }
 
 // See `crate::view` for the (de)serialize-as-a-whole design this implements.
@@ -5981,6 +6532,7 @@ impl crate::view::FreezeThaw for App {
 // `broadcast_view_presence` through the presence sink, and
 // `apply_collab_event_for_test` through `apply_remote_presence`.
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Serialized presence fields are expected to round-trip exactly.
 mod view_presence_tests {
     use super::*;
     use crate::PresenceCtx;
@@ -6506,5 +7058,212 @@ mod semantic_tree_app_tests {
             via_a11y, via_affordance,
             "both paths produce the same result"
         );
+    }
+
+    #[test]
+    fn virtual_tree_rows_dispatch_through_platform_and_semantic_routes() {
+        let root = crate::widget::TreeNode::branch(
+            1,
+            "Root",
+            (),
+            vec![crate::widget::TreeNode::leaf(2, "Child", ())],
+        );
+        let mut app = App::new(
+            State::new(),
+            Box::new(
+                crate::widget::TreeView::new(root)
+                    .with_id("items-tree")
+                    .with_expanded([1]),
+            ),
+        );
+        app.init_layout();
+
+        app.refresh_semantic_tree();
+        let child = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
+            })
+            .map(|node| node.id.clone())
+            .expect("semantic child row");
+        assert!(
+            app.invoke_semantic_action(&child, "activate", None)
+                .expect("semantic row activation")
+        );
+        app.refresh_semantic_tree();
+        assert!(
+            app.semantic_tree()
+                .node(&child)
+                .is_some_and(|node| node.state.selected)
+        );
+
+        let update = app.build_a11y_tree_update(1.0);
+        assert_eq!(
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+                .count(),
+            2
+        );
+        let root_row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(id, node)| {
+                assert!(node.supports_action(accesskit::Action::Collapse));
+                *id
+            })
+            .expect("virtual root row");
+        let route = crate::accesskit_bridge::resolve_node_id(
+            app.root_widget.as_ref(),
+            &app.node_map,
+            root_row,
+        )
+        .expect("root row route");
+        assert!(matches!(
+            route,
+            crate::accesskit_bridge::A11yTarget::Synthetic {
+                semantic_target: Some(ref target),
+                ..
+            } if target == "node:1"
+        ));
+        assert_eq!(
+            app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
+            None
+        );
+        app.refresh_semantic_tree();
+        let root_semantics = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
+            })
+            .expect("root semantics after collapse");
+        assert_eq!(root_semantics.state.expanded, Some(false));
+
+        let collapsed = app.build_a11y_tree_update(1.0);
+        let rows = collapsed
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "collapsing removes the child row");
+        assert!(rows[0].1.supports_action(accesskit::Action::Expand));
+    }
+
+    #[test]
+    fn retained_tree_delegate_is_nested_once_and_keeps_its_own_action() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let root = crate::widget::TreeNode::leaf(7, "Item", ());
+        let tree = crate::widget::TreeView::new(root).with_row_delegate(move |_, id, _| {
+            let button_id = format!("action-{id}");
+            let captured = std::rc::Rc::clone(&captured);
+            Box::new(
+                crate::widget::Button::new(&button_id, "Action", None).on_click(move || {
+                    captured.set(captured.get().saturating_add(1));
+                }),
+            )
+        });
+        let mut app = App::new(State::new(), Box::new(tree));
+        app.init_layout();
+
+        let update = app.build_a11y_tree_update(1.0);
+        let buttons = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == accesskit::Role::Button)
+            .collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 1, "delegate is not announced twice");
+        let button_id = buttons[0].0;
+        let row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(_, node)| node)
+            .expect("tree item");
+        assert_eq!(row.children(), &[button_id]);
+        assert!(
+            row.bounds().is_some(),
+            "platform row keeps viewport geometry"
+        );
+        assert_eq!(
+            app.dispatch_a11y_action(button_id, &crate::a11y::Action::Activate),
+            None
+        );
+        assert_eq!(presses.get(), 1);
+
+        app.refresh_semantic_tree();
+        let semantic_buttons = app
+            .semantic_tree()
+            .iter()
+            .filter(|node| node.role == crate::a11y::Role::Button)
+            .collect::<Vec<_>>();
+        assert_eq!(semantic_buttons.len(), 1);
+        let semantic_row = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.role == crate::a11y::Role::TreeItem)
+            .expect("semantic tree item");
+        assert!(semantic_row.children.contains(&semantic_buttons[0].id));
+        assert!(
+            semantic_row.bounds.is_some(),
+            "inspection row keeps viewport geometry"
+        );
+        assert!(
+            !semantic_row.state.selected,
+            "button activation does not select row"
+        );
+    }
+
+    #[test]
+    fn synthetic_drawn_control_dispatches_through_retained_semantic_tree() {
+        let changed = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let captured = std::rc::Rc::clone(&changed);
+        let group = crate::widget::ToggleGroup::new(
+            vec![
+                crate::widget::toggle_group::Segment::new("Light"),
+                crate::widget::toggle_group::Segment::new("Dark"),
+            ],
+            0,
+        )
+        .on_change(move |index| captured.set(index));
+        let mut app = App::new(State::new(), Box::new(group));
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let dark = app
+            .semantic_tree()
+            .find_by_name("Dark")
+            .map(|node| node.id.clone())
+            .expect("synthetic Dark segment");
+
+        assert!(
+            app.invoke_semantic_action(&dark, "activate", None)
+                .expect("semantic dispatch")
+        );
+        assert_eq!(changed.get(), 1);
+    }
+
+    #[test]
+    fn projected_control_is_invokable_through_the_resource_door() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+            captured.set(captured.get().saturating_add(1));
+        });
+        let mut app = App::new(State::new(), Box::new(button));
+        app.init_layout();
+
+        let resource = app
+            .collect_resources()
+            .into_iter()
+            .find(|resource| resource.kind == "qos.ui.control" && resource.label == "Drive me")
+            .expect("semantic button is in the published catalogue");
+        let address = qos_actions::ActionAddress::new(resource.id.0, "activate");
+        app.invoke_resource_action(&address, None, "agent:test")
+            .expect("the resource door invokes the same button action");
+        assert_eq!(presses.get(), 1);
     }
 }
