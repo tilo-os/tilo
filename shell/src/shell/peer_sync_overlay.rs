@@ -21,6 +21,7 @@ pub enum PeerSyncRequest {
     IssueInviteFor {
         name: String,
         role: crate::network::invite::InviteRole,
+        recipient_user_public_key: [u8; 32],
     },
     AcceptInvite(String),
 }
@@ -33,6 +34,7 @@ pub struct PeerSyncSnapshot {
     pub invite_name: Option<String>,
     pub invite_for: Option<String>,
     pub invite_role: crate::network::invite::InviteRole,
+    pub invite_recipient_key: Option<[u8; 32]>,
     pub status: Option<String>,
 }
 
@@ -44,6 +46,7 @@ enum Button {
     Cancel,
     CopyToken,
     PasteToken,
+    PasteIdentity,
 }
 
 /// Result of routing one input event through the overlay.
@@ -104,7 +107,13 @@ impl PeerSyncOverlay {
         self.state.connect_input = None;
         self.state.invite_token = None;
         self.state.invite_for = None;
+        self.state.invite_recipient_key = None;
         self.state.status = None;
+    }
+
+    pub fn prompt_invite_for(&mut self, name: String) {
+        self.prompt_invite();
+        self.state.invite_name = Some(name);
     }
 
     pub fn prompt_connect(&mut self) {
@@ -225,7 +234,11 @@ impl PeerSyncOverlay {
                 EventOutcome::consumed()
             }
             Key::Character(s) if chord && s.eq_ignore_ascii_case("v") => {
-                self.paste_invite_token();
+                if composer_open {
+                    self.paste_recipient_identity();
+                } else {
+                    self.paste_invite_token();
+                }
                 EventOutcome::consumed()
             }
             Key::Named(NamedKey::Escape) if self.visible() => {
@@ -289,6 +302,10 @@ impl PeerSyncOverlay {
                 self.paste_invite_token();
                 EventOutcome::consumed()
             }
+            Button::PasteIdentity => {
+                self.paste_recipient_identity();
+                EventOutcome::consumed()
+            }
         }
     }
 
@@ -301,10 +318,16 @@ impl PeerSyncOverlay {
             self.state.status = Some("Say who this invite is for".to_string());
             return EventOutcome::consumed();
         }
+        let Some(recipient_user_public_key) = self.state.invite_recipient_key else {
+            self.state.status =
+                Some("Paste their qOS identity key so the invite cannot be stolen".to_string());
+            return EventOutcome::consumed();
+        };
         EventOutcome::request(
             PeerSyncRequest::IssueInviteFor {
                 name,
                 role: self.state.invite_role,
+                recipient_user_public_key,
             },
             true,
         )
@@ -341,6 +364,26 @@ impl PeerSyncOverlay {
                 self.state.status = Some("Pasted — press Enter to join".to_string());
             }
             None => self.state.status = Some("Nothing on the clipboard to paste".to_string()),
+        }
+    }
+
+    fn paste_recipient_identity(&mut self) {
+        let Some(raw) = ui::text_selection::clipboard_paste() else {
+            self.state.status = Some("Nothing on the clipboard to paste".to_string());
+            return;
+        };
+        match parse_recipient_identity(&raw) {
+            Some(key) => {
+                self.state.invite_recipient_key = Some(key);
+                self.state.status =
+                    Some(format!("Identity bound · {}", identity_fingerprint(&key)));
+            }
+            None => {
+                self.state.status = Some(
+                    "That is not a qOS identity key (expected 64 hexadecimal characters)"
+                        .to_string(),
+                );
+            }
         }
     }
 
@@ -457,6 +500,7 @@ impl PeerSyncOverlay {
                 avail,
                 typed,
                 self.state.invite_role,
+                self.state.invite_recipient_key.as_ref(),
             )
         } else if let Some(token) = self.state.invite_token.as_deref() {
             draw_invite(
@@ -507,6 +551,7 @@ impl PeerSyncOverlay {
         let buttons: Vec<(String, Button)> = if self.state.invite_name.is_some() {
             vec![
                 ("Create invite".into(), Button::CreateInvite),
+                ("Paste identity".into(), Button::PasteIdentity),
                 (
                     format!("Role: {}", self.state.invite_role.label()),
                     Button::CycleRole,
@@ -576,6 +621,7 @@ impl PeerSyncOverlay {
                         Button::Cancel => "cancel",
                         Button::CopyToken => "copy",
                         Button::PasteToken => "paste",
+                        Button::PasteIdentity => "paste-identity",
                     },
                     *rect,
                 )
@@ -592,7 +638,7 @@ impl PeerSyncOverlay {
 fn card_rect(host: Rect, state: &PeerSyncSnapshot) -> Rect {
     let w = (host.width() * 0.42).clamp(400.0, 520.0);
     let h = if state.invite_name.is_some() {
-        210.0
+        230.0
     } else if state.connect_input.is_some() {
         220.0
     } else {
@@ -618,6 +664,25 @@ fn peer_fingerprint(peer_id: &str) -> String {
         "{} {}",
         a.iter().collect::<String>(),
         b.iter().collect::<String>()
+    )
+}
+
+fn parse_recipient_identity(value: &str) -> Option<[u8; 32]> {
+    let compact = value.trim();
+    let encoded = compact
+        .strip_prefix("qos-identity:")
+        .unwrap_or(compact)
+        .trim();
+    let bytes = hex::decode(encoded).ok()?;
+    bytes.try_into().ok()
+}
+
+fn identity_fingerprint(key: &[u8; 32]) -> String {
+    let encoded = hex::encode(key);
+    format!(
+        "{} {}",
+        &encoded[encoded.len() - 8..encoded.len() - 4],
+        &encoded[encoded.len() - 4..]
     )
 }
 
@@ -664,6 +729,7 @@ fn draw_naming(
     avail: f64,
     typed: &str,
     role: crate::network::invite::InviteRole,
+    recipient: Option<&[u8; 32]>,
 ) -> f64 {
     let colors = &theme.tokens.colors;
     text.draw_text(
@@ -719,11 +785,12 @@ fn draw_naming(
         &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
     );
     y = field.y1 + 12.0;
+    let identity = recipient.map_or_else(
+        || "paste their qOS identity; the link will not work for anyone else".to_string(),
+        |key| format!("identity {}", identity_fingerprint(key)),
+    );
     let note = text.elide_to_width(
-        &format!(
-            "They join as {} · use the Role button or Tab to change.",
-            role.label()
-        ),
+        &format!("{} · {identity}", role.label()),
         body,
         f64_to_f32(avail),
     );
@@ -1003,6 +1070,16 @@ mod tests {
             Modifiers::default(),
             None,
         );
+        let unbound = overlay.handle_event(
+            &key(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            None,
+        );
+        assert!(
+            unbound.request.is_none(),
+            "ordinary UI must not mint a bearer invite"
+        );
+        overlay.state.invite_recipient_key = Some([0x11; 32]);
         let submit = overlay.handle_event(
             &key(Key::Named(NamedKey::Enter)),
             Modifiers::default(),
@@ -1013,6 +1090,7 @@ mod tests {
             Some(PeerSyncRequest::IssueInviteFor {
                 name: "Ada".into(),
                 role: crate::network::invite::InviteRole::Editor,
+                recipient_user_public_key: [0x11; 32],
             })
         );
         overlay.finish_request(
@@ -1032,6 +1110,7 @@ mod tests {
             Modifiers::default(),
             None,
         );
+        overlay.state.invite_recipient_key = Some([0x22; 32]);
         overlay.handle_event(&key(Key::Named(NamedKey::Tab)), Modifiers::default(), None);
         let submit = overlay.handle_event(
             &key(Key::Named(NamedKey::Enter)),
@@ -1043,6 +1122,7 @@ mod tests {
             Some(PeerSyncRequest::IssueInviteFor {
                 name: "Lin".into(),
                 role: crate::network::invite::InviteRole::Viewer,
+                recipient_user_public_key: [0x22; 32],
             })
         );
     }
@@ -1085,6 +1165,18 @@ mod tests {
         );
         assert_eq!(peer_fingerprint("abc"), "abc");
         assert_eq!(peer_fingerprint(""), "");
+    }
+
+    #[test]
+    fn recipient_identity_parser_accepts_only_an_exact_person_key() {
+        let key = [0x5a; 32];
+        assert_eq!(parse_recipient_identity(&hex::encode(key)), Some(key));
+        assert_eq!(
+            parse_recipient_identity(&format!("qos-identity:{}", hex::encode(key))),
+            Some(key)
+        );
+        assert_eq!(parse_recipient_identity("5a"), None);
+        assert_eq!(parse_recipient_identity(&"g".repeat(64)), None);
     }
 
     #[test]
