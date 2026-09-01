@@ -277,7 +277,6 @@ pub struct TopBarChrome {
     notification_badge: u32,
     /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
-    avatar_chip_rects: Vec<(String, Rect)>,
     /// Scroll over `center_rect` cycles it, dots jump directly.
     center_widget: CenterWidget,
     activity_headline: Option<String>,
@@ -375,7 +374,6 @@ impl TopBarChrome {
             media_expanded: false,
             notification_badge: 0,
             avatar_stack_rect: Rect::ZERO,
-            avatar_chip_rects: Vec::new(),
             center_widget: CenterWidget::Clock,
             activity_headline: None,
             activity_unread: 0,
@@ -484,13 +482,10 @@ impl TopBarChrome {
             );
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Prefer the workspace's own collaborators, falling back to the
-        // tree-level roster only if empty (mirrors
-        // `sidebar_wheel_chrome::sync_from_tree`).
-        let roster: &[crate::shell::state::Collaborator] = match active_ws {
-            Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
-            _ => &tree.collaborators,
-        };
+        // Presence is workspace-scoped. The legacy tree-level cache can
+        // contain people active elsewhere and must not leak them into this bar.
+        let roster: &[crate::shell::state::Collaborator] =
+            active_ws.map_or(&[], |workspace| workspace.collaborators.as_slice());
         // An invited-but-not-arrived peer doesn't count as present.
         let present = |c: &&crate::shell::state::Collaborator| c.id != "me" && !c.invited;
         self.collaborator_initials.clear();
@@ -1739,7 +1734,7 @@ impl TopBarChrome {
     /// leftward from `stack_right_x`. Returns how many circles were
     /// actually drawn (chips + the overflow chip, if any).
     fn draw_avatar_chips(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -1748,7 +1743,6 @@ impl TopBarChrome {
         stack_right_x: f64,
     ) -> usize {
         let colors = &theme.tokens.colors;
-        self.avatar_chip_rects.clear();
         // Up to 3 chips, overlapping by 4px, newest on top. Routed
         // through `ui::Avatar` so the roster stays pixel-identical to
         // app rosters.
@@ -1767,9 +1761,6 @@ impl TopBarChrome {
                 .get(i)
                 .copied()
                 .unwrap_or(colors.accent[5]);
-            if let Some(name) = self.collaborator_names.get(i) {
-                self.avatar_chip_rects.push((name.clone(), rect));
-            }
             ui::widget::Avatar::draw_ringed_at(
                 scene,
                 transform,
@@ -1813,22 +1804,21 @@ impl TopBarChrome {
             .saturating_add(usize::from(self.collaborator_overflow > 0))
     }
 
-    /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
-    /// bounds, or — when the roster is empty — draws and bounds the
-    /// dashed "Invite" affordance instead. `pos` is `(center_y,
+    /// Sets [`Self::avatar_stack_rect`] to the drawn chip stack's bounds.
+    /// An untouched solo workspace deliberately has no collaborator control
+    /// in the resting bar; inviting the first person starts in the contextual
+    /// workspace sheet opened from the workspace name. `pos` is `(center_y,
     /// stack_right_x)`.
     fn draw_avatar_stack_bounds(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _theme: &Theme,
+        _text_renderer: &mut TextRenderer,
         pos: (f64, f64),
         slot_count: usize,
     ) {
         let (center_y, stack_right_x) = pos;
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         if slot_count > 0 {
             // Stack grows leftward from `stack_right_x`; each circle is
             // 18 px wide with 4 px overlap, so step = 14 px.
@@ -1839,53 +1829,7 @@ impl TopBarChrome {
                 Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
             return;
         }
-        // An empty roster is when inviting the first collaborator
-        // matters most. Dashed ring + unfilled chip: an empty seat
-        // isn't a person, so "Invite" is spelled out rather than `+`.
-        let label = "Invite";
-        let label_size = tokens.typography.scale.xs;
-        let (label_w, label_h) =
-            text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
-        let chip_r = 7.5_f64;
-        let pill_x1 = stack_right_x + 2.0;
-        let chip_cx = pill_x1 - 6.0 - chip_r;
-        let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
-        let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
-        let pill_rr = RoundedRect::from_rect(pill, f64::from(tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &pill_rr,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            label_size,
-            colors.text_dim,
-            at(transform, (label_x, center_y - f64::from(label_h) / 2.0)),
-            None,
-            TextWeight::Medium,
-        );
-        let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-            transform,
-            colors.border_standard,
-            None,
-            &chip,
-        );
-        let plus = Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0);
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            plus,
-            ui::icons::Icon::Plus,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        self.avatar_stack_rect = pill;
+        self.avatar_stack_rect = Rect::ZERO;
     }
 
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
@@ -1922,19 +1866,6 @@ impl TopBarChrome {
             return;
         };
         let mut state = chrome.borrow_mut();
-        if let Some((author, _)) = self
-            .avatar_chip_rects
-            .iter()
-            .find(|(_, rect)| rect.contains(p))
-        {
-            state.open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
-                author: Some(author.clone()),
-                group_id: None,
-                entry_id: None,
-            }));
-            *handled = true;
-            return;
-        }
         if self.overview_btn_rect.contains(p) {
             state.overlays.overview = !state.overlays.overview;
             state.bump();
@@ -2586,7 +2517,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_person_deep_links_history_to_that_person() {
+    fn clicking_a_person_opens_people_not_history() {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
@@ -2599,16 +2530,17 @@ mod tests {
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
-        bar.avatar_chip_rects.push(("Ada".into(), chip));
         bar.avatar_stack_rect = chip;
         bar.last_cursor = Some(chip.center());
 
         let mut handled = false;
         bar.handle_left_click(&mut handled);
         assert!(handled);
-        assert!(chrome.borrow().overlays.room_activity);
-        let focus = chrome.borrow_mut().take_activity_focus_request().unwrap();
-        assert_eq!(focus.author.as_deref(), Some("Ada"));
+        assert!(chrome.borrow().overlays.collaborators);
+        assert!(
+            !chrome.borrow().overlays.room_activity,
+            "a presence face represents People; activity has its own explicit route"
+        );
     }
 
     /// Asserts the colours differ AND move with the theme, which a
@@ -2713,10 +2645,13 @@ mod tests {
             active: WorkspaceId::from(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
-            collaborators: vec![crate::shell::state::Collaborator::new("alice", "Alice")],
+            collaborators: Vec::new(),
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
+        tree.workspaces[0]
+            .collaborators
+            .push(crate::shell::state::Collaborator::new("alice", "Alice"));
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default();
@@ -2767,7 +2702,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_roster_still_offers_a_clickable_invite_affordance() {
+    fn empty_roster_leaves_the_resting_bar_quiet() {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
@@ -2818,57 +2753,11 @@ mod tests {
             bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
             "this test is about the empty case and the roster is not empty",
         );
-        let stack = bar.avatar_stack_rect;
         assert!(
-            stack.area() > 0.0,
-            "an empty roster still has to offer a control to click",
+            bar.avatar_stack_rect.is_zero_area(),
+            "an untouched solo workspace must not advertise collaboration in the resting bar",
         );
-        let bar_rect = bar.get_rect();
-        assert!(
-            stack.y0 >= bar_rect.y0 && stack.y1 <= bar_rect.y1,
-            "the affordance sits inside the bar: {stack:?} vs {bar_rect:?}",
-        );
-        let tray = bar.tray_pill_rect();
-        assert!(
-            stack.x1 <= tray.x0,
-            "the affordance stays left of the tray pill: stack.x1={}, tray.x0={}",
-            stack.x1,
-            tray.x0,
-        );
-
         assert!(!chrome.borrow().overlays.collaborators);
-        let mut doc = AutoCommit::new();
-        let doc_root = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut focus: Option<NodeId> = None;
-        for event in [
-            WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(stack.center().x, stack.center().y),
-            },
-            WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-        ] {
-            let mut handled = false;
-            bar.handle_event(
-                &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
-        }
-        assert!(
-            chrome.borrow().overlays.collaborators,
-            "clicking the empty-roster affordance opened the collaborators panel",
-        );
     }
 
     /// The topbar's shadow is its only linear-gradient fill, so pinning
@@ -2944,7 +2833,7 @@ mod tests {
     /// Both states asserted together, since a stack that's empty (or
     /// full) in both cases would pass only half.
     #[test]
-    fn a_peer_in_the_room_replaces_the_invite_slot_with_their_avatar() {
+    fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
         let empty = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
@@ -2958,12 +2847,19 @@ mod tests {
         let bar = TopBarChrome::from_tree(&empty);
         assert!(
             bar.collaborator_initials().is_empty(),
-            "a room nobody is in has nobody to show, so the slot offers \
-             the invite instead",
+            "a workspace nobody else is in has nobody to show",
+        );
+
+        let mut elsewhere = empty.clone();
+        elsewhere.collaborators = vec![crate::shell::state::Collaborator::new("alice", "Alice")];
+        let bar = TopBarChrome::from_tree(&elsewhere);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "session-wide presence must not leak somebody from another workspace into this bar",
         );
 
         let mut joined = empty.clone();
-        joined.collaborators = vec![crate::shell::state::Collaborator::new(
+        joined.workspaces[0].collaborators = vec![crate::shell::state::Collaborator::new(
             "peer@11895642303397647149",
             "Xaver",
         )];
@@ -2971,8 +2867,7 @@ mod tests {
         assert_eq!(
             bar.collaborator_initials(),
             &['X'],
-            "with somebody in the room the bar must show them, not an \
-             offer to invite the first person",
+            "the bar must show somebody present in this workspace",
         );
         assert_eq!(
             bar.collaborator_overflow(),
@@ -2983,7 +2878,7 @@ mod tests {
         // Invited but not redeemed: an avatar here would falsely claim
         // he's in the workspace.
         let mut asked = empty;
-        asked.collaborators = vec![
+        asked.workspaces[0].collaborators = vec![
             crate::shell::state::Collaborator::new("peer@11895642303397647149", "Xaver")
                 .as_invited(),
         ];

@@ -561,6 +561,29 @@ pub trait Widget {
         false
     }
 
+    /// Perform an exported non-document operation owned by this widget.
+    /// Containers inherit recursive routing; an application overrides only
+    /// for the effect/view types it publishes and returns `Ok(true)` when it
+    /// handled the payload. Document operations never enter this hook.
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        for child in self.children_mut() {
+            if child.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn accepts_drop(&self, _payload: &DragPayload) -> bool {
         false
     }
@@ -868,7 +891,7 @@ pub use spinner::Spinner;
 pub mod date_picker;
 pub use date_picker::DatePicker;
 pub mod time_picker;
-pub use time_picker::TimePicker;
+pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub use color_picker::ColorPicker;
 pub mod popover_widget;

@@ -45,7 +45,9 @@ use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, PeerSyncOverlay};
-pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
+pub use crate::shell::peer_sync_overlay::{
+    PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot, PendingInvitationSummary,
+};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
@@ -106,7 +108,8 @@ fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option
 
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
-type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>;
+type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
+type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -265,6 +268,9 @@ pub struct ShellOverlayHost {
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<PeerSyncBridge>,
+    /// Session-local control path into the typed app broker. Follow never
+    /// enters the replicated workspace document or crosses the network.
+    follow_bridge: Option<FollowBridge>,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
     peer_sync_overlay: PeerSyncOverlay,
     /// Top-right notification stack, above content but below the
@@ -813,6 +819,19 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
+    /// Attach the session's live application action directory after the
+    /// collaboration broker has bound. Kept explicit so bare/headless hosts
+    /// do not fabricate a broker.
+    pub fn attach_app_action_broker(
+        &mut self,
+        broker: crate::shell::collab_broker::AppActionBroker,
+    ) {
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
+        ));
+        self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -912,6 +931,7 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
+            follow_bridge: None,
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
@@ -1180,8 +1200,14 @@ impl ShellOverlayHost {
         self.peer_sync_bridge = Some(bridge);
     }
 
+    /// Install the session-local bridge that binds application viewports to
+    /// the participant selected in the People popover.
+    pub fn set_follow_bridge(&mut self, bridge: FollowBridge) {
+        self.follow_bridge = Some(bridge);
+    }
+
     /// Run one peer-sync request through the installed bridge.
-    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<String, String> {
+    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<PeerSyncResponse, String> {
         match self.peer_sync_bridge.as_ref() {
             Some(bridge) => bridge(req),
             None => Err("peer-sync is not running in this session".to_string()),
@@ -1206,15 +1232,10 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(
-                        &PeerSyncRequest::IssueInviteFor {
-                            name,
-                            role: crate::network::invite::InviteRole::Editor,
-                        },
-                        copy,
-                    );
+                    let _ = copy;
+                    self.peer_sync_overlay.prompt_invite_for(name);
                 }
-                PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
+                PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
             }
         }
@@ -1223,7 +1244,27 @@ impl ShellOverlayHost {
     fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
         let outcome = self.peer_sync_call(request.clone());
         self.peer_sync_overlay
-            .finish_request(request, outcome, copy_result);
+            .finish_typed_request(request, outcome, copy_result);
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInvite
+                | PeerSyncRequest::IssueInviteFor { .. }
+                | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.refresh_pending_invitations();
+        }
+    }
+
+    fn open_invite_manager(&mut self) {
+        self.peer_sync_overlay.prompt_invite();
+        self.refresh_pending_invitations();
+    }
+
+    fn refresh_pending_invitations(&mut self) {
+        let request = PeerSyncRequest::ListPendingInvitations;
+        let outcome = self.peer_sync_call(request.clone());
+        self.peer_sync_overlay
+            .finish_typed_request(&request, outcome, false);
     }
 
     /// Route one event to the peer-sync card, returning whether it was
@@ -2787,6 +2828,47 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
+    /// Change Follow once, then notify every local app in the room using the
+    /// participant id its presence stream actually carries (`peer@<handle>`).
+    /// Shell focus keeps using the durable roster id, so names and capability
+    /// rows remain stable while sessions reconnect.
+    fn set_followed_peer(&mut self, peer_id: Option<String>) {
+        if self.followed_peer == peer_id {
+            return;
+        }
+        self.followed_peer = peer_id;
+        let command = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let Some(workspace) = tree.active_workspace() else {
+                drop(tree);
+                drop(state);
+                return None;
+            };
+            let target = self.followed_peer.as_deref().map(|id| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|participant| participant.id == id)
+                    .and_then(|participant| participant.session)
+                    .map_or_else(|| id.to_string(), |session| format!("peer@{session}"))
+            });
+            let command = (workspace.room, target);
+            drop(tree);
+            drop(state);
+            Some(command)
+        });
+        if let (Some(bridge), Some((room, target))) = (self.follow_bridge.as_ref(), command) {
+            bridge(room, target);
+        }
+        if self.followed_peer.is_some() {
+            self.reconcile_followed_peer();
+        } else {
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+        }
+    }
+
     fn followed_roster_row(&self) -> Option<RosterRow> {
         let peer_id = self.followed_peer.as_deref()?;
         let chrome = self.chrome.as_ref()?;
@@ -3954,6 +4036,14 @@ impl ShellOverlayHost {
         self.refresh_room_activity();
     }
 
+    /// Settle the room-activity sheet in its closed state after a shot driver
+    /// action closes it, preventing the following capture from containing the
+    /// tail of the dismissal animation.
+    pub fn force_room_activity_closed_for_shots(&mut self) {
+        self.room_activity_transition = ui::Transition::closed();
+        self.room_activity_was_open = false;
+    }
+
     /// Name-input rect inside the ws-settings modal. Matches the drawn
     /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
     fn ws_settings_name_rect(&self) -> Rect {
@@ -4569,7 +4659,7 @@ impl ShellOverlayHost {
             state.bump();
             state.push_notification(
                 "Named a version",
-                "Saved in this room's history, so everyone here sees it.",
+                "Saved in this workspace's history, so everyone here sees it.",
             );
         }
     }
@@ -4756,6 +4846,9 @@ impl ShellOverlayHost {
         // character, and a `k` in one must not open search instead.
         if self.handle_wifi_password_key(logical_key, modifiers) {
             *handled = true;
+            return true;
+        }
+        if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
             return true;
         }
         // Captured ahead of the modifier-only branch so Character('K')
@@ -5457,9 +5550,7 @@ impl ShellOverlayHost {
 
     fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
         if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return true;
         }
         // Following is a viewing mode, not a lock. The first deliberate
@@ -5469,9 +5560,7 @@ impl ShellOverlayHost {
             && !self.cursor_over_open_overlay(p)
             && !self.follow_chip_rect.contains(p)
         {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
         }
         // Gated on no overlay owning the pointer, so a click
         // under an open panel goes to the panel.
@@ -5548,10 +5637,9 @@ impl ShellOverlayHost {
             });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.followed_peer = None;
+                    self.set_followed_peer(None);
                 } else {
-                    self.followed_peer = Some(target.id);
-                    self.reconcile_followed_peer();
+                    self.set_followed_peer(Some(target.id));
                 }
             }
             *handled = true;
@@ -5731,6 +5819,91 @@ impl ShellOverlayHost {
             self.qs_root
                 .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
         };
+        self.apply_quick_settings_root_action(action, &chrome);
+    }
+
+    /// Keyboard parity for the immediate-mode quick-settings root. Tab uses
+    /// paint order, Enter/Space route through the same action dispatcher as a
+    /// pointer click, and arrows adjust the two range controls in small steps.
+    fn handle_quick_settings_keyboard(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+        handled: &mut bool,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let at_root = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+        };
+        if !at_root {
+            return false;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let mut state = chrome.borrow_mut();
+            self.qs_root.focus_next(&state.quick_settings, backwards);
+            state.bump();
+            *handled = true;
+            return true;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            let action = {
+                let mut state = chrome.borrow_mut();
+                self.qs_root
+                    .activate_focused(self.quick_settings_rect(), &mut state.quick_settings)
+            };
+            self.apply_quick_settings_root_action(action, &chrome);
+            *handled = true;
+            return true;
+        }
+
+        let direction = if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown)
+        ) {
+            -1.0
+        } else if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp)
+        ) {
+            1.0
+        } else {
+            return false;
+        };
+        let commit = {
+            let mut state = chrome.borrow_mut();
+            let commit = self
+                .qs_root
+                .adjust_focused_slider(&mut state.quick_settings, direction);
+            if commit.is_some() {
+                state.bump();
+            }
+            commit
+        };
+        match commit {
+            Some(SliderCommit::Brightness(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_brightness",
+                self.qs_actions.set_brightness(value_pct),
+            ),
+            Some(SliderCommit::Volume(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_volume",
+                self.qs_actions.set_volume(value_pct),
+            ),
+            None => return false,
+        }
+        *handled = true;
+        true
+    }
+
+    fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
             RootAction::Enter(level) => {
@@ -5968,7 +6141,7 @@ impl ShellOverlayHost {
                         state.overlays.ws_settings = false;
                         state.bump();
                     }
-                    self.peer_sync_overlay.prompt_invite();
+                    self.open_invite_manager();
                 }
             }
             WorkspaceSettingsOutcome::EditName => {
@@ -6806,6 +6979,20 @@ impl Widget for ShellOverlayHost {
         if self.route_dropped_file_event(event, handled) {
             return;
         }
+        if self.followed_peer.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            self.set_followed_peer(None);
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -6844,6 +7031,12 @@ impl Widget for ShellOverlayHost {
         ) {
             return;
         }
+        if self.followed_peer.is_some() && matches!(event, WindowEvent::MouseWheel { .. }) {
+            // Release before forwarding so this input changes the local view
+            // immediately rather than being overwritten by the next peer
+            // view-presence frame.
+            self.set_followed_peer(None);
+        }
         self.dispatch_pointer_and_content_event(
             event,
             scale_factor,
@@ -6869,18 +7062,66 @@ impl Widget for ShellOverlayHost {
             root.children
                 .push(self.room_activity.accessibility_snapshot());
         }
+        if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            if state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+            {
+                root.children
+                    .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+            }
+        }
         Some(root)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        self.overlay_flags()
-            .room_activity
-            .then(|| self.room_activity.accessibility_rect_for_path(path))
-            .flatten()
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.accessibility_rect_for_path(path);
+        }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return None;
+        }
+        let child_path = path.get(1..)?;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        (state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ))
+        .then(|| self.qs_root.accessibility_rect_for_path(child_path))
+        .flatten()
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        self.overlay_flags().room_activity && self.room_activity.focus_accessibility_path(path)
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.focus_accessibility_path(path);
+        }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return false;
+        }
+        let Some(child_path) = path.get(1..) else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            )
+            && self
+                .qs_root
+                .focus_accessibility_path(child_path, &state.quick_settings)
     }
 
     /// Expose content + palette + sidebar as direct children so trait
@@ -7767,6 +8008,7 @@ impl ShellOverlayHost {
             // see `qs_refresh`.
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
+            self.qs_root.reset_focus();
         }
         self.qs_was_open = flags.quick_settings;
         self.apply_quick_settings_readings();
@@ -8443,6 +8685,7 @@ impl ShellOverlayHost {
             is_current: false,
             people: Vec::new(),
             shares: Vec::new(),
+            strips: Vec::new(),
         };
         let here_card = here_idx.and_then(|i| cards.get(i)).unwrap_or(&empty_card);
         if here_card.shares.is_empty() {
@@ -8501,7 +8744,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Nothing in this room is shared out of it",
+            "Nothing in this workspace is shared out of it",
             body_size,
             colors.text_dim,
             transform.pre_translate(
@@ -8730,10 +8973,10 @@ impl ShellOverlayHost {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let add_size = tokens.typography.scale.base;
-        let (_, add_h) = text_renderer.measure("New room", add_size, None);
+        let (_, add_h) = text_renderer.measure("New workspace", add_size, None);
         text_renderer.draw_text(
             scene,
-            "New room",
+            "New workspace",
             add_size,
             add_color,
             transform.pre_translate((gx + glyph + 10.0, gcy - f64::from(add_h) / 2.0).into()),
@@ -8793,13 +9036,11 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let Some(row) = self.followed_roster_row() else {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return;
         };
         let label = format!("Following {}", row.label);
-        let detail = "Your view moves with theirs";
+        let detail = "Interact or press Stop to take control";
         let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
         let center_x = self.rect.center().x;
         let y0 = self.rect.y0 + 54.0;
@@ -9179,8 +9420,15 @@ impl ShellOverlayHost {
             return;
         }
 
-        self.qs_root
-            .draw(scene, transform, text_renderer, theme, rect, &qs);
+        self.qs_root.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            self.last_cursor,
+            &qs,
+        );
     }
 
     /// The quick-settings popover's elevated card: shadow, fill and
@@ -10747,9 +10995,23 @@ mod palette_dispatch_tests {
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
         let (mut h, chrome) = host_with_chrome();
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
-            PeerSyncRequest::IssueInviteFor { name, .. } => Ok(format!("token-for-{name}")),
-            PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
+            PeerSyncRequest::IssueInviteFor { name, .. } => {
+                Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
+            }
+            PeerSyncRequest::IssueInvite => {
+                Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
+            }
+            PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
+                "qos-identity:{}",
+                "42".repeat(32)
+            ))),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::ListPendingInvitations => {
+                Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
+            }
+            PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
+                Err("not pending".into())
+            }
         }));
         chrome
             .borrow_mut()
@@ -10770,6 +11032,9 @@ mod palette_dispatch_tests {
             Some("Xaver"),
             "the field takes the name — the same keys that type a token"
         );
+        let mut snapshot = h.peer_sync_snapshot();
+        snapshot.invite_recipient_key = Some([0x42; 32]);
+        h.set_peer_sync_snapshot_for_tests(snapshot);
 
         assert!(
             h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
@@ -10801,7 +11066,9 @@ mod palette_dispatch_tests {
     #[test]
     fn the_composer_refuses_to_mint_for_nobody() {
         let (mut h, chrome) = host_with_chrome();
-        h.set_peer_sync_bridge(std::rc::Rc::new(|_| Ok("a-token".to_string())));
+        h.set_peer_sync_bridge(std::rc::Rc::new(|_| {
+            Ok(PeerSyncResponse::Message("a-token".to_string()))
+        }));
         chrome
             .borrow_mut()
             .push_peer_sync_request(PeerSyncAction::PromptInvite);
@@ -10936,6 +11203,10 @@ mod palette_dispatch_tests {
         assert!(
             names.contains(&"paste"),
             "the receiving side must offer Paste, got {names:?}"
+        );
+        assert!(
+            names.contains(&"copy-identity"),
+            "the recipient must be able to send a bindable identity card, got {names:?}"
         );
         assert!(names.contains(&"join"), "and still Join, got {names:?}");
 
@@ -13933,6 +14204,34 @@ mod peer_cursor_tests {
             chrome.borrow().tree().active_group_for(strip),
             Some(target_group),
             "follow must move local focus to the participant's live group",
+        );
+    }
+
+    #[test]
+    fn follow_binds_app_views_to_the_live_session_and_stop_releases_them() {
+        let mut tree = one_group_seed();
+        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.workspaces[0]
+            .collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
+        let expected_room = tree.workspaces[0].room;
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&calls);
+        host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+            captured.borrow_mut().push((room, target));
+        }));
+
+        host.set_followed_peer(Some("ada".into()));
+        host.set_followed_peer(None);
+
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[
+                (expected_room, Some("peer@77".to_string())),
+                (expected_room, None),
+            ],
+            "the shell and every local app enter and leave Follow together"
         );
     }
 }

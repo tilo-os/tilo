@@ -17,11 +17,11 @@ use uuid::Uuid;
 /// and the per-connection session state.
 pub type ConnectionId = Uuid;
 
-/// The transport / protocol a connection speaks. This is the single most
-/// important attribute of a machine: it decides which session surface we
-/// open (a terminal for SSH, a remote-framebuffer canvas for VNC/RDP) and
-/// — crucially for qOS — whether the remote side renders pixels or simply
-/// relays application/workspace data we render locally.
+/// The transport / protocol a connection speaks.
+///
+/// RDP and qOS relay remain variants so saved, older connection profiles can
+/// round-trip without data loss. They are intentionally not offered for new
+/// profiles until qOS has an actual transport behind them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionKind {
     /// Secure shell — an interactive terminal session.
@@ -84,7 +84,21 @@ impl ConnectionKind {
         matches!(self, ConnectionKind::Vnc | ConnectionKind::Rdp)
     }
 
-    /// Iteration order for the kind selector in the add/edit form.
+    /// Kinds available when creating a new profile.
+    ///
+    /// Keep the persisted enum broader than this list: hiding an unavailable
+    /// transport from creation must not silently destroy an older profile.
+    pub fn available_to_create() -> [ConnectionKind; 2] {
+        [ConnectionKind::Ssh, ConnectionKind::Vnc]
+    }
+
+    /// Whether qOS can genuinely open this transport today.
+    pub fn is_supported(self) -> bool {
+        matches!(self, ConnectionKind::Ssh | ConnectionKind::Vnc)
+    }
+
+    /// Iteration order for every persisted kind. Use
+    /// [`Self::available_to_create`] in user-facing creation controls.
     pub fn all() -> [ConnectionKind; 4] {
         [
             ConnectionKind::Ssh,
@@ -425,6 +439,18 @@ mod tests {
         c.user = String::new();
         c.port = 0;
         assert_eq!(c.address(), "studio-node");
+    }
+
+    #[test]
+    fn only_backed_transports_are_available_to_create() {
+        assert_eq!(
+            ConnectionKind::available_to_create(),
+            [ConnectionKind::Ssh, ConnectionKind::Vnc]
+        );
+        assert!(ConnectionKind::Ssh.is_supported());
+        assert!(ConnectionKind::Vnc.is_supported());
+        assert!(!ConnectionKind::Rdp.is_supported());
+        assert!(!ConnectionKind::Qos.is_supported());
     }
 
     #[test]

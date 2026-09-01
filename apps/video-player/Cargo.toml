@@ -31,9 +31,12 @@ portal = ["ui/portal"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
+qos-actions = { path = "../../crates/collab/actions" }
 media = { path = "../../crates/media" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 vello.workspace = true
 winit.workspace = true

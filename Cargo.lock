@@ -1568,6 +1568,7 @@ dependencies = [
  "dirs 6.0.0",
  "png 0.18.1",
  "pollster",
+ "qos-actions",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde_json",
@@ -2421,6 +2422,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "compat-catalogue"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "compat-service"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "compat-catalogue",
+ "launcher",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "windows-vm",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2517,6 +2543,7 @@ name = "containers"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "qos-actions",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3144,6 +3171,7 @@ dependencies = [
  "runtime-dylib",
  "rusqlite",
  "serde",
+ "serde_json",
  "taffy",
  "ui",
  "uuid",
@@ -3413,6 +3441,7 @@ dependencies = [
 name = "disks"
 version = "0.1.0"
 dependencies = [
+ "qos-actions",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4191,6 +4220,7 @@ dependencies = [
  "mime_guess",
  "open",
  "qdoc",
+ "qos-actions",
  "qos-user-identity",
  "runtime-dylib",
  "runtime-portal",
@@ -8115,6 +8145,7 @@ name = "logs"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "qos-actions",
  "runtime-dylib",
  "serde_json",
  "taffy",
@@ -8548,7 +8579,9 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "qos-actions",
  "runtime-dylib",
+ "serde_json",
  "sysinfo",
  "taffy",
  "ui",
@@ -9911,7 +9944,9 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
+ "qos-actions",
  "runtime-dylib",
+ "serde_json",
  "swipe",
  "taffy",
  "tempfile",
@@ -11303,6 +11338,7 @@ dependencies = [
  "pkg",
  "qos-headless-schema",
  "qos-ui-graph",
+ "serde",
  "serde_json",
  "syn 2.0.117",
  "tempfile",
@@ -11313,6 +11349,7 @@ dependencies = [
 name = "qos-dev-template-smoke"
 version = "0.1.0"
 dependencies = [
+ "qos-dev",
  "ui",
 ]
 
@@ -11406,6 +11443,7 @@ name = "qos-rollback"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "base64 0.22.1",
  "clap",
  "hex",
@@ -13367,6 +13405,7 @@ dependencies = [
  "cli",
  "collab-fixtures",
  "collab-types",
+ "compat-service",
  "desktop-policy",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
@@ -13395,6 +13434,7 @@ dependencies = [
  "postcard",
  "qcms",
  "qdoc",
+ "qos-actions",
  "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",
@@ -13435,6 +13475,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wgpu",
+ "windows-vm",
  "winit",
  "word-processor",
  "zbus 4.4.0",
@@ -14000,6 +14041,7 @@ dependencies = [
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "hex",
+ "qos-actions",
  "registry-types",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -14518,6 +14560,7 @@ dependencies = [
  "crossbeam-channel",
  "libc",
  "portable-pty",
+ "qos-actions",
  "runtime-dylib",
  "serde_json",
  "serial_test",
@@ -15626,7 +15669,10 @@ dependencies = [
  "automerge",
  "comemo",
  "dirs 6.0.0",
+ "qos-actions",
  "runtime-dylib",
+ "serde",
+ "serde_json",
  "taffy",
  "tiny-skia",
  "typst",
@@ -16125,7 +16171,10 @@ dependencies = [
  "automerge",
  "collab-types",
  "media",
+ "qos-actions",
  "runtime-dylib",
+ "serde",
+ "serde_json",
  "taffy",
  "tracing",
  "ui",
@@ -16941,6 +16990,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "qos-actions",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -17309,6 +17359,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-app"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "compat-service",
+ "qos-actions",
+ "runtime-dylib",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "ui",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "windows-collections"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17585,6 +17653,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "windows-vm"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "launcher",
+ "libc",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

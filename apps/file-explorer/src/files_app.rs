@@ -22,6 +22,7 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
@@ -101,6 +102,8 @@ struct CollabPanel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CollabPanelAction {
     DestructiveEviction(Vec<PathBuf>),
+    PermanentDelete(Vec<PathBuf>),
+    EmptyTrash,
 }
 
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
@@ -748,6 +751,31 @@ impl FileExplorerWidget {
                     paths: paths.clone(),
                 })
             }
+            CollabPanelAction::PermanentDelete(paths) => {
+                Some(FileCommand::ConfirmPermanentDelete {
+                    paths: paths.clone(),
+                })
+            }
+            CollabPanelAction::EmptyTrash => Some(FileCommand::ConfirmEmptyTrash),
+        }
+    }
+
+    fn collab_panel_action_label(&self) -> Option<String> {
+        match self.collab_panel.as_ref()?.action.as_ref()? {
+            CollabPanelAction::DestructiveEviction(_) => {
+                Some(t("files-destructive-eviction-confirm"))
+            }
+            CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
+            CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
+        }
+    }
+
+    fn collab_panel_action_description(&self) -> Option<String> {
+        match self.collab_panel.as_ref()?.action.as_ref()? {
+            CollabPanelAction::DestructiveEviction(_) => Some(t("files-destructive-eviction-loss")),
+            CollabPanelAction::PermanentDelete(_) | CollabPanelAction::EmptyTrash => {
+                Some(t("files-permanent-delete-loss"))
+            }
         }
     }
 
@@ -1287,6 +1315,8 @@ impl FileExplorerWidget {
                 self.refresh_metadata_preserving_view();
                 true
             }
+            FileCommand::ConfirmPermanentDelete { paths } => self.apply_permanent_delete(&paths),
+            FileCommand::ConfirmEmptyTrash => self.perform_empty_trash(),
             FileCommand::RetryTransfer => {
                 let displayed = self.displayed_entries();
                 let paths: Vec<_> = self
@@ -1963,7 +1993,7 @@ impl FileExplorerWidget {
             }
             FileCommand::Delete => self.apply_delete(),
             FileCommand::RestoreFromTrash => self.apply_restore_from_trash(),
-            FileCommand::EmptyTrash => self.apply_empty_trash(),
+            FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
@@ -2064,25 +2094,26 @@ impl FileExplorerWidget {
     }
 
     /// `FileCommand::Delete` — trash the selection, or (already in the
-    /// Trash) permanently purge it.
+    /// Trash) first ask before permanently purging it.
     fn apply_delete(&mut self) -> bool {
         let paths = self.selected_paths();
         if !paths.is_empty() {
             if self.is_trash_view() {
-                // Already in the Trash — a second delete is a permanent
-                // purge, not a re-trash.
-                match fileops::purge_entries(&paths) {
-                    Ok(n) => {
-                        self.refresh();
-                        self.status = Some(t_args(
-                            "files-permanently-deleted",
-                            &[arg("count", fluent_count(n))],
-                        ));
-                    }
-                    Err(e) => {
-                        self.status = Some(t_args("files-delete-failed", &[arg("error", e)]));
-                    }
-                }
+                // Already in the Trash — a second delete is irreversible.
+                // Hold the exact paths in the modal action so a changed
+                // selection cannot silently change what gets destroyed.
+                self.show_collab_panel(CollabPanel {
+                    title: t_args(
+                        "files-permanent-delete-title",
+                        &[arg("count", fluent_count(paths.len()))],
+                    ),
+                    summary: t_args(
+                        "files-permanent-delete-summary",
+                        &[arg("count", fluent_count(paths.len()))],
+                    ),
+                    lines: vec![t("files-permanent-delete-loss")],
+                    action: Some(CollabPanelAction::PermanentDelete(paths)),
+                });
             } else {
                 match fileops::delete_to_trash(&paths) {
                     Ok(()) => {
@@ -2096,6 +2127,23 @@ impl FileExplorerWidget {
                         self.status = Some(t_args("files-delete-failed", &[arg("error", e)]));
                     }
                 }
+            }
+        }
+        true
+    }
+
+    /// Carry out a previously confirmed permanent deletion from Trash.
+    fn apply_permanent_delete(&mut self, paths: &[PathBuf]) -> bool {
+        match fileops::purge_entries(paths) {
+            Ok(n) => {
+                self.refresh();
+                self.status = Some(t_args(
+                    "files-permanently-deleted",
+                    &[arg("count", fluent_count(n))],
+                ));
+            }
+            Err(e) => {
+                self.status = Some(t_args("files-delete-failed", &[arg("error", e)]));
             }
         }
         true
@@ -2119,8 +2167,28 @@ impl FileExplorerWidget {
         true
     }
 
-    /// `FileCommand::EmptyTrash` — permanently empty the Trash.
-    fn apply_empty_trash(&mut self) -> bool {
+    /// `FileCommand::EmptyTrash` — ask before permanently emptying a
+    /// non-empty Trash. An already-empty Trash is safe feedback, not a
+    /// confirmation flow.
+    fn request_empty_trash_confirmation(&mut self) -> bool {
+        if self.entries.is_empty() {
+            self.status = Some(t("files-trash-already-empty"));
+            return true;
+        }
+        self.show_collab_panel(CollabPanel {
+            title: t("files-empty-trash-title"),
+            summary: t_args(
+                "files-empty-trash-summary",
+                &[arg("count", fluent_count(self.entries.len()))],
+            ),
+            lines: vec![t("files-permanent-delete-loss")],
+            action: Some(CollabPanelAction::EmptyTrash),
+        });
+        true
+    }
+
+    /// Carry out a previously confirmed request to empty the Trash.
+    fn perform_empty_trash(&mut self) -> bool {
         match fileops::empty_trash() {
             Ok(n) => {
                 self.refresh();
@@ -2958,7 +3026,9 @@ impl FileExplorerWidget {
                 break;
             }
         }
-        if let Some(action_rect) = self.collab_panel_action_rect() {
+        if let Some(action_rect) = self.collab_panel_action_rect()
+            && let Some(label) = self.collab_panel_action_label()
+        {
             let danger = theme.tokens.colors.semantic.danger;
             let action_shape = RoundedRect::from_rect(action_rect, 8.0);
             scene.fill(
@@ -2969,7 +3039,6 @@ impl FileExplorerWidget {
                 &action_shape,
             );
             scene.stroke(&Stroke::new(1.5), transform, danger, None, &action_shape);
-            let label = t("files-destructive-eviction-confirm");
             let (label_width, _) = text_renderer.measure(
                 &label,
                 theme.tokens.typography.scale.sm,
@@ -3953,6 +4022,36 @@ impl FileExplorerWidget {
     fn open_view_menu(&mut self) {
         let anchor = self.toolbar.view_menu_anchor();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
+        // At phone width the path remains useful while direct view / sort
+        // controls move here. The same labelled actions remain keyboard and
+        // accessibility reachable without squeezing desktop chrome into one row.
+        if self.toolbar.is_compact() {
+            if self.toolbar.can_go_forward() {
+                spec.push((t("files-forward"), Some(FileCommand::Forward)));
+                spec.push((String::new(), None));
+            }
+            let checked = |on: bool, label: String| {
+                t_args(
+                    if on {
+                        "files-menu-checked"
+                    } else {
+                        "files-menu-unchecked"
+                    },
+                    &[arg("label", label)],
+                )
+            };
+            spec.push((
+                checked(self.view_mode == ViewMode::List, t("files-view-list")),
+                Some(FileCommand::SetView(ViewMode::List)),
+            ));
+            spec.push((
+                checked(self.view_mode == ViewMode::Grid, t("files-view-grid")),
+                Some(FileCommand::SetView(ViewMode::Grid)),
+            ));
+            spec.push((String::new(), None));
+            spec.push((t("files-sort-by"), Some(FileCommand::OpenSortMenu)));
+            spec.push((String::new(), None));
+        }
         spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
         if !self.available_templates().is_empty() {
             spec.push((
@@ -4734,6 +4833,65 @@ impl FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+        let mut folder = Resource::new(
+            format!("folder:{}", self.current_path.display()),
+            "files.folder",
+            self.current_path.display().to_string(),
+        );
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh folder",
+            OperationKind::Effect,
+            "files.refresh",
+            &"",
+        ) {
+            folder.actions.push(spec);
+        }
+        folder.actions.push(ActionSpec::prompted_operation(
+            "navigate",
+            "Open location",
+            "Folder path",
+            "/path/to/folder",
+            OperationKind::View,
+            |path| {
+                EncodedAction::encode_operation("files.navigate", &path).expect("string payload")
+            },
+        ));
+        for entry in &self.entries {
+            let path = entry.path.to_string_lossy().into_owned();
+            let mut resource =
+                Resource::new(format!("entry:{path}"), "files.entry", entry.name.clone());
+            if let Ok(spec) =
+                ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
+            {
+                resource.actions.push(spec);
+            }
+            folder.children.push(resource);
+        }
+        vec![folder]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Result<bool, String> {
+        match (kind, type_id) {
+            (OperationKind::Effect, "files.refresh") => self.refresh(),
+            (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                self.open_path(PathBuf::from(value));
+            }
+            _ => return Ok(false),
+        }
+        self.structure_dirty = true;
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::ReadDoc;
         self.refresh_metadata_if_due(Instant::now());
@@ -5243,8 +5401,10 @@ impl Widget for FileExplorerWidget {
             if panel.action.is_some() {
                 children.push(
                     AccessNode::new(Role::Button)
-                        .with_name(t("files-destructive-eviction-confirm"))
-                        .with_description(t("files-destructive-eviction-loss")),
+                        .with_name(self.collab_panel_action_label().unwrap_or_default())
+                        .with_description(
+                            self.collab_panel_action_description().unwrap_or_default(),
+                        ),
                 );
             }
             return Some(
@@ -5601,6 +5761,53 @@ mod command_path_tests {
         assert!(
             !labels.contains(&"Rename".to_string()),
             "no in-place editing in the trash"
+        );
+    }
+
+    #[test]
+    fn trash_actions_require_an_explicit_irrevocable_confirmation() {
+        let Some(trash) = crate::fileops::trash_dir() else {
+            return;
+        };
+        let mut w = FileExplorerWidget::new();
+        // Keep this entirely in-memory: the assertion is the interaction
+        // boundary, before Files ever calls the OS trash implementation.
+        w.current_path = trash;
+        w.entries = vec![ent("deleted.txt", false, "text/plain")];
+        w.selection.select_only(0);
+
+        assert!(w.apply_command(FileCommand::Delete));
+        let panel = w.collab_panel.as_ref().expect("permanent delete warning");
+        assert!(matches!(
+            panel.action.as_ref(),
+            Some(CollabPanelAction::PermanentDelete(_))
+        ));
+        assert_eq!(
+            w.collab_panel_action_command(),
+            Some(FileCommand::ConfirmPermanentDelete {
+                paths: vec![PathBuf::from("deleted.txt")],
+            }),
+            "only the named warning action may invoke the purge"
+        );
+        let dialog = Widget::accessibility(&w).expect("warning has semantics");
+        assert_eq!(dialog.role, ui::a11y::Role::Dialog);
+        assert_eq!(
+            dialog.children.last().and_then(|node| node.name.as_deref()),
+            Some("Delete Permanently")
+        );
+
+        w.close_collab_panel();
+        assert!(w.apply_command(FileCommand::EmptyTrash));
+        assert!(matches!(
+            w.collab_panel
+                .as_ref()
+                .and_then(|panel| panel.action.as_ref()),
+            Some(CollabPanelAction::EmptyTrash)
+        ));
+        assert_eq!(
+            w.collab_panel_action_command(),
+            Some(FileCommand::ConfirmEmptyTrash),
+            "emptying Trash must use a separate explicit action"
         );
     }
 
@@ -7265,6 +7472,12 @@ mod responsive_body_tests {
                 tr: ui::text_render::TextRenderer::new(),
             };
             h.lay_out(width, height);
+            // Match the live host: a responsive child discovers its width
+            // during the first layout and asks for one immediate structural
+            // reflow when it crosses a breakpoint.
+            if h.w.take_structure_dirty() {
+                h.lay_out(width, height);
+            }
             h
         }
 
@@ -7447,6 +7660,35 @@ mod responsive_body_tests {
         // ...and back up again proves it isn't one-way.
         h.lay_out(1200.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+    }
+
+    #[test]
+    fn toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width() {
+        let mut h = H::new(None, 390.0, 760.0);
+        assert!(
+            h.w.toolbar.is_compact(),
+            "the first narrow frame keeps the path and navigation clear"
+        );
+        h.w.forward.push(PathBuf::from("/later"));
+        h.lay_out(390.0, 760.0);
+        h.w.open_view_menu();
+        assert!(
+            h.open_menu_labels().iter().any(|label| label == "Forward"),
+            "compact overflow retains history navigation rather than removing it"
+        );
+
+        // The width is discovered during layout; one follow-up composition is
+        // how the live app promotes wide controls after a real resize.
+        h.lay_out(1200.0, 720.0);
+        assert!(
+            h.w.take_structure_dirty(),
+            "crossing the breakpoint requests a structural toolbar rebuild"
+        );
+        h.lay_out(1200.0, 720.0);
+        assert!(
+            !h.w.toolbar.is_compact(),
+            "wide windows restore direct view and sort controls"
+        );
     }
 
     /// The regression: at ~600 px the window showed the breadcrumb and the

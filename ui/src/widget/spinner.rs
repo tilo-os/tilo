@@ -42,6 +42,10 @@ pub struct Spinner {
     size: f32,
     start: Instant,
     rect: Rect,
+    /// Captured from the last draw. `Widget::needs_animation_frame` has no
+    /// theme argument, so this is how the shared spinner tells the host that a
+    /// reduced-motion presentation is static and needs no wakeups.
+    reduce_motion: bool,
 }
 
 impl Spinner {
@@ -55,6 +59,7 @@ impl Spinner {
             size,
             start: Instant::now(),
             rect: Rect::ZERO,
+            reduce_motion: false,
         }
     }
 
@@ -121,6 +126,7 @@ impl Widget for Spinner {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         let size = f64::from(self.size);
         let dot_r = size * DOT_RADIUS_FRAC;
         let orbit_r = size * ORBIT_RADIUS_FRAC;
@@ -188,10 +194,11 @@ impl Widget for Spinner {
         }))
     }
 
-    /// The default defers to children (none here) and returns `false`, which
-    /// would freeze the orbit at the first frame.
+    /// In the normal presentation the default would freeze the orbit at the
+    /// first frame. In a reduced-motion presentation the orbit is deliberately
+    /// static, so requesting frames would only waste power.
     fn needs_animation_frame(&self) -> bool {
-        true
+        !self.reduce_motion
     }
 
     /// `Rect::ZERO` sentinel for the first frame.
@@ -232,17 +239,17 @@ mod tests {
     /// Pin so a future refactor that "cleans up" the override doesn't
     /// remove the only thing that keeps the dots moving in production.
     #[test]
-    fn spinner_needs_animation_frame_always() {
+    fn spinner_requests_frames_only_when_motion_is_enabled() {
         let s = Spinner::new();
         assert!(
             Widget::needs_animation_frame(&s),
-            "Spinner must always request animation frames"
+            "Spinner must request animation frames before its first motion-on draw"
         );
 
         let s = Spinner::with_size(48.0);
         assert!(
             Widget::needs_animation_frame(&s),
-            "Spinner::with_size must also request animation frames"
+            "Spinner::with_size must also request animation frames before drawing"
         );
     }
 
@@ -341,6 +348,22 @@ mod tests {
         assert_ne!(
             fresh_geo, aged_moving,
             "with motion on, a backdated spinner is at a different phase",
+        );
+    }
+
+    #[test]
+    fn reduced_motion_stops_animation_wakeups_after_the_static_frame() {
+        let mut spinner = Spinner::new();
+        let _ = draw_path_data(&mut spinner, true);
+        assert!(
+            !Widget::needs_animation_frame(&spinner),
+            "a frozen reduced-motion spinner must not keep the compositor awake"
+        );
+
+        let _ = draw_path_data(&mut spinner, false);
+        assert!(
+            Widget::needs_animation_frame(&spinner),
+            "switching back to normal motion must restore spinner animation"
         );
     }
 }

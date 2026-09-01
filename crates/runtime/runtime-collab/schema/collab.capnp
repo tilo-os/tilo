@@ -217,6 +217,13 @@ struct ExportedAction {
   # fact here, so there is no separate flag.
   description   @5 :Text;
   input         @6 :ActionInput;
+  # `document`, `effect`, or `view`. Empty from an older client means
+  # `document` for backwards compatibility.
+  operationKind @7 :Text;
+  # JSON encoding of `qos_actions::ActionParam[]`. Kept as an opaque JSON
+  # projection so Cap'n Proto clients can forward newer parameter vocabulary
+  # without a schema bump; empty means the legacy `input` projection.
+  paramsJson @8 :Text;
 }
 
 # What one exported action's invocation must supply.
@@ -426,6 +433,12 @@ struct PresencePayload {
 struct ChannelContext {
   collaborators @0 :List(Collaborator);
   permissions   @1 :List(Text);
+  # A session-local Follow command. `followChanged == false` means this is
+  # the ordinary complete roster/permission snapshot above. When true,
+  # clients leave that snapshot untouched and either follow `followTarget`
+  # or stop when it is empty. The compositor never relays this to peers.
+  followTarget  @2 :Text;
+  followChanged @3 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

@@ -409,6 +409,8 @@ impl ChannelHandle {
                 row.set_resource_label(&a.resource_label);
                 row.set_action_label(&a.action_label);
                 row.set_description(a.description.as_deref().unwrap_or(""));
+                row.set_operation_kind(&a.operation_kind);
+                row.set_params_json(&a.params_json);
                 let mut input = row.init_input();
                 match &a.input {
                     ExportedInput::None => input.set_none(()),
@@ -712,6 +714,10 @@ pub struct ExportedAction {
     pub resource_label: String,
     pub action_label: String,
     pub description: Option<String>,
+    /// `document`, `effect`, or `view`.
+    pub operation_kind: String,
+    /// JSON encoding of the canonical typed parameter descriptors.
+    pub params_json: String,
     pub input: ExportedInput,
 }
 
@@ -1069,6 +1075,10 @@ pub struct Collaborator {
 pub struct ChannelContext {
     pub collaborators: Vec<Collaborator>,
     pub permissions: Vec<String>,
+    /// `Some` only for a session-local Follow control frame. The inner
+    /// `None` means stop following; ordinary context snapshots keep this
+    /// field at `None` and replace roster/permissions as before.
+    pub follow_changed: Option<Option<String>>,
 }
 
 /// Client-pulled channel-context stream.
@@ -1123,9 +1133,17 @@ impl ContextStream {
                     .to_owned(),
             );
         }
+        let follow_changed = ctx.get_follow_changed().then(|| {
+            ctx.get_follow_target()
+                .ok()
+                .and_then(|target| target.to_str().ok())
+                .filter(|target| !target.is_empty())
+                .map(str::to_owned)
+        });
         Ok(ChannelContext {
             collaborators,
             permissions,
+            follow_changed,
         })
     }
 }

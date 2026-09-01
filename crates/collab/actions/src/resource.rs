@@ -36,7 +36,7 @@
 
 use std::sync::Arc;
 
-use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus};
+use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 /// Builds an action's encoded form from arguments already bound against its
@@ -156,6 +156,9 @@ pub struct ActionSpec {
     /// [`Action::locus`]), so the palette can show/route it before the
     /// action is built.
     pub locus: ExecutionLocus,
+    /// Whether this mutates the shared document, performs an external effect,
+    /// or changes only the invoking application's local view.
+    pub kind: OperationKind,
     pub input: ActionInput,
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
@@ -194,6 +197,7 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
+            kind: OperationKind::Document,
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
@@ -220,6 +224,7 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
+            kind: OperationKind::Document,
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
@@ -251,6 +256,67 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
+            kind: OperationKind::Document,
+            params: vec![ActionParam::required_owned(
+                PROMPTED_PARAM,
+                ParamType::Text,
+                prompt.clone(),
+            )],
+            build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+            input: ActionInput::Prompted {
+                prompt,
+                placeholder: placeholder.into(),
+                collects: Collects::Words,
+                build,
+            },
+        }
+    }
+
+    /// An immediate effect or view operation owned by the application.
+    pub fn operation<T>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: OperationKind,
+        type_id: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, ActionError>
+    where
+        T: serde::Serialize,
+    {
+        debug_assert!(kind != OperationKind::Document);
+        let encoded = EncodedAction::encode_operation(type_id, payload)?;
+        let for_build = encoded.clone();
+        Ok(Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind,
+            input: ActionInput::Immediate(encoded),
+            params: Vec::new(),
+            build: Arc::new(move |_| for_build.clone()),
+        })
+    }
+
+    /// A prompted effect or view operation owned by the application.
+    pub fn prompted_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        debug_assert!(kind != OperationKind::Document);
+        let prompt = prompt.into();
+        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
+        let for_args = build.clone();
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind,
             params: vec![ActionParam::required_owned(
                 PROMPTED_PARAM,
                 ParamType::Text,
@@ -296,6 +362,48 @@ impl ActionSpec {
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
+        Self::typed_with_kind(
+            id,
+            label,
+            placeholder,
+            locus,
+            OperationKind::Document,
+            params,
+            build,
+        )
+    }
+
+    /// A typed effect or view operation. This is the non-document counterpart
+    /// to [`typed`](Self::typed), with the same strict multi-parameter binding.
+    pub fn typed_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        debug_assert!(kind != OperationKind::Document);
+        Self::typed_with_kind(
+            id,
+            label,
+            placeholder,
+            ExecutionLocus::ClientLocal,
+            kind,
+            params,
+            build,
+        )
+    }
+
+    fn typed_with_kind(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        kind: OperationKind,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
         let build: ArgsBuilder = Arc::new(build);
         let input = derive_input(&params, &build, placeholder.into());
         Self {
@@ -303,6 +411,7 @@ impl ActionSpec {
             label: label.into(),
             description: None,
             locus,
+            kind,
             input,
             params,
             build,
@@ -465,5 +574,65 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
     }
     for child in &resource.children {
         flatten_into(child, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct OpenPath {
+        path: String,
+    }
+
+    #[test]
+    fn non_document_operation_needs_no_fake_action_implementation() {
+        let spec = ActionSpec::operation(
+            "open",
+            "Open",
+            OperationKind::Effect,
+            "files.open",
+            &OpenPath {
+                path: "/tmp/report".into(),
+            },
+        )
+        .expect("effect payload encodes");
+        assert_eq!(spec.kind, OperationKind::Effect);
+        assert!(spec.params().is_empty());
+    }
+
+    #[test]
+    fn typed_view_binds_the_same_schema_it_advertises() {
+        let spec = ActionSpec::typed_operation(
+            "zoom",
+            "Zoom",
+            "factor",
+            OperationKind::View,
+            vec![ActionParam::required_owned(
+                "factor",
+                ParamType::Number,
+                "Zoom factor",
+            )],
+            |args| {
+                EncodedAction::encode_operation("view.zoom", &args.number("factor"))
+                    .expect("bound number encodes")
+            },
+        );
+        let supplied = serde_json::json!({"factor": 1.25});
+        let encoded = spec
+            .build_json(supplied.as_object().expect("object"))
+            .expect("declared number binds");
+        assert_eq!(spec.kind, OperationKind::View);
+        assert_eq!(encoded.type_id, "view.zoom");
+        assert!(
+            spec.build_json(
+                serde_json::json!({"factor": "large"})
+                    .as_object()
+                    .expect("object")
+            )
+            .is_err()
+        );
     }
 }
