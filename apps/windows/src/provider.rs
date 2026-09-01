@@ -23,11 +23,41 @@ pub trait CompatibilityProvider: Send {
     /// Returns an error if the entry is not in the authenticated snapshot or
     /// the service worker is unavailable.
     fn launch(&mut self, app_id: &str) -> Result<(), String>;
+    /// Queue the separately authorized VM fallback action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the VM is unavailable or the entry is unknown.
     fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String>;
+    /// Transfer a portal-open installer descriptor to the service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker cannot accept the descriptor.
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String>;
+    /// Retry setup from the retained digest-pinned installer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capsule is unavailable or unauthorized.
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String>;
+    /// Remove one launcher while retaining its installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the launcher is unavailable or unauthorized.
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String>;
+    /// Run the discovered vendor uninstaller inside its capsule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no authorized vendor uninstaller exists.
     fn vendor_uninstall(&mut self, capsule_id: &str) -> Result<(), String>;
+    /// Delete a managed installation and its private capsule data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capsule is unavailable or unauthorized.
     fn delete_data(&mut self, capsule_id: &str) -> Result<(), String>;
     fn take_notice(&mut self) -> Option<String> {
         None
@@ -319,7 +349,7 @@ impl LiveProvider {
                     applications,
                     installations,
                 } => {
-                    self.cached = catalogue_from_managed(applications, installations);
+                    self.cached = catalogue_from_managed(applications, &installations);
                     self.refresh_pending = false;
                     self.next_refresh = Instant::now() + REFRESH_INTERVAL;
                 }
@@ -467,6 +497,10 @@ impl CompatibilityProvider for LiveProvider {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the worker serializes one bounded protocol stream and its exhaustive commands"
+)]
 fn worker(
     mut client: SessionClient,
     commands: &Receiver<WorkerCommand>,
@@ -596,7 +630,7 @@ fn worker(
                 lifecycle_request(
                     &mut client,
                     events,
-                    ProtocolRequest::RetryInstall {
+                    &ProtocolRequest::RetryInstall {
                         version: PROTOCOL_VERSION,
                         capsule_id,
                     },
@@ -607,7 +641,7 @@ fn worker(
                 lifecycle_request(
                     &mut client,
                     events,
-                    ProtocolRequest::RemoveLauncher {
+                    &ProtocolRequest::RemoveLauncher {
                         version: PROTOCOL_VERSION,
                         entry_id,
                     },
@@ -618,7 +652,7 @@ fn worker(
                 lifecycle_request(
                     &mut client,
                     events,
-                    ProtocolRequest::VendorUninstall {
+                    &ProtocolRequest::VendorUninstall {
                         version: PROTOCOL_VERSION,
                         capsule_id,
                     },
@@ -629,7 +663,7 @@ fn worker(
                 lifecycle_request(
                     &mut client,
                     events,
-                    ProtocolRequest::DeleteData {
+                    &ProtocolRequest::DeleteData {
                         version: PROTOCOL_VERSION,
                         capsule_id,
                     },
@@ -643,14 +677,13 @@ fn worker(
 fn lifecycle_request(
     client: &mut SessionClient,
     events: &Sender<WorkerEvent>,
-    request: ProtocolRequest,
+    request: &ProtocolRequest,
     success: &str,
 ) {
-    let event = match client.request(&request) {
-        Ok(ProtocolResponse::Retried { receipt })
-        | Ok(ProtocolResponse::VendorUninstalled { receipt }) => {
-            WorkerEvent::Notice(receipt.detail)
-        }
+    let event = match client.request(request) {
+        Ok(
+            ProtocolResponse::Retried { receipt } | ProtocolResponse::VendorUninstalled { receipt },
+        ) => WorkerEvent::Notice(receipt.detail),
         Ok(ProtocolResponse::LauncherRemoved { .. } | ProtocolResponse::DataDeleted { .. }) => {
             WorkerEvent::Notice(success.to_string())
         }
@@ -695,7 +728,7 @@ fn unavailable_catalogue(detail: &str) -> Catalogue {
 
 fn catalogue_from_managed(
     applications: Vec<ManagedApplication>,
-    installations: Vec<ManagedInstallation>,
+    installations: &[ManagedInstallation],
 ) -> Catalogue {
     let vm_reason = applications
         .iter()
@@ -713,7 +746,7 @@ fn catalogue_from_managed(
             app_from_managed(application, installation)
         })
         .collect::<Vec<_>>();
-    for installation in &installations {
+    for installation in installations {
         if !apps
             .iter()
             .any(|application| application.capsule == installation.capsule_id)
@@ -735,6 +768,10 @@ fn catalogue_from_managed(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the mapper keeps every manager field visibly tied to the authenticated DTO"
+)]
 fn app_from_managed(
     application: ManagedApplication,
     installation: Option<&ManagedInstallation>,

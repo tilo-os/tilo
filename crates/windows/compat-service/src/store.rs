@@ -49,7 +49,7 @@ pub enum InstallationStatus {
 }
 
 /// Durable install journal. The source path never enters state: only the hash
-/// of the bytes received over SCM_RIGHTS and a managed prefix-relative copy.
+/// of the bytes received over `SCM_RIGHTS` and a managed prefix-relative copy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstallationRecord {
     pub source_name: String,
@@ -381,7 +381,7 @@ impl CapsuleStore {
         source.rewind()?;
         let mut digest = Sha256::new();
         let mut copied = 0_u64;
-        let mut buffer = [0_u8; 128 * 1024];
+        let mut buffer = vec![0_u8; 128 * 1024].into_boxed_slice();
         loop {
             let read = source.read(&mut buffer)?;
             if read == 0 {
@@ -394,8 +394,9 @@ impl CapsuleStore {
                 let _ = unlink_at(&installers, &temporary);
                 return Err(CapsuleError::InstallerTooLarge);
             }
-            digest.update(&buffer[..read]);
-            destination.write_all(&buffer[..read])?;
+            let chunk = buffer.get(..read).ok_or(CapsuleError::InstallerChanged)?;
+            digest.update(chunk);
+            destination.write_all(chunk)?;
         }
         let actual = hex_lower(digest.finalize());
         if actual != expected_sha256 {
@@ -438,7 +439,7 @@ impl CapsuleStore {
                 if examined >= MAX_ENTRIES {
                     break;
                 }
-                examined += 1;
+                examined = examined.saturating_add(1);
                 let entry = entry?;
                 let file_type = entry.file_type()?;
                 if file_type.is_dir() {

@@ -16,7 +16,7 @@ const SANDBOX_GATE: &str = "/run/qos/network/gate.sock";
 
 /// Concrete qOS adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-gate implementation.
-/// Each capsule receives a private PipeWire graph, never the session audio
+/// Each capsule receives a private `PipeWire` graph, never the session audio
 /// socket. The graph has a playback tunnel on every launch and materializes a
 /// microphone source only when the canonical qOS device grant says so.
 pub struct SystemResourceBroker {

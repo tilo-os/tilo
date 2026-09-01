@@ -405,7 +405,7 @@ where
         let route = launch_plan_from_state(&state, &query);
         self.run_setup(
             state,
-            route,
+            &route,
             inspection,
             workspace_id,
             capabilities,
@@ -605,7 +605,7 @@ where
         self.store.save(&state)?;
         self.run_setup(
             state,
-            route,
+            &route,
             inspection.clone(),
             workspace_id,
             capabilities,
@@ -616,7 +616,7 @@ where
     fn run_setup(
         &self,
         mut state: CapsuleState,
-        route: LaunchPlan,
+        route: &LaunchPlan,
         inspection: InstallerInspection,
         workspace_id: &str,
         capability_records: &[CapOverride],
@@ -637,14 +637,8 @@ where
         })?;
         let execution = (|| {
             let planner = SandboxPlanner::new(&self.store, &self.runtimes, &self.session)?;
-            let plan = planner.plan(
-                &route,
-                &state,
-                &control,
-                &capabilities,
-                workspace_id,
-                &lease,
-            )?;
+            let plan =
+                planner.plan(route, &state, &control, &capabilities, workspace_id, &lease)?;
             self.executor.execute(&plan).map_err(ServiceError::from)
         })();
         self.resources.revoke(&lease.id);

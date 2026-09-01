@@ -25,7 +25,7 @@ pub enum ProtocolRequest {
         version: u16,
         entry_id: String,
     },
-    /// The portal-selected descriptor accompanies this frame via SCM_RIGHTS.
+    /// The portal-selected descriptor accompanies this frame via `SCM_RIGHTS`.
     Install {
         version: u16,
         source_name: String,
