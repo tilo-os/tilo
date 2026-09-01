@@ -50,6 +50,7 @@ pub mod caps_lock;
 pub mod chrome;
 pub mod clipboard;
 pub mod collaboration;
+pub mod collection_transition;
 pub mod color_compat;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
@@ -72,7 +73,9 @@ pub mod history_source;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod interaction;
 pub mod launch;
+pub mod local_state;
 pub mod math;
 pub mod mpris;
 pub mod nav_stack;
@@ -82,6 +85,7 @@ pub mod overlay;
 pub mod paragraph;
 pub mod permissions;
 pub mod persist;
+pub mod platform;
 pub mod portal;
 pub mod presence;
 pub mod profiling;
@@ -93,6 +97,7 @@ pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod reader_hud;
 pub mod record;
 pub mod render_thread;
+pub mod reorder;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
@@ -107,9 +112,11 @@ pub mod text_render;
 pub mod text_selection;
 pub mod theme;
 pub mod tokens;
+pub mod ui_graph;
 pub mod undo;
 pub mod uri;
 pub mod view;
+pub mod virtual_viewport;
 pub mod warmup;
 pub mod webview;
 pub mod widget;
@@ -129,11 +136,21 @@ pub use winit;
 
 pub use app::{App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
+pub use collection_transition::{
+    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
+};
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
+pub use i18n::{ArgValue, I18nError, I18nManager};
 pub use image_store::{Fetcher, ImageStore};
+pub use interaction::{InputModality, InteractionEnvironment, PointerPrecision};
+pub use local_state::{
+    LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
+    WakeHandle,
+};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
+pub use platform::{DialogActionOrder, Platform, PlatformConventions, Shortcut};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
@@ -141,22 +158,35 @@ pub use profiling::{
 };
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
+pub use reorder::{
+    DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
+};
 pub use search::{
     FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult, fuzzy_score,
 };
-pub use selection::SelectionModel;
-pub use state::{State, UndoEntry, UndoLog};
+pub use selection::{KeySelection, SelectionModel};
+pub use state::{
+    Revision, RevisionHistory, RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
+};
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
+pub use ui_graph::{
+    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiDocument, UiDocumentExt,
+    UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+};
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{
     FROZEN_VERSION, FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect,
+};
+pub use virtual_viewport::{
+    DragScrollFinish, DragScrollUpdate, DragScroller, ReconcileError, ScrollAlignment,
+    ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
 };
 
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid
 // clashing with `permissions::{Role}` / `permissions::Verb`, which are
 // already re-exported at the crate root.
-pub use a11y::{A11ySettings, AccessNode, AccessState, AccessibleTextSelection};
+pub use a11y::{A11ySettings, AccessBounds, AccessNode, AccessState, AccessibleTextSelection};
 pub use a11y_tree::{
     SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta,
 };
@@ -168,6 +198,7 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
 pub use qos_actions;
+pub use widget::ModelView;
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
@@ -176,7 +207,12 @@ pub use widget::{AppShell, NarrowScreen, ShellLayout};
 pub use widget::{Card, CardGrid, card_column_width, card_columns};
 pub use widget::{EditOutcome, EditableLabel};
 pub use widget::{Element, Widget};
+pub use widget::{
+    NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
+    NativeViewInput,
+};
 pub use widget::{RichBlockStyle, RichTextEditor};
+pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.

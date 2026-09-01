@@ -15,6 +15,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
+use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
 use crate::text_render::TextRenderer;
@@ -131,6 +132,9 @@ pub struct CommandEntry {
     /// Rendered right-aligned in the row. Purely informational — the palette
     /// never binds it.
     pub keybinding: Option<String>,
+    /// Preferred semantic form of a shortcut. When present, it is rendered
+    /// with the host platform's native command modifier and notation.
+    pub shortcut: Option<Shortcut>,
     pub argument: Option<ArgumentSpec>,
     /// Consecutive entries sharing a group render under one header; `None`
     /// joins whatever section precedes it.
@@ -149,6 +153,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("label", &self.label)
             .field("description", &self.description)
             .field("keybinding", &self.keybinding)
+            .field("shortcut", &self.shortcut)
             .field("argument", &self.argument)
             .field("group", &self.group)
             .field("group_total", &self.group_total)
@@ -165,6 +170,7 @@ impl CommandEntry {
             label: label.into(),
             description: None,
             keybinding: None,
+            shortcut: None,
             argument: None,
             group: None,
             group_total: None,
@@ -201,6 +207,21 @@ impl CommandEntry {
     pub fn keybinding(mut self, k: impl Into<String>) -> Self {
         self.keybinding = Some(k.into());
         self
+    }
+
+    /// Adds a platform-formatted shortcut hint. Prefer this to
+    /// [`Self::keybinding`] for commands using the native command modifier.
+    #[must_use]
+    pub fn shortcut(mut self, shortcut: Shortcut) -> Self {
+        self.shortcut = Some(shortcut);
+        self
+    }
+
+    pub fn keybinding_label(&self, platform: PlatformConventions) -> Option<String> {
+        self.shortcut
+            .as_ref()
+            .map(|shortcut| shortcut.label(platform))
+            .or_else(|| self.keybinding.clone())
     }
 
     #[must_use]
@@ -421,6 +442,7 @@ pub struct CommandPalette {
     /// geometry accessor reads this so hit-testing, scrolling and painting
     /// cannot disagree.
     rows: Vec<VisualRow>,
+    platform: PlatformConventions,
 }
 
 /// One painted line in the result list. Headers are not selectable and are
@@ -464,6 +486,7 @@ impl CommandPalette {
             host_filter_strip: false,
             host_filter_strip_rows: 1,
             rows: Vec::new(),
+            platform: PlatformConventions::default(),
         }
     }
 
@@ -1408,6 +1431,7 @@ impl CommandPalette {
                             selected,
                             label_size,
                             desc_size,
+                            self.platform,
                         );
                     }
                     y += rh;
@@ -1509,11 +1533,12 @@ impl CommandPalette {
         desc_size: f32,
         label_size: f32,
         selected: bool,
+        platform: PlatformConventions,
     ) -> f64 {
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
-        if let Some(kb) = &entry.keybinding {
-            let (kw, kh) = text_renderer.measure(kb, desc_size, None);
+        if let Some(kb) = entry.keybinding_label(platform) {
+            let (kw, kh) = text_renderer.measure(&kb, desc_size, None);
             let chip_w = f64::from(kw) + 14.0;
             let chip_h = f64::from(kh) + 8.0;
             let cy = f64::midpoint(row.y0, row.y1);
@@ -1542,7 +1567,7 @@ impl CommandPalette {
             );
             text_renderer.draw_text(
                 scene,
-                kb,
+                &kb,
                 desc_size,
                 colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
                 transform.pre_translate(Vec2::new(
@@ -1594,6 +1619,7 @@ impl CommandPalette {
         selected: bool,
         label_size: f32,
         desc_size: f32,
+        platform: PlatformConventions,
     ) {
         let colors = &theme.tokens.colors;
         let row_ground = Self::row_ground(colors, selected);
@@ -1627,6 +1653,7 @@ impl CommandPalette {
             desc_size,
             label_size,
             selected,
+            platform,
         );
         let avail = (text_right - text_x).max(0.0);
 
@@ -1802,6 +1829,10 @@ const FILTER_STRIP_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.platform = conventions;
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(
@@ -2977,6 +3008,21 @@ mod tests {
         assert_eq!(
             band.y0, one_band.y0,
             "the band still starts under the field — it grows downward"
+        );
+    }
+
+    #[test]
+    fn semantic_shortcut_labels_follow_the_palette_platform() {
+        use crate::platform::{Platform, PlatformConventions};
+
+        let entry = CommandEntry::new("find", "Find").shortcut(Shortcut::command("F"));
+        assert_eq!(
+            entry.keybinding_label(PlatformConventions::new(Platform::MacOs)),
+            Some("⌘F".into())
+        );
+        assert_eq!(
+            entry.keybinding_label(PlatformConventions::new(Platform::Windows)),
+            Some("Ctrl+F".into())
         );
     }
 
