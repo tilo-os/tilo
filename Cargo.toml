@@ -147,6 +147,7 @@ members = [
     "crates/system/settings-store",
     "crates/system/atomic-file",
     "crates/system/desktop-entry",
+    "crates/system/windows-vm",
 ]
 resolver = "2"
 
