@@ -25,6 +25,121 @@ use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
 };
 
+/// Resolve the user-owned device-identity root used by a qOS desktop session
+/// installed on another Linux distribution.
+///
+/// XDG's data directory is the portable contract across Ubuntu, Fedora, Arch
+/// and other hosts. Relative values are rejected: turning one into an
+/// identity path using the compositor's working directory would make key
+/// placement depend on the display manager.
+pub fn host_identity_root(
+    xdg_data_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> io::Result<PathBuf> {
+    let base = match xdg_data_home.filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => {
+            let home = home.filter(|value| !value.is_empty()).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "neither XDG_DATA_HOME nor HOME is set for this login",
+                )
+            })?;
+            PathBuf::from(home).join(".local/share")
+        }
+    };
+    if !base.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the host session data directory must be absolute",
+        ));
+    }
+    Ok(base.join("qos"))
+}
+
+/// Select the per-user identity tree for a host-installed desktop session.
+///
+/// Must run while process startup is still single-threaded. The environment
+/// variable is also inherited by launcher/broker children, keeping every
+/// identity consumer on the same tree. An explicit existing override remains
+/// available for hermetic development and tests.
+pub fn configure_host_identity_root() -> io::Result<PathBuf> {
+    let root = match std::env::var_os("QOS_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => host_identity_root(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))?,
+    };
+    if !root.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "QOS_IDENTITY_ROOT must be absolute",
+        ));
+    }
+    prepare_private_host_identity_tree(&root)?;
+    // SAFETY: `main` calls this before it starts the warm-up thread or any
+    // compositor/runtime worker. No other thread can read the environment.
+    unsafe { std::env::set_var("QOS_IDENTITY_ROOT", &root) };
+    Ok(root)
+}
+
+/// Create the host-session identity tree as a user-private trust boundary.
+/// The full qOS image intentionally shares its device key with a dedicated
+/// system group; a distro session has no such group and must not inherit a
+/// host's broad primary-group membership instead.
+#[cfg(unix)]
+fn prepare_private_host_identity_tree(root: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    let parent = root.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "identity root has no parent")
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let parent_meta = std::fs::metadata(parent)?;
+    if !parent_meta.is_dir()
+        || parent_meta.uid() != unsafe { libc::geteuid() }
+        || parent_meta.mode() & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "host-session identity parent must be user-owned and not group/world writable",
+        ));
+    }
+
+    for directory in [
+        root.to_path_buf(),
+        root.join("user-identity"),
+        root.join("device"),
+    ] {
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "host-session identity directory is not a user-owned real directory: {}",
+                            directory.display()
+                        ),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700).create(&directory)?;
+            }
+            Err(error) => return Err(error),
+        }
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn prepare_private_host_identity_tree(_root: &std::path::Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "host desktop sessions require Unix filesystem permissions",
+    ))
+}
+
 /// Writes public metadata to `$XDG_CONFIG_HOME/qos/identity/primary.json`
 /// (falling back to `$HOME/.config/...`) and imports its private share into
 /// the runtime identity provider before returning.
@@ -146,8 +261,12 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
         Ok(None) => true,
         Ok(Some(_)) => false,
         Err(e) => {
-            tracing::warn!("identity store load failed; treating as no identity present: {e}");
-            true
+            // A corrupt, unsafe, or unreadable record is not the same as no
+            // record. Entering creation here could overwrite the only copy of
+            // an existing identity; keep the desktop gated and let the normal
+            // validation path report the repairable error instead.
+            tracing::error!("identity store load failed; refusing to replace it: {e}");
+            false
         }
     }
 }
@@ -266,6 +385,58 @@ mod tests {
         assert!(needs_first_run_flow(&store));
         store.save(&fixture_record()).unwrap();
         assert!(!needs_first_run_flow(&store));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_existing_identity_is_never_treated_as_missing() {
+        let tmp = TmpDir::new("invalid-existing");
+        let path = tmp.0.join("primary.json");
+        fs::write(&path, b"not an identity").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let store = DiskIdentityStore::at(path);
+        assert!(!needs_first_run_flow(&store));
+    }
+
+    #[test]
+    fn host_identity_root_uses_the_xdg_data_contract() {
+        assert_eq!(
+            host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into())).unwrap(),
+            PathBuf::from("/home/alice/.data/qos")
+        );
+        assert_eq!(
+            host_identity_root(None, Some("/home/alice".into())).unwrap(),
+            PathBuf::from("/home/alice/.local/share/qos")
+        );
+    }
+
+    #[test]
+    fn host_identity_root_never_depends_on_the_working_directory() {
+        assert!(host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err());
+        assert!(host_identity_root(None, Some("relative".into())).is_err());
+        assert!(host_identity_root(None, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_identity_tree_is_private_and_refuses_a_symlink_root() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let tmp = TmpDir::new("host-private-root");
+        let root = tmp.0.join("data/qos");
+        prepare_private_host_identity_tree(&root).unwrap();
+        for directory in [&root, &root.join("user-identity"), &root.join("device")] {
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        let target = tmp.0.join("target");
+        fs::create_dir(&target).unwrap();
+        let linked = tmp.0.join("linked");
+        symlink(&target, &linked).unwrap();
+        assert!(prepare_private_host_identity_tree(&linked).is_err());
     }
 
     #[test]
