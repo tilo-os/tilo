@@ -293,15 +293,52 @@ fn attach_peer_sync_bridge(
         crate::shell::overlay_host::PeerSyncRequest::IssueInvite => {
             let active = tree_for_bridge.read().active;
             net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor { name, role } => {
             let active = tree_for_bridge.read().active;
             net.issue_invite_named_with_role(active, INVITE_EXPIRY_SECONDS, &name, role)
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().active;
             net.accept_invite(active, &token)
                 .map(|room| room.to_string())
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::ListPendingInvitations => {
+            let room = tree_for_bridge
+                .read()
+                .active_workspace()
+                .map(|workspace| workspace.room)
+                .ok_or_else(|| "no active workspace".to_string())?;
+            Ok(
+                crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                    net.pending_invitations(room)
+                        .into_iter()
+                        .map(
+                            |invite| crate::shell::overlay_host::PendingInvitationSummary {
+                                id: invite.id,
+                                name: invite.name,
+                                role: invite.role,
+                                expiry_unix_seconds: invite.expiry_unix_seconds,
+                            },
+                        )
+                        .collect(),
+                ),
+            )
+        }
+        crate::shell::overlay_host::PeerSyncRequest::ResendInvitation(id) => net
+            .resend_invitation(&id)
+            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+        crate::shell::overlay_host::PeerSyncRequest::CancelInvitation(id) => {
+            if net.cancel_invitation(&id) {
+                Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                    "canceled".into(),
+                ))
+            } else {
+                Err("invitation is no longer pending".into())
+            }
         }
     }))
 }

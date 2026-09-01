@@ -3,6 +3,7 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Wired in behind `--enable-peer-sync`.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use iroh::address_lookup::memory::MemoryLookup;
@@ -90,12 +91,67 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingIdentityAdmission {
-    room: crate::shell::state::RoomId,
-    name: String,
-    role: crate::network::invite::InviteRole,
-    expiry_unix_seconds: u64,
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct PendingInvitation {
+    pub id: [u8; 32],
+    pub room: crate::shell::state::RoomId,
+    pub name: String,
+    pub role: crate::network::invite::InviteRole,
+    pub token: String,
+    pub expiry_unix_seconds: u64,
+}
+
+impl PendingInvitation {
+    #[must_use]
+    pub fn is_expired(&self, now_unix_seconds: u64) -> bool {
+        self.expiry_unix_seconds < now_unix_seconds
+    }
+
+    #[must_use]
+    pub fn id_hex(&self) -> String {
+        hex::encode(self.id)
+    }
+}
+
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn pending_invites_path(keypair_path: &Path) -> PathBuf {
+    keypair_path.with_file_name("pending-invitations.json")
+}
+
+fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "ignoring invalid pending invitation store");
+        Vec::new()
+    })
+}
+
+fn persist_pending_invitations(
+    path: &Path,
+    invitations: &std::collections::HashMap<[u8; 32], PendingInvitation>,
+) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        tracing::warn!(%error, path = %path.display(), "could not create pending invitation directory");
+        return;
+    }
+    let mut rows: Vec<_> = invitations.values().cloned().collect();
+    rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
+    let Ok(bytes) = serde_json::to_vec_pretty(&rows) else {
+        return;
+    };
+    if let Err(error) = atomic_file::write_with_mode(path, &bytes, 0o600) {
+        tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
+    }
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
@@ -146,8 +202,8 @@ pub struct ShellNetwork {
     /// Exact signed invitations awaiting a certificate-bearing person.
     /// Keying by the invite hash permits concurrent invites without letting
     /// one bearer receive another invite's name or role.
-    pending_identity_admissions:
-        Mutex<std::collections::HashMap<[u8; 32], PendingIdentityAdmission>>,
+    pending_identity_admissions: Mutex<std::collections::HashMap<[u8; 32], PendingInvitation>>,
+    pending_invitations_path: Option<PathBuf>,
     /// Invite ids this guest must attach to anti-entropy requests until the
     /// authority's first governance response proves redemption completed.
     pending_redemptions: Mutex<std::collections::HashMap<crate::shell::state::RoomId, [u8; 32]>>,
@@ -361,6 +417,16 @@ impl ShellNetwork {
         // Capacity matches `Actor::spawn`'s command-channel default.
         let (event_tx, event_rx) = mpsc::channel(64);
 
+        let pending_invitations_path = pending_invites_path(keypair_path);
+        let now = now_unix_seconds();
+        let pending_identity_admissions: std::collections::HashMap<_, _> =
+            load_pending_invitations(&pending_invitations_path)
+                .into_iter()
+                .filter(|invite| !invite.is_expired(now))
+                .map(|invite| (invite.id, invite))
+                .collect();
+        persist_pending_invitations(&pending_invitations_path, &pending_identity_admissions);
+
         Ok(Self {
             cmd_tx,
             replica,
@@ -377,7 +443,8 @@ impl ShellNetwork {
             last_sync_kick: Mutex::new(None),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
-            pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+            pending_identity_admissions: Mutex::new(pending_identity_admissions),
+            pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
@@ -778,6 +845,59 @@ impl ShellNetwork {
         addrs.first().cloned()
     }
 
+    /// Invitations this authority can still resend or cancel. Expired
+    /// credentials are removed from both memory and the private on-disk
+    /// inventory before rows are returned to the UI.
+    #[must_use]
+    pub fn pending_invitations(&self, room: RoomId) -> Vec<PendingInvitation> {
+        let Ok(mut pending) = self.pending_identity_admissions.lock() else {
+            return Vec::new();
+        };
+        let before = pending.len();
+        let now = now_unix_seconds();
+        pending.retain(|_, invite| !invite.is_expired(now));
+        if pending.len() != before
+            && let Some(path) = self.pending_invitations_path.as_deref()
+        {
+            persist_pending_invitations(path, &pending);
+        }
+        let mut rows: Vec<_> = pending
+            .values()
+            .filter(|invite| invite.room == room)
+            .cloned()
+            .collect();
+        rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
+        rows
+    }
+
+    /// Return the original signed token without extending its lifetime or
+    /// minting a second grant.
+    pub fn resend_invitation(&self, id: &[u8; 32]) -> Result<String, String> {
+        self.pending_identity_admissions
+            .lock()
+            .map_err(|_| "invite admission state is unavailable".to_string())?
+            .get(id)
+            .filter(|invite| !invite.is_expired(now_unix_seconds()))
+            .map(|invite| invite.token.clone())
+            .ok_or_else(|| "invitation is no longer pending".to_string())
+    }
+
+    /// Cancel one exact bearer credential. A later redemption carrying its
+    /// hash has no pending authority grant and is refused. Existing members
+    /// are unaffected; removing them is a separate governance action.
+    pub fn cancel_invitation(&self, id: &[u8; 32]) -> bool {
+        let Ok(mut pending) = self.pending_identity_admissions.lock() else {
+            return false;
+        };
+        if pending.remove(id).is_none() {
+            return false;
+        }
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
+        true
+    }
+
     /// Mint a signed invite to the workspace `local`, valid for
     /// `expiry_seconds_from_now`. Signs with this shell's own Iroh
     /// key and embeds the address the endpoint actually bound, so the
@@ -912,18 +1032,24 @@ impl ShellNetwork {
         let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
         let parsed = crate::network::invite::validate_invite_token(&token)?;
         let invite_id = crate::network::invite::invite_id(&token);
-        self.pending_identity_admissions
+        let mut pending = self
+            .pending_identity_admissions
             .lock()
-            .map_err(|_| "invite admission state is unavailable".to_string())?
-            .insert(
-                invite_id,
-                PendingIdentityAdmission {
-                    room,
-                    name: invitee.unwrap_or("Member").to_string(),
-                    role,
-                    expiry_unix_seconds: parsed.expiry_unix_seconds,
-                },
-            );
+            .map_err(|_| "invite admission state is unavailable".to_string())?;
+        pending.insert(
+            invite_id,
+            PendingInvitation {
+                id: invite_id,
+                room,
+                name: invitee.unwrap_or("Member").to_string(),
+                role,
+                token: token.clone(),
+                expiry_unix_seconds: parsed.expiry_unix_seconds,
+            },
+        );
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
         Ok(token)
     }
 
@@ -1571,6 +1697,9 @@ impl ShellNetwork {
         if admission.room != room || admission.expiry_unix_seconds < now {
             if let Ok(mut pending) = self.pending_identity_admissions.lock() {
                 pending.remove(&invite_id);
+                if let Some(path) = self.pending_invitations_path.as_deref() {
+                    persist_pending_invitations(path, &pending);
+                }
             }
             return;
         }
@@ -1632,6 +1761,9 @@ impl ShellNetwork {
         drop(replica);
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {
             pending.remove(&invite_id);
+            if let Some(path) = self.pending_invitations_path.as_deref() {
+                persist_pending_invitations(path, &pending);
+            }
         }
         // The guest's first announcement can arrive before exact-token
         // redemption and is therefore refused. Retry certification now that
@@ -1855,6 +1987,7 @@ pub(crate) fn shell_network_for_test(
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+        pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
@@ -1868,6 +2001,53 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_invites_survive_restart_and_cancel_exactly_one_credential() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pending-invitations.json");
+        let room = RoomId::new();
+        let first = PendingInvitation {
+            id: [1; 32],
+            room,
+            name: "Ada".into(),
+            role: crate::network::invite::InviteRole::Editor,
+            token: "signed-one".into(),
+            expiry_unix_seconds: u64::MAX,
+        };
+        let second = PendingInvitation {
+            id: [2; 32],
+            room,
+            name: "Lin".into(),
+            role: crate::network::invite::InviteRole::Viewer,
+            token: "signed-two".into(),
+            expiry_unix_seconds: u64::MAX,
+        };
+        let persisted = std::collections::HashMap::from([
+            (first.id, first.clone()),
+            (second.id, second.clone()),
+        ]);
+        persist_pending_invitations(&path, &persisted);
+        assert_eq!(load_pending_invitations(&path).len(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let (mut net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 9);
+        net.pending_invitations_path = Some(path.clone());
+        *net.pending_identity_admissions.lock().unwrap() = persisted;
+        assert_eq!(net.resend_invitation(&first.id).unwrap(), "signed-one");
+        assert!(net.cancel_invitation(&first.id));
+        assert!(net.resend_invitation(&first.id).is_err());
+        assert_eq!(net.resend_invitation(&second.id).unwrap(), "signed-two");
+        let restored = load_pending_invitations(&path);
+        assert_eq!(restored, vec![second]);
+    }
 
     #[test]
     fn live_session_claims_are_identified_before_dispatch() {
@@ -1957,10 +2137,12 @@ mod tests {
             .expect("pending")
             .insert(
                 [1; 32],
-                PendingIdentityAdmission {
+                PendingInvitation {
+                    id: [1; 32],
                     room,
                     name: "Ada".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    token: "invite-one".into(),
                     expiry_unix_seconds: u64::MAX,
                 },
             );
@@ -2173,6 +2355,57 @@ mod tests {
             "a commenter must not smuggle a splice through the generic document route",
         );
 
+        {
+            let replica = net.replica.lock().expect("replica");
+            let mut tree = replica.tree.write();
+            let workspace = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("workspace");
+            workspace.capabilities.retain(|capability| {
+                !matches!(
+                    &capability.subject,
+                    collab_types::Subject::Principal(collab_types::Principal::Person(member))
+                        if member == &person
+                )
+            });
+        }
+        assert!(
+            !net.peer_room_allows(
+                &origin,
+                room_topic_id(room),
+                crate::shell::state::Verb::Read,
+                false,
+            ),
+            "removal blocks every new room frame even while the device stays authenticated"
+        );
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &comment,
+            ),
+            None,
+            "an operation signed while online is still refused if it arrives after removal",
+        );
+        {
+            let replica = net.replica.lock().expect("replica");
+            let mut tree = replica.tree.write();
+            let workspace = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("workspace");
+            workspace.grant_capability(collab_types::CapOverride::membership(
+                collab_types::Subject::person(person.clone()),
+                room.to_string(),
+                collab_types::Verb::Write,
+            ));
+        }
+
         let mut revoked = RevocationEntry {
             user_public_key: cert.user_public_key,
             revoked_device_public_key: cert.device_public_key,
@@ -2235,10 +2468,12 @@ mod tests {
             .expect("pending")
             .insert(
                 [2; 32],
-                PendingIdentityAdmission {
+                PendingInvitation {
+                    id: [2; 32],
                     room,
                     name: "Vi".into(),
                     role: crate::network::invite::InviteRole::Viewer,
+                    token: "invite-two".into(),
                     expiry_unix_seconds: u64::MAX,
                 },
             );
@@ -2421,19 +2656,23 @@ mod tests {
         net.pending_identity_admissions.lock().unwrap().extend([
             (
                 [11; 32],
-                PendingIdentityAdmission {
+                PendingInvitation {
+                    id: [11; 32],
                     room,
                     name: "Vera".into(),
                     role: crate::network::invite::InviteRole::Viewer,
+                    token: "invite-eleven".into(),
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
             (
                 [12; 32],
-                PendingIdentityAdmission {
+                PendingInvitation {
+                    id: [12; 32],
                     room,
                     name: "Eli".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    token: "invite-twelve".into(),
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
@@ -2617,10 +2856,12 @@ mod tests {
             .expect("pending admission")
             .insert(
                 [3; 32],
-                PendingIdentityAdmission {
+                PendingInvitation {
+                    id: [3; 32],
                     room: our_room,
                     name: "Peer".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    token: "invite-three".into(),
                     expiry_unix_seconds: u64::MAX,
                 },
             );
