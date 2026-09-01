@@ -1,8 +1,10 @@
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use collab_types::caps::CapOverride;
 use compat_catalogue::{
-    ApplicationQuery, Catalogue, CatalogueError, LaunchPlan, Layer, MatchKind, VmFallback,
+    ApplicationQuery, Catalogue, CatalogueError, LaunchPlan, Layer, MatchKind, Runtime, VmFallback,
 };
 use launcher::capabilities::CapabilityPlan;
 use serde::{Deserialize, Serialize};
@@ -10,9 +12,11 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    CapsuleCommandPlan, CapsuleError, CapsuleProgram, CapsuleStore, ExecutionError,
-    ExecutionOutcome, HostSession, LaunchResourceBroker, NetworkShape, PlanError, ResourceError,
-    ResourceRequest, RuntimeRegistry, SandboxExecutor, SandboxPlanner,
+    CapsuleCommandPlan, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, ExecutionError,
+    ExecutionOutcome, HostSession, InstallationRecord, InstallationStatus, InstallerError,
+    InstallerInspection, InstallerKind, LaunchResourceBroker, MAX_INSTALLER_BYTES, NetworkShape,
+    PlanError, ProgramKind, ResourceError, ResourceRequest, RuntimeRegistry, SandboxExecutor,
+    SandboxPlanner, inspect_installer,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -103,6 +107,17 @@ pub struct LaunchReceipt {
     pub exit_code: Option<i32>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InstallReceipt {
+    pub capsule_id: String,
+    pub display_name: String,
+    pub route: RouteKind,
+    pub status: InstallationStatus,
+    pub discovered_programs: usize,
+    pub exit_code: Option<i32>,
+    pub detail: String,
+}
+
 pub struct VmRouteRequest<'a> {
     pub route: &'a LaunchPlan,
     pub app_id: &'a str,
@@ -147,6 +162,10 @@ pub struct CompatibilityService<R, B, E, V> {
     session: HostSession,
     /// Prefix setup and recipe checks are serialized by the singleton service.
     capsule_gate: Mutex<()>,
+    /// Setup/removal is a mutation transaction. It does not block ordinary
+    /// application launches, but two managers cannot concurrently replace or
+    /// retire the same private prefix.
+    installation_gate: Mutex<()>,
 }
 
 impl<R, B, E, V> CompatibilityService<R, B, E, V>
@@ -176,6 +195,7 @@ where
             vm,
             session,
             capsule_gate: Mutex::new(()),
+            installation_gate: Mutex::new(()),
         })
     }
 
@@ -279,6 +299,377 @@ where
         })
     }
 
+    /// Import and run one portal-selected installer. The caller transfers an
+    /// already-open descriptor; no host path or runner choice crosses this
+    /// boundary. The inspected digest is resolved through the catalogue and
+    /// binds the managed copy that setup later executes.
+    pub fn install(
+        &self,
+        source: &mut File,
+        source_name: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<InstallReceipt, ServiceError> {
+        validate_launch_id("workspace id", workspace_id)?;
+        let inspection = inspect_installer(source, source_name)?;
+        let _mutation = self
+            .installation_gate
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        self.install_inspected(source, &inspection, workspace_id, capabilities, now_unix)
+    }
+
+    /// Retry the exact digest-pinned installer retained in a capsule. The
+    /// management client cannot substitute bytes, executable arguments, or a
+    /// route during repair.
+    pub fn retry_install(
+        &self,
+        capsule_id: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<InstallReceipt, ServiceError> {
+        validate_launch_id("capsule id", capsule_id)?;
+        validate_launch_id("workspace id", workspace_id)?;
+        let _mutation = self
+            .installation_gate
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        let state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+        let installation = state
+            .installation
+            .clone()
+            .ok_or(ServiceError::NotManagedInstallation)?;
+        let inspection = InstallerInspection {
+            source_name: installation.source_name.clone(),
+            display_name: installation.display_name.clone(),
+            sha256: installation.sha256.clone(),
+            size: 0,
+            kind: installation.kind,
+            machine: None,
+        };
+        let query = installer_query(&inspection);
+        let route = launch_plan_from_state(&state, &query);
+        self.run_setup(
+            state,
+            route,
+            inspection,
+            workspace_id,
+            capabilities,
+            now_unix,
+        )
+    }
+
+    /// Remove an installed application by retiring its entire isolated
+    /// capsule. Running a vendor uninstaller would add code execution without
+    /// improving host cleanup: all private registry/files already live below
+    /// this one capsule and disappear atomically with it.
+    pub fn delete_capsule(&self, capsule_id: &str) -> Result<(), ServiceError> {
+        validate_launch_id("capsule id", capsule_id)?;
+        let _mutation = self
+            .installation_gate
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        let state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+        if state.installation.is_none() {
+            return Err(ServiceError::NotManagedInstallation);
+        }
+        self.store.retire_capsule(capsule_id)?;
+        Ok(())
+    }
+
+    /// Remove one qOS launcher entry while retaining the Windows installation
+    /// and every byte in its capsule. The server-owned entry ID is resolved by
+    /// the session layer before this method is called.
+    pub fn remove_launcher(&self, capsule_id: &str, program_id: &str) -> Result<(), ServiceError> {
+        validate_launch_id("capsule id", capsule_id)?;
+        validate_launch_id("program id", program_id)?;
+        let _mutation = self
+            .installation_gate
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        let mut state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+        let removed = state
+            .programs
+            .get(program_id)
+            .is_some_and(|program| program.kind == ProgramKind::Application)
+            .then(|| state.programs.remove(program_id))
+            .flatten();
+        if removed.is_none() {
+            return Err(ServiceError::ProgramNotRegistered(program_id.to_string()));
+        }
+        self.store.save(&state)?;
+        Ok(())
+    }
+
+    /// Run the installer-recorded vendor uninstaller inside the same sandbox.
+    /// Success removes qOS launchers but deliberately retains the prefix so
+    /// users can inspect or later delete leftover data as a separate action.
+    pub fn vendor_uninstall(
+        &self,
+        capsule_id: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<InstallReceipt, ServiceError> {
+        validate_launch_id("capsule id", capsule_id)?;
+        validate_launch_id("workspace id", workspace_id)?;
+        let _mutation = self
+            .installation_gate
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        let mut state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+        let installation = state
+            .installation
+            .clone()
+            .ok_or(ServiceError::NotManagedInstallation)?;
+        let uninstaller = installation
+            .uninstaller_relative_path
+            .clone()
+            .ok_or(ServiceError::VendorUninstallerUnavailable)?;
+        let query = ApplicationQuery {
+            executable: uninstaller
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string),
+            installer_sha256: Some(installation.sha256.clone()),
+            product: Some(installation.display_name.clone()),
+            ..ApplicationQuery::default()
+        };
+        let route = launch_plan_from_state(&state, &query);
+        let app_id = imported_app_id(&installation.sha256);
+        let resolved = CapabilityPlan::for_app(&app_id, capabilities, now_unix);
+        if let Some(journal) = state.installation.as_mut() {
+            journal.status = InstallationStatus::Uninstalling;
+            journal.last_error = None;
+        }
+        self.store.save(&state)?;
+        let program = CapsuleProgram {
+            id: "vendor-uninstaller".to_string(),
+            display_name: format!("Uninstall {}", installation.display_name),
+            prefix_relative_executable: uninstaller,
+            query,
+            kind: ProgramKind::InstallerControl,
+            arguments: Vec::new(),
+        };
+        let lease = self.resources.materialize(ResourceRequest {
+            app_id: &app_id,
+            workspace_id,
+            capabilities: &resolved,
+        })?;
+        let execution = (|| {
+            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &self.session)?;
+            let command =
+                planner.plan(&route, &state, &program, &resolved, workspace_id, &lease)?;
+            self.executor.execute(&command).map_err(ServiceError::from)
+        })();
+        self.resources.revoke(&lease.id);
+        let outcome = execution?;
+        let status = if outcome.success {
+            state
+                .programs
+                .retain(|_, program| program.kind == ProgramKind::InstallerControl);
+            InstallationStatus::Uninstalled
+        } else {
+            InstallationStatus::NeedsAttention
+        };
+        if let Some(journal) = state.installation.as_mut() {
+            journal.status = status;
+            journal.last_exit_code = outcome.exit_code;
+            journal.last_error = (!outcome.success)
+                .then(|| "The vendor uninstaller did not complete successfully".to_string());
+        }
+        self.store.save(&state)?;
+        Ok(InstallReceipt {
+            capsule_id: state.id,
+            display_name: installation.display_name,
+            route: RouteKind::from(route.runtime.layer),
+            status,
+            discovered_programs: state
+                .programs
+                .values()
+                .filter(|program| program.kind == ProgramKind::Application)
+                .count(),
+            exit_code: outcome.exit_code,
+            detail: if outcome.success {
+                "Vendor uninstall completed. Private leftover data is retained until you choose Delete data."
+                    .to_string()
+            } else {
+                "Vendor uninstall needs attention; the private capsule was retained.".to_string()
+            },
+        })
+    }
+
+    fn install_inspected(
+        &self,
+        source: &mut File,
+        inspection: &InstallerInspection,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<InstallReceipt, ServiceError> {
+        let query = installer_query(inspection);
+        let app_id = imported_app_id(&inspection.sha256);
+        let route = self.resolve_route(&query, VmFallback::Disabled, &app_id)?;
+        if route.runtime.layer == Layer::Vm {
+            return Err(ServiceError::VmInstallNeedsExplicitFallback);
+        }
+        let mut state = self.store.ensure_for_plan(&route)?;
+        if let Some(existing) = &state.installation
+            && existing.sha256 != inspection.sha256
+        {
+            return Err(ServiceError::CapsuleInstallerMismatch);
+        }
+        let relative = self.store.copy_installer(
+            &state.id,
+            source,
+            &inspection.sha256,
+            inspection.kind,
+            MAX_INSTALLER_BYTES,
+        )?;
+        state.installation = Some(InstallationRecord {
+            source_name: inspection.source_name.clone(),
+            display_name: inspection.display_name.clone(),
+            sha256: inspection.sha256.clone(),
+            kind: inspection.kind,
+            installer_relative_path: relative,
+            status: InstallationStatus::Installing,
+            last_exit_code: None,
+            last_error: None,
+            uninstaller_relative_path: None,
+        });
+        let control = installer_control(&state, inspection)?;
+        state.programs.insert(control.id.clone(), control);
+        self.store.save(&state)?;
+        self.run_setup(
+            state,
+            route,
+            inspection.clone(),
+            workspace_id,
+            capabilities,
+            now_unix,
+        )
+    }
+
+    fn run_setup(
+        &self,
+        mut state: CapsuleState,
+        route: LaunchPlan,
+        inspection: InstallerInspection,
+        workspace_id: &str,
+        capability_records: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<InstallReceipt, ServiceError> {
+        let app_id = imported_app_id(&inspection.sha256);
+        let capabilities = CapabilityPlan::for_app(&app_id, capability_records, now_unix);
+        let control = installer_control(&state, &inspection)?;
+        if let Some(installation) = state.installation.as_mut() {
+            installation.status = InstallationStatus::Installing;
+            installation.last_error = None;
+        }
+        self.store.save(&state)?;
+        let lease = self.resources.materialize(ResourceRequest {
+            app_id: &app_id,
+            workspace_id,
+            capabilities: &capabilities,
+        })?;
+        let execution = (|| {
+            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &self.session)?;
+            let plan = planner.plan(
+                &route,
+                &state,
+                &control,
+                &capabilities,
+                workspace_id,
+                &lease,
+            )?;
+            self.executor.execute(&plan).map_err(ServiceError::from)
+        })();
+        self.resources.revoke(&lease.id);
+        let outcome = match execution {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(installation) = state.installation.as_mut() {
+                    installation.status = InstallationStatus::Failed;
+                    installation.last_error = Some(bounded_error(&error.to_string()));
+                }
+                self.store.save(&state)?;
+                return Err(error);
+            }
+        };
+
+        let (mut programs, uninstaller) = self
+            .store
+            .discover_programs(&state.id, &installer_query(&inspection))?;
+        if programs.is_empty()
+            && outcome.success
+            && inspection.kind == InstallerKind::Exe
+            && !looks_like_setup(&inspection.source_name)
+        {
+            let installation = state
+                .installation
+                .as_ref()
+                .ok_or(ServiceError::NotManagedInstallation)?;
+            programs.push(CapsuleProgram {
+                id: "portable-application".to_string(),
+                display_name: inspection.display_name.clone(),
+                prefix_relative_executable: installation.installer_relative_path.clone(),
+                query: installer_query(&inspection),
+                kind: ProgramKind::Application,
+                arguments: Vec::new(),
+            });
+        }
+        state
+            .programs
+            .retain(|_, program| program.kind == ProgramKind::InstallerControl);
+        for program in programs.iter().cloned() {
+            state.programs.insert(program.id.clone(), program);
+        }
+        let status = if outcome.success && !programs.is_empty() {
+            InstallationStatus::Installed
+        } else if outcome.success {
+            InstallationStatus::NeedsAttention
+        } else {
+            InstallationStatus::Failed
+        };
+        if let Some(installation) = state.installation.as_mut() {
+            installation.status = status;
+            installation.last_exit_code = outcome.exit_code;
+            installation.last_error = (!outcome.success).then(|| {
+                format!(
+                    "Installer exited with status {}",
+                    outcome
+                        .exit_code
+                        .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+                )
+            });
+            installation.uninstaller_relative_path = uninstaller;
+        }
+        self.store.save(&state)?;
+        Ok(InstallReceipt {
+            capsule_id: state.id,
+            display_name: inspection.display_name,
+            route: RouteKind::from(route.runtime.layer),
+            status,
+            discovered_programs: programs.len(),
+            exit_code: outcome.exit_code,
+            detail: install_detail(status, programs.len()),
+        })
+    }
+
     fn resolve_route(
         &self,
         query: &ApplicationQuery,
@@ -291,6 +682,113 @@ where
             route.runtime.id = format!("wine-{}", hex_lower(digest.iter().take(16).copied()));
         }
         Ok(route)
+    }
+}
+
+fn installer_query(inspection: &InstallerInspection) -> ApplicationQuery {
+    ApplicationQuery {
+        executable: Some(inspection.source_name.clone()),
+        installer_sha256: Some(inspection.sha256.clone()),
+        product: Some(inspection.display_name.clone()),
+        ..ApplicationQuery::default()
+    }
+}
+
+fn imported_app_id(sha256: &str) -> String {
+    format!(
+        "dev.qos.windows.import.{}",
+        sha256.get(..24).unwrap_or(sha256)
+    )
+}
+
+fn launch_plan_from_state(state: &CapsuleState, query: &ApplicationQuery) -> LaunchPlan {
+    LaunchPlan {
+        record_id: None,
+        match_kind: if query.installer_sha256.is_some() {
+            MatchKind::ExecutableDigest
+        } else {
+            MatchKind::Executable
+        },
+        runtime: Runtime {
+            id: state.id.clone(),
+            layer: state.layer,
+        },
+        runner: state.runner.clone(),
+        settings: state.settings.clone(),
+        security_profile: state.security_profile.clone(),
+        proton_recipe: None,
+        compatibility_grade: None,
+    }
+}
+
+fn installer_control(
+    state: &CapsuleState,
+    inspection: &InstallerInspection,
+) -> Result<CapsuleProgram, ServiceError> {
+    let installation = state
+        .installation
+        .as_ref()
+        .ok_or(ServiceError::NotManagedInstallation)?;
+    if installation.sha256 != inspection.sha256 || installation.kind != inspection.kind {
+        return Err(ServiceError::CapsuleInstallerMismatch);
+    }
+    let (executable, arguments) = match inspection.kind {
+        InstallerKind::Exe => (installation.installer_relative_path.clone(), Vec::new()),
+        InstallerKind::Msi => {
+            let file_name = installation
+                .installer_relative_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(ServiceError::CapsuleInstallerMismatch)?;
+            (
+                PathBuf::from("drive_c/windows/system32/msiexec.exe"),
+                vec!["/i".to_string(), format!(r"C:\qos-installers\{file_name}")],
+            )
+        }
+    };
+    Ok(CapsuleProgram {
+        id: "installer-control".to_string(),
+        display_name: format!("Install {}", inspection.display_name),
+        prefix_relative_executable: executable,
+        query: installer_query(inspection),
+        kind: ProgramKind::InstallerControl,
+        arguments,
+    })
+}
+
+fn looks_like_setup(source_name: &str) -> bool {
+    let stem = Path::new(source_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    ["setup", "install", "installer", "bootstrap", "update"]
+        .iter()
+        .any(|word| stem.contains(word))
+}
+
+fn bounded_error(error: &str) -> String {
+    error.chars().take(2_048).collect()
+}
+
+fn install_detail(status: InstallationStatus, programs: usize) -> String {
+    match status {
+        InstallationStatus::Installed => format!(
+            "Installation completed and {programs} application launcher(s) were discovered."
+        ),
+        InstallationStatus::NeedsAttention => {
+            "Setup exited normally, but no application launcher was discovered. You can retry setup or delete its private data."
+                .to_string()
+        }
+        InstallationStatus::Failed => {
+            "Setup did not complete. Its private capsule and exact installer were retained for retry."
+                .to_string()
+        }
+        InstallationStatus::Uninstalled => {
+            "Vendor uninstall completed; private leftover data is retained.".to_string()
+        }
+        InstallationStatus::Installing => "Installation is running.".to_string(),
+        InstallationStatus::Uninstalling => "Vendor uninstall is running.".to_string(),
     }
 }
 
@@ -407,6 +905,8 @@ pub enum ServiceError {
     #[error(transparent)]
     Execution(#[from] ExecutionError),
     #[error(transparent)]
+    Installer(#[from] InstallerError),
+    #[error(transparent)]
     Vm(#[from] windows_vm::LaunchError),
     #[error("invalid launch field {0}")]
     InvalidRequest(&'static str),
@@ -414,6 +914,16 @@ pub enum ServiceError {
     ProgramNotRegistered(String),
     #[error("VM route was selected without explicit fallback authorization")]
     VmWasNotExplicit,
+    #[error(
+        "this installer is catalogued for the Windows VM and needs explicit fallback confirmation"
+    )]
+    VmInstallNeedsExplicitFallback,
+    #[error("capsule is not a portal-managed installation")]
+    NotManagedInstallation,
+    #[error("the retained installer does not match this capsule journal")]
+    CapsuleInstallerMismatch,
+    #[error("this installation did not publish a vendor uninstaller")]
+    VendorUninstallerUnavailable,
     #[error("capsule service state lock is poisoned")]
     StateLock,
 }
