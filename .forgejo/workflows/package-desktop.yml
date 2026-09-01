@@ -60,6 +60,8 @@ jobs:
             diagnostic=rpm-version-drift
           elif ! dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
+          elif ! dist/ci/run-payload-contract-tests.sh; then
+            diagnostic=payload-contract
           elif ! os/tests/portal_config_validity.sh; then
             diagnostic=portal-contract
           fi
