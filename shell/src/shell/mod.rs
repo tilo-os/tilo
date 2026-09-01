@@ -92,6 +92,7 @@ pub mod window_actions;
 pub mod workspace_drop;
 pub mod workspace_history;
 pub mod workspace_settings;
+mod workspace_settings_overlay;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 #[cfg(any(test, debug_assertions))]
