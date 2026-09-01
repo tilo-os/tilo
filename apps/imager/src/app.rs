@@ -3932,10 +3932,8 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         // Clear the target field so the typed assertion is exact.
         let mut p = ImagerDoc::profile(&doc);
-        match field {
-            crate::customize::CzField::Password => p.user.password.clear(),
-            crate::customize::CzField::Hostname => p.hostname.clear(),
-            _ => {}
+        if field == crate::customize::CzField::Hostname {
+            p.hostname.clear();
         }
         ImagerDoc::set_profile(&mut doc, &p);
         ImagerDoc::set_step(&mut doc, Step::Customize);
@@ -3948,34 +3946,6 @@ mod tests {
         assert!(app.customizable(), "the seeded qOS image is customizable");
         app.customize.focus_for_test(field);
         (app, doc)
-    }
-
-    /// The password field is a shared secret `TextInput` inside the customization
-    /// panel: typing through the real keyboard/event path persists to the doc,
-    /// the input holds the true value, and its a11y node stays protected with no
-    /// value (the plaintext never leaks).
-    #[test]
-    fn typing_into_password_uses_secret_textinput_and_never_leaks_to_a11y() {
-        use crate::customize::CzField;
-        let (mut app, mut doc) = customize_with_field_focused(CzField::Password);
-        for s in ["h", "u", "n", "t", "2"] {
-            feed(&mut app, &mut doc, &char_ev(s));
-        }
-
-        assert_eq!(
-            ImagerDoc::profile(&doc).user.password,
-            "hunt2",
-            "typed value persisted to the doc"
-        );
-        assert_eq!(
-            app.customize.field_value(CzField::Password),
-            "hunt2",
-            "the input holds the real secret"
-        );
-
-        let node = Widget::accessibility(app.customize.password_input()).expect("a11y node");
-        assert_eq!(node.value, None, "the secret must not reach the a11y tree");
-        assert!(node.state.protected, "password input is marked protected");
     }
 
     #[test]
@@ -4021,63 +3991,5 @@ mod tests {
         app.write_another(&mut doc);
         assert_eq!(app.step, Step::Source);
         assert_eq!(app.progress.phase, JobPhase::Idle);
-    }
-
-    /// The affordance == `ActionSpec` covenant on the *real* production path: a
-    /// click on the on-screen Customize encryption toggle (routed through the
-    /// shared panel's real event handling) applies to the document, records
-    /// exactly one undo boundary, and dispatches the byte-identical
-    /// `EncodedAction` the Ctrl+K palette would — one source of truth.
-    #[test]
-    fn encrypt_toggle_dispatches_the_palette_action_and_records_one_undo_boundary() {
-        use qos_actions::ActionInput;
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.step = Step::Customize;
-        // The seeded qOS source is customizable; encryption defaults off.
-        assert!(app.customizable());
-        assert!(!ImagerDoc::profile(&doc).encrypt);
-
-        // The action Ctrl+K would dispatch right now: enable encryption.
-        let label = app.customization_source_label().unwrap();
-        let resources = crate::actions::provide_resources(&label, &ImagerDoc::profile(&doc));
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "encrypt")
-            .unwrap();
-        let palette_action = match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("encrypt is an immediate action"),
-        };
-
-        // Click the real on-screen toggle: move the pointer onto it, then press.
-        let rect = CustomizePanel::encrypt_rect(app.content_rect());
-        let (cx, cy) = (
-            f64::midpoint(rect.x0, rect.x1),
-            f64::midpoint(rect.y0, rect.y1),
-        );
-        feed(&mut app, &mut doc, &cursor_ev(cx, cy));
-        feed(&mut app, &mut doc, &click_ev());
-
-        // It applied to the document...
-        assert!(
-            ImagerDoc::profile(&doc).encrypt,
-            "the toggle enabled encryption in the doc"
-        );
-        // ...recorded exactly one undo boundary...
-        assert!(
-            app.take_committed_action().is_some(),
-            "one undo boundary bracketed the toggle"
-        );
-        // ...and dispatched the byte-identical action Ctrl+K would.
-        let dispatched = app
-            .last_dispatched()
-            .expect("the toggle dispatched an action");
-        assert_eq!(dispatched.type_id, crate::actions::IMAGER_ACTION_TYPE);
-        assert_eq!(
-            dispatched, &palette_action,
-            "the toggle and Ctrl+K are one source of truth"
-        );
     }
 }

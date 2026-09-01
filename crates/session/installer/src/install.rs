@@ -91,6 +91,10 @@ pub struct InstallOptions {
     pub filesystem: String,
     /// Hostname seeded into the installed system.
     pub hostname: String,
+    /// Optional human-readable account name (GECOS), never a credential.
+    pub full_name: String,
+    /// POSIX locale seeded into `/etc/locale.conf`.
+    pub locale: String,
     /// IANA time zone (e.g. `Europe/Amsterdam`). Empty ⇒ leave the
     /// backend default (UTC); the flag is then omitted.
     pub timezone: String,
@@ -118,6 +122,8 @@ impl Default for InstallOptions {
             alongside_efi: String::new(),
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
+            full_name: String::new(),
+            locale: "en_US.UTF-8".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -155,6 +161,12 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         .arg(&opts.filesystem)
         .arg("--hostname")
         .arg(&opts.hostname);
+    if !opts.full_name.trim().is_empty() {
+        cmd.arg("--full-name").arg(opts.full_name.trim());
+    }
+    if !opts.locale.trim().is_empty() {
+        cmd.arg("--locale").arg(opts.locale.trim());
+    }
     if !opts.alongside_root.is_empty() {
         cmd.arg("--alongside")
             .arg("--root-partition")
@@ -322,6 +334,8 @@ mod tests {
         let opts = InstallOptions {
             filesystem: "ext4".to_string(),
             hostname: "lab-1".to_string(),
+            full_name: "ada Example".to_string(),
+            locale: "nl_NL.UTF-8".to_string(),
             timezone: "Europe/Amsterdam".to_string(),
             keymap: "de".to_string(),
             keyvariant: String::new(),
@@ -343,6 +357,10 @@ mod tests {
                 "ext4",
                 "--hostname",
                 "lab-1",
+                "--full-name",
+                "ada Example",
+                "--locale",
+                "nl_NL.UTF-8",
                 "--timezone",
                 "Europe/Amsterdam",
                 "--keymap",
