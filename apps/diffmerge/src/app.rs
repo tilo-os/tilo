@@ -401,6 +401,17 @@ impl DiffMergeApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "diffmerge.portal_disconnected".into(),
+                            message: "file picker disconnected".into(),
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
             }
         }
     }
