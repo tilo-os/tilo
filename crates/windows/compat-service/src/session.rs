@@ -289,6 +289,16 @@ where
             .map_err(Into::into)
     }
 
+    fn escalate_install_to_vm(
+        &self,
+        capsule_id: &str,
+        workspace_id: &str,
+    ) -> Result<crate::VmInstallation, SessionError> {
+        self.service
+            .escalate_install_to_vm(capsule_id, workspace_id)
+            .map_err(Into::into)
+    }
+
     fn remove_launcher(&self, entry: &RegisteredProgram) -> Result<(), SessionError> {
         self.service
             .remove_launcher(&entry.capsule_id, &entry.program.id)
