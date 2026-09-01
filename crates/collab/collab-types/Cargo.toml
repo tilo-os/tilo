@@ -30,6 +30,7 @@ postcard = { workspace = true, features = ["alloc"] }
 # direct here so the dep is explicit) so the digest is 32 bytes
 # without needing a separate blake3 dep.
 sha2.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 

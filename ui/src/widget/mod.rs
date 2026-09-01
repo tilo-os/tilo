@@ -10,6 +10,7 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
@@ -487,6 +488,17 @@ pub trait Widget {
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
         self.children().iter().any(|c| c.needs_animation_frame())
+    }
+
+    /// Earliest wall-clock deadline at which this subtree needs a sync/redraw
+    /// even if there is no input. Unlike `needs_animation_frame`, this keeps
+    /// the event loop asleep until the requested instant and is appropriate
+    /// for filesystem/status polling rather than animation.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .iter()
+            .filter_map(|child| child.next_wake_deadline())
+            .min()
     }
 
     /// `Some(rect)` when this subtree holds an *open* modal, its panel box.

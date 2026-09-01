@@ -1,8 +1,8 @@
 //! Responsive sidebar chrome.
 //!
 //! This component owns the drawer's presentation state and geometry together
-//! with the controls that operate that state. The calendar-specific contents
-//! (smart lists, accounts, tasks and mini-month) remain in `CalendarApp`.
+//! with the controls that operate that state. Calendar-specific lists and
+//! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

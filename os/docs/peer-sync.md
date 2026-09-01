@@ -40,14 +40,14 @@ The identity files are created together by `shell --provision-identity`:
 ```text
 ~/.config/qos/identity/primary.json
 /var/lib/qos/user-identity/pubkey.bin
-/var/lib/qos/user-identity/privkey.bin
 /var/lib/qos/device/keypair.bin
 /var/lib/qos/device/cert.bin
 ```
 
-The personal root certifies the device key. Shell, filesystem sync, and the
-workspace-host client all derive the same Iroh endpoint id from that device
-key.
+The personal record is the only copy of the root private key; the shared
+system projection contains only its public key. The personal root certifies
+the device key. Shell, filesystem sync, and the workspace-host client all
+derive the same Iroh endpoint id from that device key.
 
 ## Diagnostics
 

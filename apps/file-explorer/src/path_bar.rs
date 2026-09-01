@@ -34,6 +34,7 @@ use ui::widget::{Autocomplete, AutocompleteOutcome, Suggestion, Widget};
 use crate::breadcrumb_bar::BreadcrumbBar;
 use crate::breadcrumbs::breadcrumb_components;
 use crate::command::{CommandSink, FileCommand, push};
+use crate::i18n::t;
 use crate::model::format_path;
 
 /// Height of the bar (a single line of text plus breathing room for the
@@ -61,7 +62,7 @@ impl PathBar {
             crumbs: BreadcrumbBar::new(Vec::new(), sink.clone()),
             field: Autocomplete::new()
                 .with_id("files.path_input")
-                .with_placeholder("Type a path, e.g. ~/Documents"),
+                .with_placeholder(&t("files-path-placeholder")),
             editing: false,
             current: PathBuf::new(),
             home: None,
@@ -270,21 +271,51 @@ impl Widget for PathBar {
     }
 
     fn is_focusable(&self) -> bool {
-        self.editing
+        true
     }
 
     fn set_focus(&mut self, focused: bool) {
         if self.editing {
             self.field.set_focus(focused);
+        } else {
+            self.crumbs.set_focus(focused);
         }
     }
 
     fn is_focused(&self) -> bool {
-        self.editing && self.field.is_focused()
+        if self.editing {
+            self.field.is_focused()
+        } else {
+            self.crumbs.is_focused()
+        }
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.editing && self.field.wants_pointer_capture()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if self.editing {
+            self.field.accessibility()
+        } else {
+            self.crumbs.accessibility()
+        }
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if self.editing {
+            return self.field.perform_action(action, state, path);
+        }
+        let handled = self.crumbs.perform_action(action, state, path);
+        if self.crumbs.take_edit_requested() {
+            self.begin_edit();
+        }
+        handled
     }
 }
 
@@ -380,6 +411,7 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::new_sink;
 
     #[test]
     fn completions_list_directory_entries_matching_the_prefix() {
@@ -459,5 +491,29 @@ mod tests {
             dotted.iter().any(|s| s.label == ".config"),
             "a dot prefix reveals them"
         );
+    }
+
+    #[test]
+    fn breadcrumb_mode_is_focusable_and_activation_enters_named_text_input() {
+        use ui::a11y::{Action, Role};
+
+        let mut bar = PathBar::new(new_sink());
+        bar.set_path(
+            PathBuf::from("/home/u/Documents"),
+            Some(PathBuf::from("/home/u")),
+            Vec::new(),
+        );
+        bar.set_focus(true);
+        let trail = bar.accessibility().expect("trail semantics");
+        assert_eq!(trail.role, Role::Group);
+        assert_eq!(trail.name.as_deref(), Some("Breadcrumbs"));
+        assert!(trail.state.focused && trail.state.focusable);
+
+        let mut doc = AutoCommit::new();
+        assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(bar.is_editing());
+        let input = bar.accessibility().expect("editable path semantics");
+        assert_eq!(input.role, Role::TextInput);
+        assert!(input.state.focusable);
     }
 }
