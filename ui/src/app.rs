@@ -506,6 +506,7 @@ impl App {
                 action_label: descriptor.action_label.clone(),
                 description: descriptor.description.clone(),
                 operation_kind: descriptor.kind.as_str().to_string(),
+                params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
                 input: match &descriptor.input {
                     qos_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
                     qos_actions::InputSpec::Text {
@@ -552,21 +553,40 @@ impl App {
         actor: &str,
     ) -> Result<(), qos_actions::DoorError> {
         let resources = self.collect_resources();
+        let typed_arguments = argument
+            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+            .map(|json| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+            })
+            .transpose()?;
         let kind = qos_actions::door::resolve(&resources, address)
             .map(|spec| spec.kind)
             .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()));
         kind.and_then(|kind| {
             if kind == qos_actions::OperationKind::Document {
                 let before = self.state.doc.get_heads();
-                let dispatched = qos_actions::door::invoke(
-                    &mut self.state.doc,
-                    &resources,
-                    address,
-                    argument,
-                    actor.as_bytes(),
-                    &self.action_registry,
-                    self.action_transport.as_mut(),
-                )?;
+                let dispatched = if let Some(arguments) = &typed_arguments {
+                    qos_actions::door::invoke_json(
+                        &mut self.state.doc,
+                        &resources,
+                        address,
+                        arguments,
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    )?
+                } else {
+                    qos_actions::door::invoke(
+                        &mut self.state.doc,
+                        &resources,
+                        address,
+                        argument,
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    )?
+                };
                 if dispatched.mutated_local() {
                     self.state.record_committed_action_authored(
                         before,
@@ -579,7 +599,11 @@ impl App {
                 }
                 Ok(())
             } else {
-                let encoded = qos_actions::door::encode(&resources, address, argument)?;
+                let encoded = if let Some(arguments) = &typed_arguments {
+                    qos_actions::door::encode_json(&resources, address, arguments)?
+                } else {
+                    qos_actions::door::encode(&resources, address, argument)?
+                };
                 let handled = self
                     .root_widget
                     .invoke_resource_operation(
