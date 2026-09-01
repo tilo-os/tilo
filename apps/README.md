@@ -43,7 +43,7 @@ sees with:
 
 ```bash
 cargo run -q --bin qos-control -- actions list
-cargo run -q --bin qos-control -- actions invoke <id> --args-json '{"name":"value"}'
+cargo run -q --bin qos-control -- actions invoke <provider> <id> --args-json '{"name":"value"}'
 cargo run -q --bin qos-control -- actions status <broker-invocation-id>
 cargo run -q --bin qos-control -- actions cancel <broker-invocation-id>
 ```
