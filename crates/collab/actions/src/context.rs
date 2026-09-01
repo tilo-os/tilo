@@ -80,6 +80,45 @@ impl ActionContext {
         self
     }
 
+    /// Fill app ownership from the registered action type when a generic
+    /// palette/door caller has only resource metadata. Explicit app context
+    /// always wins. Action types conventionally start with the package stem
+    /// (`word-processor.action`, `api_tester.action`).
+    #[must_use]
+    pub fn with_inferred_app(mut self, type_id: &str) -> Self {
+        if self.app.is_some() {
+            return self;
+        }
+        let stem = type_id.split('.').next().unwrap_or("").trim();
+        let words: Vec<&str> = stem
+            .split(['-', '_'])
+            .filter(|word| !word.is_empty())
+            .collect();
+        if words.is_empty() {
+            return self;
+        }
+        let title_word = |word: &str| {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        };
+        let component = words
+            .iter()
+            .map(|word| title_word(word))
+            .collect::<String>();
+        let label = words
+            .iter()
+            .map(|word| title_word(word))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.app = Some(ActionApp {
+            id: format!("org.qos.{component}"),
+            label,
+        });
+        self
+    }
+
     #[must_use]
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
         let purpose = purpose.into();
@@ -277,6 +316,19 @@ mod tests {
         assert_eq!(
             context.app.as_ref().map(|app| app.label.as_str()),
             Some("Code")
+        );
+    }
+
+    #[test]
+    fn generic_palette_context_infers_stable_app_ownership() {
+        let context = ActionContext::for_resource("Export", "doc:1", "document", "Brief")
+            .with_inferred_app("word-processor.action");
+        assert_eq!(
+            context.app,
+            Some(ActionApp {
+                id: "org.qos.WordProcessor".into(),
+                label: "Word Processor".into(),
+            })
         );
     }
 }
