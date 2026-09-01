@@ -6,9 +6,14 @@ set -euo pipefail
 root=${1%/}
 [[ -n $root ]] || root=/
 path() { printf '%s%s' "${root%/}" "$1"; }
+libexec_dir=${QOS_LIBEXEC_DIR:-/usr/libexec}
+[[ $libexec_dir == /* && $libexec_dir != */ ]] || {
+    echo "QOS_LIBEXEC_DIR must be an absolute directory" >&2
+    exit 2
+}
 
 for file in /usr/bin/qos-shell /usr/bin/qos-launcher \
-            /usr/libexec/qos-unlock-helper /usr/libexec/qos-session; do
+            "$libexec_dir/qos-unlock-helper" "$libexec_dir/qos-session"; do
     [[ -x $(path "$file") ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in /etc/pam.d/qos-unlock \
@@ -22,18 +27,18 @@ if [[ ! -f $(path /usr/share/licenses/qos-session/LICENSE) \
     exit 1
 fi
 
-grep -q '^Exec=/usr/libexec/qos-session$' "$(path /usr/share/wayland-sessions/qos.desktop)"
+grep -Fqx "Exec=$libexec_dir/qos-session" "$(path /usr/share/wayland-sessions/qos.desktop)"
 grep -q '^TryExec=/usr/bin/qos-shell$' "$(path /usr/share/wayland-sessions/qos.desktop)"
 grep -q '^DesktopNames=nirios$' "$(path /usr/share/wayland-sessions/qos.desktop)"
 grep -q '^UseIn=nirios$' "$(path /usr/share/xdg-desktop-portal/portals/qos.portal)"
-grep -q '^QOS_SHELL=/usr/bin/qos-shell$' "$(path /usr/libexec/qos-session)"
-grep -q -- '--firstboot' "$(path /usr/libexec/qos-session)"
+grep -q '^QOS_SHELL=/usr/bin/qos-shell$' "$(path "$libexec_dir/qos-session")"
+grep -q -- '--firstboot' "$(path "$libexec_dir/qos-session")"
 # The compositor owns the portal bus name in-process. A D-Bus activator or
 # separate user unit would race it and serve an empty workspace.
 [[ ! -e $(path /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service) ]]
 [[ ! -e $(path /usr/lib/systemd/user/qos-portal.service) ]]
 
-for elf in /usr/bin/qos-shell /usr/bin/qos-launcher /usr/libexec/qos-unlock-helper; do
+for elf in /usr/bin/qos-shell /usr/bin/qos-launcher "$libexec_dir/qos-unlock-helper"; do
     elf_description=$(file "$(path "$elf")")
     case ${QOS_EXPECT_ARCH:-} in
         amd64) grep -Eq 'ELF 64-bit.*x86-64' <<<"$elf_description" ;;

@@ -24,6 +24,7 @@ build() {
   cd "qos-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p qos-unlock-helper
+  export QOS_UNLOCK_HELPER_PATH=/usr/lib/qos/qos-unlock-helper
   cargo build --release --locked -p shell --no-default-features
   ./dist/stage-payload.sh target/release "$srcdir/payload"
 }
@@ -37,9 +38,11 @@ package_qos-session() {
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'xdg-desktop-portal: sandbox portals' 'greetd: display manager')
   cd "$srcdir/payload"
   install -Dm755 bin/qos-shell bin/qos-launcher -t "$pkgdir/usr/bin"
-  install -Dm755 libexec/qos-unlock-helper libexec/qos-session -t "$pkgdir/usr/libexec"
+  install -Dm755 libexec/qos-unlock-helper libexec/qos-session -t "$pkgdir/usr/lib/qos"
   install -Dm644 pam/qos-unlock "$pkgdir/etc/pam.d/qos-unlock"
   install -Dm644 wayland-sessions/qos.desktop -t "$pkgdir/usr/share/wayland-sessions"
+  sed -i 's#/usr/libexec/qos-session#/usr/lib/qos/qos-session#' \
+    "$pkgdir/usr/share/wayland-sessions/qos.desktop"
   install -Dm644 portal/qos.portal -t "$pkgdir/usr/share/xdg-desktop-portal/portals"
   install -Dm644 license/LICENSE "$pkgdir/usr/share/licenses/qos-session/LICENSE"
 }
@@ -47,6 +50,8 @@ package_qos-session() {
 package_qos-session-devel() {
   depends=("qos-session=$pkgver-$pkgrel" 'coreutils' 'grep')
   cd "$srcdir/payload"
-  install -Dm755 libexec/qos-session-dev "$pkgdir/usr/libexec/qos-session-dev"
+  install -Dm755 libexec/qos-session-dev "$pkgdir/usr/lib/qos/qos-session-dev"
   install -Dm644 wayland-sessions/qos-dev.desktop -t "$pkgdir/usr/share/wayland-sessions"
+  sed -i 's#/usr/libexec/qos-session-dev#/usr/lib/qos/qos-session-dev#g' \
+    "$pkgdir/usr/share/wayland-sessions/qos-dev.desktop"
 }
