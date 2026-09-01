@@ -2478,7 +2478,8 @@ mod tests {
     fn graph_json_round_trips_and_builds_real_accessible_widgets() {
         fn has_title(node: &crate::headless::InspectionNode) -> bool {
             node.semantics.as_ref().is_some_and(|semantics| {
-                semantics.role == Role::StaticText && semantics.name.as_deref() == Some("Roadmap")
+                semantics.role == (Role::Heading { level: 1 })
+                    && semantics.name.as_deref() == Some("Roadmap")
             }) || node.children.iter().any(has_title)
         }
 

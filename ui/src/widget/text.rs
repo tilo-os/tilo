@@ -35,9 +35,10 @@ pub struct Text {
     args: Vec<(String, ArgValue)>,
     i18n_revision: u64,
     style: TextStyle,
-    /// Semantic typography follows the active theme on every layout build.
-    /// Explicit style modifiers clear this value and take ownership of style.
+    /// Semantic intent drives accessibility and, by default, live typography.
     semantic_role: Option<TextRole>,
+    follows_role_style: bool,
+    heading_level: Option<u8>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,
     engine_revision: u64,
     /// `None` (default) renders with the theme's `text_primary`.
@@ -73,6 +74,8 @@ impl Text {
             i18n_revision: crate::i18n::I18nManager::revision(),
             style: TextStyle::new(16.0),
             semantic_role: None,
+            follows_role_style: false,
+            heading_level: None,
             layout_engine: None,
             engine_revision: 0,
             color: None,
@@ -265,6 +268,7 @@ impl Text {
     #[must_use]
     pub fn with_role(mut self, role: TextRole) -> Self {
         self.semantic_role = Some(role);
+        self.follows_role_style = true;
         let style = Theme::default().tokens.typography.style(role);
         self.style = self.merged_semantic_style(&style);
         self.dirty = true;
@@ -273,7 +277,7 @@ impl Text {
     }
 
     fn use_explicit_style(&mut self) {
-        self.semantic_role = None;
+        self.follows_role_style = false;
     }
 
     fn merged_semantic_style(&self, style: &TextStyle) -> TextStyle {
@@ -287,6 +291,9 @@ impl Text {
     }
 
     fn observe_theme_role(&mut self, theme: &Theme) {
+        if !self.follows_role_style {
+            return;
+        }
         let Some(role) = self.semantic_role else {
             return;
         };
@@ -297,6 +304,24 @@ impl Text {
             self.dirty = true;
             self.layout_dirty = true;
         }
+    }
+
+    /// Override the screen-reader heading level while retaining the selected
+    /// visual role. Levels are clamped to the platform-supported 1–6 range.
+    /// This is useful for nested sections; `Title`/`Display` default to level
+    /// 1 and `Heading` defaults to level 2.
+    #[must_use]
+    pub fn with_heading_level(mut self, level: u8) -> Self {
+        self.heading_level = Some(level.clamp(1, 6));
+        self
+    }
+
+    fn accessible_heading_level(&self) -> Option<u8> {
+        self.heading_level.or(match self.semantic_role {
+            Some(TextRole::Title | TextRole::Display) => Some(1),
+            Some(TextRole::Heading) => Some(2),
+            _ => None,
+        })
     }
 
     #[must_use]
@@ -764,7 +789,10 @@ impl Widget for Text {
         if label.is_empty() {
             return None;
         }
-        Some(AccessNode::new(Role::StaticText).with_name(label))
+        let role = self
+            .accessible_heading_level()
+            .map_or(Role::StaticText, |level| Role::Heading { level });
+        Some(AccessNode::new(role).with_name(label))
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -1091,6 +1119,27 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("Hello world"));
         assert_eq!(node.value, None);
         assert!(!node.state.focusable, "static text is not focusable");
+    }
+
+    #[test]
+    fn semantic_title_and_heading_roles_create_navigable_headings() {
+        let title = Widget::accessibility(&Text::new("Projects").with_role(TextRole::Title))
+            .expect("title is accessible");
+        let heading = Widget::accessibility(&Text::new("Recent").with_role(TextRole::Heading))
+            .expect("heading is accessible");
+        assert_eq!(title.role, Role::Heading { level: 1 });
+        assert_eq!(heading.role, Role::Heading { level: 2 });
+    }
+
+    #[test]
+    fn custom_heading_style_keeps_semantics_and_level_can_be_overridden() {
+        let text = Text::new("Details")
+            .with_role(TextRole::Heading)
+            .with_size(19.0)
+            .with_heading_level(3);
+        let node = Widget::accessibility(&text).expect("heading is accessible");
+        assert_eq!(node.role, Role::Heading { level: 3 });
+        assert_eq!(text.text_style().size, 19.0);
     }
 
     #[test]
