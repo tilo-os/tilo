@@ -50,6 +50,7 @@ use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
 use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
 use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
@@ -202,10 +203,6 @@ pub struct ShellOverlayHost {
     qs_transition: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
-    /// Quick-settings slider being dragged (0 = brightness, 1 = volume).
-    /// The `os_action` shell-out fires only on Released so a drag doesn't
-    /// spawn a subprocess per pixel of motion.
-    qs_slider_drag: Option<usize>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -314,6 +311,8 @@ pub struct ShellOverlayHost {
     /// tab whose content changed without its id changing still gets
     /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// Quick-settings root-page presentation, geometry and input state.
+    qs_root: QuickSettingsRoot,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
@@ -925,7 +924,6 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
-            qs_slider_drag: None,
             power_menu: PowerMenu::default(),
             ws_invite_copied_at: None,
             strip_ribbon_hover: None,
@@ -955,6 +953,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
+            qs_root: QuickSettingsRoot::default(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
@@ -4538,26 +4537,22 @@ impl ShellOverlayHost {
         false
     }
 
-    /// A brightness/volume slider drag in progress owns pointer input
-    /// ahead of the modal absorb gate, so it keeps updating even once
-    /// the drag leaves the slider bar or the popover — like a native
-    /// slider.
+    /// Routes an in-progress root-page slider drag before modal absorption.
     fn route_qs_slider_drag(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
-        let Some(drag_i) = self.qs_slider_drag else {
+        if !self.qs_root.drag_active() {
             return false;
-        };
+        }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                if let (Some(p), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
-                    let (bar, _) = self.quick_settings_slider_geometry(drag_i);
-                    let t = f64_to_f32_lossy(((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0));
+                if let (Some(point), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
+                    let panel = self.quick_settings_rect();
                     let mut st = chrome.borrow_mut();
-                    if drag_i == 0 {
-                        st.quick_settings.brightness = t;
-                    } else {
-                        st.quick_settings.volume = t;
+                    if self
+                        .qs_root
+                        .update_drag(point, panel, &mut st.quick_settings)
+                    {
+                        st.bump();
                     }
-                    st.bump();
                 }
                 *handled = true;
                 true
@@ -4567,25 +4562,24 @@ impl ShellOverlayHost {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let value_pct: f32 = self.chrome.as_ref().map_or(0.0, |c| {
-                    let st = c.borrow();
-                    if drag_i == 0 {
-                        st.quick_settings.brightness
-                    } else {
-                        st.quick_settings.volume
+                let commit = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
+                match commit {
+                    Some(SliderCommit::Brightness(value_pct)) => {
+                        crate::shell::qs_actions::log_qs_result(
+                            "set_brightness",
+                            self.qs_actions.set_brightness(value_pct),
+                        );
                     }
-                }) * 100.0;
-                self.qs_slider_drag = None;
-                if drag_i == 0 {
-                    crate::shell::qs_actions::log_qs_result(
-                        "set_brightness",
-                        self.qs_actions.set_brightness(value_pct),
-                    );
-                } else {
-                    crate::shell::qs_actions::log_qs_result(
-                        "set_volume",
-                        self.qs_actions.set_volume(value_pct),
-                    );
+                    Some(SliderCommit::Volume(value_pct)) => {
+                        crate::shell::qs_actions::log_qs_result(
+                            "set_volume",
+                            self.qs_actions.set_volume(value_pct),
+                        );
+                    }
+                    None => {}
                 }
                 *handled = true;
                 true
@@ -5848,229 +5842,105 @@ impl ShellOverlayHost {
             chrome.borrow_mut().clear_notification_history();
         }
     }
-
-    /// Clicks on the quick-settings root page: a chevron drills into a
-    /// sub-page, an action tile fires and closes the popover, otherwise
-    /// falls to sliders/toggles/the power-profile chip. Split out of
-    /// `handle_shell_quick_settings_click`, which always treats the
-    /// click as absorbed regardless of what this does.
+    /// Routes a click through the root-page component, then applies the
+    /// resulting shell-wide navigation or side effect after hit-testing.
     fn handle_shell_quick_settings_root_click(&mut self, p: Point) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Tested before the toggle hit so the chevron
-        // region wins over the toggle's full-card rect.
-        let mut pushed_level = None;
-        for i in [0, 1, 5] {
-            let chev = self.quick_settings_toggle_chevron_rect(i);
-            if chev.contains(p) {
-                pushed_level = Some(match i {
-                    0 => crate::shell::quick_settings::QsLevel::Wifi,
-                    1 => crate::shell::quick_settings::QsLevel::Bluetooth,
-                    _ => crate::shell::quick_settings::QsLevel::Vpn,
-                });
-                break;
-            }
-        }
-        if let Some(level) = pushed_level {
-            // Fetched here, not on panel-open: a Wi-Fi
-            // scan is the slowest read in the set.
-            match level {
-                crate::shell::quick_settings::QsLevel::Wifi => {
-                    self.qs_refresh.kick_wifi_networks();
-                }
-                crate::shell::quick_settings::QsLevel::Bluetooth => {
-                    self.qs_refresh.kick_bt_devices();
-                }
-                _ => {}
-            }
+        let action = {
             let mut st = chrome.borrow_mut();
-            st.quick_settings.push_level(level);
-            st.bump();
-            return;
-        }
-        // Each tile closes the popover; the action fires
-        // after the chrome borrow drops.
-        let mut action_hit: Option<usize> = None;
-        for i in 0..4 {
-            let tile = self.quick_settings_action_geometry(i);
-            if tile.contains(p) {
-                action_hit = Some(i);
-                break;
-            }
-        }
-        if let Some(i) = action_hit {
-            let mut st = chrome.borrow_mut();
-            match i {
-                0 => {
-                    st.overlays.ws_settings = true;
+            self.qs_root
+                .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
+        };
+        match action {
+            RootAction::None => {}
+            RootAction::Enter(level) => {
+                match level {
+                    crate::shell::quick_settings::QsLevel::Wifi => {
+                        self.qs_refresh.kick_wifi_networks();
+                    }
+                    crate::shell::quick_settings::QsLevel::Bluetooth => {
+                        self.qs_refresh.kick_bt_devices();
+                    }
+                    _ => {}
                 }
-                1 => {
-                    let active = st.quick_settings.privacy.active_media.clone();
-                    if active.is_empty() {
-                        let privacy = &st.quick_settings.privacy;
-                        let camera = format!("camera: {:?}", privacy.camera_kill);
-                        let microphone = format!("microphone: {:?}", privacy.microphone_kill);
-                        st.push_notification("Privacy", format!("{camera} · {microphone}"));
-                    } else {
-                        let mut failed = Vec::new();
-                        let mut seen = std::collections::BTreeSet::new();
-                        for use_ in &active {
-                            if seen.insert(use_.client_id)
-                                && os_actions::revoke_media_client(use_.client_id).is_err()
-                            {
-                                failed.push(use_.label.clone());
+                let mut st = chrome.borrow_mut();
+                st.quick_settings.push_level(level);
+                st.bump();
+            }
+            RootAction::OpenNotifications => {
+                let mut st = chrome.borrow_mut();
+                st.quick_settings
+                    .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+                st.bump();
+            }
+            RootAction::DisplayNotice => {
+                let mut st = chrome.borrow_mut();
+                st.push_notification(
+                    "Displays",
+                    "Display switching is available in Settings → Displays.",
+                );
+                st.bump();
+            }
+            RootAction::Changed(pending) => {
+                chrome.borrow_mut().bump();
+                self.dispatch_quick_settings_toggle_actions(
+                    pending.wifi,
+                    pending.bluetooth,
+                    pending.wired,
+                    pending.airplane,
+                    pending.hotspot,
+                    pending.mobile,
+                    pending.night_light,
+                    pending.power,
+                );
+            }
+            RootAction::OpenSettings | RootAction::Privacy | RootAction::OpenPowerMenu => {
+                let mut st = chrome.borrow_mut();
+                match action {
+                    RootAction::OpenSettings => st.overlays.ws_settings = true,
+                    RootAction::Privacy => {
+                        let active = st.quick_settings.privacy.active_media.clone();
+                        if active.is_empty() {
+                            let privacy = &st.quick_settings.privacy;
+                            let camera = format!("camera: {:?}", privacy.camera_kill);
+                            let microphone = format!("microphone: {:?}", privacy.microphone_kill);
+                            st.push_notification("Privacy", format!("{camera} · {microphone}"));
+                        } else {
+                            let mut failed = Vec::new();
+                            let mut seen = std::collections::BTreeSet::new();
+                            for use_ in &active {
+                                if seen.insert(use_.client_id)
+                                    && os_actions::revoke_media_client(use_.client_id).is_err()
+                                {
+                                    failed.push(use_.label.clone());
+                                }
+                            }
+                            if failed.is_empty() {
+                                st.quick_settings.privacy.active_media.clear();
+                                st.push_notification(
+                                    "Camera and microphone access stopped",
+                                    "The active PipeWire clients were disconnected.",
+                                );
+                            } else {
+                                st.push_notification(
+                                    "Could not stop all access",
+                                    format!("Still active: {}", failed.join(", ")),
+                                );
                             }
                         }
-                        if failed.is_empty() {
-                            st.quick_settings.privacy.active_media.clear();
-                            st.push_notification(
-                                "Camera and microphone access stopped",
-                                "The active PipeWire clients were disconnected.",
-                            );
-                        } else {
-                            st.push_notification(
-                                "Could not stop all access",
-                                format!("Still active: {}", failed.join(", ")),
-                            );
-                        }
                     }
+                    RootAction::OpenPowerMenu => self.power_menu.open(),
+                    _ => return,
                 }
-                2 => {
-                    st.quick_settings
-                        .push_level(crate::shell::quick_settings::QsLevel::Notifications);
-                    st.bump();
-                    return;
-                }
-                _ => {
-                    self.power_menu.open();
-                }
+                st.overlays.quick_settings = false;
+                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                st.bump();
             }
-            st.overlays.quick_settings = false;
-            st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
-            st.bump();
-            return;
         }
-        self.handle_shell_quick_settings_toggle_click(&chrome, p);
     }
-
-    /// Sliders, radio/feature toggles and the power-profile chip on the
-    /// quick-settings root page. Split out of
-    /// `handle_shell_quick_settings_root_click` — actions dispatch
-    /// after dropping the chrome borrow to avoid a re-entrant
-    /// `borrow_mut`; sliders don't participate, since `Released` owns
-    /// their shell-out.
-    fn handle_shell_quick_settings_toggle_click(&mut self, chrome: &Chrome, p: Point) {
-        let mut pending_wifi: Option<bool> = None;
-        let mut pending_bt: Option<bool> = None;
-        let mut pending_wired: Option<bool> = None;
-        let mut pending_airplane: Option<bool> = None;
-        let mut pending_hotspot: Option<bool> = None;
-        let mut pending_mobile: Option<bool> = None;
-        let mut pending_night_light: Option<bool> = None;
-        let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> = None;
-        let mut st = chrome.borrow_mut();
-        let mut changed = false;
-        for i in 0..2 {
-            let (bar, _) = self.quick_settings_slider_geometry(i);
-            // Extends the hit vertically to the whole row.
-            let hit = Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
-            if hit.contains(p) {
-                let t = f64_to_f32_lossy(((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0));
-                if i == 0 {
-                    st.quick_settings.brightness = t;
-                } else {
-                    st.quick_settings.volume = t;
-                }
-                // Committed to the OS on Released; only the
-                // visual updates during drag, like a
-                // physical mixer knob.
-                self.qs_slider_drag = Some(i);
-                changed = true;
-            }
-        }
-        for i in 0..9 {
-            let prect = self.quick_settings_toggle_geometry(i);
-            let hit = Rect::new(
-                prect.x0 - 4.0,
-                prect.y0 - 4.0,
-                prect.x1 + 4.0,
-                prect.y1 + 4.0,
-            );
-            if hit.contains(p) {
-                if i == 0 {
-                    st.quick_settings.wifi = !st.quick_settings.wifi;
-                    pending_wifi = Some(st.quick_settings.wifi);
-                } else if i == 1 {
-                    st.quick_settings.bluetooth = !st.quick_settings.bluetooth;
-                    pending_bt = Some(st.quick_settings.bluetooth);
-                } else if i == 2 {
-                    if let Some(wired) = st.quick_settings.wired.as_mut() {
-                        wired.connected = !wired.connected;
-                        pending_wired = Some(wired.connected);
-                    }
-                } else if i == 3 {
-                    st.quick_settings.radios.airplane_mode =
-                        !st.quick_settings.radios.airplane_mode;
-                    pending_airplane = Some(st.quick_settings.radios.airplane_mode);
-                } else if i == 4 {
-                    st.quick_settings.radios.hotspot_active =
-                        !st.quick_settings.radios.hotspot_active;
-                    pending_hotspot = Some(st.quick_settings.radios.hotspot_active);
-                } else if i == 5 {
-                    st.quick_settings
-                        .push_level(crate::shell::quick_settings::QsLevel::Vpn);
-                } else if i == 6 {
-                    st.quick_settings.night_light = !st.quick_settings.night_light;
-                    pending_night_light = Some(st.quick_settings.night_light);
-                } else if i == 7 {
-                    st.push_notification(
-                        "Displays",
-                        "Display switching is available in Settings → Displays.",
-                    );
-                } else if st.quick_settings.radios.wwan_available {
-                    st.quick_settings.radios.wwan_enabled = !st.quick_settings.radios.wwan_enabled;
-                    pending_mobile = Some(st.quick_settings.radios.wwan_enabled);
-                }
-                changed = true;
-            }
-        }
-        // Power profile chip — cycle Balanced → Performance →
-        // Saver and push the new value through to
-        // `powerprofilesctl`.
-        let pp_rect = self.quick_settings_power_profile_geometry();
-        if pp_rect.contains(p) {
-            use crate::shell::quick_settings::PowerProfile;
-            let next = match st.quick_settings.power_profile {
-                PowerProfile::Saver => PowerProfile::Balanced,
-                PowerProfile::Balanced => PowerProfile::Performance,
-                PowerProfile::Performance => PowerProfile::Saver,
-            };
-            st.quick_settings.power_profile = next;
-            pending_power = Some(next);
-            changed = true;
-        }
-        if !changed {
-            return;
-        }
-        st.bump();
-        drop(st);
-        self.dispatch_quick_settings_toggle_actions(
-            pending_wifi,
-            pending_bt,
-            pending_wired,
-            pending_airplane,
-            pending_hotspot,
-            pending_mobile,
-            pending_night_light,
-            pending_power,
-        );
-    }
-
-    /// Shells out to the OS for whichever quick-settings toggles changed.
-    /// Split out of `handle_shell_quick_settings_toggle_click` — runs
-    /// after that function drops its chrome borrow, to avoid a
-    /// re-entrant `borrow_mut`.
+    /// Shells out to the OS for changes returned by the root component.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_quick_settings_toggle_actions(
         &self,
@@ -10509,9 +10379,6 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // Sub-line falls back to "Not connected" when unpaired or off
-        // (used by section 3, the toggle card grid, below).
-        const NOT_CONNECTED: &str = "Not connected";
         let qs = self
             .chrome
             .as_ref()
@@ -10527,17 +10394,8 @@ impl ShellOverlayHost {
             return;
         }
 
-        self.draw_quick_settings_action_row(scene, transform, text_renderer, theme, &qs);
-        self.draw_quick_settings_slider_card(scene, transform, theme, rect, &qs);
-        self.draw_quick_settings_toggle_grid(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &qs,
-            NOT_CONNECTED,
-        );
-        self.draw_quick_settings_power_profile(scene, transform, text_renderer, theme, &qs);
+        self.qs_root
+            .draw(scene, transform, text_renderer, theme, rect, &qs);
     }
 
     /// The quick-settings popover's elevated card: shadow, fill and
@@ -10646,430 +10504,6 @@ impl ShellOverlayHost {
             }
             crate::shell::quick_settings::QsLevel::Root => false,
         }
-    }
-
-    /// Section 1: Action row (Settings / Privacy / Notifications / Power).
-    fn draw_quick_settings_action_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let white_10 = colors.text_primary.with_alpha_factor(0.10);
-        for i in 0..4 {
-            let tile = self.quick_settings_action_geometry(i);
-            // Control role: 12px — the radius scale deliberately omits
-            // 16, so a literal 16 here would match nothing else on screen.
-            let tile_rr = RoundedRect::from_rect(
-                tile,
-                ui::chrome::ChromeRole::Control.radius(theme, tile.height()),
-            );
-            // Power tile's red wash must expose its r/g/b signature so
-            // the concept-parity spec test detects it.
-            let bg = if i == 3 {
-                colors.semantic.danger.with_alpha_factor(0.20)
-            } else {
-                white_10
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
-
-            let glyph_color = if i == 3 {
-                colors.semantic.danger
-            } else {
-                colors.text_primary
-            };
-            let glyph_rect = Rect::new(
-                tile.x0 + (tile.width() - 20.0) / 2.0,
-                tile.y0 + 7.0,
-                tile.x0 + f64::midpoint(tile.width(), 20.0),
-                tile.y0 + 27.0,
-            );
-            let glyph = match i {
-                0 => ui::icons::Icon::Settings2,
-                1 => ui::icons::Icon::Camera,
-                2 => ui::icons::Icon::Bell,
-                _ => ui::icons::Icon::Power,
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                glyph_rect,
-                glyph,
-                glyph_color,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            if i == 1 {
-                Self::draw_quick_settings_privacy_indicator(scene, transform, tile, colors, qs);
-            }
-            let action_label = match i {
-                0 => "Settings",
-                1 if !qs.privacy.active_media.is_empty() => "Stop access",
-                1 => "Privacy",
-                2 => "History",
-                _ => "Power",
-            };
-            let (label_w, _) = text_renderer.measure_weighted(
-                action_label,
-                tokens.typography.scale.xs,
-                None,
-                TextWeight::Medium,
-            );
-            // `Affine`'s `Mul` composes transform matrices with plain
-            // float multiply-adds — it cannot overflow or panic — but
-            // `arithmetic_side_effects` can't see that for a
-            // non-primitive `Mul` impl.
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix multiplication; it cannot overflow or panic"
-            )]
-            let label_xform = transform
-                * Affine::translate((tile.center().x - f64::from(label_w) / 2.0, tile.y0 + 34.0));
-            text_renderer.draw_text_weighted(
-                scene,
-                action_label,
-                tokens.typography.scale.xs,
-                glyph_color,
-                label_xform,
-                None,
-                TextWeight::Medium,
-            );
-        }
-    }
-
-    /// The camera/mic privacy overlay on the Privacy action tile (index
-    /// 1): a status dot, plus a mic-off glyph when muted or killed.
-    fn draw_quick_settings_privacy_indicator(
-        scene: &mut Scene,
-        transform: Affine,
-        tile: Rect,
-        colors: &ui::tokens::colors::Colors,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let blocked = !matches!(
-            qs.privacy.camera_kill,
-            os_actions::KillState::Allowed | os_actions::KillState::Unavailable
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if blocked {
-                colors.semantic.danger
-            } else if !qs.privacy.active_media.is_empty() {
-                colors.semantic.success
-            } else {
-                colors.text_dim.with_alpha_factor(0.45)
-            },
-            None,
-            &vello::kurbo::Circle::new(Point::new(tile.x1 - 12.0, tile.y0 + 12.0), 4.0),
-        );
-        if qs.privacy.microphone_muted.unwrap_or(false)
-            || !matches!(
-                qs.privacy.microphone_kill,
-                os_actions::KillState::Allowed | os_actions::KillState::Unavailable
-            )
-        {
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(tile.x0 + 7.0, tile.y0 + 7.0, tile.x0 + 21.0, tile.y0 + 21.0),
-                ui::icons::Icon::MicOff,
-                colors.semantic.danger,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-    }
-
-    /// Section 2: Slider card (Brightness / Volume).
-    fn draw_quick_settings_slider_card(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let slider_card = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 88.0,
-            rect.x1 - 16.0,
-            rect.y0 + 88.0 + 72.0,
-        );
-        let white_05 = colors.text_primary.with_alpha_factor(0.05);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            white_05,
-            None,
-            &RoundedRect::from_rect(slider_card, 16.0),
-        );
-        let slider_values = [qs.brightness, qs.volume];
-        for i in 0..2 {
-            let (bar, row_y) = self.quick_settings_slider_geometry(i);
-            let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
-            let icon_cy = row_y + 12.0;
-            let icon_rect = Rect::new(icon_x - 7.0, icon_cy - 7.0, icon_x + 7.0, icon_cy + 7.0);
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                icon_rect,
-                if i == 0 {
-                    ui::icons::Icon::Sun
-                } else {
-                    ui::icons::Icon::Volume2
-                },
-                colors.text_dim,
-                1.5,
-            );
-
-            // Solid white via `text_primary`, not indigo — the
-            // concept-parity spec pins that delta to zero.
-            let track_rr = RoundedRect::from_rect(bar, 3.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_primary.with_alpha_factor(0.10),
-                None,
-                &track_rr,
-            );
-            let fill_w = bar.width()
-                * f64::from(slider_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0));
-            if fill_w > 0.0 {
-                let filled = Rect::new(bar.x0, bar.y0, bar.x0 + fill_w, bar.y1);
-                let filled_rr = RoundedRect::from_rect(filled, 3.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.text_primary,
-                    None,
-                    &filled_rr,
-                );
-            }
-        }
-    }
-
-    /// The 9 toggle-card rows (on/off, label, sub-line) section 3 draws
-    /// one card per. Split out of the drawing loop so each is a plain
-    /// data computation.
-    fn quick_settings_toggle_rows<'a>(
-        qs: &'a crate::shell::chrome_state::QuickSettingsState,
-        not_connected: &'a str,
-    ) -> [(bool, &'a str, &'a str); 9] {
-        let wifi_sub = if qs.wifi {
-            qs.wifi_networks
-                .iter()
-                .find(|n| n.connected)
-                .map_or(not_connected, |n| n.ssid.as_str())
-        } else {
-            not_connected
-        };
-        let bt_sub = if qs.bluetooth {
-            qs.bt_devices
-                .iter()
-                .find(|d| d.connected)
-                .map_or(not_connected, |d| d.name.as_str())
-        } else {
-            not_connected
-        };
-        let wired_on = qs.wired.as_ref().is_some_and(|wired| wired.connected);
-        let wired_sub = qs
-            .wired
-            .as_ref()
-            .and_then(|wired| wired.device.as_deref())
-            .unwrap_or(if wired_on {
-                "Connected"
-            } else {
-                "Not connected"
-            });
-        let vpn_active = qs.vpns.iter().any(|vpn| vpn.active);
-        let vpn_sub = qs
-            .vpns
-            .iter()
-            .find(|vpn| vpn.active)
-            .or_else(|| qs.vpns.first())
-            .map_or("No profiles", |vpn| vpn.name.as_str());
-        let mobile_sub = if qs.radios.wwan_available {
-            if qs.radios.wwan_enabled {
-                "Enabled"
-            } else {
-                "Disabled"
-            }
-        } else {
-            "Unavailable"
-        };
-        [
-            (qs.wifi, "WLAN", wifi_sub),
-            (qs.bluetooth, "Bluetooth", bt_sub),
-            (wired_on, "LAN", wired_sub),
-            (qs.radios.airplane_mode, "Airplane mode", "All radios"),
-            (qs.radios.hotspot_active, "Hotspot", "qOS Hotspot"),
-            (vpn_active, "VPN", vpn_sub),
-            (qs.night_light, "Night Light", "Display comfort"),
-            (false, "Displays", "Switch output"),
-            (qs.radios.wwan_enabled, "Mobile data", mobile_sub),
-        ]
-    }
-
-    /// Section 3: Toggle card grid. ON cards use an alpha wash rather
-    /// than solid indigo-500 — the concept-parity spec pins the
-    /// closed→open delta to zero.
-    fn draw_quick_settings_toggle_grid(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-        not_connected: &str,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let toggle_rows = Self::quick_settings_toggle_rows(qs, not_connected);
-        for (i, (on, label, sub_line)) in toggle_rows.iter().enumerate() {
-            let card = self.quick_settings_toggle_geometry(i);
-            let card_rr = RoundedRect::from_rect(card, 16.0);
-            // ON → indigo wash; OFF → slate-800 — the wash keeps the
-            // spec test's solid-indigo signature clear.
-            let bg = if *on {
-                colors.accent[5].with_alpha_factor(0.20)
-            } else {
-                colors.neutral[2]
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &card_rr);
-
-            // Wifi for slot 0, Bluetooth for slot 1.
-            let glyph_box = Rect::new(
-                card.x0 + 12.0,
-                card.y0 + 12.0,
-                card.x0 + 12.0 + 20.0,
-                card.y0 + 12.0 + 20.0,
-            );
-            // Slot 0 (Wifi) and slot 4 (Hotspot) both fall to the
-            // catch-all Wifi glyph below, same as anything past slot 7
-            // (e.g. Mobile data).
-            let icon = match i {
-                1 => ui::icons::Icon::Bluetooth,
-                2 => ui::icons::Icon::EthernetPort,
-                3 => ui::icons::Icon::WifiOff,
-                5 => ui::icons::Icon::Shield,
-                6 => ui::icons::Icon::Sun,
-                7 => ui::icons::Icon::Monitor,
-                _ => ui::icons::Icon::Wifi,
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                glyph_box,
-                icon,
-                colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-
-            // Trailing chevron — placeholder caret for now.
-            let chev_cx = card.x1 - 16.0;
-            let chev_y = card.y0 + 22.0;
-            let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_y), 3.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_primary.with_alpha_factor(0.60),
-                None,
-                &chev,
-            );
-
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((card.x0 + 12.0, card.y1 - 36.0).into()),
-                None,
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text(
-                scene,
-                sub_line,
-                tokens.typography.scale.xs,
-                colors.text_primary.with_alpha_factor(0.70),
-                transform.pre_translate((card.x0 + 12.0, card.y1 - 18.0).into()),
-                None,
-            );
-        }
-    }
-
-    /// Section 4: Power Profile row.
-    fn draw_quick_settings_power_profile(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let white_05 = colors.text_primary.with_alpha_factor(0.05);
-        let pp = self.quick_settings_power_profile_geometry();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            white_05,
-            None,
-            &RoundedRect::from_rect(pp, 16.0),
-        );
-        let battery_rect = Rect::new(
-            pp.x0 + 12.0,
-            pp.y0 + 14.0,
-            pp.x0 + 12.0 + 20.0,
-            pp.y0 + 34.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            battery_rect,
-            ui::icons::Icon::Battery,
-            colors.semantic.success,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let profile_label = qs.power_profile.label();
-        text_renderer.draw_text_weighted(
-            scene,
-            profile_label,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((pp.x0 + 44.0, pp.y0 + 8.0).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        let battery_summary = if qs.battery.present {
-            match qs.battery.health_percent() {
-                Some(health) => format!("{}% battery · {health}% health", qs.battery.capacity),
-                None => format!("{}% battery", qs.battery.capacity),
-            }
-        } else {
-            "AC power".to_string()
-        };
-        let power_detail = match qs.firmware_updates {
-            Some(count) if count > 0 => format!("{battery_summary} · {count} firmware update(s)"),
-            _ => battery_summary,
-        };
-        text_renderer.draw_text(
-            scene,
-            &power_detail,
-            tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((pp.x0 + 44.0, pp.y0 + 26.0).into()),
-            None,
-        );
-        let chev_cx = pp.x1 - 16.0;
-        let chev_y = f64::midpoint(pp.y0, pp.y1);
-        let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_y), 3.0);
-        scene.fill(Fill::NonZero, transform, colors.text_dim, None, &chev);
     }
 
     /// Draw the `QuickSettings` drill-in header — back-chevron on the left
@@ -11229,17 +10663,6 @@ impl ShellOverlayHost {
     fn qs_back_chevron_rect(&self) -> Rect {
         let r = self.quick_settings_rect();
         Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x0 + 40.0, r.y0 + 40.0)
-    }
-
-    /// Toggle-card chevron hit rect — clicking here pushes
-    /// `QsLevel::Wifi` (i==0) / `QsLevel::Bluetooth` (i==1) onto the nav
-    /// stack instead of flipping the toggle bool.
-    fn quick_settings_toggle_chevron_rect(&self, i: usize) -> Rect {
-        let card = self.quick_settings_toggle_geometry(i);
-        // Generous 32×32 hit rect around the painted 3px chevron.
-        let cx = card.x1 - 16.0;
-        let cy = card.y0 + 22.0;
-        Rect::new(cx - 16.0, cy - 16.0, cx + 16.0, cy + 16.0)
     }
 
     /// Raise the passphrase prompt for `ssid`.
@@ -11609,55 +11032,19 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Collaborators dropdown: a peer-roster popover anchored under the
-    /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
-    /// 1 = Volume), with the label baseline `y`, so draw and hit-test
-    /// share one source of truth.
+    /// Root slider geometry exposed for integration click routing tests.
     pub fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
-        let r = self.quick_settings_rect();
-        let card_y = r.y0 + 88.0;
-        let row_y = card_y + 12.0 + usize_to_f64_lossy(i) * 36.0;
-        let bar_y_mid = row_y + 12.0;
-        let bar_x0 = r.x0 + 16.0 + 16.0 + 12.0;
-        let bar_x1 = r.x1 - 16.0;
-        let bar = Rect::new(bar_x0, bar_y_mid - 3.0, bar_x1, bar_y_mid + 3.0);
-        (bar, row_y)
+        QuickSettingsRoot::slider_geometry(self.quick_settings_rect(), i)
     }
 
-    /// Toggle card rect for the i-th quick-settings toggle card
-    /// The nine system tiles sit in a 3-column grid below
-    /// the slider card.
+    /// Root toggle geometry exposed for integration click routing tests.
     pub fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
-        let r = self.quick_settings_rect();
-        let grid_y = r.y0 + 176.0;
-        let grid_h = 88.0;
-        let inner_w = r.width() - 32.0; // 16 px outer padding each side.
-        let card_w = (inner_w - 16.0) / 3.0; // 8 px gaps between cards.
-        let row = i / 3;
-        let col = i % 3;
-        let x0 = r.x0 + 16.0 + usize_to_f64_lossy(col) * (card_w + 8.0);
-        let y0 = grid_y + usize_to_f64_lossy(row) * (grid_h + 8.0);
-        Rect::new(x0, y0, x0 + card_w, y0 + grid_h)
+        QuickSettingsRoot::toggle_geometry(self.quick_settings_rect(), i)
     }
 
-    /// Action-row tile rect for the i-th tile (Settings, Privacy,
-    /// Notifications, Power). The row sits at the top of the popover.
-    pub(crate) fn quick_settings_action_geometry(&self, i: usize) -> Rect {
-        let r = self.quick_settings_rect();
-        let row_y = r.y0 + 16.0;
-        let row_h = 56.0;
-        let inner_w = r.width() - 32.0;
-        let tile_w = (inner_w - 24.0) / 4.0; // 8 px gap × 3.
-        let x0 = r.x0 + 16.0 + usize_to_f64_lossy(i) * (tile_w + 8.0);
-        Rect::new(x0, row_y, x0 + tile_w, row_y + row_h)
-    }
-
-    /// Power Profile row rect — sits at the bottom of the popover.
+    /// Root power-profile geometry exposed for integration click routing tests.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        let row_y = r.y0 + 472.0;
-        let row_h = 48.0;
-        Rect::new(r.x0 + 16.0, row_y, r.x1 - 16.0, row_y + row_h)
+        QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
     }
 }
 
