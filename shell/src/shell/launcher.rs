@@ -92,6 +92,7 @@ pub struct ServiceLaunchIdentity {
     pub app_id: String,
     pub workspace_id: String,
     pub allowed_compat_entry_ids: Vec<String>,
+    pub compat_entry_generation: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +105,8 @@ struct TrustedServiceLaunch {
 static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static WINDOWS_COMPAT_ENTRY_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -171,10 +174,25 @@ pub fn consume_trusted_service_launch(
 /// Publish the server-owned compatibility entries that a newly launched
 /// Windows manager may address. Existing launches deliberately retain their
 /// one-shot snapshot.
-pub fn set_windows_compat_entry_ids(mut entry_ids: Vec<String>) {
+#[must_use]
+pub fn set_windows_compat_entry_ids(mut entry_ids: Vec<String>) -> u64 {
     entry_ids.sort();
     entry_ids.dedup();
-    *lock(&WINDOWS_COMPAT_ENTRY_IDS) = entry_ids;
+    let mut current = lock(&WINDOWS_COMPAT_ENTRY_IDS);
+    if *current != entry_ids {
+        *current = entry_ids;
+        return WINDOWS_COMPAT_ENTRY_GENERATION
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_add(1);
+    }
+    WINDOWS_COMPAT_ENTRY_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[must_use]
+/// Current server-owned entry registry generation. A manager records this at
+/// launch; an update becomes visible only through a newly authenticated launch.
+pub fn windows_compat_entry_generation() -> u64 {
+    WINDOWS_COMPAT_ENTRY_GENERATION.load(std::sync::atomic::Ordering::Acquire)
 }
 
 fn unregister_launched_process(pid: u32) {
@@ -896,6 +914,7 @@ fn build_launch_command_for(
             } else {
                 Vec::new()
             },
+            compat_entry_generation: windows_compat_entry_generation(),
         }),
     }
 }
@@ -2083,6 +2102,7 @@ mod tests {
                 app_id: "dev.qos.windows".into(),
                 workspace_id: "room-1".into(),
                 allowed_compat_entry_ids: vec!["windows-reader".into()],
+                compat_entry_generation: 7,
             },
         );
         let (_, start_time) = proc_stat(pid).expect("current process stat");
@@ -2100,5 +2120,14 @@ mod tests {
             None,
             "the authority record is single-use"
         );
+    }
+
+    #[test]
+    fn managed_entry_registry_generation_changes_only_with_its_snapshot() {
+        let first = set_windows_compat_entry_ids(vec!["windows-one".into()]);
+        let unchanged = set_windows_compat_entry_ids(vec!["windows-one".into()]);
+        let second = set_windows_compat_entry_ids(vec!["windows-two".into()]);
+        assert_eq!(unchanged, first);
+        assert!(second > first);
     }
 }
