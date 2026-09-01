@@ -110,6 +110,15 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let portal_pickers = crate::portal::FilePickerQueue::new();
     let mut host = host;
     host.set_portal_queues(portal_prompts.clone(), portal_pickers.clone());
+    // Bind before erasing the concrete host behind `dyn Widget`, so the
+    // same live app-action provider exists in hosted and native sessions.
+    let _collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
+    if let Some(action_broker) = _collab_broker
+        .as_ref()
+        .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker)
+    {
+        host.attach_app_action_broker(action_broker);
+    }
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     qos_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);
@@ -151,10 +160,6 @@ pub fn run_with_full_options(opts: HostedOptions) {
     };
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
-
-    // Local typed collaboration broker, held for the lifetime of `app.run()`.
-    // When peer sync is enabled it also bridges app changes between machines.
-    let _collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
     let identity_socket = launcher::services::identity_socket();
     let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
