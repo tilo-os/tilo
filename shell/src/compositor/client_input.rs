@@ -805,6 +805,12 @@ fn v120_component(value: f64) -> i32 {
 /// Whether the shell chrome is currently claiming all input: an overlay,
 /// the command palette, the peer-sync card, the workspace-name editor, or a permission prompt — in any of those a client must not receive keys or pointer focus.
 pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+    // First-login chrome is a compositor-owned security boundary. It hides the
+    // entire desktop and must mute both the local Wayland seat and the remote
+    // input firewall, just like the session lock does.
+    if fb.host().onboarding_active() {
+        return true;
+    }
     if fb.host().palette_visible() {
         return true;
     }
@@ -1346,14 +1352,17 @@ fn foreign_tab_title(app_id: &str) -> String {
 
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
-    let target = if chrome_captures_input(fb) {
-        None
-    } else {
+    let captured = chrome_captures_input(fb);
+    let candidate = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
         active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
     };
-    state.set_client_keyboard_focus(target);
+    state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
+}
+
+fn gate_keyboard_focus(candidate: Option<u64>, chrome_captures: bool) -> Option<u64> {
+    if chrome_captures { None } else { candidate }
 }
 
 /// Tell the remote-input firewall what is on screen. Called every tick,
@@ -2436,6 +2445,37 @@ mod tests {
             "with the portal's file chooser up the chrome must hold input — \
              otherwise the clicks meant for it go to the client behind it and \
              the dialog cannot be used at all"
+        );
+    }
+
+    #[test]
+    fn onboarding_mutes_wayland_focus_and_the_remote_input_view() {
+        const HIDDEN_SURFACE: u64 = 424_242;
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.host_mut()
+            .enable_onboarding(std::path::PathBuf::from("/tmp/qos-oobe-input-test"));
+        let _ = fb.paint_settled();
+
+        assert!(
+            chrome_captures_input(&fb),
+            "compositor-owned OOBE must capture every client input route"
+        );
+
+        assert_eq!(
+            gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
+            None,
+            "a hidden Wayland client cannot retain keyboard focus"
+        );
+        let remote_view = crate::network::input_firewall::ShellView::new(
+            vec![(HIDDEN_SURFACE, Rect::new(0.0, 0.0, 400.0, 300.0))],
+            gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
+            chrome_captures_input(&fb),
+            false,
+        );
+        assert!(
+            remote_view.chrome_captures_input(),
+            "remote peers must see OOBE as occluding trusted chrome"
         );
     }
 
