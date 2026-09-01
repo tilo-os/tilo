@@ -66,6 +66,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use zeroize::Zeroizing;
 
 /// Path to the privileged install backend installed on the live medium.
 pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
@@ -73,7 +74,7 @@ pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
 pub const POWER_BIN: &str = "/usr/libexec/qos-power";
 
 /// User-selected install options threaded through to the backend.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
@@ -98,7 +99,7 @@ pub struct InstallOptions {
     /// second stdin line. It becomes a TPM2+PIN keyslot on a machine with a
     /// TPM, and the boot passphrase on one without. Empty ⇒ omitted, which on
     /// a TPM-less machine leaves the recovery key as the only way in.
-    pub pin: String,
+    pub pin: Zeroizing<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
     /// meaningful with [`Self::encrypt`]; maps to `--fido2`. A token must
     /// be present at install time, but its absence never aborts the
@@ -115,7 +116,7 @@ impl Default for InstallOptions {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: false,
-            pin: String::new(),
+            pin: Zeroizing::new(String::new()),
             fido2: false,
         }
     }
@@ -319,7 +320,7 @@ mod tests {
             keymap: "de".to_string(),
             keyvariant: String::new(),
             encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
         };
         let cmd = install_command("/dev/sda", "quinten", &opts);
@@ -355,7 +356,7 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: "dvorak".to_string(),
             encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -389,7 +390,7 @@ mod tests {
             keymap: String::new(),
             keyvariant: String::new(),
             encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -423,7 +424,7 @@ mod tests {
             keymap: String::new(),
             keyvariant: "dvorak".to_string(),
             encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -443,7 +444,7 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: true,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -487,7 +488,7 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: true,
-            pin: "1234".to_string(),
+            pin: "1234".to_string().into(),
             fido2: true,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -530,7 +531,7 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: false,
-            pin: "1234".to_string(),
+            pin: "1234".to_string().into(),
             fido2: true,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -550,7 +551,7 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: true,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: true,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
@@ -628,7 +629,7 @@ mod tests {
         // extra-stdin vector run_install builds, then driving a stub command.
         let opts = InstallOptions {
             encrypt: true,
-            pin: "9182".to_string(),
+            pin: "9182".to_string().into(),
             ..InstallOptions::default()
         };
         // Mirror run_install's stdin-extra derivation.
@@ -653,7 +654,7 @@ mod tests {
         // doesn't read a PIN line when `--pin` wasn't passed).
         let opts = InstallOptions {
             encrypt: true,
-            pin: String::new(),
+            pin: String::new().into(),
             ..InstallOptions::default()
         };
         let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {

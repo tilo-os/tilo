@@ -101,4 +101,4 @@ echo "qos-session-dev: starting $TARGET_REAL" >&2
 # --firstboot for the same reason as the production wrapper: a host has no
 # unit that prepares the user's config directories. Identity creation remains
 # an interactive compositor-owned step.
-exec "$TARGET_REAL" --firstboot --backend drm "$@"
+exec "$TARGET_REAL" --host-desktop-session --firstboot --backend drm "$@"
