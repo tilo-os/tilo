@@ -861,7 +861,11 @@ impl GitClientApp {
         // group first so the title can be clamped to stop before it on a
         // narrow window instead of running underneath.
         self.tab_rects.clear();
-        let settings_w = 220.0;
+        // Keep the settings cluster wide enough for the full "Syntax" label.
+        // The old 46px icon-sized control left only "Syn" visible in the
+        // shipped shot, which made a presentation preference look like a
+        // truncated status label.
+        let settings_w = 230.0;
         let (widths, total) = Self::measure_appbar_tabs(tr);
         let tx_start = bar.x1 - settings_w - total - 20.0;
         let tab_group_left = tx_start - 6.0;
@@ -1068,10 +1072,11 @@ impl GitClientApp {
         // seg; the click handler flips the layout.
         self.settings_seg = seg;
 
-        // Syntax-highlight pill toggle. Labelled with the universal `</>`
-        // code glyph rather than a cryptic word-fragment, centred in the pill.
+        // Syntax-highlight toggle. Keep the visible label explicit: this is a
+        // preference, not a repository status, and "Syn" is ambiguous when a
+        // control is viewed without its tooltip or action palette.
         let hx = seg.x1 + 10.0;
-        let hl = Rect::new(hx, y, hx + 46.0, y + 32.0);
+        let hl = Rect::new(hx, y, hx + 64.0, y + 32.0);
         let on = self.settings.syntax_highlight;
         draw::fill_round(
             scene,
@@ -1085,16 +1090,16 @@ impl GitClientApp {
             },
         );
         let hlfg = if on { Color::WHITE } else { c.text_dim };
-        let glyph = "</>";
-        let gw = f64::from(tr.measure_weighted(glyph, 12.5, None, TextWeight::Medium).0);
+        let label = "Syntax";
+        let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
         draw::text_weighted(
             scene,
             tr,
             t,
-            glyph,
-            12.5,
+            label,
+            12.0,
             hlfg,
-            hl.x0 + (hl.width() - gw) / 2.0,
+            hl.x0 + (hl.width() - lw) / 2.0,
             y + 8.0,
             None,
             TextWeight::Medium,
