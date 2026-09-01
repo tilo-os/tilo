@@ -3715,6 +3715,31 @@ impl Widget for FeedsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            crate::actions::FeedsOperation::RefreshAll => {
+                if self.store.feeds.is_empty() {
+                    return Err("there are no subscriptions to refresh".into());
+                }
+                self.refresh_all();
+            }
+        }
+        Ok(true)
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
