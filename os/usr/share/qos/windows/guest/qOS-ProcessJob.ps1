@@ -54,6 +54,9 @@ namespace qOS.WindowsGuest
         private const uint ResumeFailed = 0xffffffff;
         private const int ErrorAccessDenied = 5;
         private const int ErrorElevationRequired = 740;
+        private const int MaxUninstallArguments = 32;
+        private const int MaxUninstallArgumentChars = 4096;
+        private const int MaxUninstallCommandChars = 16384;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct StartupInfo
@@ -182,6 +185,12 @@ namespace qOS.WindowsGuest
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
 
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
         // The manifest's argument tail is passed directly to the selected
         // executable, never parsed by a shell. lpApplicationName remains the
         // independently validated full path, so arguments cannot select a
@@ -208,6 +217,58 @@ namespace qOS.WindowsGuest
                 throw new ArgumentException("A Windows Installer product code is required.", "productCode");
             }
             return Run(msiexecPath, "/x " + QuoteArgument(productCode));
+        }
+
+        public static ProcessJobResult RunExecutableUninstaller(string executablePath, string[] arguments)
+        {
+            return Run(executablePath, BuildArgumentTail(arguments));
+        }
+
+        // Registry uninstall strings are parsed once with Windows' native
+        // argv rules during discovery. The raw string is never persisted or
+        // executed and CommandLineToArgvW is not a shell or expansion engine.
+        public static string[] ParseUninstallCommandLine(string commandLine)
+        {
+            if (String.IsNullOrWhiteSpace(commandLine) || commandLine.Length > MaxUninstallCommandChars)
+            {
+                throw new ArgumentException("The uninstall command line is empty or exceeds its bound.", "commandLine");
+            }
+
+            int argumentCount;
+            IntPtr nativeArguments = CommandLineToArgvW(commandLine, out argumentCount);
+            if (nativeArguments == IntPtr.Zero)
+            {
+                ThrowWin32("Could not parse the Windows uninstall command line.");
+            }
+            try
+            {
+                if (argumentCount < 1 || argumentCount > MaxUninstallArguments + 1)
+                {
+                    throw new ArgumentException("The uninstall command line has too many arguments.", "commandLine");
+                }
+                string[] arguments = new string[argumentCount];
+                int totalChars = 0;
+                for (int index = 0; index < argumentCount; index++)
+                {
+                    IntPtr argumentPointer = Marshal.ReadIntPtr(nativeArguments, index * IntPtr.Size);
+                    string argument = Marshal.PtrToStringUni(argumentPointer);
+                    if (argument == null || argument.Length > MaxUninstallArgumentChars || ContainsControlCharacter(argument))
+                    {
+                        throw new ArgumentException("An uninstall argument is invalid or exceeds its bound.", "commandLine");
+                    }
+                    totalChars += argument.Length;
+                    if (totalChars > MaxUninstallCommandChars)
+                    {
+                        throw new ArgumentException("The parsed uninstall arguments exceed their aggregate bound.", "commandLine");
+                    }
+                    arguments[index] = argument;
+                }
+                return arguments;
+            }
+            finally
+            {
+                LocalFree(nativeArguments);
+            }
         }
 
         private static ProcessJobResult Run(string executable, string argumentTail)
@@ -404,6 +465,51 @@ namespace qOS.WindowsGuest
             return quoted.ToString();
         }
 
+        private static string BuildArgumentTail(string[] arguments)
+        {
+            if (arguments == null || arguments.Length == 0)
+            {
+                return null;
+            }
+            if (arguments.Length > MaxUninstallArguments)
+            {
+                throw new ArgumentException("The executable uninstaller has too many arguments.", "arguments");
+            }
+            StringBuilder tail = new StringBuilder();
+            int totalChars = 0;
+            for (int index = 0; index < arguments.Length; index++)
+            {
+                string argument = arguments[index];
+                if (argument == null || argument.Length > MaxUninstallArgumentChars || ContainsControlCharacter(argument))
+                {
+                    throw new ArgumentException("An executable uninstaller argument is invalid or exceeds its bound.", "arguments");
+                }
+                totalChars += argument.Length;
+                if (totalChars > MaxUninstallCommandChars)
+                {
+                    throw new ArgumentException("The executable uninstaller arguments exceed their aggregate bound.", "arguments");
+                }
+                if (index != 0)
+                {
+                    tail.Append(' ');
+                }
+                tail.Append(QuoteArgument(argument));
+            }
+            return tail.ToString();
+        }
+
+        private static bool ContainsControlCharacter(string value)
+        {
+            foreach (char character in value)
+            {
+                if (character < 0x20 || character == 0x7f)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private static void ThrowWin32(string message)
         {
             throw new Win32Exception(Marshal.GetLastWin32Error(), message);
@@ -411,4 +517,147 @@ namespace qOS.WindowsGuest
     }
 }
 '@ -Language CSharp
+}
+
+function Test-qOSPathInsideRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+    return $Path.StartsWith(($Root.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-qOSTrustedPathAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "qOS executable uninstall binding crosses a reparse point: $Path"
+    }
+
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $trustedOwners = @(
+        'S-1-5-18',       # Local System
+        'S-1-5-32-544',   # BUILTIN\Administrators
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464' # TrustedInstaller
+    )
+    if ($ownerSid -notin $trustedOwners) {
+        throw "qOS executable uninstall path has an untrusted owner: $Path"
+    }
+
+    $trustedWriters = @($trustedOwners) + @('S-1-3-0') # CREATOR OWNER
+    $writeMask = (
+        [int][Security.AccessControl.FileSystemRights]::WriteData -bor
+        [int][Security.AccessControl.FileSystemRights]::AppendData -bor
+        [int][Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [int][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [int][Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [int][Security.AccessControl.FileSystemRights]::Delete -bor
+        [int][Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [int][Security.AccessControl.FileSystemRights]::TakeOwnership
+    )
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        if (
+            $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            (([int]$rule.FileSystemRights -band $writeMask) -ne 0) -and
+            $rule.IdentityReference.Value -notin $trustedWriters
+        ) {
+            throw "qOS executable uninstall path grants write access to an untrusted principal: $Path"
+        }
+    }
+    return $item
+}
+
+function Assert-qOSTrustedPathChain {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$Leaf
+    )
+
+    if (-not (Test-qOSPathInsideRoot -Path $Path -Root $Root)) {
+        throw 'qOS executable uninstall path escapes its bound install root'
+    }
+    $rootItem = Assert-qOSTrustedPathAcl -Path $Root
+    if (-not $rootItem.PSIsContainer) { throw 'qOS executable uninstall root is not a directory' }
+
+    $relative = $Path.Substring($Root.Length).TrimStart('\')
+    $parts = @($relative.Split([char[]]@('\'), [StringSplitOptions]::RemoveEmptyEntries))
+    if ($parts.Count -eq 0) { throw 'qOS executable uninstall path cannot equal its install root' }
+    $current = $Root
+    $lastDirectoryPart = if ($Leaf) { $parts.Count - 2 } else { $parts.Count - 1 }
+    for ($index = 0; $index -le $lastDirectoryPart; $index++) {
+        $current = Join-Path $current $parts[$index]
+        $directory = Assert-qOSTrustedPathAcl -Path $current
+        if (-not $directory.PSIsContainer) { throw 'qOS executable uninstall path contains a non-directory component' }
+    }
+    if ($Leaf) {
+        $leafItem = Assert-qOSTrustedPathAcl -Path $Path
+        if ($leafItem.PSIsContainer) { throw 'qOS executable uninstall target is not a regular file' }
+        return $leafItem
+    }
+}
+
+function Get-qOSValidatedExecutableUninstallContract {
+    param([Parameter(Mandatory = $true)]$Contract)
+
+    if ([string]$Contract.kind -ne 'exe') { throw 'qOS executable uninstall contract has the wrong kind' }
+    $rawRoot = [string]$Contract.installRoot
+    $rawApplication = [string]$Contract.applicationPath
+    $rawExecutable = [string]$Contract.executablePath
+    foreach ($rawPath in @($rawRoot, $rawApplication, $rawExecutable)) {
+        if ([string]::IsNullOrWhiteSpace($rawPath) -or $rawPath -notmatch '^[A-Za-z]:\\' -or $rawPath.Substring(2).Contains(':')) {
+            throw 'qOS executable uninstall contract contains a non-absolute or alternate-stream path'
+        }
+    }
+    $root = [IO.Path]::GetFullPath($rawRoot).TrimEnd('\')
+    $application = [IO.Path]::GetFullPath($rawApplication)
+    $executable = [IO.Path]::GetFullPath($rawExecutable)
+    if ([IO.Path]::GetExtension($executable) -ine '.exe') {
+        throw 'qOS executable uninstaller is not an EXE'
+    }
+
+    $underProgramFiles = $false
+    foreach ($basePath in @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) {
+        $programRoot = [IO.Path]::GetFullPath([string]$basePath).TrimEnd('\')
+        if ($root.StartsWith(($programRoot + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+            $underProgramFiles = $true
+            break
+        }
+    }
+    if (-not $underProgramFiles) {
+        throw 'qOS executable uninstall root is not a product-specific Program Files directory'
+    }
+
+    $null = Assert-qOSTrustedPathChain -Root $root -Path $application -Leaf
+    $executableItem = Assert-qOSTrustedPathChain -Root $root -Path $executable -Leaf
+    $expectedHash = ([string]$Contract.executableSha256).ToLowerInvariant()
+    if ($expectedHash -notmatch '^[a-f0-9]{64}$') { throw 'qOS executable uninstall digest is invalid' }
+    $actualHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -cne $expectedHash) { throw 'qOS executable uninstaller changed after discovery' }
+
+    $arguments = @($Contract.arguments)
+    if ($arguments.Count -gt 32) { throw 'qOS executable uninstaller has too many arguments' }
+    $normalizedArguments = @()
+    $totalArgumentChars = 0
+    foreach ($argument in $arguments) {
+        if ($null -eq $argument) { throw 'qOS executable uninstaller has a null argument' }
+        $text = [string]$argument
+        if ($text.Length -gt 4096 -or $text -match '[\x00-\x1f\x7f]') {
+            throw 'qOS executable uninstaller argument is invalid or too long'
+        }
+        $totalArgumentChars += $text.Length
+        if ($totalArgumentChars -gt 16384) { throw 'qOS executable uninstaller arguments exceed their aggregate bound' }
+        $normalizedArguments += $text
+    }
+
+    return [PSCustomObject]@{
+        kind = 'exe'
+        installRoot = $root
+        applicationPath = $application
+        executablePath = $executable
+        executableSha256 = $expectedHash
+        arguments = @($normalizedArguments)
+    }
 }
