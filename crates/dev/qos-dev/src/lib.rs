@@ -357,6 +357,18 @@ pub enum UiGraphEdit {
     },
 }
 
+/// High-level request for an app-owned component in a serialized UI graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiComponentInsert {
+    pub name: String,
+    pub id: Option<String>,
+    pub parent: String,
+    /// `None` appends to the parent.
+    pub index: Option<usize>,
+    /// One JSON object passed unchanged to the component factory.
+    pub props: String,
+}
+
 /// Create a useful, accessible starter graph.
 ///
 /// # Errors
@@ -1971,8 +1983,9 @@ fn component_source(
 
 fn display_component_source(name: &str, module_name: &str, type_name: &str) -> String {
     format!(
-        r#"use ui::tokens::TextRole;
-use ui::widget::Text;
+        r##"use ui::tokens::TextRole;
+use ui::widget::{{Element, Text}};
+use ui::{{UiBuildContext, UiComponentRequest}};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct {type_name}Props {{
@@ -1998,6 +2011,30 @@ pub fn {module_name}(id: &str, props: &{type_name}Props) -> ui::widget::Column {
             .with_id(format!("{{id}}-detail")),
     ]
     .with_no_padding()
+}}
+
+/// Build this component from a serialized UI graph node.
+///
+/// # Errors
+///
+/// Returns a field-specific error when `title` or `detail` is not a string.
+pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
+    let string = |key| {{
+        request
+            .props
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{{key}} must be a string"))
+    }};
+    let props = {type_name}Props::new(string("title")?, string("detail")?);
+    Ok(Box::new({module_name}(request.id, &props)))
+}}
+
+/// Register this component's stable graph factory name.
+#[must_use]
+pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {{
+    context.with_component("{name}", from_ui_graph)
 }}
 
 #[cfg(test)]
@@ -2027,8 +2064,40 @@ mod tests {{
         )
         .expect("component detail semantics");
     }}
+
+    #[test]
+    fn graph_factory_validates_props_and_builds_the_same_component() {{
+        let document = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"example","name":"{name}","props":{{"title":"Graph title","detail":"Graph detail"}}}}}}"#,
+        )
+        .expect("valid component graph");
+        let context = register_ui_graph(UiBuildContext::default());
+        let widget = ui::UiDocumentExt::build_with(
+            &document,
+            &ui::Theme::default(),
+            &context,
+        )
+        .expect("registered component");
+        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        app.expect(
+            &SemanticExpectation::named("example-title")
+                .role(Role::Heading {{ level: 2 }})
+                .name("Graph title"),
+        )
+        .expect("graph component heading");
+
+        let invalid = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"title":"Missing detail"}}}}}}"#,
+        )
+        .expect("structurally valid component graph");
+        assert!(matches!(
+            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
+                if message == "detail must be a string"
+        ));
+    }}
 }}
-"#
+"##
     )
 }
 
@@ -2878,6 +2947,69 @@ pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
 /// file remains unchanged on failure.
 pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
     edit_ui_graph_batch(path, vec![edit])
+}
+
+/// Insert an app-owned component with a unique default id and append-by-default
+/// placement, then atomically publish the validated graph.
+///
+/// # Errors
+///
+/// Returns an error when props are not a JSON object, the parent cannot accept
+/// children, an explicit id is invalid or duplicated, or publication fails.
+pub fn insert_ui_component(path: &Path, request: UiComponentInsert) -> Result<String> {
+    let value: serde_json::Value =
+        serde_json::from_str(&request.props).context("parsing component props as JSON")?;
+    let props = value
+        .as_object()
+        .cloned()
+        .context("component props must be a JSON object")?;
+    let mut document = load_ui_graph(path)?;
+    let id = match request.id {
+        Some(id) => id,
+        None => unique_ui_node_id(&document, &request.name)?,
+    };
+    let index = if let Some(index) = request.index {
+        index
+    } else {
+        match document.node(&request.parent) {
+            Some(
+                qos_ui_graph::UiNode::Column { children, .. }
+                | qos_ui_graph::UiNode::Row { children, .. },
+            ) => children.len(),
+            Some(_) => bail!(
+                "UI graph node {:?} is not a row or column and cannot accept children",
+                request.parent
+            ),
+            None => bail!("UI graph has no node {:?}", request.parent),
+        }
+    };
+    document.insert_child(
+        &request.parent,
+        index,
+        qos_ui_graph::UiNode::Component {
+            id: id.clone(),
+            name: request.name,
+            props,
+        },
+    )?;
+    write_ui_graph(path, &document)?;
+    Ok(id)
+}
+
+fn unique_ui_node_id(document: &qos_ui_graph::UiDocument, base: &str) -> Result<String> {
+    if document.node(base).is_none() {
+        return Ok(base.to_owned());
+    }
+    let mut suffix = 2_u64;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if document.node(&candidate).is_none() {
+            return Ok(candidate);
+        }
+        suffix = suffix
+            .checked_add(1)
+            .context("exhausted component id suffixes")?;
+    }
 }
 
 /// Parse a JSON array of tagged graph edits suitable for
@@ -6412,7 +6544,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. A `{{\"type\":\"component\"}}` node can mount an app-owned retained component; register its factory in `UiBuildContext` and pass it to `screens::router_with`."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. Add an app-owned retained component with `qos-dev add component profile-card --template display`, then `qos-dev ui component ui/main.json profile-card --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`. Register the generated `components::profile_card::register_ui_graph` result in `screens::router_with`."
         );
     }
     if spec.template == Template::Async {
@@ -7015,6 +7147,9 @@ mod tests {
         syn::parse_file(&display_source).unwrap();
         assert!(display_source.contains("pub struct ActivityCardProps"));
         assert!(display_source.contains("pub fn activity_card(id: &str"));
+        assert!(display_source.contains("pub fn from_ui_graph("));
+        assert!(display_source.contains("pub fn register_ui_graph("));
+        assert!(display_source.contains("context.with_component(\"activity-card\""));
         assert!(display_source.contains("with_id(format!(\"{id}-title\"))"));
         assert!(display_source.contains("SemanticExpectation::named(\"example-title\")"));
 
@@ -8225,19 +8360,30 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let graph = temp.path().join("ui/main.json");
         init_ui_graph(&graph, "Projects", false).expect("initialize graph");
-        let component = parse_ui_node(
-            r#"{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}"#,
-        )
-        .expect("component node");
-        edit_ui_graph(
+        let profile = insert_ui_component(
             &graph,
-            UiGraphEdit::Insert {
+            UiComponentInsert {
+                name: "profile-card".into(),
+                id: Some("profile".into()),
                 parent: "root".into(),
-                index: 2,
-                node: component,
+                index: None,
+                props: r#"{"title":"Ada","detail":"Owner"}"#.into(),
             },
         )
         .expect("insert component");
+        assert_eq!(profile, "profile");
+        let second = insert_ui_component(
+            &graph,
+            UiComponentInsert {
+                name: "profile".into(),
+                id: None,
+                parent: "root".into(),
+                index: Some(2),
+                props: "{}".into(),
+            },
+        )
+        .expect("insert uniquely named component");
+        assert_eq!(second, "profile-2");
         edit_ui_graph(
             &graph,
             UiGraphEdit::SetProperty {
@@ -8258,6 +8404,21 @@ mod tests {
             Some(qos_ui_graph::UiNode::Component { props, .. })
                 if props.get("title") == Some(&serde_json::json!("Grace"))
         ));
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let error = insert_ui_component(
+            &graph,
+            UiComponentInsert {
+                name: "profile-card".into(),
+                id: None,
+                parent: "root".into(),
+                index: None,
+                props: "[]".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must be a JSON object"));
+        assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
     }
 
     #[test]
@@ -8850,6 +9011,8 @@ mod tests {
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
         assert!(app_readme(&spec).contains("qos-dev ui set"));
         assert!(app_readme(&spec).contains("qos-dev ui apply"));
+        assert!(app_readme(&spec).contains("qos-dev ui component"));
+        assert!(app_readme(&spec).contains("register_ui_graph"));
         assert!(app_readme(&spec).contains("screens::router_with"));
     }
 
