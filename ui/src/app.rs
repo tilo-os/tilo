@@ -48,7 +48,7 @@ use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};
 use vello::{
@@ -341,6 +341,35 @@ pub struct App {
     /// Wins over `QOS_PACKAGE_ID`/binary-name resolution for the Wayland
     /// `xdg_toplevel.app_id`. System surfaces use this as a stable identity.
     window_app_id: Option<String>,
+
+    /// Optional app → shell lifecycle channel for detachable surfaces. It is
+    /// discovered from the launcher-provided service fd and absent outside a
+    /// qOS session, where apps simply keep their overlays attached.
+    floating_surface_client: Option<crate::floating_surface::FloatingSurfaceServiceClient>,
+    last_floating_presentations:
+        std::collections::HashMap<String, crate::floating_surface::FloatingSurfacePresentation>,
+    /// Activity IDs from the previous service pump, including generic
+    /// browser/capture mirrors that do not own a secondary native window.
+    /// Comparing this set lets an app toggle PiP off with an explicit Dismiss
+    /// instead of abandoning a compositor mirror until process exit.
+    last_active_floating_ids: std::collections::HashSet<String>,
+    /// IDs whose shell `PrepareSurface`/`Adopted` reply has established
+    /// desktop coordinate space. Before this edge, presentation geometry is
+    /// still app-local and must not overwrite the translated detach request.
+    prepared_floating_presentations: std::collections::HashSet<String>,
+    /// App-local → desktop translation supplied by the shell for each
+    /// prepared native surface. While a frozen transfer proxy owns the pixels,
+    /// pointer capture can still arrive through the primary app window; the
+    /// runtime uses this to keep that held drag in desktop coordinates.
+    floating_coordinate_offsets: std::collections::HashMap<String, vello::kurbo::Vec2>,
+    /// Native surfaces temporarily hidden while their live content is back
+    /// inside the app. They retain the same compositor capability and warm
+    /// renderer until the activity ends or detaches again.
+    suspended_floating_presentations: std::collections::HashSet<String>,
+    /// Lifecycle edges also drive the runtime's secondary-window set. The
+    /// root sees them immediately; `AppHandler` drains this copy where an
+    /// `ActiveEventLoop` is available for window creation/destruction.
+    floating_host_messages: Vec<crate::floating_surface::FloatingSurfaceHostMessage>,
 }
 
 impl App {
@@ -445,6 +474,14 @@ impl App {
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
             window_app_id: None,
+            floating_surface_client:
+                crate::floating_surface::FloatingSurfaceServiceClient::discover(),
+            last_floating_presentations: std::collections::HashMap::new(),
+            last_active_floating_ids: std::collections::HashSet::new(),
+            prepared_floating_presentations: std::collections::HashSet::new(),
+            floating_coordinate_offsets: std::collections::HashMap::new(),
+            suspended_floating_presentations: std::collections::HashSet::new(),
+            floating_host_messages: Vec::new(),
         };
 
         app.a11y.high_contrast = Self::high_contrast_env_enabled();
@@ -469,6 +506,341 @@ impl App {
             .base_theme
             .clone()
             .with_a11y(&self.a11y, self.text_scale, self.ui_scale);
+    }
+
+    fn pump_floating_surface_service(&mut self) -> bool {
+        let active_ids = self
+            .root_widget
+            .active_floating_surface_ids()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let Some(client) = self.floating_surface_client.as_mut() else {
+            let mut changed = false;
+            // Outside a qOS session there is no trusted shell chooser to
+            // open. Drain the edge so reconnecting later cannot replay a
+            // stale user gesture.
+            while self.root_widget.take_capture_studio_request().is_some() {}
+            while let Some(request) = self.root_widget.take_floating_surface_request() {
+                let message = crate::floating_surface::FloatingSurfaceHostMessage::Reattach {
+                    id: request.id,
+                };
+                self.root_widget.on_floating_surface_host_message(&message);
+                self.floating_host_messages.push(message);
+                changed = true;
+            }
+            let _ = self.root_widget.take_floating_surface_source_updates();
+            self.last_active_floating_ids = self
+                .root_widget
+                .active_floating_surface_ids()
+                .into_iter()
+                .collect();
+            return changed;
+        };
+
+        let mut changed = false;
+        while let Some(mode) = self.root_widget.take_capture_studio_request() {
+            let mode = match mode {
+                crate::widget::CaptureMode::Screenshot => {
+                    crate::floating_surface::CaptureStudioProtocolMode::Screenshot
+                }
+                crate::widget::CaptureMode::Recording => {
+                    crate::floating_surface::CaptureStudioProtocolMode::Recording
+                }
+                crate::widget::CaptureMode::Pip => {
+                    crate::floating_surface::CaptureStudioProtocolMode::PictureInPicture
+                }
+            };
+            if let Err(error) = client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode },
+            ) {
+                tracing::warn!(%error, "shell capture-studio request failed");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+            changed = true;
+        }
+        while let Some(request) = self.root_widget.take_floating_surface_request() {
+            self.suspended_floating_presentations.remove(&request.id);
+            let message = crate::floating_surface::FloatingSurfaceClientMessage::Present {
+                request: (&request).into(),
+            };
+            if let Err(error) = client.send(&message) {
+                tracing::warn!(%error, "floating-surface service send failed; keeping app UI local");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        }
+        for (id, region) in self.root_widget.take_floating_surface_source_updates() {
+            if let Err(error) = client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
+                    id,
+                    region: crate::floating_surface::protocol_rect_array(region),
+                },
+            ) {
+                tracing::warn!(%error, "floating-surface source update failed");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        }
+
+        // Generic live mirrors have no `FloatingSurfacePresentation`: their
+        // pixels live in the shell capture host. The stable activity-ID edge
+        // is therefore their authoritative close/toggle signal.
+        for id in generic_floating_ids_to_dismiss(
+            &self.last_active_floating_ids,
+            &active_ids,
+            &self.last_floating_presentations,
+            &self.suspended_floating_presentations,
+        ) {
+            if let Err(error) =
+                client.send(&crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id })
+            {
+                tracing::warn!(%error, "floating-surface dismiss failed");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        }
+
+        let presentations = self
+            .root_widget
+            .floating_surface_presentations()
+            .into_iter()
+            .map(|presentation| (presentation.id.clone(), presentation))
+            .collect::<std::collections::HashMap<_, _>>();
+        for (id, presentation) in &presentations {
+            if !self.prepared_floating_presentations.contains(id) {
+                continue;
+            }
+            let changed = self
+                .last_floating_presentations
+                .get(id)
+                .is_none_or(|previous| previous != presentation);
+            if changed
+                && let Err(error) = client.send(
+                    &crate::floating_surface::FloatingSurfaceClientMessage::SurfaceGeometry {
+                        id: id.clone(),
+                        rect: crate::floating_surface::protocol_rect_array(
+                            presentation.window_rect,
+                        ),
+                        content_rect: crate::floating_surface::protocol_rect_array(
+                            presentation.content_rect,
+                        ),
+                    },
+                )
+            {
+                tracing::warn!(%error, "floating-surface geometry send failed");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+            if presentation.returning_to_app && !self.suspended_floating_presentations.contains(id)
+            {
+                self.suspended_floating_presentations.insert(id.clone());
+                if let Err(error) = client.send(
+                    &crate::floating_surface::FloatingSurfaceClientMessage::Suspend {
+                        id: id.clone(),
+                        rect: crate::floating_surface::protocol_rect_array(
+                            presentation.window_rect,
+                        ),
+                        content_rect: crate::floating_surface::protocol_rect_array(
+                            presentation.content_rect,
+                        ),
+                    },
+                ) {
+                    tracing::warn!(%error, "floating-surface return handoff failed");
+                    self.floating_surface_client = None;
+                    self.reattach_after_floating_service_loss();
+                    return changed;
+                }
+            }
+        }
+        for id in self.last_floating_presentations.keys() {
+            if presentations.contains_key(id) {
+                continue;
+            }
+            if self.suspended_floating_presentations.contains(id) {
+                continue;
+            }
+            let Some(previous) = self.last_floating_presentations.get(id) else {
+                continue;
+            };
+            let message = if active_ids.contains(id) {
+                self.suspended_floating_presentations.insert(id.clone());
+                crate::floating_surface::FloatingSurfaceClientMessage::Suspend {
+                    id: id.clone(),
+                    rect: crate::floating_surface::protocol_rect_array(previous.window_rect),
+                    content_rect: crate::floating_surface::protocol_rect_array(
+                        previous.content_rect,
+                    ),
+                }
+            } else {
+                crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id: id.clone() }
+            };
+            if let Err(error) = client.send(&message) {
+                tracing::warn!(%error, "floating-surface lifecycle send failed");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        }
+        // The activity can end while its native surface is already suspended,
+        // so no presentation edge remains to trigger permanent cleanup.
+        let ended_suspended = self
+            .suspended_floating_presentations
+            .iter()
+            .filter(|id| !active_ids.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ended_suspended {
+            if let Err(error) = client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id: id.clone() },
+            ) {
+                tracing::warn!(%error, "floating-surface dismiss send failed");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+            self.suspended_floating_presentations.remove(&id);
+        }
+        let geometry_changed = presentations != self.last_floating_presentations;
+        self.last_floating_presentations = presentations;
+
+        let messages = match client.pump() {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!(%error, "floating-surface service disconnected; keeping app UI local");
+                self.floating_surface_client = None;
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        };
+        for message in messages {
+            match &message {
+                crate::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                    id,
+                    coordinate_offset,
+                    ..
+                } => {
+                    self.floating_coordinate_offsets.insert(
+                        id.clone(),
+                        vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+                    );
+                    if self.prepared_floating_presentations.insert(id.clone()) {
+                        // Force one geometry publication on the next pump,
+                        // even when the pixels did not move while preparing.
+                        self.last_floating_presentations.remove(id);
+                    }
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. } => {
+                    if self.prepared_floating_presentations.insert(id.clone()) {
+                        self.last_floating_presentations.remove(id);
+                    }
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
+                    self.prepared_floating_presentations.remove(id);
+                    self.floating_coordinate_offsets.remove(id);
+                    self.suspended_floating_presentations.remove(id);
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
+                    self.prepared_floating_presentations.remove(id);
+                    self.floating_coordinate_offsets.remove(id);
+                    self.suspended_floating_presentations.insert(id.clone());
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
+            }
+            if let crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { bounds } =
+                &message
+            {
+                match crate::floating_surface::protocol_rect(*bounds) {
+                    Ok(bounds) => {
+                        self.root_widget.set_floating_surface_bounds(bounds);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "shell sent invalid floating-surface bounds")
+                    }
+                }
+            }
+            self.root_widget.on_floating_surface_host_message(&message);
+            self.floating_host_messages.push(message);
+            changed = true;
+        }
+        self.last_active_floating_ids = self
+            .root_widget
+            .active_floating_surface_ids()
+            .into_iter()
+            .collect();
+        changed || geometry_changed
+    }
+
+    fn reattach_after_floating_service_loss(&mut self) {
+        let ids = self
+            .last_floating_presentations
+            .keys()
+            .chain(self.suspended_floating_presentations.iter())
+            .cloned()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.last_floating_presentations.clear();
+        self.last_active_floating_ids.clear();
+        self.prepared_floating_presentations.clear();
+        self.floating_coordinate_offsets.clear();
+        self.suspended_floating_presentations.clear();
+        for id in ids {
+            let message = crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id };
+            self.root_widget.on_floating_surface_host_message(&message);
+            self.floating_host_messages.push(message);
+        }
+    }
+
+    fn take_floating_host_messages(
+        &mut self,
+    ) -> Vec<crate::floating_surface::FloatingSurfaceHostMessage> {
+        std::mem::take(&mut self.floating_host_messages)
+    }
+
+    /// Re-express a held pointer delivered through the primary app window in
+    /// desktop space while a prepared floating presentation is still active.
+    /// This is the transfer-proxy interval: pixels already live in the shell,
+    /// but the native secondary may not have committed and taken pointer focus
+    /// yet. Once the root reattaches, its presentation disappears immediately,
+    /// so the very next primary event remains app-local as usual.
+    fn primary_floating_pointer_event(
+        &self,
+        event: &WindowEvent,
+        scale_factor: f64,
+    ) -> Option<WindowEvent> {
+        if !self.root_widget.wants_pointer_capture() {
+            return None;
+        }
+        let offset = self
+            .root_widget
+            .floating_surface_presentations()
+            .iter()
+            .find_map(|presentation| self.floating_coordinate_offsets.get(&presentation.id))?;
+        let dx = offset.x * scale_factor;
+        let dy = offset.y * scale_factor;
+        match event {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => Some(WindowEvent::CursorMoved {
+                device_id: *device_id,
+                position: PhysicalPosition::new(position.x + dx, position.y + dy),
+            }),
+            WindowEvent::Touch(touch) => {
+                let mut translated = touch.clone();
+                translated.location.x += dx;
+                translated.location.y += dy;
+                Some(WindowEvent::Touch(translated))
+            }
+            _ => None,
+        }
     }
 
     /// Lets the hosted app register its action types, e.g.
@@ -2653,13 +3025,113 @@ impl App {
             app: self,
             window: None,
             render: None,
+            floating_windows: Vec::new(),
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            primary_frames_sent: 0,
+            primary_frames_completed: 0,
+            last_primary_frame_presented: 0,
+            floating_source_clear_frames: std::collections::HashMap::new(),
+            floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
         };
         event_loop.run_app(&mut handler).unwrap();
+    }
+}
+
+fn native_floating_logical_size(rect: KurboRect) -> winit::dpi::LogicalSize<f64> {
+    winit::dpi::LogicalSize::new(
+        rect.width().round().max(1.0),
+        rect.height().round().max(1.0),
+    )
+}
+
+fn generic_floating_ids_to_dismiss(
+    previous: &std::collections::HashSet<String>,
+    current: &std::collections::HashSet<String>,
+    native_presentations: &std::collections::HashMap<
+        String,
+        crate::floating_surface::FloatingSurfacePresentation,
+    >,
+    suspended_native: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    previous
+        .difference(current)
+        .filter(|id| !native_presentations.contains_key(*id) && !suspended_native.contains(*id))
+        .cloned()
+        .collect()
+}
+
+fn completed_primary_frame_gates(
+    gates: &std::collections::HashMap<String, Option<u64>>,
+    last_presented: u64,
+) -> Vec<String> {
+    gates
+        .iter()
+        .filter_map(|(id, required)| {
+            required
+                .is_some_and(|required| required <= last_presented)
+                .then_some(id.clone())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod generic_floating_activity_tests {
+    use super::{
+        completed_primary_frame_gates, generic_floating_ids_to_dismiss,
+        native_floating_logical_size,
+    };
+    use crate::floating_surface::FloatingSurfacePresentation;
+    use std::collections::{HashMap, HashSet};
+    use vello::kurbo::Rect;
+
+    #[test]
+    fn generic_pip_activity_edge_dismisses_without_touching_native_surfaces() {
+        let previous = HashSet::from([
+            "browser.media-pip".to_string(),
+            "chat-call:huddle".to_string(),
+            "navigation:route".to_string(),
+        ]);
+        let current = HashSet::new();
+        let native = HashMap::from([(
+            "chat-call:huddle".to_string(),
+            FloatingSurfacePresentation {
+                id: "chat-call:huddle".into(),
+                content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
+                window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
+                returning_to_app: false,
+            },
+        )]);
+        let suspended = HashSet::from(["navigation:route".to_string()]);
+        assert_eq!(
+            generic_floating_ids_to_dismiss(&previous, &current, &native, &suspended),
+            vec!["browser.media-pip".to_string()]
+        );
+    }
+
+    #[test]
+    fn native_float_allocation_follows_the_complete_soft_chrome() {
+        let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
+        let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
+        assert_eq!((compact.width, compact.height), (376.0, 252.0));
+        assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
+    }
+
+    #[test]
+    fn ownership_proxy_waits_for_the_exact_primary_frame_to_present() {
+        let gates = HashMap::from([
+            ("waiting".to_string(), None),
+            ("next".to_string(), Some(12)),
+            ("later".to_string(), Some(13)),
+        ]);
+        assert!(completed_primary_frame_gates(&gates, 11).is_empty());
+        assert_eq!(
+            completed_primary_frame_gates(&gates, 12),
+            vec!["next".to_string()]
+        );
     }
 }
 
@@ -2767,6 +3239,7 @@ struct AppHandler {
     /// `None` again in `exiting`, after the worker is joined, so its surface
     /// drops BEFORE the `Window` arc goes away.
     render: Option<RenderThreadHandle>,
+    floating_windows: Vec<NativeFloatingWindow>,
     /// `None` until `resumed` creates the window (must be built while
     /// hidden); lazy, so the hot path pays nothing with no screen reader
     /// running.
@@ -2775,12 +3248,37 @@ struct AppHandler {
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<ImeWindowState>,
+    primary_frames_sent: u64,
+    primary_frames_completed: u64,
+    last_primary_frame_presented: u64,
+    /// `None` waits for the next primary submission; `Some(sequence)` waits
+    /// until that exact-or-newer frame is reported Presented by the worker.
+    floating_source_clear_frames: std::collections::HashMap<String, Option<u64>>,
+    /// Reverse ownership gate. A suspended native surface remains covered by
+    /// its compositor-frozen final frame until one primary app frame with the
+    /// reattached widget is reported Presented.
+    floating_destination_present_frames: std::collections::HashMap<String, Option<u64>>,
     /// Maps one-finger taps onto the existing pointer event contract so every
     /// standard and app-local control gets touch without bespoke branches.
     touch_pointer: crate::interaction::TouchPointerEmulator,
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
+}
+
+struct NativeFloatingWindow {
+    id: String,
+    token: String,
+    desktop_rect: KurboRect,
+    window: Arc<Window>,
+    render: Option<RenderThreadHandle>,
+    /// Device/surface creation is much slower than a frame on software and
+    /// headless backends.  Keeping it off the winit thread lets the frozen
+    /// compositor proxy continue following the pointer during handoff.
+    render_init: Option<mpsc::Receiver<Result<RenderThreadHandle, String>>>,
+    prepared_at: Instant,
+    adopted: bool,
+    suspended: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3081,51 +3579,87 @@ fn run_layout_pass(
     Some((true, t_compute_us, t_apply_us))
 }
 
+fn create_window_render(
+    window: &Arc<Window>,
+    transparent: bool,
+) -> Result<RenderThreadHandle, String> {
+    let size = window.inner_size();
+    let mut render_cx = RenderContext::new();
+    let mut surface = pollster::block_on(render_cx.create_surface(
+        window.clone(),
+        size.width.max(1),
+        size.height.max(1),
+        vello::wgpu::PresentMode::AutoVsync,
+    ))
+    .map_err(|e| format!("could not create a drawing surface: {e}"))?;
+    if transparent {
+        // `Auto` commonly resolves to Opaque on Wayland even when winit's
+        // window was created transparent. Floating surfaces paint
+        // premultiplied Vello output, so request the matching compositor mode
+        // explicitly; otherwise the transparent gutter becomes a black box.
+        surface.config.alpha_mode = vello::wgpu::CompositeAlphaMode::PreMultiplied;
+    }
+    let device_handle = render_cx
+        .devices
+        .get(surface.dev_id)
+        .ok_or_else(|| "render device index out of range".to_string())?;
+    // Flipping to the sRGB suffix here would panic on mismatch with the
+    // format `create_surface` already chose. `configure` returns no
+    // `Result`, so guard it like the worker's reconfigures do
+    // (`render_thread::configure_surface_checked`) — an already-lost
+    // surface would otherwise hit wgpu's panicking default handler.
+    let configure_scope = device_handle
+        .device
+        .push_error_scope(vello::wgpu::ErrorFilter::Validation);
+    surface
+        .surface
+        .configure(&device_handle.device, &surface.config);
+    if let Some(err) = pollster::block_on(configure_scope.pop()) {
+        return Err(format!("could not configure the drawing surface: {err}"));
+    }
+    let renderer = Renderer::new(
+        &device_handle.device,
+        RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::all(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .map_err(|e| format!("could not create the renderer: {e}"))?;
+    // After this, every GPU call happens on its render worker.
+    spawn_render_thread(render_cx, surface, renderer)
+}
+
+fn begin_window_render_init(
+    window: Arc<Window>,
+    transparent: bool,
+) -> Result<mpsc::Receiver<Result<RenderThreadHandle, String>>, String> {
+    let (result_tx, result_rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("floating-render-init".into())
+        .spawn(move || {
+            let result = create_window_render(&window, transparent);
+            // The surface may have been permanently closed while a slow GPU
+            // backend was still probing. In that case, stop the newly-created
+            // render worker here so its surface is dropped before `window`.
+            if let Err(mpsc::SendError(result)) = result_tx.send(result)
+                && let Ok(mut render) = result
+            {
+                render.shutdown_and_join();
+            }
+        })
+        .map_err(|error| format!("could not start floating renderer setup: {error}"))?;
+    Ok(result_rx)
+}
+
 impl AppHandler {
     /// Called from the first `RedrawRequested` rather than inline in
     /// `resumed`, so the blocking GPU init doesn't starve the loop's first
     /// events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
-        let size = window.inner_size();
-        let mut render_cx = RenderContext::new();
-        let surface = pollster::block_on(render_cx.create_surface(
-            window.clone(),
-            size.width.max(1),
-            size.height.max(1),
-            vello::wgpu::PresentMode::AutoVsync,
-        ))
-        .map_err(|e| format!("could not create a drawing surface: {e}"))?;
-        let device_handle = render_cx
-            .devices
-            .get(surface.dev_id)
-            .ok_or_else(|| "render device index out of range".to_string())?;
-        // Flipping to the sRGB suffix here would panic on mismatch with the
-        // format `create_surface` already chose. `configure` returns no
-        // `Result`, so guard it like the worker's reconfigures do
-        // (`render_thread::configure_surface_checked`) — an already-lost
-        // surface would otherwise hit wgpu's panicking default handler.
-        let configure_scope = device_handle
-            .device
-            .push_error_scope(vello::wgpu::ErrorFilter::Validation);
-        surface
-            .surface
-            .configure(&device_handle.device, &surface.config);
-        if let Some(err) = pollster::block_on(configure_scope.pop()) {
-            return Err(format!("could not configure the drawing surface: {err}"));
-        }
-        let renderer = Renderer::new(
-            &device_handle.device,
-            RendererOptions {
-                use_cpu: false,
-                antialiasing_support: vello::AaSupport::all(),
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .map_err(|e| format!("could not create the renderer: {e}"))?;
-        // After this, every GPU call happens on the `ui-render` thread.
-        self.render = Some(spawn_render_thread(render_cx, surface, renderer)?);
+        self.render = Some(create_window_render(window, false)?);
         Ok(())
     }
 
@@ -3151,6 +3685,382 @@ impl AppHandler {
             None => window.set_ime_allowed(false),
         }
         self.ime_state = next;
+    }
+
+    fn create_native_floating_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: String,
+        token: String,
+        rect: KurboRect,
+    ) -> Result<(), String> {
+        if let Some(existing) = self
+            .floating_windows
+            .iter_mut()
+            .find(|surface| surface.id == id)
+        {
+            if existing.token != token {
+                return Err("shell changed the token of a live floating surface".into());
+            }
+            if existing.desktop_rect.size() != rect.size() {
+                let _ = existing
+                    .window
+                    .request_inner_size(native_floating_logical_size(rect));
+            }
+            existing.desktop_rect = rect;
+            existing.prepared_at = Instant::now();
+            existing.adopted = false;
+            existing.suspended = false;
+            existing.window.set_visible(true);
+            existing.window.request_redraw();
+            return Ok(());
+        }
+        let logical_size = native_floating_logical_size(rect);
+        let mut attributes = Window::default_attributes()
+            .with_title(format!("Floating · {id}"))
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_transparent(true)
+            .with_visible(false)
+            .with_inner_size(logical_size);
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            attributes = attributes.with_name(
+                format!(
+                    "{}{}",
+                    crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX,
+                    token
+                ),
+                "",
+            );
+        }
+        let window = Arc::new(
+            event_loop
+                .create_window(attributes)
+                .map_err(|error| format!("create floating surface window: {error}"))?,
+        );
+        window.set_visible(true);
+        window.request_redraw();
+        self.floating_windows.push(NativeFloatingWindow {
+            id,
+            token,
+            desktop_rect: rect,
+            window,
+            render: None,
+            render_init: None,
+            prepared_at: Instant::now(),
+            adopted: false,
+            suspended: false,
+        });
+        Ok(())
+    }
+
+    fn suspend_native_floating_window(&mut self, id: &str) -> bool {
+        let Some(surface) = self
+            .floating_windows
+            .iter_mut()
+            .find(|surface| surface.id == id)
+        else {
+            return false;
+        };
+        surface.window.set_visible(false);
+        surface.suspended = true;
+        surface.adopted = false;
+        true
+    }
+
+    fn close_native_floating_window(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .floating_windows
+            .iter()
+            .position(|surface| surface.id == id)
+        else {
+            return false;
+        };
+        let mut surface = self.floating_windows.remove(index);
+        surface.window.set_visible(false);
+        if let Some(mut render) = surface.render.take() {
+            render.shutdown_and_join();
+        }
+        true
+    }
+
+    fn apply_floating_host_messages(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let mut changed = false;
+        for message in self.app.take_floating_host_messages() {
+            match message {
+                crate::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                    id,
+                    token,
+                    rect,
+                    content_rect: _,
+                    transfer_covered,
+                    coordinate_offset: _,
+                } => match crate::floating_surface::protocol_rect(rect) {
+                    Ok(rect) => {
+                        if transfer_covered {
+                            self.floating_source_clear_frames.insert(id.clone(), None);
+                            if let Some(primary) = self.window.as_ref() {
+                                primary.request_redraw();
+                            }
+                        }
+                        match self.create_native_floating_window(event_loop, id, token, rect) {
+                            Ok(()) => changed = true,
+                            Err(error) => {
+                                tracing::warn!(%error, "could not prepare native floating surface")
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "shell sent invalid floating surface rect")
+                    }
+                },
+                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, rect } => {
+                    if crate::floating_surface::protocol_rect(rect).is_ok()
+                        && let Some(surface) = self
+                            .floating_windows
+                            .iter_mut()
+                            .find(|surface| surface.id == id)
+                    {
+                        surface.adopted = true;
+                        surface.window.request_redraw();
+                        changed = true;
+                    }
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
+                    self.floating_source_clear_frames.remove(&id);
+                    self.floating_destination_present_frames.remove(&id);
+                    changed |= self.close_native_floating_window(&id);
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
+                    self.floating_source_clear_frames.remove(&id);
+                    self.floating_destination_present_frames
+                        .insert(id.clone(), None);
+                    changed |= self.suspend_native_floating_window(&id);
+                    if let Some(primary) = self.window.as_ref() {
+                        primary.request_redraw();
+                    }
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
+            }
+        }
+        changed
+    }
+
+    /// A prepared surface that never commits must not strand its app-owned
+    /// content half outside the primary window forever. Keep polling only
+    /// while the first buffer is pending, then ask the shell to close the
+    /// abandoned capability; `Closed` drives the ordinary animated return.
+    fn recover_stalled_floating_windows(&mut self) -> bool {
+        // A frozen compositor-side transfer frame keeps the surface visually
+        // continuous while a cold GPU backend prepares. This deadline is now
+        // a genuine failure bound, not a UX timer: ordinary adoption replaces
+        // the proxy on its first committed buffer.
+        // A cold secondary WGPU surface can spend several seconds enumerating
+        // fallbacks on software/headless systems. The compositor's transfer
+        // proxy is already covering every pixel, so returning at four seconds
+        // caused a needless visible snap just before a viable backend could
+        // finish. Ten seconds remains a bounded failure path without turning
+        // ordinary slow device discovery into UX churn.
+        const FIRST_BUFFER_DEADLINE: Duration = Duration::from_secs(10);
+        let stalled = self
+            .floating_windows
+            .iter()
+            .filter(|surface| {
+                !surface.suspended
+                    && !surface.adopted
+                    && surface.prepared_at.elapsed() >= FIRST_BUFFER_DEADLINE
+            })
+            .map(|surface| surface.id.clone())
+            .collect::<Vec<_>>();
+        if stalled.is_empty() {
+            return false;
+        }
+        for id in stalled {
+            tracing::warn!(%id, "floating surface missed its first-buffer deadline; returning it to the app");
+            if let Some(client) = self.app.floating_surface_client.as_mut() {
+                let _ = client.send(
+                    &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
+                        id: id.clone(),
+                    },
+                );
+            }
+            self.close_native_floating_window(&id);
+        }
+        true
+    }
+
+    fn sync_native_floating_geometry(&mut self) -> bool {
+        let presentations = self.app.root_widget.floating_surface_presentations();
+        let mut changed = false;
+        for surface in &mut self.floating_windows {
+            if let Some(presentation) = presentations
+                .iter()
+                .find(|presentation| presentation.id == surface.id)
+                && presentation.window_rect != surface.desktop_rect
+            {
+                if presentation.window_rect.size() != surface.desktop_rect.size() {
+                    // App-owned live activities can change silhouette while
+                    // detached: a call gains participant rows, navigation
+                    // reveals another instruction, or accessibility text
+                    // grows. Resize the real transparent buffer with the
+                    // shared presentation rect so its soft chrome is never
+                    // clipped inside the old native allocation.
+                    let _ = surface
+                        .window
+                        .request_inner_size(native_floating_logical_size(presentation.window_rect));
+                }
+                surface.desktop_rect = presentation.window_rect;
+                surface.window.request_redraw();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn handle_floating_redraw(&mut self, index: usize) -> bool {
+        let (app, surfaces) = (&mut self.app, &mut self.floating_windows);
+        let Some(surface) = surfaces.get_mut(index) else {
+            return false;
+        };
+        if surface.suspended {
+            return true;
+        }
+        if surface.render.is_none() {
+            if surface.render_init.is_none() {
+                match begin_window_render_init(surface.window.clone(), true) {
+                    Ok(init) => surface.render_init = Some(init),
+                    Err(error) => {
+                        tracing::warn!(%error, id = %surface.id, "floating surface renderer failed");
+                        return false;
+                    }
+                }
+            }
+            let Some(init) = surface.render_init.as_ref() else {
+                return false;
+            };
+            match init.try_recv() {
+                Ok(Ok(render)) => {
+                    surface.render = Some(render);
+                    surface.render_init = None;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, id = %surface.id, "floating surface renderer failed");
+                    surface.render_init = None;
+                    return false;
+                }
+                Err(mpsc::TryRecvError::Empty) => return true,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    tracing::warn!(id = %surface.id, "floating surface renderer setup stopped");
+                    surface.render_init = None;
+                    return false;
+                }
+            }
+        }
+        let Some(render) = surface.render.as_mut() else {
+            return false;
+        };
+        let mut followup = false;
+        while let Ok(outcome) = render.frame_complete.try_recv() {
+            match outcome {
+                FrameOutcome::Presented => {}
+                FrameOutcome::Reconfigured | FrameOutcome::Skipped => followup = true,
+                FrameOutcome::SurfaceGone => return false,
+            }
+        }
+        let Ok(mut scene) = render.scene_pool.recv() else {
+            return false;
+        };
+        scene.reset();
+        let inner = surface.window.inner_size();
+        let scale = surface.window.scale_factor();
+        let transform = crate::scale::composite_transform(scale)
+            .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
+        app.root_widget.draw_floating_surfaces(
+            &mut scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+        if render
+            .render_tx
+            .send(RenderRequest::Frame {
+                scene: Box::new(scene),
+                width: inner.width.max(1),
+                height: inner.height.max(1),
+                base_color: Color::TRANSPARENT,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        if followup {
+            surface.window.request_redraw();
+        }
+        true
+    }
+
+    fn dispatch_floating_event(
+        &mut self,
+        window: &Arc<Window>,
+        desktop_rect: KurboRect,
+        event: WindowEvent,
+    ) {
+        let scale = window.scale_factor();
+        let event = match event {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => WindowEvent::CursorMoved {
+                device_id,
+                position: PhysicalPosition::new(
+                    position.x + desktop_rect.x0 * scale,
+                    position.y + desktop_rect.y0 * scale,
+                ),
+            },
+            WindowEvent::Touch(mut touch) => {
+                touch.location = PhysicalPosition::new(
+                    touch.location.x + desktop_rect.x0 * scale,
+                    touch.location.y + desktop_rect.y0 * scale,
+                );
+                WindowEvent::Touch(touch)
+            }
+            other => other,
+        };
+        let app = &mut self.app;
+        let Some(root_node) = app.root_node else {
+            return;
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        app.root_widget.handle_event(
+            &event,
+            scale,
+            &app.modifiers,
+            &mut app.state.doc,
+            &app.state.root,
+            &mut handled,
+            &mut focus_target,
+            root_node,
+            &app.taffy,
+        );
+        if let Some(id) = focus_target {
+            app.set_focused_node(Some(id));
+        }
+        if handled {
+            app.commit_action();
+            app.needs_sync = true;
+            app.layout_dirty |= app.root_widget.is_layout_dirty();
+            if let Some(primary) = self.window.as_ref() {
+                primary.request_redraw();
+            }
+            for surface in &self.floating_windows {
+                surface.window.request_redraw();
+            }
+        }
     }
 
     /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
@@ -3181,14 +4091,16 @@ impl AppHandler {
         let Some(render) = self.render.as_mut() else {
             return;
         };
-        let app = &mut self.app;
         // A `Reconfigured` or `Skipped` previous frame re-requests a
         // redraw so the user doesn't see a stale image.
         let mut needs_followup_redraw = false;
         let mut surface_gone = false;
         while let Ok(outcome) = render.frame_complete.try_recv() {
+            self.primary_frames_completed = self.primary_frames_completed.saturating_add(1);
             match outcome {
-                FrameOutcome::Presented => {}
+                FrameOutcome::Presented => {
+                    self.last_primary_frame_presented = self.primary_frames_completed;
+                }
                 FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
                     needs_followup_redraw = true;
                 }
@@ -3197,11 +4109,54 @@ impl AppHandler {
                 }
             }
         }
+        let cleared = completed_primary_frame_gates(
+            &self.floating_source_clear_frames,
+            self.last_primary_frame_presented,
+        );
+        for id in cleared {
+            let sent =
+                self.app
+                    .floating_surface_client
+                    .as_mut()
+                    .is_some_and(|client| {
+                        client
+                    .send(&crate::floating_surface::FloatingSurfaceClientMessage::SourceCleared {
+                        id: id.clone(),
+                    })
+                    .is_ok()
+                    });
+            if sent {
+                self.floating_source_clear_frames.remove(&id);
+            }
+        }
+        let destinations_presented = completed_primary_frame_gates(
+            &self.floating_destination_present_frames,
+            self.last_primary_frame_presented,
+        );
+        for id in destinations_presented {
+            let sent = self
+                .app
+                .floating_surface_client
+                .as_mut()
+                .is_some_and(|client| {
+                    client
+                        .send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::DestinationPresented {
+                                id: id.clone(),
+                            },
+                        )
+                        .is_ok()
+                });
+            if sent {
+                self.floating_destination_present_frames.remove(&id);
+            }
+        }
         if surface_gone {
             tracing::info!("drawing surface is gone; closing the window");
             event_loop.exit();
             return;
         }
+        let app = &mut self.app;
 
         // `recv()` is the backpressure boundary — capacity-2 means
         // at most one frame of overlap (main building N+1 while
@@ -3358,6 +4313,18 @@ impl AppHandler {
             event_loop.exit();
             return;
         }
+        self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
+        let submitted = self.primary_frames_sent;
+        for required in self.floating_source_clear_frames.values_mut() {
+            if required.is_none() {
+                *required = Some(submitted);
+            }
+        }
+        for required in self.floating_destination_present_frames.values_mut() {
+            if required.is_none() {
+                *required = Some(submitted);
+            }
+        }
 
         let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
         if let Some(_start) = t_frame_start {
@@ -3379,6 +4346,12 @@ impl AppHandler {
 
         if needs_followup_redraw {
             window.request_redraw();
+        }
+        // The secondary surfaces paint the same app-owned state. A primary
+        // frame therefore invalidates each of them exactly once; their own
+        // presentation never recursively requests another primary frame.
+        for surface in &self.floating_windows {
+            surface.window.request_redraw();
         }
     }
 
@@ -3480,6 +4453,7 @@ impl AppHandler {
         // presentation state and must not create an empty undo boundary.
         let mut is_undo_redo =
             self.dispatching_touch_pointer && matches!(event, WindowEvent::CursorMoved { .. });
+        let mut floating_pointer_needs_redraw = false;
 
         // The palette owns the keyboard while open; Ctrl+K itself is
         // handled below, so let it through.
@@ -3705,6 +4679,11 @@ impl AppHandler {
 
         if !handled && let Some(root_node) = app.root_node {
             let scale_factor = window.scale_factor();
+            let had_floating_presentation =
+                !app.root_widget.floating_surface_presentations().is_empty();
+            let floating_pointer_event = app.primary_floating_pointer_event(&event, scale_factor);
+            let used_desktop_pointer_space = floating_pointer_event.is_some();
+            let event_for_root = floating_pointer_event.as_ref().unwrap_or(&event);
             let was_mouse_click = matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -3713,7 +4692,7 @@ impl AppHandler {
                 }
             );
             app.root_widget.handle_event(
-                &event,
+                event_for_root,
                 scale_factor,
                 &app.modifiers,
                 &mut app.state.doc,
@@ -3723,6 +4702,11 @@ impl AppHandler {
                 root_node,
                 &app.taffy,
             );
+            let has_floating_presentation =
+                !app.root_widget.floating_surface_presentations().is_empty();
+            floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
+                && (used_desktop_pointer_space
+                    || had_floating_presentation != has_floating_presentation);
             if was_mouse_click {
                 tracing::debug!(
                     handled,
@@ -3900,7 +4884,7 @@ impl AppHandler {
             if !is_pointer_move || app.root_widget.is_layout_dirty() {
                 app.layout_dirty = true;
             }
-            if !is_pointer_move || app.root_widget.needs_redraw() {
+            if !is_pointer_move || floating_pointer_needs_redraw || app.root_widget.needs_redraw() {
                 window.request_redraw();
             }
         }
@@ -4128,6 +5112,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.app.autosave_flush();
         self.app.root_widget.unmount_native_views();
+        for surface in &mut self.floating_windows {
+            if let Some(mut render) = surface.render.take() {
+                render.shutdown_and_join();
+            }
+        }
+        self.floating_windows.clear();
         if let Some(mut render) = self.render.take() {
             render.shutdown_and_join();
         }
@@ -4139,6 +5129,44 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(index) = self
+            .floating_windows
+            .iter()
+            .position(|surface| surface.window.id() == window_id)
+        {
+            let window = self.floating_windows[index].window.clone();
+            let desktop_rect = self.floating_windows[index].desktop_rect;
+            match event {
+                WindowEvent::CloseRequested => {
+                    let id = self.floating_windows[index].id.clone();
+                    if let Some(client) = self.app.floating_surface_client.as_mut() {
+                        let _ = client.send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
+                                id: id.clone(),
+                            },
+                        );
+                    }
+                    self.close_native_floating_window(&id);
+                }
+                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    if !self.handle_floating_redraw(index) {
+                        let id = self
+                            .floating_windows
+                            .get(index)
+                            .map(|surface| surface.id.clone());
+                        if let Some(id) = id {
+                            self.close_native_floating_window(&id);
+                        }
+                    }
+                }
+                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                other => self.dispatch_floating_event(&window, desktop_rect, other),
+            }
+            return;
+        }
         let Some(window) = self.window.clone() else {
             return;
         };
@@ -4217,6 +5245,33 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         self.sync_ime(&window);
+
+        if self.app.pump_floating_surface_service() {
+            self.app.layout_dirty = true;
+            window.request_redraw();
+        }
+        if self.apply_floating_host_messages(event_loop) {
+            window.request_redraw();
+        }
+        self.sync_native_floating_geometry();
+        if self.recover_stalled_floating_windows() {
+            window.request_redraw();
+        }
+        // `RedrawRequested` polls the asynchronous renderer setup. The shell
+        // keeps showing its live transfer proxy in the meantime, so these
+        // frames are cheap but essential: the first real buffer should take
+        // ownership as soon as it is ready, without waiting for fresh input.
+        for surface in &self.floating_windows {
+            if !surface.suspended && !surface.adopted {
+                surface.window.request_redraw();
+            }
+        }
+        if self.app.root_widget.needs_animation_frame() {
+            for surface in &self.floating_windows {
+                surface.window.request_redraw();
+            }
+        }
+
         let app = &mut self.app;
 
         // Catches a compositor reconfigure that changes `inner_size()`
@@ -4230,7 +5285,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             window.request_redraw();
         }
-
         // Keep pumping frames while any "just typed" highlighter mark is
         // still fading, so the taper animates instead of freezing.
         let typing_now = Instant::now();
@@ -4337,10 +5391,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // ~60 Hz tick only while something no winit event surfaces on its
         // own needs draining — a live collab socket, or a root still
         // wanting another frame.
+        let awaiting_floating_pixels = self
+            .floating_windows
+            .iter()
+            .any(|surface| !surface.suspended && !surface.adopted);
         let fast_pump = app.collab_manager.is_connected()
             || needs_frame
             || tooltip_pending
             || typing_active
+            || awaiting_floating_pixels
             || scheduled_due;
         match (fast_pump, scheduled_deadline) {
             (true, _) => {

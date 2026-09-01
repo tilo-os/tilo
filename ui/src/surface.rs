@@ -14,13 +14,71 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
 };
 
+use crate::ColorCompat;
 use crate::theme::Theme;
 use crate::tokens::Shadow;
+
+/// Shared silhouette for lightweight desktop floats. The asymmetry is only
+/// one or two logical pixels along each edge: enough to feel soft and held,
+/// never enough to look like a novelty blob. Body, border, app-owned call /
+/// navigation surfaces, and generic floating windows all use this exact path
+/// so their corner radii cannot drift apart.
+pub fn soft_outline(rect: Rect) -> BezPath {
+    let mut path = BezPath::new();
+    path.move_to((rect.x0 + 21.0, rect.y0 + 1.5));
+    path.curve_to(
+        (rect.x0 + 8.0, rect.y0),
+        (rect.x0, rect.y0 + 9.0),
+        (rect.x0 + 1.5, rect.y0 + 23.0),
+    );
+    path.line_to((rect.x0 - 1.0, rect.y1 - 20.0));
+    path.curve_to(
+        (rect.x0, rect.y1 - 7.0),
+        (rect.x0 + 10.0, rect.y1 + 1.0),
+        (rect.x0 + 24.0, rect.y1 + 1.5),
+    );
+    path.line_to((rect.x1 - 18.0, rect.y1 + 2.0));
+    path.curve_to(
+        (rect.x1 - 6.0, rect.y1),
+        (rect.x1 + 1.0, rect.y1 - 9.0),
+        (rect.x1, rect.y1 - 22.0),
+    );
+    path.line_to((rect.x1 + 2.0, rect.y0 + 27.0));
+    path.curve_to(
+        (rect.x1 + 1.0, rect.y0 + 11.0),
+        (rect.x1 - 10.0, rect.y0 - 1.0),
+        (rect.x1 - 27.0, rect.y0),
+    );
+    path.close_path();
+    path
+}
+
+/// Shared quiet drag affordance for a detachable soft surface.
+///
+/// Call, navigation and generic floating windows use the same 36×3 logical
+/// pixel pill. Keeping this out of app renderers makes the cross-boundary
+/// gesture recognizable without imposing one shared title/control layout on
+/// workflow-specific surfaces.
+pub fn floating_drag_grip(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
+    let grip = Rect::new(
+        rect.center().x - 18.0,
+        rect.y0 + 6.0,
+        rect.center().x + 18.0,
+        rect.y0 + 9.0,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color.with_alpha_factor(0.38),
+        None,
+        &RoundedRect::from_rect(grip, 2.0),
+    );
+}
 
 /// Resolution of the baked falloff along the profile axis: 256 samples
 /// across a band at most a couple hundred logical px wide is plenty.
