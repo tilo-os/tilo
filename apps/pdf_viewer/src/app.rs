@@ -849,8 +849,12 @@ impl PdfApp {
         state: &mut AutoCommit,
         action: &crate::actions::PdfViewerAction,
     ) {
-        self.actions
-            .dispatch(state, crate::actions::PDF_VIEWER_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::PDF_VIEWER_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.PdfViewer", "PDF Viewer", action),
+        );
     }
 
     /// The presentation context Ctrl+K needs to build the document-level action

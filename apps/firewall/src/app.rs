@@ -321,8 +321,12 @@ impl FirewallApp {
     /// (`firewall-cmd`/`nft`, see [`Self::apply`]) is a separate side effect
     /// driven by the resulting document state — never part of an action.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &FirewallAction) {
-        self.actions
-            .dispatch(state, crate::actions::FIREWALL_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::FIREWALL_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Firewall", "Firewall", action),
+        );
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(json) = FirewallDoc::load_json(state) {
             if let Some(cfg) = FirewallConfig::from_json(&json) {
