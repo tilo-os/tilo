@@ -25,9 +25,11 @@ silently replaced.
 
 Native qOS and the legacy-host compatibility route deliberately have different
 trust models. A normal qOS installation creates identity through the dedicated
-OOBE and keeps native provisioning responsible for protected-key migration and
-the OS installation's encrypted-storage policy. It does not infer a person's
-identity from the implementation-level Unix account.
+OOBE and requires a LUKS2-encrypted system before that identity is created.
+TPM2 machines use one required startup PIN bound to the TPM; machines without
+TPM2 require a normal disk passphrase. Native provisioning remains responsible
+for protected-key migration and does not infer a person's identity from the
+implementation-level Unix account.
 
 Only when qDesktop is installed on top of an existing Linux distribution does
 identity associate with the already-authenticated Unix login. Its files live in
