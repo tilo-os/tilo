@@ -721,7 +721,12 @@ impl MapsApp {
     /// and the document agree on a single source of truth.
     fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
         MapsDoc::save(doc, &self.model);
-        self.actions.dispatch(doc, MAPS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            MAPS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Maps", "Maps", action),
+        );
         if let Some(model) = MapsDoc::load(doc) {
             self.model = model;
             self.endpoints

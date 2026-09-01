@@ -211,7 +211,12 @@ impl MailState {
     /// Ctrl+K palette. The in-memory mailbox is updated by the caller for
     /// immediate feedback and reconciled from the document on the next `sync`.
     fn dispatch_action(&mut self, doc: &mut AutoCommit, action: &MailAction) {
-        self.actions.dispatch(doc, MAIL_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            MAIL_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Mail", "Mail", action),
+        );
     }
 
     /// Persist the in-progress draft as an action (undo boundary + replay + the
