@@ -50,7 +50,7 @@ jobs:
         run: |
           set -uo pipefail
           diagnostic=success
-          if ! bash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key; then
+          if ! bash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD; then
             diagnostic=bash-syntax
           elif ! cc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c; then
             diagnostic=qemu-wrapper-compile
