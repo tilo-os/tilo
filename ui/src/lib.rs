@@ -181,8 +181,8 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 pub use history_source::groups as history_groups;
 pub use history_source::{
     ActivityBrief, ActivityDigest, AuthorDirectory, CompareError, HistoryComparison,
-    HistoryFacetIndex, HistorySeenFrontier, HistorySource, compare_entries, heads_for_entry,
-    version_index_for_entry,
+    HistoryFacetIndex, HistoryResourceTarget, HistorySeenFrontier, HistorySelectionDetail,
+    HistorySource, compare_entries, heads_for_entry, version_index_for_entry,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
