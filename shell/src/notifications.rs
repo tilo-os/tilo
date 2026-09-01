@@ -17,6 +17,14 @@
 //! the same [`crate::portal::CallerMap`] the portal backend uses, riding
 //! along on [`IncomingNotification::caller`].
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus `Notify` signature requires app_icon; the zbus `#[interface]` macro \
+              deserialises it into this named parameter and forwards it by identifier into its \
+              generated dispatcher even though this handler has no use for the value, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -230,7 +238,12 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
 fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
     actions
         .chunks_exact(2)
-        .map(|c| (c[0].clone(), c[1].clone()))
+        .filter_map(|c| {
+            let [key, label] = c else {
+                return None; // chunks_exact(2) guarantees len == 2
+            };
+            Some((key.clone(), label.clone()))
+        })
         .collect()
 }
 
@@ -357,19 +370,23 @@ impl NotificationService {
             .collect();
         self.priority_contacts
             .replace_verified(contacts)
-            .map(|count| count as u32)
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
             .map_err(zbus::fdo::Error::Failed)
     }
 
     /// `CloseNotification` — ask the server to close a notification by id.
     /// The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
-    async fn close_notification(&self, id: u32) {
+    fn close_notification(&self, id: u32) {
         self.bridge.request_close(id);
     }
 
     /// `GetCapabilities` — advertise the optional features we honour:
     /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
-    async fn get_capabilities(&self) -> Vec<String> {
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed capability list doesn't depend on self"
+    )]
+    fn get_capabilities(&self) -> Vec<String> {
         vec![
             "body".to_string(),
             "actions".to_string(),
@@ -378,7 +395,11 @@ impl NotificationService {
     }
 
     /// `GetServerInformation` — `(name, vendor, version, spec_version)`.
-    async fn get_server_information(&self) -> (String, String, String, String) {
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed server info doesn't depend on self"
+    )]
+    fn get_server_information(&self) -> (String, String, String, String) {
         (
             "qOS Notifications".to_string(),
             "qOS".to_string(),
@@ -420,6 +441,12 @@ impl ServerHandle {
 ///
 /// **Production** passes `zbus::Connection::session()`. **Tests** pass an
 /// in-process p2p connection; `request_name` is best-effort there since p2p connections have no broker.
+///
+/// # Errors
+///
+/// Returns an error if registering [`NotificationService`] at
+/// [`OBJECT_PATH`] fails. A failed [`BUS_NAME`] request is logged, not
+/// propagated.
 pub async fn serve_notifications(
     connection: zbus::Connection,
     service: NotificationService,

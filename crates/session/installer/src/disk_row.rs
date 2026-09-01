@@ -147,11 +147,22 @@ impl Widget for DiskRow {
             transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y1)),
             None,
         );
+        let mut details = Vec::new();
         if !self.disk.model.is_empty() {
+            details.push(self.disk.model.clone());
+        }
+        details.push(self.disk.contents_summary());
+        if self.disk.is_system {
+            details.push("running system disk".to_string());
+        }
+        if self.disk.read_only {
+            details.push("read-only".to_string());
+        }
+        if !details.is_empty() {
             let y2 = y1 + f64::from(NAME_SIZE) + 4.0;
             text_renderer.draw_text(
                 scene,
-                &self.disk.model,
+                &details.join(" · "),
                 MODEL_SIZE,
                 theme.text_dim,
                 transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y2)),

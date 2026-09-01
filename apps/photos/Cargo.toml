@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "photos"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
 # so the shell's palette and an out-of-process caller drive the same operations
@@ -28,7 +32,6 @@ qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

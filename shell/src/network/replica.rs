@@ -115,15 +115,24 @@ impl WorkspaceTreeReplica {
             msgs.push(NeighbourMsg::SyncReq {
                 since,
                 room: room.to_string(),
+                invite_id: None,
             });
         }
         drop(tree);
-        self.pending_outgoing.lock().unwrap().extend(msgs);
+        self.pending_outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(msgs);
     }
 
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
-        std::mem::take(&mut *self.pending_outgoing.lock().unwrap())
+        std::mem::take(
+            &mut *self
+                .pending_outgoing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 }
 
@@ -151,7 +160,7 @@ impl WorkspaceTreeReplica {
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
-            NeighbourMsg::SyncReq { since, room } => {
+            NeighbourMsg::SyncReq { since, room, .. } => {
                 // A roomless request is the transport's peer-join kick, not a request for
                 // everything — answering with a document would be the leak this closes.
                 let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
@@ -175,7 +184,7 @@ impl WorkspaceTreeReplica {
                 }
                 self.pending_outgoing
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(NeighbourMsg::SyncResp {
                         changes,
                         room: room_id.to_string(),
@@ -193,7 +202,8 @@ impl WorkspaceTreeReplica {
                     );
                     return;
                 };
-                if let Err(err) = self.tree.write().apply_room_changes(room_id, changes, from) {
+                let result = self.tree.write().apply_room_changes(room_id, changes, from);
+                if let Err(err) = result {
                     tracing::error!(
                         target: "shell::network::replica",
                         sender = %sender,
@@ -221,6 +231,8 @@ mod tests {
     //! pattern `hub.rs`'s tests use.
     //!
     //! [`Hub`]: crate::network::hub::Hub
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::network::hub::Hub;
     use automerge::{ROOT, ReadDoc, ScalarValue};
@@ -339,7 +351,10 @@ mod tests {
             Value::Scalar(s) => match s.as_ref() {
                 ScalarValue::Str(t) => out.push_str(t),
                 ScalarValue::Bytes(b) => out.push_str(&String::from_utf8_lossy(b)),
-                other => out.push_str(&format!("{other:?}")),
+                // `String`'s `Write` impl is infallible.
+                other => {
+                    let _ = write!(out, "{other:?}");
+                }
             },
             Value::Object(ObjType::List | ObjType::Text) => {
                 for i in 0..doc.length(id) {
@@ -363,13 +378,13 @@ mod tests {
         initiator.lock().unwrap().request_sync();
         let from = initiator.lock().unwrap().id();
         let outbound = initiator.lock().unwrap().drain_outgoing();
-        for msg in outbound {
+        for msg in &outbound {
             hub.broadcast(from, msg);
         }
         for other in others {
             let id = other.lock().unwrap().id();
             let replies = other.lock().unwrap().drain_outgoing();
-            for msg in replies {
+            for msg in &replies {
                 hub.broadcast(id, msg);
             }
         }
@@ -480,8 +495,8 @@ mod tests {
             .map_or(0, |(i, _)| i);
         let end = held[at..]
             .char_indices()
-            .nth(needle.chars().count() + 70)
-            .map_or(held.len(), |(i, _)| at + i);
+            .nth(needle.chars().count().saturating_add(70))
+            .map_or(held.len(), |(i, _)| at.saturating_add(i));
         panic!(
             "{what} ({needle:?}) leaked to a guest invited only to room A.\n\
              Found in the guest's own state at byte {at}:\n…{}…",
@@ -501,6 +516,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                 room: stranger_room.to_string(),
+                invite_id: None,
             },
         );
         assert!(
@@ -524,6 +540,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: Vec::new(),
                 room: String::new(),
+                invite_id: None,
             },
         );
 
@@ -618,6 +635,7 @@ mod tests {
         );
         // Nowhere in what the host now holds — including the room document it will hand to the next peer that asks.
         let held = holdings(&mut tree);
+        drop(tree);
         assert!(
             !held.contains(ROGUE_OWNER) && !held.contains(ROGUE_PATH),
             "the refused governance is still somewhere in the host's state: \
@@ -708,6 +726,7 @@ mod tests {
                 .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
             "the room's capabilities arrived"
         );
+        drop(guest);
     }
 
     /// What arrived has to be *announceable*, not just present: the shell
@@ -793,6 +812,7 @@ mod tests {
             .push(NeighbourMsg::SyncReq {
                 since: vec![1],
                 room: String::new(),
+                invite_id: None,
             });
         rep.pending_outgoing
             .lock()
@@ -800,6 +820,7 @@ mod tests {
             .push(NeighbourMsg::SyncReq {
                 since: vec![2],
                 room: String::new(),
+                invite_id: None,
             });
 
         let drained = rep.drain_outgoing();
@@ -832,7 +853,7 @@ mod tests {
         let queued = rep.drain_outgoing();
         assert_eq!(queued.len(), 1, "one SyncReq per room this machine is in");
         match &queued[0] {
-            NeighbourMsg::SyncReq { since, room: r } => {
+            NeighbourMsg::SyncReq { since, room: r, .. } => {
                 assert!(
                     !since.is_empty(),
                     "encoded `since` must be a valid JSON array, got empty vec"
@@ -970,6 +991,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: since.clone(),
                 room: elsewhere.to_string(),
+                invite_id: None,
             },
         );
         assert!(
@@ -984,6 +1006,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: since.clone(),
                 room: room.to_string(),
+                invite_id: None,
             },
         );
         assert!(
@@ -997,6 +1020,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since,
                 room: room.to_string(),
+                invite_id: None,
             },
         );
         assert!(

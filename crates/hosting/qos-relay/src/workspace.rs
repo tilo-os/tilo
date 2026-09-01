@@ -285,8 +285,6 @@ impl WorkspaceRuntime {
                 crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
                     self.store.retain_delta(&channel, seq, &encoded)?;
                 }
-                crate::coedit::CoeditPayload::Unsigned(_)
-                | crate::coedit::CoeditPayload::Signed(_) => {}
             }
         }
         // 4. Materialize into the pinned doc so the host holds

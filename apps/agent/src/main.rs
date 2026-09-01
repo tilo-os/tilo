@@ -92,6 +92,9 @@ struct Cli {
     settle_ms: u64,
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -120,6 +123,7 @@ fn main() -> anyhow::Result<()> {
     };
     let cfg = Config {
         endpoint: cli.endpoint,
+        endpoint_identity: None,
         app_id: cli.app,
         cluster: cli.workspace,
         record: cli.record,

@@ -45,6 +45,8 @@ pub enum InstallError {
     InstallerMissing { detail: String },
     /// `qos-install` ran and refused; `detail` is its own output — usually the signature or hash complaint.
     Refused { code: i32, detail: String },
+    /// Downloaded bytes did not match the signed registry metadata.
+    Integrity { detail: String },
 }
 
 impl InstallError {
@@ -66,6 +68,9 @@ impl InstallError {
                 } else {
                     format!("qos-install refused it: {trimmed}")
                 }
+            }
+            InstallError::Integrity { detail } => {
+                format!("the downloaded package failed its registry check: {detail}")
             }
         }
     }
@@ -93,14 +98,53 @@ pub fn qos_install_bin() -> String {
 /// The exact `qos-install` invocation [`install`] runs. Split out so a
 /// test can assert on argv without a network or real installer — in
 /// particular, that --allow-self-signed is not in it.
-pub fn install_argv(staged_qpkg: &Path) -> Vec<String> {
+pub fn install_argv(
+    staged_qpkg: &Path,
+    publisher_pubkey_hex: &str,
+    qpkg_root_hash_hex: &str,
+) -> Vec<String> {
     vec![
         "install".to_string(),
         staged_qpkg.display().to_string(),
         // Replace an older copy of the same id rather than failing — opening
         // an app the user asked for shouldn't stall on a stale install of it.
         "--force".to_string(),
+        // A valid qpkg from another publisher is not the package the
+        // signed registry entry vouched for.
+        "--require-publisher".to_string(),
+        publisher_pubkey_hex.to_string(),
+        "--require-package-root".to_string(),
+        qpkg_root_hash_hex.to_string(),
     ]
+}
+
+fn verify_download_metadata(app: &CatalogueApp, received: u64) -> Result<(), InstallError> {
+    if received != app.qpkg_size_bytes {
+        return Err(InstallError::Integrity {
+            detail: format!(
+                "size mismatch (received {received} bytes, expected {})",
+                app.qpkg_size_bytes
+            ),
+        });
+    }
+    let expected = hex::decode(&app.qpkg_root_hash_hex).map_err(|e| InstallError::Integrity {
+        detail: format!("registry supplied an invalid package root: {e}"),
+    })?;
+    if expected.len() != 32 {
+        return Err(InstallError::Integrity {
+            detail: "registry supplied a package root that is not 32 bytes".to_string(),
+        });
+    }
+    let publisher =
+        hex::decode(&app.publisher_pubkey_hex).map_err(|e| InstallError::Integrity {
+            detail: format!("registry supplied an invalid publisher key: {e}"),
+        })?;
+    if publisher.len() != 32 {
+        return Err(InstallError::Integrity {
+            detail: "registry supplied a publisher key that is not 32 bytes".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// How much has to arrive before another progress report. A report
@@ -241,14 +285,24 @@ pub fn install_app_reporting(
         .collect();
     let dest = staging.join(format!("{safe_id}-{}.qpkg", app.version.replace('/', "_")));
 
-    let downloaded = download_reporting(&app.download_url, &dest, on_progress);
-    if let Err(detail) = downloaded {
+    let downloaded = match download_reporting(&app.download_url, &dest, on_progress) {
+        Ok(bytes) => bytes,
+        Err(detail) => {
+            let _ = std::fs::remove_file(&dest);
+            return Err(InstallError::Download { detail });
+        }
+    };
+    if let Err(error) = verify_download_metadata(app, downloaded) {
         let _ = std::fs::remove_file(&dest);
-        return Err(InstallError::Download { detail });
+        return Err(error);
     }
 
     let output = Command::new(qos_install_bin())
-        .args(install_argv(&dest))
+        .args(install_argv(
+            &dest,
+            &app.publisher_pubkey_hex,
+            &app.qpkg_root_hash_hex,
+        ))
         .output();
     let _ = std::fs::remove_file(&dest);
 
@@ -334,17 +388,63 @@ fn installer_complaint(text: &str) -> String {
 mod tests {
     use super::*;
 
+    fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
+        CatalogueApp {
+            package_id: "dev.qos.test".into(),
+            display_name: "Test".into(),
+            description: String::new(),
+            category: None,
+            version: "1.0.0".into(),
+            registry: "test".into(),
+            download_url: "https://example.invalid/test.qpkg".into(),
+            qpkg_root_hash_hex: "cd".repeat(32),
+            qpkg_size_bytes: bytes.len() as u64,
+            publisher_pubkey_hex: "ab".repeat(32),
+            trust: "verified".into(),
+        }
+    }
+
+    #[test]
+    fn staged_download_must_match_the_signed_registry_metadata() {
+        let bytes = b"signed package bytes";
+        let app = registry_app_for(bytes);
+        verify_download_metadata(&app, bytes.len() as u64).expect("matching metadata");
+
+        let mut malformed_root = app.clone();
+        malformed_root.qpkg_root_hash_hex = "00".repeat(31);
+        assert!(matches!(
+            verify_download_metadata(&malformed_root, bytes.len() as u64),
+            Err(InstallError::Integrity { detail }) if detail.contains("not 32 bytes")
+        ));
+        assert!(matches!(
+            verify_download_metadata(&app, bytes.len() as u64 + 1),
+            Err(InstallError::Integrity { detail }) if detail.contains("size mismatch")
+        ));
+    }
+
     /// The one argv assertion that is a security property rather than
     /// a formatting detail.
     #[test]
     fn the_install_invocation_never_relaxes_signature_checking() {
-        let argv = install_argv(Path::new("/tmp/staged.qpkg"));
+        let publisher = "ab".repeat(32);
+        let root = "cd".repeat(32);
+        let argv = install_argv(Path::new("/tmp/staged.qpkg"), &publisher, &root);
         assert_eq!(argv[0], "install");
         assert_eq!(argv[1], "/tmp/staged.qpkg");
         assert!(
             !argv.iter().any(|a| a == "--allow-self-signed"),
             "an install started from a search box must not opt out of \
              the publisher signature check: {argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--require-package-root" && pair[1] == root),
+            "the installer must pin the signed registry package root: {argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--require-publisher" && pair[1] == publisher),
+            "the installer must pin the signed registry publisher: {argv:?}"
         );
         assert!(
             !argv.iter().any(|a| a.starts_with("--require-attestor")),
@@ -368,6 +468,9 @@ mod tests {
             InstallError::Refused {
                 code: 2,
                 detail: "publisher signature did not verify".into(),
+            },
+            InstallError::Integrity {
+                detail: "package root mismatch".into(),
             },
         ];
         for c in &cases {

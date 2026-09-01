@@ -42,10 +42,12 @@ use std::time::{Duration, Instant};
 use ui::ColorCompat;
 use ui::animation::{Animated, Curve};
 use ui::gesture::{DragSelect, Granularity};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
+use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
+use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
@@ -56,9 +58,23 @@ use crate::model::{
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_chapter};
 use crate::paint;
+use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
+use crate::reading_settings::{ReadingSettings, ReadingSettingsAction};
+use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
+
+fn book_open_request() -> PickRequest {
+    PickRequest::open("Open a book", "Open")
+        .thread_name("ebook-portal-open")
+        .filter(
+            FileFilter::new("EPUB books")
+                .mimetype("application/epub+zip")
+                .glob("*.epub"),
+        )
+        .all_files()
+}
 
 /// Pixels one wheel-line notch maps to, matching the toolkit's other scroll
 /// surfaces so a mouse wheel feels consistent across apps.
@@ -326,11 +342,6 @@ enum Action {
     /// Open the colour picker on one colour slot (0=page,1=ink,2=accent) of a
     /// scheme.
     PickSchemeColor(String, usize),
-    PickerDone,
-    PickerCancel,
-    /// Snap the picker to a hue-wheel primary (palette chips): a fast path to
-    /// a pure hue alongside the SV square / hue strip.
-    PickerSwatch([u8; 3]),
     BeginRenameScheme(String),
 
     // --- settings screen: fonts ------------------------------------------
@@ -344,55 +355,7 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
-
     // --- library shelf ---------------------------------------------------
-    ToggleSortMenu,
-    SetSort(crate::model::LibrarySort),
-    ToggleHideRead,
-}
-
-/// What the colour picker is editing.
-#[derive(Clone, PartialEq, Eq)]
-enum PickTarget {
-    /// Create a brand-new scheme from the chosen background colour on Done.
-    NewScheme,
-    /// Live-edit one colour slot (0=page,1=ink,2=accent) of an existing scheme.
-    Slot(String, usize),
-}
-
-/// Which sub-control of the colour picker a drag is currently steering.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PickPart {
-    /// The saturation × value square.
-    Sv,
-    /// The vertical hue strip.
-    Hue,
-}
-
-/// Live colour-picker state, edited in HSV (so hue survives dragging value to
-/// black) and committed back as an sRGB triple.
-#[derive(Clone)]
-struct ColorPick {
-    target: PickTarget,
-    /// Current hue in degrees (preserved across value/sat drags on greys).
-    hue: f32,
-    sat: f32,
-    val: f32,
-}
-
-impl ColorPick {
-    fn from_rgb(target: PickTarget, rgb: [u8; 3]) -> Self {
-        let (h, s, v) = crate::model::rgb_to_hsv(rgb);
-        Self {
-            target,
-            hue: h,
-            sat: s,
-            val: v,
-        }
-    }
-    fn rgb(&self) -> [u8; 3] {
-        crate::model::hsv_to_rgb(self.hue, self.sat, self.val)
-    }
 }
 
 /// Icon glyphs the chrome draws (each maps to a `paint::*` vector helper).
@@ -402,8 +365,6 @@ enum Ico {
     Toc,
     Notes,
     Bookmark(bool),
-    /// A horizontal three-dot "more" glyph (opens the full settings screen).
-    Dots,
     /// A downward chevron (dropdown affordance).
     ChevDown,
 }
@@ -418,8 +379,12 @@ impl BooksApp {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent per-peer view-state flag (dirty, mouse_down, \
-              dragging_sel, ...), not a combinatorial state machine"
+    reason = "each bool is an independent, unrelated flag spanning unrelated \
+              subsystems (library-load state, drag/selection gestures, popover \
+              open/closed toggles, and a handful of --shots-only seams); \
+              grouping them into enums would not express any real invariant \
+              between them and would touch reader, library and settings call \
+              sites across this file"
 )]
 pub struct BooksApp {
     // --- parsed content (render cache, regenerable; not in the CRDT) -------
@@ -435,7 +400,7 @@ pub struct BooksApp {
     pending_open_path: Option<PathBuf>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Empty-state message when opening a book failed.
     load_error: Option<String>,
 
@@ -507,24 +472,12 @@ pub struct BooksApp {
     /// Accumulated wheel delta in the reader, so a trackpad's small pixel
     /// deltas coalesce into whole page turns.
     turn_accum: f64,
-    /// Reading-settings popover (text size / spacing / typeface / page tint),
-    /// summoned by the "Aa" button in the top bar.
-    type_popover: bool,
+    /// Reading-settings popover; owns its open state, drawing, inputs, and
+    /// modal hit stack, and emits settings effects for CRDT persistence here.
+    reading_settings: ReadingSettings,
 
-    /// The floating page-indicator bubble ([`ui::StatusBubble`]) over the
-    /// bottom-centre of the reading column on a page change or hover.
-    page_bubble: ui::StatusBubble,
-    /// The (chapter, page) the bubble last announced, so a change re-pokes
-    /// it. `None` until the first draw (so opening a book doesn't poke it).
-    bubble_shown: Option<(usize, usize)>,
-    /// The bubble's pill + chevron rects, captured during draw for hover
-    /// detection and click hit-testing.
-    bubble_rect: Rect,
-    bubble_prev: Rect,
-    bubble_next: Rect,
-    /// Screenshot-only: force the page bubble hover-pinned open. Never set
-    /// at runtime.
-    shots_reader_bubble: bool,
+    /// Owns the transient page indicator's animation, drawing and hit-testing.
+    reader_bubble: ReaderBubble,
 
     cursor: Point,
     /// First block index visible on the current page (for bookmark targeting).
@@ -581,16 +534,14 @@ pub struct BooksApp {
     renaming: Option<Rename>,
     /// Shared spin buttons used by the quick-reading and font-manager panels.
     number_controls: NumberControls,
-    picker: Option<ColorPick>,
-    /// Which picker sub-control a drag currently steers.
-    pick_drag: Option<PickPart>,
-    /// Picker sub-control geometry, recorded in draw for drag hit-testing.
-    pick_sv: Rect,
-    pick_hue: Rect,
+    /// Modal colour editor; owns HSV state, drawing, hit regions and drags.
+    color_picker: ColorPicker,
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
-    sort_menu: bool,
+    /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
+    /// its topmost hit stack; the app persists emitted preference actions.
+    shelf_controls: ShelfControls,
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
     /// Whether the "add a system font" family picker is open.
@@ -728,13 +679,8 @@ impl BooksApp {
             shelf_cols: 1,
             scroll_to_cursor: false,
             turn_accum: 0.0,
-            type_popover: false,
-            page_bubble: ui::StatusBubble::new(),
-            bubble_shown: None,
-            bubble_rect: Rect::ZERO,
-            bubble_prev: Rect::ZERO,
-            bubble_next: Rect::ZERO,
-            shots_reader_bubble: false,
+            reading_settings: ReadingSettings::default(),
+            reader_bubble: ReaderBubble::default(),
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
@@ -759,14 +705,11 @@ impl BooksApp {
             settings_tab: SettingsTab::Fonts,
             renaming: None,
             number_controls: NumberControls::default(),
-            picker: None,
-            pick_drag: None,
-            pick_sv: Rect::ZERO,
-            pick_hue: Rect::ZERO,
+            color_picker: ColorPicker::default(),
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders: Vec::new(),
-            sort_menu: false,
+            shelf_controls: ShelfControls::default(),
             editing_scheme: None,
             font_picker: false,
             picker_scroll: 0.0,
@@ -809,8 +752,7 @@ impl BooksApp {
     /// a single still frame captures the transient indicator. Never armed at
     /// runtime.
     pub fn arm_reader_bubble_for_shots(&mut self) {
-        self.shots_reader_bubble = true;
-        self.page_bubble.poke(Instant::now());
+        self.reader_bubble.arm_for_shots();
     }
 
     fn num_chapters(&self) -> usize {
@@ -961,7 +903,7 @@ impl BooksApp {
             }
             "type" => {
                 self.view = View::Reader;
-                self.type_popover = true;
+                self.reading_settings.open();
             }
             "library-scrolled" => {
                 // The large value clamps to the real max in draw.
@@ -1104,10 +1046,8 @@ impl BooksApp {
                     [0x1A, 0x22, 0x33],
                 ));
                 self.shot_schemes = Some(sc);
-                self.picker = Some(ColorPick::from_rgb(
-                    PickTarget::Slot("scheme1".into(), 0),
-                    [0x1A, 0x22, 0x33],
-                ));
+                self.color_picker
+                    .open(PickTarget::Slot("scheme1".into(), 0), [0x1A, 0x22, 0x33]);
             }
             _ => return false,
         }
@@ -1460,7 +1400,9 @@ impl BooksApp {
         }
         self.book_idx = i.min(self.library.len() - 1);
         self.view = View::Reader;
-        let id = self.library[self.book_idx].id.clone();
+        let Some(id) = self.library.get(self.book_idx).map(|b| b.id.clone()) else {
+            return;
+        };
         let mut p = BooksDoc::read_progress(doc, &id);
         let nchap = self.num_chapters().saturating_sub(1);
         self.chapter = p.chapter.min(nchap);
@@ -1482,7 +1424,7 @@ impl BooksApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(book_open_request().send());
         self.load_error = None;
         self.dirty = true;
     }
@@ -1497,10 +1439,10 @@ impl BooksApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
+                    PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
                     // A cancel is not an error — leave the current view intact.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         self.dirty = true;
                     }
@@ -1572,7 +1514,7 @@ impl BooksApp {
             Action::GotoChapter(c) => self.on_goto_chapter(c),
             Action::ToggleToc => self.on_toggle_toc(),
             Action::ToggleNotes => self.on_toggle_notes(),
-            Action::ToggleTypePopover => self.type_popover = !self.type_popover,
+            Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
@@ -1607,10 +1549,10 @@ impl BooksApp {
             Action::JumpTo(id) => self.on_jump_to(id),
             Action::Delete(id) => self.on_delete_annotation(id, doc),
             Action::OpenComments(group) => self.on_open_comments(group),
-            Action::CloseComments => self.on_close_comments(doc),
+            Action::CloseComments => self.on_close_comments(),
             Action::DeleteHighlight(group) => self.on_delete_highlight(group, doc),
             Action::AddComment(group) => self.on_add_comment(group, doc),
-            Action::EditComment(id) => self.composing = Some(id),
+            Action::EditComment(id) => self.on_edit_comment(id),
             Action::DeleteComment(id) => self.on_delete_comment(id, doc),
             Action::OpenViaPortal => self.request_open_via_portal(),
             Action::ShareToWorkspace(i) => self.on_share_to_workspace(i, doc),
@@ -1631,9 +1573,6 @@ impl BooksApp {
             Action::CloseSchemeEditor => self.on_close_scheme_editor(doc),
             Action::NewSchemeViaPicker => self.on_new_scheme_via_picker(doc),
             Action::PickSchemeColor(id, slot) => self.on_pick_scheme_color(id, slot, doc),
-            Action::PickerSwatch(rgb) => self.on_picker_swatch(rgb, doc),
-            Action::PickerDone => self.commit_picker(doc),
-            Action::PickerCancel => self.on_picker_cancel(),
             Action::BeginRenameScheme(id) => self.on_begin_rename_scheme(id, doc),
 
             // --- settings screen: fonts ----------------------------------
@@ -1645,11 +1584,29 @@ impl BooksApp {
             Action::CloseFontPicker => self.font_picker = false,
             Action::AddSystemFont(family) => self.on_add_system_font(&family, doc),
             Action::BeginRenameFont(id) => self.on_begin_rename_font(id, doc),
+        }
+    }
 
-            // --- library shelf -------------------------------------------
-            Action::ToggleSortMenu => self.sort_menu = !self.sort_menu,
-            Action::SetSort(sort) => self.on_set_sort(sort, doc),
-            Action::ToggleHideRead => self.on_toggle_hide_read(doc),
+    fn dispatch_reading_settings(&mut self, action: ReadingSettingsAction, doc: &mut AutoCommit) {
+        match action {
+            ReadingSettingsAction::Swallow => {}
+            ReadingSettingsAction::Dismiss => self.reading_settings.close(),
+            ReadingSettingsAction::OpenManager => self.dispatch(Action::OpenSettings, doc),
+            ReadingSettingsAction::SetFontScale(value) => {
+                self.bump_setting(doc, |settings| settings.font_scale = value);
+            }
+            ReadingSettingsAction::SetLineSpacing(value) => {
+                self.bump_setting(doc, |settings| settings.line_spacing = value);
+            }
+            ReadingSettingsAction::SetMode(mode) => self.dispatch(Action::SetMode(mode), doc),
+            ReadingSettingsAction::SetComposition(composition) => {
+                self.dispatch(Action::SetComposition(composition), doc);
+            }
+            ReadingSettingsAction::SetFont(id) => self.dispatch(Action::SetFont(id), doc),
+            ReadingSettingsAction::SetReadTheme(theme) => {
+                self.dispatch(Action::SetReadTheme(theme), doc);
+            }
+            ReadingSettingsAction::SetScheme(id) => self.dispatch(Action::SetScheme(id), doc),
         }
     }
 
@@ -1658,7 +1615,7 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.type_popover = false;
+        self.reading_settings.close();
     }
 
     fn on_next_page(&mut self) {
@@ -1746,7 +1703,7 @@ impl BooksApp {
     }
 
     fn on_dismiss_overlay(&mut self) {
-        self.type_popover = false;
+        self.reading_settings.close();
         if self.toc_layout() == SplitLayout::Overlay && self.toc_open() {
             self.toc_flap.close();
         }
@@ -1761,8 +1718,9 @@ impl BooksApp {
         if !shown.is_empty() {
             let cur = self.active_font().id;
             let idx = shown.iter().position(|f| f.id == cur).unwrap_or(0);
-            let next = shown[(idx + 1) % shown.len()].id.clone();
-            self.bump_setting(doc, |s| s.font_id = next);
+            if let Some(next) = shown.get((idx + 1) % shown.len()).map(|f| f.id.clone()) {
+                self.bump_setting(doc, |s| s.font_id = next);
+            }
         }
     }
 
@@ -1854,11 +1812,8 @@ impl BooksApp {
         self.comment_overlay.open(group);
     }
 
-    fn on_close_comments(&mut self, doc: &mut AutoCommit) {
-        // Finish any comment mid-composition so its text is saved.
-        if self.composing.is_some() {
-            self.finish_composing(doc);
-        }
+    fn on_close_comments(&mut self) {
+        self.comment_overlay.finish_editing();
         self.comment_overlay.close();
     }
 
@@ -1873,9 +1828,7 @@ impl BooksApp {
 
     fn on_add_comment(&mut self, group: Uuid, doc: &mut AutoCommit) {
         // Anchor to the highlight's first piece so it sorts with the range.
-        if self.composing.is_some() {
-            self.finish_composing(doc);
-        }
+        self.comment_overlay.finish_editing();
         let anchor = self
             .annotations
             .iter()
@@ -1899,14 +1852,23 @@ impl BooksApp {
             );
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
-            self.composing = Some(id);
+            self.comment_overlay.begin_editing(id, "");
+        }
+    }
+
+    fn on_edit_comment(&mut self, id: Uuid) {
+        if let Some(comment) = self
+            .annotations
+            .iter()
+            .find(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
+        {
+            self.comment_overlay.begin_editing(id, &comment.note);
         }
     }
 
     fn on_delete_comment(&mut self, id: Uuid, doc: &mut AutoCommit) {
-        if self.composing == Some(id) {
-            self.composing = None;
-            self.note_composer.close();
+        if self.comment_overlay.editing_id() == Some(id) {
+            self.comment_overlay.finish_editing();
         }
         self.perform_action(doc, &crate::actions::delete_annotation_action(id));
     }
@@ -1958,10 +1920,10 @@ impl BooksApp {
 
     fn on_open_settings(&mut self) {
         self.view = View::Settings;
-        self.type_popover = false;
+        self.reading_settings.close();
         // Numeric controls retain their own edit state and commit on blur.
         self.font_picker = false;
-        self.picker = None;
+        self.color_picker.cancel();
         self.default_font_menu = false;
         self.editing_scheme = None;
         self.renaming = None;
@@ -1971,7 +1933,7 @@ impl BooksApp {
     fn on_close_settings(&mut self, doc: &mut AutoCommit) {
         self.commit_rename(doc);
         self.font_picker = false;
-        self.picker = None;
+        self.color_picker.cancel();
         self.default_font_menu = false;
         self.editing_scheme = None;
         self.view = if self.library.is_empty() {
@@ -1984,7 +1946,7 @@ impl BooksApp {
     fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut AutoCommit) {
         self.commit_rename(doc);
         self.default_font_menu = false;
-        self.picker = None;
+        self.color_picker.cancel();
         self.settings_tab = tab;
         self.settings_scroll = 0.0;
     }
@@ -2048,11 +2010,8 @@ impl BooksApp {
         // Open the colour picker to choose a background; the scheme is
         // derived + created when the picker is committed.
         self.commit_rename(doc);
-        self.picker = Some(ColorPick::from_rgb(
-            PickTarget::NewScheme,
-            [0x1B, 0x18, 0x16],
-        ));
-        self.pick_drag = None;
+        self.color_picker
+            .open(PickTarget::NewScheme, [0x1B, 0x18, 0x16]);
     }
 
     fn on_pick_scheme_color(&mut self, id: String, slot: usize, doc: &mut AutoCommit) {
@@ -2062,25 +2021,9 @@ impl BooksApp {
             .schemes
             .iter()
             .find(|s| s.id == id)
-            .map_or([0x80, 0x80, 0x80], |s| s.slots()[slot].1);
-        self.picker = Some(ColorPick::from_rgb(PickTarget::Slot(id, slot), cur));
-        self.pick_drag = None;
-    }
-
-    fn on_picker_swatch(&mut self, rgb: [u8; 3], doc: &mut AutoCommit) {
-        if let Some(p) = self.picker.as_mut() {
-            let (h, s, v) = crate::model::rgb_to_hsv(rgb);
-            p.hue = h;
-            p.sat = s;
-            p.val = v;
-            let t = p.target.clone();
-            self.apply_live_pick(doc, &t);
-        }
-    }
-
-    fn on_picker_cancel(&mut self) {
-        self.picker = None;
-        self.pick_drag = None;
+            .and_then(|s| s.slots().get(slot).map(|&(_, c)| c))
+            .unwrap_or([0x80, 0x80, 0x80]);
+        self.color_picker.open(PickTarget::Slot(id, slot), cur);
     }
 
     fn on_begin_rename_scheme(&mut self, id: String, doc: &mut AutoCommit) {
@@ -2178,7 +2121,7 @@ impl BooksApp {
         p.sort = sort;
         self.library_prefs = p;
         BooksDoc::write_library_prefs(doc, &p);
-        self.sort_menu = false;
+        self.shelf_controls.close_sort_menu();
     }
 
     fn on_toggle_hide_read(&mut self, doc: &mut AutoCommit) {
@@ -2186,6 +2129,15 @@ impl BooksApp {
         p.hide_read = !p.hide_read;
         self.library_prefs = p;
         BooksDoc::write_library_prefs(doc, &p);
+    }
+
+    fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
+        match action {
+            ShelfControlAction::ToggleSortMenu => self.shelf_controls.toggle_sort_menu(),
+            ShelfControlAction::SetSort(sort) => self.on_set_sort(sort, doc),
+            ShelfControlAction::ToggleHideRead => self.on_toggle_hide_read(doc),
+            ShelfControlAction::Swallow => {}
+        }
     }
 
     fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut AutoCommit) {
@@ -2203,59 +2155,33 @@ impl BooksApp {
     /// Apply the picker's live colour to its target (called on every drag). For
     /// a slot, this live-edits the scheme so the manager previews the change;
     /// for a new scheme, nothing is written until [`Self::commit_picker`].
-    fn apply_live_pick(&self, doc: &mut AutoCommit, target: &PickTarget) {
-        let Some(p) = self.picker.as_ref() else {
-            return;
-        };
-        let rgb = p.rgb();
-        if let PickTarget::Slot(id, slot) = target {
+    fn apply_live_pick(&self, doc: &mut AutoCommit, edit: &ColorEdit) {
+        if let PickTarget::Slot(id, slot) = &edit.target {
             let mut sc = self.schemes.clone();
             if let Some(s) = sc.iter_mut().find(|s| &s.id == id && !s.builtin) {
-                s.set_slot(*slot, rgb);
+                s.set_slot(*slot, edit.rgb);
                 BooksDoc::write_schemes(doc, &sc);
             }
         }
     }
 
-    /// Steer the picker from a pointer position within the SV square or hue
-    /// strip, then apply the resulting colour live.
-    fn apply_pick_drag(&mut self, p: Point, doc: &mut AutoCommit) {
-        let Some(part) = self.pick_drag else { return };
-        let (sv, hue) = (self.pick_sv, self.pick_hue);
-        let target = match self.picker.as_ref() {
-            Some(pk) => pk.target.clone(),
-            None => return,
-        };
-        if let Some(pk) = self.picker.as_mut() {
-            match part {
-                PickPart::Sv => {
-                    let sx = ((p.x - sv.x0) / sv.width().max(1.0)).clamp(0.0, 1.0) as f32;
-                    let sy = ((p.y - sv.y0) / sv.height().max(1.0)).clamp(0.0, 1.0) as f32;
-                    pk.sat = sx;
-                    pk.val = 1.0 - sy;
-                }
-                PickPart::Hue => {
-                    let hy = ((p.y - hue.y0) / hue.height().max(1.0)).clamp(0.0, 1.0) as f32;
-                    pk.hue = hy * 360.0;
-                }
-            }
-        }
-        self.apply_live_pick(doc, &target);
-    }
-
     /// Commit the colour picker: create the new scheme (for a from-background
     /// pick) or finalise the slot edit, then close.
     fn commit_picker(&mut self, doc: &mut AutoCommit) {
-        let Some(p) = self.picker.take() else { return };
-        self.pick_drag = None;
-        let rgb = p.rgb();
-        match p.target {
+        let Some(edit) = self.color_picker.take() else {
+            return;
+        };
+        match edit.target {
             PickTarget::NewScheme => {
                 let mut sc = self.schemes.clone();
                 let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                sc.push(ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), rgb));
+                sc.push(ColorScheme::from_bg(
+                    &new_id,
+                    &format!("Scheme {n}"),
+                    edit.rgb,
+                ));
                 BooksDoc::write_schemes(doc, &sc);
                 self.editing_scheme = Some(new_id.clone());
                 self.bump_setting(doc, |st| st.scheme_id = new_id);
@@ -2263,7 +2189,7 @@ impl BooksApp {
             PickTarget::Slot(id, slot) => {
                 let mut sc = self.schemes.clone();
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
-                    s.set_slot(slot, rgb);
+                    s.set_slot(slot, edit.rgb);
                 }
                 BooksDoc::write_schemes(doc, &sc);
             }
@@ -2349,7 +2275,8 @@ impl BooksApp {
             .or_else(|| self.fonts.iter().find(|f| f.id == "serif"))
             .or_else(|| self.fonts.first())
             .cloned()
-            .unwrap_or_else(|| default_fonts()[0].clone())
+            .or_else(|| default_fonts().first().cloned())
+            .unwrap_or_else(|| FontEntry::new("default", FontKind::Default, "Default", 1.0, true))
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -2376,32 +2303,6 @@ impl BooksApp {
         };
         let mono = f.kind.is_mono();
         (choice, f.size_mult, font_sig(&f), mono)
-    }
-
-    /// Every enabled scheme (built-ins + custom). Built-in tints route
-    /// through `SetReadTheme` to keep their hand-tuned palette; custom
-    /// schemes apply their own colours.
-    fn quick_scheme_pills(&self) -> Vec<SchemePill> {
-        self.schemes
-            .iter()
-            .filter(|s| s.enabled)
-            .map(|s| {
-                if s.builtin {
-                    let rt = ReadTheme::from_str(&s.id);
-                    SchemePill {
-                        label: s.name.clone(),
-                        action: Action::SetReadTheme(rt),
-                        active: self.settings.scheme_id.is_empty() && self.settings.theme == rt,
-                    }
-                } else {
-                    SchemePill {
-                        label: s.name.clone(),
-                        action: Action::SetScheme(s.id.clone()),
-                        active: self.settings.scheme_id == s.id,
-                    }
-                }
-            })
-            .collect()
     }
 
     /// Resolve the reader's page palette: a selected, enabled custom scheme wins;
@@ -2650,8 +2551,12 @@ impl BooksApp {
     /// single mutation path shared with the Ctrl+K palette, via the
     /// framework's [`ActionHost`](ui::ActionHost).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
-        self.actions
-            .dispatch(doc, crate::actions::EBOOK_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::EBOOK_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Ebook", "Ebook", action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
@@ -3006,38 +2911,22 @@ impl BooksApp {
         self.perform_action(doc, &action);
     }
 
-    /// Append/erase a character on the note currently being composed. Each
-    /// keystroke rewrites the note's scalar in the CRDT — coarse-grained but
-    /// genuinely collaborative at the annotation level.
-    fn edit_note_text(&mut self, doc: &mut AutoCommit, edit: NoteEdit) -> bool {
-        let Some(id) = self.composing else {
-            return false;
-        };
-        let Some(mut a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            self.composing = None;
-            return false;
-        };
-        match edit {
-            NoteEdit::Insert(s) => a.note.push_str(&s),
-            NoteEdit::Backspace => {
-                a.note.pop();
-            }
-            NoteEdit::Done => {
-                self.composing = None;
-                a.created = a.created.max(now_ms());
-            }
-        }
-        BooksDoc::upsert_annotation(doc, &a);
-        true
-    }
-
     fn set_composing_text(&mut self, doc: &mut AutoCommit, text: String) -> bool {
         let Some(id) = self.composing else {
             return false;
         };
+        self.set_annotation_text(doc, id, text)
+    }
+
+    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: String) -> bool {
         let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            self.composing = None;
-            self.note_composer.close();
+            if self.composing == Some(id) {
+                self.composing = None;
+                self.note_composer.close();
+            }
+            if self.comment_overlay.editing_id() == Some(id) {
+                self.comment_overlay.finish_editing();
+            }
             return false;
         };
         annotation.note = text;
@@ -3046,12 +2935,19 @@ impl BooksApp {
     }
 
     fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(id) = self.composing.take() else {
+            return false;
+        };
         let note_editor_open = self.note_composer.is_open();
-        let handled = self.edit_note_text(doc, NoteEdit::Done);
         if note_editor_open {
             self.note_composer.close();
         }
-        handled
+        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            return false;
+        };
+        annotation.created = annotation.created.max(now_ms());
+        BooksDoc::upsert_annotation(doc, &annotation);
+        true
     }
 
     // --- Hit-test helpers ----------------------------------------------------
@@ -3063,40 +2959,6 @@ impl BooksApp {
     fn is_hover(&self, rect: Rect) -> bool {
         rect.contains(self.cursor)
     }
-}
-
-enum NoteEdit {
-    Insert(String),
-    Backspace,
-    Done,
-}
-
-/// One PAGE pill in the quick-settings popover: a colour scheme the reader
-/// can switch to (built-in tint or enabled custom scheme).
-struct SchemePill {
-    label: String,
-    action: Action,
-    active: bool,
-}
-
-/// Count how many rows a run of pill widths wraps into within `max_w`, matching
-/// the greedy layout the draw loop uses (so a pre-sized panel fits its pills).
-fn wrap_row_count(widths: &[f64], max_w: f64, gap: f64) -> usize {
-    if widths.is_empty() {
-        return 1;
-    }
-    let mut rows = 1;
-    let mut x = 0.0;
-    for (i, &w) in widths.iter().enumerate() {
-        let adv = if i == 0 { w } else { gap + w };
-        if x + adv > max_w && x > 0.0 {
-            rows += 1;
-            x = w;
-        } else {
-            x += adv;
-        }
-    }
-    rows
 }
 
 impl Widget for BooksApp {
@@ -3231,6 +3093,15 @@ impl Widget for BooksApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3245,7 +3116,7 @@ impl Widget for BooksApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3269,6 +3140,7 @@ impl Widget for BooksApp {
         self.hits.clear();
         self.comment_overlay.begin_frame();
         self.number_controls.begin_frame();
+        self.reading_settings.begin_frame();
         // Advance the rail flap transitions (reconcile first so a resize this
         // frame uses the right mode default) before laying anything out.
         self.reconcile_flaps();
@@ -3316,7 +3188,7 @@ impl Widget for BooksApp {
         if self.forward_shared_input_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             doc,
             path,
             node_id,
@@ -3385,7 +3257,7 @@ impl Widget for BooksApp {
         // easing in, or the floating page bubble is lingering/fading.
         self.flaps_animating()
             || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
-            || self.page_bubble.needs_frame(Instant::now())
+            || self.reader_bubble.needs_frame(Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -3403,7 +3275,7 @@ impl BooksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         node_id: NodeId,
@@ -3411,6 +3283,23 @@ impl BooksApp {
         handled: &mut bool,
     ) -> bool {
         let mut input_handled = false;
+        let (comment_text, comment_submitted) = self.comment_overlay.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        if let Some((id, text)) = comment_text {
+            self.set_annotation_text(doc, id, text);
+        }
+        if comment_submitted {
+            input_handled = true;
+        }
+
         let (note_text, submit) = self.note_composer.handle_event(
             event,
             scale_factor,
@@ -3427,6 +3316,20 @@ impl BooksApp {
         if submit {
             self.finish_composing(doc);
             input_handled = true;
+        }
+
+        let settings_actions = self.reading_settings.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        for action in settings_actions {
+            self.dispatch_reading_settings(action, doc);
         }
 
         let changes = self.number_controls.handle_event(
@@ -3514,6 +3417,7 @@ impl BooksApp {
             return;
         }
         self.cursor = p;
+        self.reading_settings.set_cursor(p);
         self.dirty = true; // hover feedback
         // Margin-marker drag: a release past the threshold
         // re-anchors the highlight (vs a plain tap → comments).
@@ -3524,9 +3428,12 @@ impl BooksApp {
             *handled = true;
             return;
         }
-        // Colour-picker drag: steer the SV square / hue strip.
-        if self.mouse_down && self.pick_drag.is_some() {
-            self.apply_pick_drag(p, doc);
+        // The modal colour picker owns its drag geometry and HSV state; the
+        // app only persists the semantic colour edit it emits.
+        if self.mouse_down
+            && let Some(edit) = self.color_picker.drag_to(p)
+        {
+            self.apply_live_pick(doc, &edit);
             self.refresh_from_doc(doc);
             *handled = true;
             return;
@@ -3576,12 +3483,32 @@ impl BooksApp {
         }
     }
 
-    fn handle_left_press(
-        &mut self,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    /// Early-out hit-testing for the reading-settings popover, color picker
+    /// and note composer, which each own a private hit stack outside the
+    /// app-wide `self.hits` list and must be asked before it. Returns
+    /// whether any of them consumed the press, so the caller can return
+    /// immediately without falling through.
+    fn handle_left_press_overlay(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
+        if let Some(action) = self.reading_settings.hit_test(self.cursor) {
+            self.dispatch_reading_settings(action, doc);
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+        if let Some(action) = self.color_picker.press(self.cursor) {
+            self.mouse_down = true;
+            match action {
+                PickerPress::Swallow => {}
+                PickerPress::Cancel => self.color_picker.cancel(),
+                PickerPress::Done => self.commit_picker(doc),
+                PickerPress::Edit(edit) => self.apply_live_pick(doc, &edit),
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
         if let Some(action) = self.note_composer.hit_test(self.cursor) {
             match action {
                 NoteAction::Swallow => {}
@@ -3593,14 +3520,31 @@ impl BooksApp {
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
+            return true;
+        }
+        false
+    }
+
+    fn handle_left_press(
+        &mut self,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if self.handle_left_press_overlay(doc, handled) {
             return;
         }
         // The comment panel owns a modal, private hit stack. Ask it
         // before the app-wide regions so its card cannot fall through
         // to page selection or rail controls underneath.
         let comment_action = self.comment_overlay.hit_test(self.cursor);
+        let shelf_action = if comment_action.is_none() && self.view == View::Library {
+            self.shelf_controls.hit_test(self.cursor)
+        } else {
+            None
+        };
         // Topmost wins: later-recorded hits draw on top.
-        let top = if comment_action.is_none() {
+        let top = if comment_action.is_none() && shelf_action.is_none() {
             self.hits
                 .iter()
                 .rev()
@@ -3609,29 +3553,16 @@ impl BooksApp {
         } else {
             None
         };
+        // The bubble is drawn below subsequent reader overlays. Their app-wide
+        // hits therefore keep precedence when geometry ever overlaps.
+        let bubble_action = if comment_action.is_none() && shelf_action.is_none() && top.is_none() {
+            self.reader_bubble.hit_test(self.cursor)
+        } else {
+            None
+        };
         self.mouse_down = true;
         self.dragging_sel = false;
         self.press_pos = self.cursor;
-
-        // Colour-picker SV/hue press begins a drag and steers immediately,
-        // taking priority over the panel's tap-swallow.
-        if self.picker.is_some() {
-            let part = if self.pick_sv.contains(self.cursor) {
-                Some(PickPart::Sv)
-            } else if self.pick_hue.contains(self.cursor) {
-                Some(PickPart::Hue)
-            } else {
-                None
-            };
-            if let Some(part) = part {
-                self.pick_drag = Some(part);
-                self.apply_pick_drag(self.cursor, doc);
-                self.refresh_from_doc(doc);
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-        }
 
         // A press on a highlight's margin marker begins a re-anchor
         // drag, taking priority over text selection. A press that
@@ -3654,11 +3585,31 @@ impl BooksApp {
 
         // A press on page text runs through the shared
         // selection-gesture core: single → double (word) → triple.
-        let on_page = self.view == View::Reader && comment_action.is_none() && top.is_none();
+        let on_page = self.view == View::Reader
+            && comment_action.is_none()
+            && top.is_none()
+            && bubble_action.is_none();
         let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
 
         if let Some(action) = comment_action {
             self.dispatch_comment_action(action, doc);
+            self.refresh_from_doc(doc);
+            self.persist_progress(doc);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(action) = shelf_action {
+            self.dispatch_shelf_control(action, doc);
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(action) = bubble_action {
+            self.dispatch(
+                match action {
+                    ReaderBubbleAction::PreviousPage => Action::PrevPage,
+                    ReaderBubbleAction::NextPage => Action::NextPage,
+                },
+                doc,
+            );
             self.refresh_from_doc(doc);
             self.persist_progress(doc);
             self.dirty = true;
@@ -3751,7 +3702,7 @@ impl BooksApp {
         }
         self.drag_select.release();
         let was_drag = self.dragging_sel;
-        if self.pick_drag.take().is_some() {
+        if self.color_picker.end_drag() {
             self.dirty = true;
             *handled = true;
         }
@@ -3869,7 +3820,8 @@ impl BooksApp {
             return self.handle_settings_escape_key(key, doc);
         }
 
-        // While composing a note, characters feed the note text.
+        // The note's shared TextInput owns editing. Escape remains app-level
+        // policy so it can finish and dismiss the floating composer.
         if self.composing.is_some() {
             return self.handle_composing_key(key, doc);
         }
@@ -3883,9 +3835,8 @@ impl BooksApp {
 
     fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
         if let Key::Named(NamedKey::Escape) = key {
-            if self.picker.is_some() {
-                self.picker = None;
-                self.pick_drag = None;
+            if self.color_picker.is_open() {
+                self.color_picker.cancel();
             } else if self.font_picker {
                 self.font_picker = false;
             } else if self.default_font_menu {
@@ -3901,15 +3852,7 @@ impl BooksApp {
     }
 
     fn handle_composing_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
-        match key {
-            Key::Named(NamedKey::Escape | NamedKey::Enter) => {
-                self.edit_note_text(doc, NoteEdit::Done)
-            }
-            Key::Named(NamedKey::Backspace) => self.edit_note_text(doc, NoteEdit::Backspace),
-            Key::Named(NamedKey::Space) => self.edit_note_text(doc, NoteEdit::Insert(" ".into())),
-            Key::Character(c) => self.edit_note_text(doc, NoteEdit::Insert(c.to_string())),
-            _ => false,
-        }
+        matches!(key, Key::Named(NamedKey::Escape)) && self.finish_composing(doc)
     }
 
     fn handle_reader_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
@@ -3961,8 +3904,8 @@ impl BooksApp {
                     self.notes_layout() == SplitLayout::Overlay && self.notes_open();
                 if self.comment_overlay.is_open() {
                     self.dispatch(Action::CloseComments, doc);
-                } else if self.type_popover {
-                    self.type_popover = false;
+                } else if self.reading_settings.is_open() {
+                    self.reading_settings.close();
                 } else if toc_overlay || notes_overlay {
                     self.dispatch(Action::DismissOverlay, doc);
                 } else {
@@ -4019,7 +3962,7 @@ impl BooksApp {
         if dx == 0.0 || self.view != View::Reader {
             return false;
         }
-        if self.type_popover || self.composing.is_some() {
+        if self.reading_settings.is_open() || self.composing.is_some() {
             return false;
         }
         self.swipe_accum += dx;
@@ -4090,7 +4033,7 @@ impl BooksApp {
                 // A page fills the viewport, so the wheel turns pages rather than
                 // scrolling within one. Suppressed while a modal surface (the
                 // reading-settings popover or an in-progress note) owns input.
-                if self.type_popover || self.composing.is_some() {
+                if self.reading_settings.is_open() || self.composing.is_some() {
                     return false;
                 }
                 // Continuous mode scrolls the flow by pixels instead of turning
@@ -4185,7 +4128,6 @@ impl BooksApp {
             Ico::Toc => paint::list(scene, t, inner, icon_col, w),
             Ico::Notes => paint::note(scene, t, inner, icon_col, w),
             Ico::Bookmark(filled) => paint::bookmark(scene, t, inner, icon_col, w, filled),
-            Ico::Dots => paint::dots(scene, t, inner, icon_col),
             Ico::ChevDown => paint::chevron_down(scene, t, inner, icon_col, w),
         }
         self.push_hit(rect, action);
@@ -4240,43 +4182,21 @@ impl BooksApp {
         self.push_hit(rect, action);
     }
 
-    /// A toggle switch (track + knob). `w`/`h` are the track size. Pushes a hit
-    /// for `action` and returns the track rect.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/c/x/y/w/h are the standard transform/colours/geometry names shared by \
-                  every draw helper in this chrome section"
-    )]
+    /// Draw a shared toggle face and retain the app-specific action routing.
     fn switch(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
+        track: Rect,
         on: bool,
         action: Action,
     ) {
-        let track = Rect::new(x, y, x + w, y + h);
-        let bg = if on {
-            theme.accent_primary
-        } else {
-            c.neutral[3]
-        };
-        paint::fill_round(scene, t, track, h / 2.0, bg);
-        let kr = h / 2.0 - 2.5;
-        let kx = if on { x + w - h / 2.0 } else { x + h / 2.0 };
-        paint::circle(
+        Toggle::paint(
             scene,
             t,
-            Point::new(kx, y + h / 2.0),
-            kr,
-            Color::from_rgb8(250, 250, 252),
+            theme,
+            &ToggleFace::new(track, on).hovered(self.is_hover(track)),
         );
         self.push_hit(track, action);
     }
@@ -4295,7 +4215,7 @@ impl BooksApp {
         right_x: f64,
         cy: f64,
         value: f64,
-        field: NumberField,
+        field: &NumberField,
     ) -> f64 {
         let btn = 28.0;
         let vslot_w = 52.0;
@@ -4392,6 +4312,7 @@ struct ShelfGrid {
 
 impl BooksApp {
     fn draw_library(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.shelf_controls.begin_frame();
         let lib = std::mem::take(&mut self.library);
         let c = theme.tokens.colors.clone();
         let r = self.rect;
@@ -4405,7 +4326,16 @@ impl BooksApp {
             return;
         }
 
-        let sort_btn = self.draw_library_shelf_controls(scene, t, tr, theme, &c, r, open_x);
+        let sort_btn = self.shelf_controls.draw_bar(
+            scene,
+            t,
+            tr,
+            theme,
+            r,
+            open_x,
+            self.cursor,
+            self.library_prefs,
+        );
 
         // --- filter + sort the display order ------------------------------
         let order = self.shelf_display_order(&lib);
@@ -4414,14 +4344,31 @@ impl BooksApp {
         // Everything hidden by the "hide read" filter.
         if order.is_empty() {
             Self::draw_all_read_empty_state(scene, t, tr, &c, r);
-            if self.sort_menu {
-                self.draw_sort_menu(scene, t, tr, theme, &c, sort_btn);
-            }
+            self.shelf_controls.draw_menu(
+                scene,
+                t,
+                tr,
+                theme,
+                r,
+                sort_btn,
+                self.cursor,
+                self.library_prefs.sort,
+            );
             self.library = lib;
             return;
         }
 
-        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r, sort_btn);
+        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r);
+        self.shelf_controls.draw_menu(
+            scene,
+            t,
+            tr,
+            theme,
+            r,
+            sort_btn,
+            self.cursor,
+            self.library_prefs.sort,
+        );
         self.library = lib;
     }
 
@@ -4493,102 +4440,6 @@ impl BooksApp {
             Action::OpenViaPortal,
         );
         open_x
-    }
-
-    /// Sort dropdown + hide-read toggle, left of the "Open book" button —
-    /// only drawn once the shelf has books. Returns the sort button's rect
-    /// (the dropdown menu, drawn later, anchors to it).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_library_shelf_controls(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-        open_x: f64,
-    ) -> Rect {
-        let cy = r.y0 + (TOP_BAR - 30.0) / 2.0;
-        let mut rx = open_x - 16.0;
-        // Sort dropdown.
-        let sort_label = format!("Sort · {}", self.library_prefs.sort.label());
-        let (slw, _) = tr.measure_weighted(&sort_label, 13.0, None, TextWeight::Medium);
-        let sb_w = f64::from(slw) + 26.0 + 20.0;
-        rx -= sb_w;
-        let sbtn = Rect::new(rx, cy, rx + sb_w, cy + 30.0);
-        let shover = self.sort_menu || self.is_hover(sbtn);
-        paint::fill_round(
-            scene,
-            t,
-            sbtn,
-            15.0,
-            if shover {
-                theme.bg_hover
-            } else {
-                c.surfaces.overlay
-            },
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            sbtn,
-            15.0,
-            if self.sort_menu {
-                theme.border_focus
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &sort_label,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((rx + 13.0, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        paint::chevron_down(
-            scene,
-            t,
-            Rect::new(rx + sb_w - 26.0, cy + 3.0, rx + sb_w - 4.0, cy + 27.0),
-            c.text_dim,
-            1.7,
-        );
-        self.push_hit(sbtn, Action::ToggleSortMenu);
-        let sort_btn = sbtn;
-        rx -= 18.0;
-        // Hide-read toggle + label.
-        let tog_w = 40.0;
-        let tog_h = 22.0;
-        rx -= tog_w;
-        self.switch(
-            scene,
-            t,
-            theme,
-            c,
-            rx,
-            cy + (30.0 - tog_h) / 2.0,
-            tog_w,
-            tog_h,
-            self.library_prefs.hide_read,
-            Action::ToggleHideRead,
-        );
-        let hl = "Hide read";
-        let (hlw, _) = tr.measure_weighted(hl, 13.0, None, TextWeight::Medium);
-        rx -= 8.0 + f64::from(hlw);
-        tr.draw_text_weighted(
-            scene,
-            hl,
-            13.0,
-            c.text_dim,
-            t * Affine::translate((rx, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        sort_btn
     }
 
     /// Everything hidden by the "hide read" filter: an empty-shelf message
@@ -4706,7 +4557,6 @@ impl BooksApp {
         order: &[usize],
         c: &ui::tokens::colors::Colors,
         r: Rect,
-        sort_btn: Rect,
     ) {
         let grid = self.shelf_grid_geometry(r, order.len());
 
@@ -4770,11 +4620,6 @@ impl BooksApp {
             let thumb_y = track_y0 + frac * (track_h - thumb_h);
             let thumb = Rect::new(track_x, thumb_y, track_x + 4.0, thumb_y + thumb_h);
             paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
-        }
-
-        // Sort dropdown menu floats above the shelf.
-        if self.sort_menu {
-            self.draw_sort_menu(scene, t, tr, theme, c, sort_btn);
         }
     }
 
@@ -4904,21 +4749,35 @@ impl BooksApp {
     /// key (ties broken by title so the order is stable).
     fn shelf_display_order(&self, lib: &[Book]) -> Vec<usize> {
         use crate::model::LibrarySort;
-        let frac = |i: usize| self.shelf_fraction.get(&lib[i].id).copied().unwrap_or(0.0);
-        let opened = |i: usize| self.shelf_opened.get(&lib[i].id).copied().unwrap_or(0);
-        let title = |i: usize| lib[i].title.to_lowercase();
+        // `i`/`a`/`b` below are always drawn from `0..lib.len()` (or from
+        // `idx`, which is built from that same range), so every lookup is
+        // in-bounds by construction — `.get()` still keeps the closures
+        // panic-free for clippy without depending on that invariant.
+        let frac = |i: usize| {
+            lib.get(i).map_or(0.0, |b| {
+                self.shelf_fraction.get(&b.id).copied().unwrap_or(0.0)
+            })
+        };
+        let opened = |i: usize| {
+            lib.get(i)
+                .map_or(0, |b| self.shelf_opened.get(&b.id).copied().unwrap_or(0))
+        };
+        let title = |i: usize| {
+            lib.get(i)
+                .map_or_else(String::new, |b| b.title.to_lowercase())
+        };
+        let author = |i: usize| {
+            lib.get(i)
+                .map_or_else(String::new, |b| b.author.to_lowercase())
+        };
         let mut idx: Vec<usize> = (0..lib.len())
             .filter(|&i| !self.library_prefs.hide_read || frac(i) < 0.985)
             .collect();
         match self.library_prefs.sort {
             LibrarySort::Title => idx.sort_by_key(|&a| title(a)),
-            LibrarySort::Author => idx.sort_by(|&a, &b| {
-                lib[a]
-                    .author
-                    .to_lowercase()
-                    .cmp(&lib[b].author.to_lowercase())
-                    .then(title(a).cmp(&title(b)))
-            }),
+            LibrarySort::Author => {
+                idx.sort_by(|&a, &b| author(a).cmp(&author(b)).then(title(a).cmp(&title(b))));
+            }
             LibrarySort::Recent => {
                 idx.sort_by(|&a, &b| opened(b).cmp(&opened(a)).then(title(a).cmp(&title(b))));
             }
@@ -4930,84 +4789,6 @@ impl BooksApp {
             }),
         }
         idx
-    }
-
-    /// The sort-order dropdown menu, anchored under the sort button.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_sort_menu(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        anchor: Rect,
-    ) {
-        use crate::model::LibrarySort;
-        let w = 190.0_f64.max(anchor.width());
-        let row_h = 34.0;
-        let x0 = (anchor.x1 - w).max(self.rect.x0 + 8.0);
-        let top = anchor.y1 + 6.0;
-        let menu = Rect::new(
-            x0,
-            top,
-            x0 + w,
-            top + LibrarySort::ALL.len() as f64 * row_h + 8.0,
-        );
-        let shadow = Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
-        paint::fill_round(
-            scene,
-            t,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(menu, Action::Swallow);
-        let mut my = top + 4.0;
-        for choice in LibrarySort::ALL {
-            let row = Rect::new(x0 + 6.0, my, x0 + w - 6.0, my + row_h - 4.0);
-            let sel = self.library_prefs.sort == choice;
-            if sel {
-                paint::fill_round(
-                    scene,
-                    t,
-                    row,
-                    8.0,
-                    theme.accent_primary.with_alpha_factor(0.16),
-                );
-            } else if self.is_hover(row) {
-                paint::fill_round(scene, t, row, 8.0, theme.bg_hover);
-            }
-            tr.draw_text_weighted(
-                scene,
-                choice.label(),
-                13.0,
-                if sel {
-                    theme.accent_primary
-                } else {
-                    c.text_primary
-                },
-                t * Affine::translate((x0 + 16.0, my + 8.0)),
-                None,
-                if sel {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                },
-            );
-            self.push_hit(row, Action::SetSort(choice));
-            my += row_h;
-        }
     }
 
     /// Resolve a book's decoded cover into a cached, GPU-ready image handle.
@@ -5441,33 +5222,41 @@ impl BooksApp {
         );
 
         // Plus mark inside a soft accent disc.
-        let cx = x + w / 2.0;
-        let disc_cy = y + cover_h * 0.40;
-        let disc_r = 24.0;
+        let disc_centre_x = x + w / 2.0;
+        let disc_centre_y = y + cover_h * 0.40;
+        let disc_radius = 24.0;
         paint::circle(
             scene,
             t,
-            Point::new(cx, disc_cy),
-            disc_r,
+            Point::new(disc_centre_x, disc_centre_y),
+            disc_radius,
             theme.accent_primary.with_alpha_factor(0.16),
         );
         paint::plus(
             scene,
             t,
-            Rect::new(cx - 11.0, disc_cy - 11.0, cx + 11.0, disc_cy + 11.0),
+            Rect::new(
+                disc_centre_x - 11.0,
+                disc_centre_y - 11.0,
+                disc_centre_x + 11.0,
+                disc_centre_y + 11.0,
+            ),
             theme.accent_primary,
             2.2,
         );
 
         // Title + hint, centred under the mark.
-        let title = "Add a book";
-        let (title_w, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        let label = "Add a book";
+        let (label_w, _) = tr.measure_weighted(label, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
-            title,
+            label,
             15.0,
             c.text_primary,
-            t * Affine::translate((cx - f64::from(title_w) / 2.0, disc_cy + disc_r + 16.0)),
+            t * Affine::translate((
+                disc_centre_x - f64::from(label_w) / 2.0,
+                disc_centre_y + disc_radius + 16.0,
+            )),
             None,
             TextWeight::Semibold,
         );
@@ -5478,7 +5267,10 @@ impl BooksApp {
             hint,
             12.0,
             c.text_dim,
-            t * Affine::translate((cx - f64::from(hint_w) / 2.0, disc_cy + disc_r + 38.0)),
+            t * Affine::translate((
+                disc_centre_x - f64::from(hint_w) / 2.0,
+                disc_centre_y + disc_radius + 38.0,
+            )),
             None,
         );
 
@@ -5513,23 +5305,6 @@ struct ReaderPageGeometry {
     content_w: f32,
     content_h: f32,
     gutter: f64,
-}
-
-/// Sizing + pre-measured content for the reading-settings popover, computed
-/// once per [`BooksApp::draw_type_popover`] call.
-struct TypePopoverLayout {
-    pad: f64,
-    row_h: f64,
-    pill_h: f64,
-    pill_gap: f64,
-    header_h: f64,
-    panel: Rect,
-    /// Inner-content left/right edges (`panel` inset by `pad`).
-    ix0: f64,
-    ix1: f64,
-    font_pills: Vec<(String, String, f64, bool)>,
-    scheme_pills: Vec<SchemePill>,
-    scheme_widths: Vec<f64>,
 }
 
 impl BooksApp {
@@ -5713,14 +5488,21 @@ impl BooksApp {
 
         // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
         self.draw_reader_topbar(scene, t, tr, theme, &lib, c);
-        self.draw_reader_bubble(
+        self.reader_bubble.draw(
             scene,
             t,
             tr,
             theme,
+            self.rect,
+            self.cursor,
             geom.center_x0,
             geom.center_x1,
-            nchap.max(1),
+            ReaderPosition {
+                chapter: self.chapter,
+                page: self.page,
+                page_count: self.cur_page_count,
+                chapter_count: nchap.max(1),
+            },
         );
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(
@@ -5750,10 +5532,22 @@ impl BooksApp {
             self.cursor,
             &self.annotations,
             self.hi_color,
-            self.composing,
         );
-        // Reading-settings popover floats above everything.
-        self.draw_type_popover(scene, t, tr, theme, c);
+        // Reading-settings floats above everything and owns its own modal hit
+        // stack; only the available reader span is supplied by the host.
+        self.reading_settings.draw(
+            scene,
+            t,
+            tr,
+            theme,
+            self.rect,
+            geom.center_x0 + 12.0,
+            geom.center_x1 - 18.0,
+            &self.settings,
+            &self.fonts,
+            &self.default_font_id,
+            &self.schemes,
+        );
 
         self.library = lib;
     }
@@ -5780,7 +5574,7 @@ impl BooksApp {
         let body_y0 = r.y0 + TOP_BAR;
         // The page renders to the window bottom now that the always-on bottom
         // strip is gone — the page indicator floats as a transient bubble
-        // (`draw_reader_bubble`) instead of costing a permanent strip of chrome.
+        // (the `ReaderBubble` component) instead of costing a permanent strip of chrome.
         let body_y1 = r.y1;
 
         // ---- paper rect + content box -----------------------------------
@@ -5957,14 +5751,14 @@ impl BooksApp {
         }
 
         // first visible block on the top-left pane → bookmark target
-        self.page_top_block = {
-            let (ts, te) = (panes[0].win_start, panes[0].win_end);
+        self.page_top_block = panes.first().map_or(0, |pane| {
+            let (ts, te) = (pane.win_start, pane.win_end);
             layout
                 .blocks
                 .iter()
                 .find(|b| b.lines.iter().any(|l| l.y >= ts - 0.5 && l.y < te))
                 .map_or(0, |b| b.index)
-        };
+        });
         panes
     }
 
@@ -6209,7 +6003,7 @@ impl BooksApp {
         self.draw_pane_highlight_markers(scene, t, palette, content_x, &group_top);
 
         // ---- glyphs + decorations (on top of bands) ---------------------
-        self.draw_pane_glyphs(
+        Self::draw_pane_glyphs(
             scene,
             t,
             tr,
@@ -6245,11 +6039,11 @@ impl BooksApp {
                 .iter()
                 .filter(|l| pane.shows(l.y, b.line_height))
                 .collect();
-            if visible.is_empty() {
+            let (Some(first), Some(last)) = (visible.first(), visible.last()) else {
                 continue;
-            }
-            let by0 = pane.screen_y(visible.first().unwrap().y) - 3.0;
-            let by1 = pane.screen_y(visible.last().unwrap().y) + f64::from(b.line_height);
+            };
+            let by0 = pane.screen_y(first.y) - 3.0;
+            let by1 = pane.screen_y(last.y) + f64::from(b.line_height);
             for a in annos
                 .iter()
                 .filter(|a| a.chapter == chapter && a.block == b.index)
@@ -6468,7 +6262,9 @@ impl BooksApp {
                 if lo < hi {
                     let (bx0, bx1) =
                         run_sub_x(x0, f64::from(w), run.char_start, run.char_len, lo, hi);
-                    grow(&mut hi_span[i], bx0, bx1);
+                    if let Some(span) = hi_span.get_mut(i) {
+                        grow(span, bx0, bx1);
+                    }
                 }
             }
         }
@@ -6519,7 +6315,7 @@ impl BooksApp {
             &mut hi_span,
         );
         for (i, a) in block_ranged.iter().enumerate() {
-            if let Some((mnx, mxx)) = hi_span[i] {
+            if let Some((mnx, mxx)) = hi_span.get(i).copied().flatten() {
                 let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                 paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
                 self.hi_bands.push(band);
@@ -6593,7 +6389,6 @@ impl BooksApp {
     /// bullets) and every run's glyphs, on top of the bands.
     #[allow(clippy::too_many_arguments)]
     fn draw_pane_glyphs(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -6838,9 +6633,12 @@ impl BooksApp {
             let mapped = match action {
                 ui::HudAction::Copy => Action::CopySelection,
                 ui::HudAction::Note => Action::AddNote,
-                ui::HudAction::Highlight(i) => {
-                    Action::SetColor(HiColor::ALL[i.min(HiColor::ALL.len() - 1)])
-                }
+                ui::HudAction::Highlight(i) => Action::SetColor(
+                    HiColor::ALL
+                        .get(i.min(HiColor::ALL.len() - 1))
+                        .copied()
+                        .unwrap_or(HiColor::ALL[0]),
+                ),
                 ui::HudAction::Delete => match del_group {
                     Some(g) => Action::DeleteHighlight(g),
                     None => Action::Swallow,
@@ -7116,7 +6914,7 @@ impl BooksApp {
         let aa_h = 32.0;
         let aa_y = r.y0 + (TOP_BAR - aa_h) / 2.0;
         let aa_rect = Rect::new(rx, aa_y, rx + aa_w, aa_y + aa_h);
-        let aa_active = self.type_popover;
+        let aa_active = self.reading_settings.is_open();
         let aa_hover = self.is_hover(aa_rect);
         let aa_bg = if aa_active {
             theme.accent_primary
@@ -7144,700 +6942,6 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         self.push_hit(aa_rect, Action::ToggleTypePopover);
-    }
-
-    /// The floating page-indicator bubble ([`ui::StatusBubble`]): surfaces on
-    /// a page change or pointer hover over the bottom-centre band, then
-    /// fades. Chevron hits are pushed only while visible, so an invisible
-    /// bubble never eats a click in the bottom band.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bubble(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        center_x0: f64,
-        center_x1: f64,
-        nchap: usize,
-    ) {
-        self.bubble_rect = Rect::ZERO;
-        self.bubble_prev = Rect::ZERO;
-        self.bubble_next = Rect::ZERO;
-
-        let now = Instant::now();
-        // A page/chapter change briefly floats the bubble. The first
-        // observation only records the position, so opening a book doesn't
-        // poke it open.
-        let pos = (self.chapter, self.page);
-        if let Some(prev) = self.bubble_shown
-            && prev != pos
-        {
-            self.page_bubble.poke(now);
-        }
-        self.bubble_shown = Some(pos);
-
-        let r = self.rect;
-        let text_size = 12.5f32;
-        let chev = 26.0;
-        let label = self.reader_bubble_label(tr, center_x0, center_x1, nchap);
-
-        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
-        let cx = f64::midpoint(center_x0, center_x1);
-        let by = r.y1 - 16.0 - pill_h;
-        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
-
-        // Reveal zone: a band across the bottom-centre of the reading column
-        // (plus the pill itself), so approaching the bottom edge surfaces the
-        // indicator.
-        let zone = Rect::new(rect.x0 - 40.0, r.y1 - (pill_h + 32.0), rect.x1 + 40.0, r.y1);
-        let over =
-            self.shots_reader_bubble || zone.contains(self.cursor) || rect.contains(self.cursor);
-        self.page_bubble.set_hover(over, now);
-
-        let alpha = self.page_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
-        }
-
-        // Capture geometry for hover + click hit-testing (the chevron slots), and
-        // route the chevrons through the same page-nav action path every other
-        // affordance uses — only while the bubble is actually up.
-        self.bubble_rect = rect;
-        self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + chev + 8.0, rect.y1);
-        self.bubble_next = Rect::new(rect.x1 - chev - 8.0, rect.y0, rect.x1, rect.y1);
-        self.push_hit(self.bubble_prev, Action::PrevPage);
-        self.push_hit(self.bubble_next, Action::NextPage);
-
-        self.draw_reader_bubble_pill(scene, t, tr, theme, rect, &label, text_size, alpha);
-    }
-
-    /// The bubble's label: `"page / count"`, extended with the chapter
-    /// locator when the richer label still fits comfortably within the
-    /// reading column.
-    fn reader_bubble_label(
-        &self,
-        tr: &mut TextRenderer,
-        center_x0: f64,
-        center_x1: f64,
-        nchap: usize,
-    ) -> String {
-        let count = self.cur_page_count.max(1);
-        let base = format!("{} / {}", self.page + 1, count);
-        let with_chapter = format!(
-            "{}   ·   Chapter {} of {}",
-            base,
-            self.chapter + 1,
-            nchap.max(1)
-        );
-        let col_w = (center_x1 - center_x0).max(120.0);
-        // Prefer the richer label with the chapter locator, but only when the
-        // pill would still sit comfortably within the reading column.
-        let (rich_w, _) = ui::status_bubble::pill_size(&with_chapter, tr, 12.5, 26.0);
-        if nchap > 0 && rich_w <= col_w - 48.0 {
-            with_chapter
-        } else {
-            base
-        }
-    }
-
-    /// The pill background + label, and its prev/next chevrons.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bubble_pill(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        text_size: f32,
-        alpha: f32,
-    ) {
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            t,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, label, text_size);
-        let prev_hot = self.bubble_prev.contains(self.cursor);
-        let next_hot = self.bubble_next.contains(self.cursor);
-        let cyy = f64::midpoint(rect.y0, rect.y1);
-        let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
-        let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
-        ui::status_bubble::draw_chevron(
-            scene,
-            t,
-            pc,
-            if prev_hot {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            true,
-        );
-        ui::status_bubble::draw_chevron(
-            scene,
-            t,
-            nc,
-            if next_hot {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            false,
-        );
-        scene.pop_layer();
-    }
-
-    /// Horizontal bounds `(left, right)` for the reading-settings popover,
-    /// kept clear of any docked rail. Shared by the draw path and its layout test.
-    fn type_popover_x_bounds(&self, panel_w: f64) -> (f64, f64) {
-        let r = self.rect;
-        let notes_docked_w = match self.notes_layout() {
-            SplitLayout::Docked => NOTES_W * self.notes_flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let toc_docked_w = match self.toc_layout() {
-            SplitLayout::Docked => TOC_W * self.toc_flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let px1 = r.x1 - 18.0 - notes_docked_w;
-        let px0 = (px1 - panel_w).max(r.x0 + 12.0 + toc_docked_w);
-        (px0, px1)
-    }
-
-    fn draw_type_popover(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
-        if !self.type_popover {
-            return;
-        }
-        let r = self.rect;
-        // No scrim: the page IS the live preview of the type/colour you're
-        // choosing, so it must stay at full brightness while this popover is
-        // open. A full-surface *invisible* dismiss target still lets a tap
-        // anywhere off the panel close it.
-        self.push_hit(r, Action::DismissOverlay);
-
-        let layout = self.type_popover_layout(tr, r);
-        // Body panel (its own tap-swallow so clicks inside don't dismiss).
-        paint::fill_round(
-            scene,
-            t,
-            layout.panel,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            layout.panel,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(layout.panel, Action::Swallow);
-
-        let (ix0, ix1) = (layout.ix0, layout.ix1);
-        let y = layout.panel.y0 + layout.pad;
-        let y = self.draw_type_popover_header(scene, t, tr, theme, c, ix0, ix1, y, layout.header_h);
-        let y = self.draw_type_popover_steppers(scene, t, tr, theme, c, ix0, ix1, y, layout.row_h);
-        let y = self.draw_type_popover_layout_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-        );
-        let y = self.draw_type_popover_composition_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-        );
-        let y = self.draw_type_popover_typeface_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-            &layout.font_pills,
-        );
-        self.draw_type_popover_page_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-            &layout.scheme_pills,
-            &layout.scheme_widths,
-        );
-    }
-
-    /// Sizing for the whole popover: pre-measured font/scheme pills (so the
-    /// panel sizes to however many the reader has chosen to show), the
-    /// panel's total height from every section's row count, and its clamped
-    /// on-screen rect.
-    fn type_popover_layout(&self, tr: &mut TextRenderer, r: Rect) -> TypePopoverLayout {
-        let pad = 16.0;
-        let row_h = 34.0;
-        let pill_h = row_h - 4.0;
-        let pill_gap = 8.0;
-        let panel_w = 320.0_f64.min(r.width() - 24.0);
-        let inner_w = panel_w - pad * 2.0;
-
-        let shown = self.shown_fonts();
-        let active_id = self.active_font().id;
-        let font_pills: Vec<(String, String, f64, bool)> = shown
-            .iter()
-            .map(|f| {
-                let w = f64::from(
-                    tr.measure_weighted(&f.name, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0;
-                (f.id.clone(), f.name.clone(), w, f.id == active_id)
-            })
-            .collect();
-        let font_widths: Vec<f64> = font_pills.iter().map(|p| p.2).collect();
-        let font_rows = wrap_row_count(&font_widths, inner_w, pill_gap);
-
-        // Enabled colour schemes offered as PAGE pills.
-        let scheme_pills: Vec<SchemePill> = self.quick_scheme_pills();
-        let scheme_widths: Vec<f64> = scheme_pills
-            .iter()
-            .map(|p| {
-                f64::from(
-                    tr.measure_weighted(&p.label, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0
-            })
-            .collect();
-        let scheme_rows = wrap_row_count(&scheme_widths, inner_w, pill_gap);
-
-        let header_h = 30.0;
-        let steppers_h = row_h + 10.0 + row_h;
-        // Layout row: a "LAYOUT" label + one row of page/scroll/spread pills.
-        let layout_h = 16.0 + pill_h;
-        let composition_h = 16.0 + pill_h;
-        let type_h =
-            16.0 + font_rows as f64 * pill_h + font_rows.saturating_sub(1) as f64 * pill_gap;
-        let page_h =
-            16.0 + scheme_rows as f64 * pill_h + scheme_rows.saturating_sub(1) as f64 * pill_gap;
-        let panel_h = pad * 2.0
-            + header_h
-            + steppers_h
-            + 22.0
-            + layout_h
-            + 22.0
-            + composition_h
-            + 22.0
-            + type_h
-            + 22.0
-            + page_h;
-
-        // The "Aa" trigger now lives in the top bar, so the popover drops down
-        // from just below it (right-aligned via the shared x-bounds), clamping
-        // its foot to the window bottom on a short window.
-        let (px0, px1) = self.type_popover_x_bounds(panel_w);
-        let py0 = r.y0 + TOP_BAR + 8.0;
-        let py1 = (py0 + panel_h).min(r.y1 - 12.0);
-
-        TypePopoverLayout {
-            pad,
-            row_h,
-            pill_h,
-            pill_gap,
-            header_h,
-            panel: Rect::new(px0, py0, px1, py1),
-            ix0: px0 + pad,
-            ix1: px1 - pad,
-            font_pills,
-            scheme_pills,
-            scheme_widths,
-        }
-    }
-
-    /// "Display" title + the ⋯ button that opens the full settings manager.
-    /// Returns the y just below the header.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_header(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        y: f64,
-        header_h: f64,
-    ) -> f64 {
-        // Header: "Display" + a small ⋯ button that opens the full manager.
-        tr.draw_text_weighted(
-            scene,
-            "Display",
-            13.5,
-            c.text_primary,
-            t * Affine::translate((ix0, y + 4.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let dots_s = 26.0;
-        self.icon_button(
-            scene,
-            t,
-            theme,
-            ix1 - dots_s,
-            y - 2.0,
-            dots_s,
-            Ico::Dots,
-            false,
-            Action::OpenSettings,
-        );
-        y + header_h
-    }
-
-    /// Text-size and line-spacing steppers (each value is click-to-type as
-    /// well as +/− steppable). Returns the y just below them.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_steppers(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        y: f64,
-        row_h: f64,
-    ) -> f64 {
-        self.stepper_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            row_h,
-            "Text size",
-            f64::from(self.settings.font_scale) * 100.0,
-            NumberField::FontScale,
-        );
-        let y = y + row_h + 10.0;
-        self.stepper_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            row_h,
-            "Line spacing",
-            f64::from(self.settings.line_spacing),
-            NumberField::LineSpacing,
-        );
-        y + row_h + 22.0
-    }
-
-    /// "LAYOUT" — single page / continuous scroll / two-up spread pills,
-    /// wrapping within the panel. Returns the y just below the row(s).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_layout_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
-            "LAYOUT",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for m in ReadMode::ALL {
-            let w = f64::from(
-                tr.measure_weighted(m.label(), 12.5, None, TextWeight::Medium)
-                    .0,
-            ) + 24.0;
-            if sx + w > ix1 && sx > ix0 {
-                sx = ix0;
-                y += pill_h + pill_gap;
-            }
-            let active = self.settings.mode == m;
-            let action = if active {
-                Action::Swallow
-            } else {
-                Action::SetMode(m)
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                m.label(),
-                12.5,
-                active,
-                Some(action),
-            );
-            sx += w + pill_gap;
-        }
-        y + pill_h + 22.0
-    }
-
-    /// "COMPOSITION" — book-quality global fitting or natural ragged lines.
-    /// Returns the y just below the row.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_composition_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
-            "COMPOSITION",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for composition in CompositionStyle::ALL {
-            let label = composition.label();
-            let width =
-                f64::from(tr.measure_weighted(label, 12.5, None, TextWeight::Medium).0) + 24.0;
-            let active = self.settings.composition == composition;
-            let action = if active {
-                Action::Swallow
-            } else {
-                Action::SetComposition(composition)
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                label,
-                12.5,
-                active,
-                Some(action),
-            );
-            sx += width + pill_gap;
-        }
-        y + pill_h + 22.0
-    }
-
-    /// "TYPEFACE" — one pill per shown font, wrapping within the panel.
-    /// Returns the y just below the row(s).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_typeface_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-        font_pills: &[(String, String, f64, bool)],
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
-            "TYPEFACE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for (id, name, w, active) in font_pills {
-            if sx + w > ix1 && sx > ix0 {
-                sx = ix0;
-                y += pill_h + pill_gap;
-            }
-            let action = if *active {
-                Action::Swallow
-            } else {
-                Action::SetFont(id.clone())
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                name,
-                12.5,
-                *active,
-                Some(action),
-            );
-            sx += w + pill_gap;
-        }
-        y + pill_h + 22.0
-    }
-
-    /// "PAGE" — one pill per enabled colour scheme, wrapping within the panel.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_page_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-        scheme_pills: &[SchemePill],
-        scheme_widths: &[f64],
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            "PAGE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for (p, w) in scheme_pills.iter().zip(scheme_widths.iter()) {
-            if sx + w > ix1 && sx > ix0 {
-                sx = ix0;
-                y += pill_h + pill_gap;
-            }
-            let action = if p.active {
-                Action::Swallow
-            } else {
-                p.action.clone()
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                &p.label,
-                12.5,
-                p.active,
-                Some(action),
-            );
-            sx += w + pill_gap;
-        }
-        let _ = y;
-    }
-
-    /// A labelled −/value/＋ stepper row used inside the reading popover. The
-    /// value itself is a click-to-type field: tapping it (via `field`) starts a
-    /// numeric edit, in addition to the ± steppers.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn stepper_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x0: f64,
-        x1: f64,
-        y: f64,
-        h: f64,
-        label: &str,
-        value: f64,
-        field: NumberField,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            label,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((x0, y + (h - 13.0) / 2.0)),
-            None,
-            TextWeight::Medium,
-        );
-        let width = (h * 2.0 + 62.0).min((x1 - x0) * 0.58);
-        self.number_controls.draw(
-            field,
-            value,
-            Rect::new(x1 - width, y, x1, y + h),
-            scene,
-            t,
-            tr,
-            theme,
-        );
     }
 
     /// `panel_x0` is the rail's left edge — `r.x0` when docked, or a slid
@@ -8331,8 +7435,9 @@ impl BooksApp {
             self.draw_font_picker(scene, t, tr, theme, &c);
         }
         // The colour picker floats above everything when open.
-        if self.picker.is_some() {
-            self.draw_color_picker(scene, t, tr, theme, &c);
+        if self.color_picker.is_open() {
+            self.color_picker
+                .draw(scene, t, tr, theme, self.rect, self.cursor);
         }
     }
 
@@ -8599,9 +7704,10 @@ impl BooksApp {
             }
             let s = p.to_string_lossy().to_string();
             match &home {
-                Some(h) if !h.is_empty() && s.starts_with(h.as_str()) => {
-                    format!("~{}", &s[h.len()..])
-                }
+                Some(h) if !h.is_empty() => match s.strip_prefix(h.as_str()) {
+                    Some(rest) => format!("~{rest}"),
+                    None => s,
+                },
                 _ => s,
             }
         };
@@ -8640,11 +7746,12 @@ impl BooksApp {
                 scene,
                 t,
                 theme,
-                c,
-                x + w - 18.0 - tog_w,
-                y + (row_h - tog_h) / 2.0,
-                tog_w,
-                tog_h,
+                Rect::new(
+                    x + w - 18.0 - tog_w,
+                    y + (row_h - tog_h) / 2.0,
+                    x + w - 18.0,
+                    y + f64::midpoint(row_h, tog_h),
+                ),
                 watched,
                 Action::ToggleWatchFolder(folder.clone()),
             );
@@ -8939,7 +8046,7 @@ impl BooksApp {
             size_right,
             cy,
             f64::from(f.size_mult),
-            NumberField::FontMult(f.id.clone()),
+            &NumberField::FontMult(f.id.clone()),
         );
         // Enable/disable toggle (= whether it appears in quick settings).
         let tog_w = 40.0;
@@ -8949,11 +8056,7 @@ impl BooksApp {
             scene,
             t,
             theme,
-            c,
-            tog_x,
-            cy - tog_h / 2.0,
-            tog_w,
-            tog_h,
+            Rect::new(tog_x, cy - tog_h / 2.0, tog_x + tog_w, cy + tog_h / 2.0),
             f.shown,
             Action::ToggleFontShown(f.id.clone()),
         );
@@ -9356,11 +8459,7 @@ impl BooksApp {
             scene,
             t,
             theme,
-            c,
-            rx,
-            cy - tog_h / 2.0,
-            tog_w,
-            tog_h,
+            Rect::new(rx, cy - tog_h / 2.0, rx + tog_w, cy + tog_h / 2.0),
             s.enabled,
             Action::ToggleSchemeEnabled(s.id.clone()),
         );
@@ -9705,278 +8804,6 @@ impl BooksApp {
         self.push_hit(drect, Action::CloseSchemeEditor);
     }
 
-    /// The reusable colour picker: HSV square + hue strip + quick palette,
-    /// live preview and hex readout. Records the SV/hue rects for drag steering.
-    fn draw_color_picker(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
-        let Some(pick) = self.picker.clone() else {
-            return;
-        };
-        let r = self.rect;
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(0.45);
-        scene.fill(Fill::NonZero, t, scrim, None, &r);
-        // Tap-away cancels.
-        self.push_hit(r, Action::PickerCancel);
-
-        let pw = 372.0_f64.min(r.width() - 40.0);
-        let ph = 396.0_f64.min(r.height() - 40.0);
-        let px0 = r.x0 + (r.width() - pw) / 2.0;
-        let py0 = r.y0 + (r.height() - ph) / 2.0;
-        let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
-        paint::fill_round(
-            scene,
-            t,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(panel, Action::Swallow);
-
-        let ix0 = px0 + 20.0;
-        let ix1 = px0 + pw - 20.0;
-        let title = match &pick.target {
-            PickTarget::NewScheme => "New scheme — pick a background",
-            PickTarget::Slot(_, 0) => "Page colour",
-            PickTarget::Slot(_, 1) => "Text colour",
-            PickTarget::Slot(..) => "Accent colour",
-        };
-        tr.draw_text_weighted(
-            scene,
-            title,
-            15.0,
-            c.text_primary,
-            t * Affine::translate((ix0, py0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-
-        let top = py0 + 46.0;
-        let sv_size = 190.0;
-        self.draw_color_picker_sv_hue(scene, t, c, ix0, ix1, top, sv_size, &pick);
-
-        let prev_y = top + sv_size + 16.0;
-        Self::draw_color_picker_preview(scene, t, tr, c, ix0, prev_y, &pick);
-
-        let chip_y = prev_y + 46.0;
-        self.draw_color_picker_chips(scene, t, theme, c, ix0, ix1, chip_y);
-
-        let btn_y = py0 + ph - 46.0;
-        self.draw_color_picker_buttons(scene, t, tr, theme, c, ix1, btn_y);
-    }
-
-    /// SV square + hue strip. Also records `pick_sv`/`pick_hue` so
-    /// `handle_event` can steer drags against the same rects.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t, s, v, h, i are the standard transform/HSV-channel/loop-index names \
-                  used throughout this file's colour-grid drawing"
-    )]
-    fn draw_color_picker_sv_hue(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        top: f64,
-        sv_size: f64,
-        pick: &ColorPick,
-    ) {
-        let hue_w = 22.0;
-        let sv = Rect::new(ix0, top, ix0 + sv_size, top + sv_size);
-        let hue = Rect::new(ix1 - hue_w, top, ix1, top + sv_size);
-        self.pick_sv = sv;
-        self.pick_hue = hue;
-
-        // SV square: a grid of cells sampling hsv(hue, s, v). Cheap enough for a
-        // one-frame modal and keeps the picker self-contained (no gradient rig).
-        let (cols, rows) = (20usize, 20usize);
-        let cw = sv_size / cols as f64;
-        let chh = sv_size / rows as f64;
-        for gy in 0..rows {
-            for gx in 0..cols {
-                let s = (gx as f32 + 0.5) / cols as f32;
-                let v = 1.0 - (gy as f32 + 0.5) / rows as f32;
-                let rgb = crate::model::hsv_to_rgb(pick.hue, s, v);
-                let cell = Rect::new(
-                    sv.x0 + gx as f64 * cw,
-                    sv.y0 + gy as f64 * chh,
-                    sv.x0 + gx as f64 * cw + cw + 0.8,
-                    sv.y0 + gy as f64 * chh + chh + 0.8,
-                );
-                paint::fill_rect(scene, t, cell, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
-            }
-        }
-        paint::stroke_round(scene, t, sv, 6.0, c.border_standard, 1.0);
-        // SV cursor.
-        let cur = Point::new(
-            sv.x0 + f64::from(pick.sat) * sv_size,
-            sv.y0 + f64::from(1.0 - pick.val) * sv_size,
-        );
-        paint::circle(scene, t, cur, 7.0, Color::from_rgba8(255, 255, 255, 230));
-        let ring = Rect::new(cur.x - 6.0, cur.y - 6.0, cur.x + 6.0, cur.y + 6.0);
-        paint::stroke_round(scene, t, ring, 6.0, Color::from_rgba8(0, 0, 0, 180), 1.5);
-
-        // Hue strip.
-        let bands = 48usize;
-        let bh = sv_size / bands as f64;
-        for i in 0..bands {
-            let h = i as f32 / bands as f32 * 360.0;
-            let rgb = crate::model::hsv_to_rgb(h, 1.0, 1.0);
-            let by = hue.y0 + i as f64 * bh;
-            paint::fill_rect(
-                scene,
-                t,
-                Rect::new(hue.x0, by, hue.x1, by + bh + 0.8),
-                Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
-            );
-        }
-        paint::stroke_round(scene, t, hue, 4.0, c.border_standard, 1.0);
-        let hy = hue.y0 + f64::from(pick.hue / 360.0) * sv_size;
-        let hmark = Rect::new(hue.x0 - 3.0, hy - 3.0, hue.x1 + 3.0, hy + 3.0);
-        paint::stroke_round(scene, t, hmark, 3.0, Color::from_rgb8(250, 250, 252), 2.0);
-    }
-
-    /// Preview swatch + hex readout for the color under the cursor.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_color_picker_preview(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        prev_y: f64,
-        pick: &ColorPick,
-    ) {
-        let rgb = pick.rgb();
-        let sw = Rect::new(ix0, prev_y, ix0 + 54.0, prev_y + 34.0);
-        paint::fill_round(scene, t, sw, 8.0, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
-        paint::stroke_round(scene, t, sw, 8.0, c.border_standard, 1.0);
-        tr.draw_text_weighted(
-            scene,
-            &crate::model::hex_string(rgb),
-            15.0,
-            c.text_primary,
-            t * Affine::translate((ix0 + 66.0, prev_y + 9.0)),
-            None,
-            TextWeight::Semibold,
-        );
-    }
-
-    /// Quick palette chips.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_color_picker_chips(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        chip_y: f64,
-    ) {
-        let chips: [[u8; 3]; 10] = [
-            [0xEF, 0x44, 0x44],
-            [0xF5, 0x9E, 0x0B],
-            [0xFA, 0xCC, 0x15],
-            [0x10, 0xB9, 0x81],
-            [0x3B, 0x82, 0xF6],
-            [0xA7, 0x8B, 0xFA],
-            [0xF6, 0xEC, 0xD8],
-            [0xFC, 0xFC, 0xFA],
-            [0x2A, 0x2A, 0x2E],
-            [0x14, 0x18, 0x22],
-        ];
-        let chip = 26.0;
-        let cgap = (ix1 - ix0 - chips.len() as f64 * chip) / (chips.len() as f64 - 1.0);
-        let mut cx = ix0;
-        for col in chips {
-            let cr = Rect::new(cx, chip_y, cx + chip, chip_y + chip);
-            paint::fill_round(scene, t, cr, 6.0, Color::from_rgb8(col[0], col[1], col[2]));
-            let hov = self.is_hover(cr);
-            paint::stroke_round(
-                scene,
-                t,
-                cr,
-                6.0,
-                if hov {
-                    theme.border_focus
-                } else {
-                    c.border_standard
-                },
-                if hov { 2.0 } else { 1.0 },
-            );
-            self.push_hit(cr, Action::PickerSwatch(col));
-            cx += chip + cgap;
-        }
-    }
-
-    /// Cancel / Done buttons.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_color_picker_buttons(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix1: f64,
-        btn_y: f64,
-    ) {
-        let done_w = f64::from(
-            tr.measure_weighted("Done", 13.0, None, TextWeight::Semibold)
-                .0,
-        ) + 44.0;
-        let drect = Rect::new(ix1 - done_w, btn_y, ix1, btn_y + 34.0);
-        paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
-        tr.draw_text_weighted(
-            scene,
-            "Done",
-            13.0,
-            Color::from_rgb8(248, 248, 252),
-            t * Affine::translate((ix1 - done_w + 22.0, btn_y + 9.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        self.push_hit(drect, Action::PickerDone);
-        let can_w = f64::from(
-            tr.measure_weighted("Cancel", 13.0, None, TextWeight::Medium)
-                .0,
-        ) + 30.0;
-        let crect = Rect::new(
-            ix1 - done_w - 10.0 - can_w,
-            btn_y,
-            ix1 - done_w - 10.0,
-            btn_y + 34.0,
-        );
-        paint::fill_round(scene, t, crect, 17.0, c.surfaces.overlay);
-        tr.draw_text_weighted(
-            scene,
-            "Cancel",
-            13.0,
-            c.text_primary,
-            t * Affine::translate((crect.x0 + 15.0, btn_y + 9.0)),
-            None,
-            TextWeight::Medium,
-        );
-        self.push_hit(crect, Action::PickerCancel);
-    }
-
     fn draw_font_picker(
         &mut self,
         scene: &mut Scene,
@@ -10149,7 +8976,10 @@ fn ellipsize(
     let mut lo = 0;
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        let candidate: String = chars
+            .get(..mid)
+            .map_or_else(String::new, |s| s.iter().collect())
+            + "…";
         if f64::from(tr.measure_weighted(&candidate, size, None, weight).0) <= max_w {
             best = candidate;
             lo = mid;
@@ -10338,12 +9168,33 @@ mod interaction_tests {
                 pred(&action)
             })
             .or_else(|| {
+                [
+                    (ReaderBubbleAction::PreviousPage, Action::PrevPage),
+                    (ReaderBubbleAction::NextPage, Action::NextPage),
+                ]
+                .into_iter()
+                .find_map(|(bubble_action, action)| {
+                    pred(&action)
+                        .then(|| app.reader_bubble.action_center(bubble_action))
+                        .flatten()
+                })
+            })
+            .or_else(|| {
                 app.hits
                     .iter()
                     .rev()
                     .find(|h| pred(&h.action))
                     .map(|h| h.rect.center())
             })
+    }
+
+    fn find_reading_hit(
+        app: &BooksApp,
+        pred: impl Fn(&ReadingSettingsAction) -> bool,
+    ) -> Option<Point> {
+        app.reading_settings
+            .action_rect(pred)
+            .map(|rect| rect.center())
     }
 
     /// Route a real left-click at `p` (logical px) through `handle_event`.
@@ -10720,9 +9571,9 @@ mod interaction_tests {
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let sans = find_hit(
+        let sans = find_reading_hit(
             &app,
-            |a| matches!(a, Action::SetFont(id) if id.as_str() == "default"),
+            |a| matches!(a, ReadingSettingsAction::SetFont(id) if id == "default"),
         )
         .expect("default (sans) pill");
         assert!(click(&mut app, &mut doc, sans), "sans pill handled");
@@ -10744,9 +9595,9 @@ mod interaction_tests {
             "font signature differs so the chapter relays out"
         );
         // And back to serif via its own pill — reselecting the reading face.
-        let serif = find_hit(
+        let serif = find_reading_hit(
             &app,
-            |a| matches!(a, Action::SetFont(id) if id.as_str() == "serif"),
+            |a| matches!(a, ReadingSettingsAction::SetFont(id) if id == "serif"),
         )
         .expect("serif pill");
         assert!(click(&mut app, &mut doc, serif), "serif pill handled");
@@ -10812,8 +9663,6 @@ mod interaction_tests {
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        // All four built-in schemes start enabled and offered in quick settings.
-        assert_eq!(app.quick_scheme_pills().len(), 4);
         // Toggle the Light scheme off through its manager row.
         let toggle = find_hit(
             &app,
@@ -10821,16 +9670,24 @@ mod interaction_tests {
         )
         .expect("scheme enable toggle");
         assert!(click(&mut app, &mut doc, toggle), "toggle handled");
+        app.view = View::Reader;
+        app.reading_settings.open();
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        let pills = app.quick_scheme_pills();
-        assert_eq!(
-            pills.len(),
-            3,
-            "a disabled scheme drops out of quick settings"
+        assert!(
+            find_reading_hit(&app, |action| matches!(
+                action,
+                ReadingSettingsAction::SetReadTheme(ReadTheme::Light)
+            ))
+            .is_none(),
+            "Light is gone from quick settings"
         );
         assert!(
-            !pills.iter().any(|p| p.label == "Light"),
-            "Light is gone from quick settings"
+            find_reading_hit(&app, |action| matches!(
+                action,
+                ReadingSettingsAction::SetReadTheme(ReadTheme::Dark)
+            ))
+            .is_some(),
+            "enabled schemes remain in quick settings"
         );
     }
 
@@ -10846,7 +9703,7 @@ mod interaction_tests {
         let newbtn = find_hit(&app, |a| matches!(a, Action::NewSchemeViaPicker))
             .expect("a New scheme button");
         assert!(click(&mut app, &mut doc, newbtn), "new-via-picker handled");
-        assert!(app.picker.is_some(), "the colour picker opened");
+        assert!(app.color_picker.is_open(), "the colour picker opened");
         assert_eq!(
             BooksDoc::read_schemes(&doc).len(),
             before,
@@ -10855,7 +9712,7 @@ mod interaction_tests {
         // Commit the picker -> a scheme is derived from the chosen background,
         // selected, and opened in the editor.
         frame(&mut app, &mut doc, 1200.0, 860.0);
-        let done = find_hit(&app, |a| matches!(a, Action::PickerDone)).expect("a Done button");
+        let done = app.color_picker.done_center().expect("a Done button");
         assert!(click(&mut app, &mut doc, done), "picker done handled");
         let schemes = BooksDoc::read_schemes(&doc);
         assert_eq!(
@@ -10905,10 +9762,10 @@ mod interaction_tests {
             click(&mut app, &mut doc, sw),
             "picker opened on the page slot"
         );
-        assert!(app.picker.is_some());
+        assert!(app.color_picker.is_open());
         // Drag on the SV square: a press + move within it applies a new colour.
         frame(&mut app, &mut doc, 1200.0, 900.0);
-        let sv = app.pick_sv;
+        let sv = app.color_picker.sv_rect();
         ptr_move(
             &mut app,
             &mut doc,
@@ -11162,7 +10019,7 @@ mod interaction_tests {
         let mut doc = AutoCommit::new();
         // Same page, popover closed then open.
         let closed = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
-        app.type_popover = true;
+        app.reading_settings.open();
         let open = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
 
         let mut ro = OffscreenRenderer::new(w, h);
@@ -11187,10 +10044,13 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(app.layout.is_some(), "reader starts laid out");
 
-        app.type_popover = true;
+        app.reading_settings.open();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let ragged = find_hit(&app, |action| {
-            matches!(action, Action::SetComposition(CompositionStyle::Ragged))
+        let ragged = find_reading_hit(&app, |action| {
+            matches!(
+                action,
+                ReadingSettingsAction::SetComposition(CompositionStyle::Ragged)
+            )
         })
         .expect("settings popover exposes the Ragged composition choice");
         assert!(click(&mut app, &mut doc, ragged), "choice is clickable");
@@ -11385,7 +10245,7 @@ mod interaction_tests {
             "a page change surfaces the bubble's next chevron"
         );
         assert!(
-            app.page_bubble.needs_frame(Instant::now()),
+            app.reader_bubble.needs_frame(Instant::now()),
             "the visible bubble schedules its own fade-out frames"
         );
     }
@@ -11864,14 +10724,16 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(!app.type_popover);
+        assert!(!app.reading_settings.is_open());
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         assert!(click(&mut app, &mut doc, aa));
-        assert!(app.type_popover, "popover opened");
+        assert!(app.reading_settings.is_open(), "popover opened");
         // Choose the Dark page tint from the popover.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let dark = find_hit(&app, |a| matches!(a, Action::SetReadTheme(ReadTheme::Dark)))
-            .expect("dark tint pill");
+        let dark = find_reading_hit(&app, |action| {
+            matches!(action, ReadingSettingsAction::SetReadTheme(ReadTheme::Dark))
+        })
+        .expect("dark tint pill");
         assert!(click(&mut app, &mut doc, dark));
         assert_eq!(BooksDoc::read_settings(&doc).theme, ReadTheme::Dark);
     }
@@ -12035,9 +10897,7 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty(), "starts empty");
 
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path),
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         app.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(app.library.len(), 1, "the picked book joined the library");
@@ -12236,8 +11096,11 @@ mod interaction_tests {
             "wide window docks the rail"
         );
 
-        let panel_w = 320.0_f64.min(app.rect.width() - 24.0);
-        let (px0, px1) = app.type_popover_x_bounds(panel_w);
+        let (px0, px1) = ReadingSettings::panel_x_bounds(
+            app.rect,
+            app.rect.x0 + 12.0 + TOC_W,
+            app.rect.x1 - 18.0 - NOTES_W,
+        );
         let rail_left = app.rect.x1 - NOTES_W;
         assert!(
             px1 <= rail_left,
@@ -12635,8 +11498,8 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let base = BooksDoc::read_settings(&doc).font_scale;
         let font = app
-            .number_controls
-            .rect(&NumberField::FontScale)
+            .reading_settings
+            .number_rect(&NumberField::FontScale)
             .expect("font + stepper");
         let inc = Point::new(
             font.x1 - font.height() / 2.0,
@@ -12653,8 +11516,8 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let sbase = BooksDoc::read_settings(&doc).line_spacing;
         let spacing = app
-            .number_controls
-            .rect(&NumberField::LineSpacing)
+            .reading_settings
+            .number_rect(&NumberField::LineSpacing)
             .expect("spacing - stepper");
         let dec = Point::new(
             spacing.x0 + spacing.height() / 2.0,
@@ -12726,9 +11589,9 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
 
         // Layer 1: an open type popover — first Escape closes only that.
-        app.type_popover = true;
+        app.reading_settings.open();
         assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
-        assert!(!app.type_popover, "escape closed the popover");
+        assert!(!app.reading_settings.is_open(), "escape closed the popover");
         assert_eq!(app.view, View::Reader, "still in the book");
 
         // Layer 2: a narrow window with the contents overlay flap open.
@@ -12786,8 +11649,8 @@ mod interaction_tests {
         // Tap the text-size value to type a number directly.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let val = app
-            .number_controls
-            .rect(&NumberField::FontScale)
+            .reading_settings
+            .number_rect(&NumberField::FontScale)
             .expect("the text-size value is a shared number field");
         let val = Point::new(f64::midpoint(val.x0, val.x1), f64::midpoint(val.y0, val.y1));
         assert!(click(&mut app, &mut doc, val), "value tap handled");
@@ -12807,8 +11670,8 @@ mod interaction_tests {
         // Line spacing is click-to-type too.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let ls_val = app
-            .number_controls
-            .rect(&NumberField::LineSpacing)
+            .reading_settings
+            .number_rect(&NumberField::LineSpacing)
             .expect("line spacing is a shared number field");
         let ls_val = Point::new(
             f64::midpoint(ls_val.x0, ls_val.x1),
@@ -12911,10 +11774,16 @@ mod interaction_tests {
         );
 
         // The sort control + hide-read toggle are reachable in the shelf chrome.
-        let sort = find_hit(&app, |a| matches!(a, Action::ToggleSortMenu));
-        assert!(sort.is_some(), "a sort control is present");
-        let hide = find_hit(&app, |a| matches!(a, Action::ToggleHideRead));
-        assert!(hide.is_some(), "a hide-read toggle is present");
+        assert!(
+            app.shelf_controls
+                .has_action(ShelfControlAction::ToggleSortMenu),
+            "a sort control is present"
+        );
+        assert!(
+            app.shelf_controls
+                .has_action(ShelfControlAction::ToggleHideRead),
+            "a hide-read toggle is present"
+        );
     }
 
     /// Drive a real drag that starts *inside* a paragraph and ends in a later
@@ -13097,7 +11966,10 @@ mod interaction_tests {
         // Add the first comment and type it.
         let add = find_hit(&app, |a| matches!(a, Action::AddComment(_))).expect("add-comment");
         assert!(click(&mut app, &mut doc, add), "add handled");
-        assert!(app.composing.is_some(), "the new comment is being composed");
+        assert!(
+            app.comment_overlay.editing_id().is_some(),
+            "the new comment is being composed"
+        );
         for ch in ["H", "i"] {
             key_char(&mut app, &mut doc, ch);
         }
@@ -13123,7 +11995,10 @@ mod interaction_tests {
         let edit =
             find_hit(&app, |a| matches!(a, Action::EditComment(_))).expect("an edit affordance");
         assert!(click(&mut app, &mut doc, edit), "edit handled");
-        assert!(app.composing.is_some(), "a comment reopened for editing");
+        assert!(
+            app.comment_overlay.editing_id().is_some(),
+            "a comment reopened for editing"
+        );
         key_named(&mut app, &mut doc, NamedKey::Enter);
 
         // Delete one comment.

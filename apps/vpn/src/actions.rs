@@ -24,7 +24,7 @@
 //!   deterministically.
 //! * **Importing a system config** — the XDG-portal file pick, reading and
 //!   parsing the `.conf` / `.ovpn`, and persisting it to the data dir are
-//!   external steps ([`crate::portal`], [`crate::config`]). Only the resulting
+//!   external steps ([`ui::portal`], [`crate::config`]). Only the resulting
 //!   parsed [`Connection`] is added to the document, and that add is the same
 //!   [`VpnAction::AddConnection`] the add form dispatches.
 //! * **Presentation** — which connection is selected, the detail tab, hover,

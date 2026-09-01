@@ -6,11 +6,10 @@
 //! `date_picker_first_day_of_week_is_monday` so a future locale change
 //! must touch both the test and `first_visible_col`.
 //!
-//! State is owned by the widget itself, not the CRDT, because the
-//! selected date and the visible month are presentation concerns
-//! (analogous to scroll position) — the consumer wires `on_change` to
-//! propagate the chosen `NaiveDate` into whatever Automerge document
-//! they manage.
+//! The visible month remains presentation state. The selected date can stay
+//! widget-local, bind directly to typed process-local state with
+//! [`DatePicker::from_state`], or be observed with `on_change` for an
+//! app-owned durable mutation.
 
 use automerge::{AutoCommit, ObjId};
 use chrono::{Datelike, Local, NaiveDate};
@@ -39,9 +38,12 @@ const GRID_COLS: usize = 7;
 const WEEKDAY_LABELS: [&str; GRID_COLS] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
 pub struct DatePicker {
+    /// Fluent message id spoken for the composite calendar control.
+    accessible_name: Option<String>,
     selected: NaiveDate,
     month_view: (i32, u32),
     on_change: Option<Box<dyn FnMut(NaiveDate)>>,
+    local_state: Option<crate::local_state::LocalBinding<NaiveDate>>,
     rect: Rect,
     day_rects: Vec<(NaiveDate, Rect)>,
     prev_button_rect: Rect,
@@ -55,9 +57,11 @@ pub struct DatePicker {
 impl DatePicker {
     pub fn new(initial: NaiveDate) -> Self {
         Self {
+            accessible_name: None,
             selected: initial,
             month_view: (initial.year(), initial.month()),
             on_change: None,
+            local_state: None,
             rect: Rect::ZERO,
             day_rects: Vec::new(),
             prev_button_rect: Rect::ZERO,
@@ -67,8 +71,28 @@ impl DatePicker {
         }
     }
 
+    /// Create a date picker bound to typed process-local state.
+    ///
+    /// Pointer, keyboard, and semantic changes update `state`; mutations
+    /// through any clone update the selected date and visible month on the
+    /// next synchronization pass.
+    pub fn from_state(state: &crate::LocalState<NaiveDate>) -> Self {
+        let (selected, binding) = crate::local_state::LocalBinding::new(state);
+        Self {
+            local_state: Some(binding),
+            ..Self::new(selected)
+        }
+    }
+
     pub fn selected(&self) -> NaiveDate {
         self.selected
+    }
+
+    /// Name the date picker for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     pub fn month_view(&self) -> (i32, u32) {
@@ -102,11 +126,27 @@ impl DatePicker {
         };
     }
 
-    /// Does **not** fire `on_change` — for a host seeding the picker from
-    /// its own state before showing it.
+    /// Set the date programmatically without firing `on_change`.
+    /// A bound [`crate::LocalState`] is updated immediately.
     pub fn set_selected(&mut self, date: NaiveDate) {
         self.selected = date;
         self.month_view = (date.year(), date.month());
+        self.publish_local_state();
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.selected);
+        }
+    }
+
+    fn commit_user_date(&mut self, date: NaiveDate) {
+        self.selected = date;
+        self.month_view = (date.year(), date.month());
+        self.publish_local_state();
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(date);
+        }
     }
 
     /// The visible month follows the selection so arrowing off the end of
@@ -116,11 +156,7 @@ impl DatePicker {
             .selected
             .checked_add_signed(chrono::Duration::days(days))
         {
-            self.selected = d;
-            self.month_view = (d.year(), d.month());
-            if let Some(cb) = self.on_change.as_mut() {
-                cb(d);
-            }
+            self.commit_user_date(d);
         }
     }
 
@@ -221,7 +257,16 @@ const CELL_SIZE: f64 = 32.0;
 const CHEVRON_WIDTH: f64 = 32.0;
 
 impl Widget for DatePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        if let Some(date) = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll)
+        {
+            self.selected = date;
+            self.month_view = (date.year(), date.month());
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -335,10 +380,7 @@ impl Widget for DatePicker {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        let d = self.selected;
-                        if let Some(cb) = self.on_change.as_mut() {
-                            cb(d);
-                        }
+                        self.commit_user_date(self.selected);
                         *handled = true;
                     }
                     _ => {}
@@ -370,13 +412,9 @@ impl Widget for DatePicker {
                     .find(|(_, r)| r.contains(pt))
                     .map(|(d, _)| *d);
                 if let Some(date) = hit {
-                    self.selected = date;
                     // Slides the visible month on a spill-in/out click,
                     // matching every common picker UX.
-                    self.month_view = (date.year(), date.month());
-                    if let Some(cb) = self.on_change.as_mut() {
-                        cb(date);
-                    }
+                    self.commit_user_date(date);
                     *handled = true;
                 }
             }
@@ -409,12 +447,41 @@ impl Widget for DatePicker {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.selected.format("%Y-%m-%d").to_string())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
+                    focused: self.is_focused(),
                     ..Default::default()
                 }),
         )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        match action {
+            Action::SetValue(value) => {
+                let Ok(date) = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d") else {
+                    return false;
+                };
+                self.commit_user_date(date);
+                true
+            }
+            Action::Increment => {
+                self.move_selection(1);
+                true
+            }
+            Action::Decrement => {
+                self.move_selection(-1);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -766,6 +833,51 @@ mod tests {
         let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
         let first_col: usize = dp.first_visible_col();
         assert_eq!(first_col, 0_usize);
+    }
+
+    #[test]
+    fn local_state_keeps_date_pickers_in_sync() {
+        let first = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+        let second = NaiveDate::from_ymd_opt(2027, 8, 4).unwrap();
+        let state = crate::LocalState::new(first);
+        let mut left = DatePicker::from_state(&state);
+        let mut right = DatePicker::from_state(&state);
+        let mut doc = AutoCommit::new();
+
+        left.set_selected(second);
+        assert_eq!(state.with(|date| *date), second);
+        Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+        assert_eq!(right.selected(), second);
+        assert_eq!(right.month_view(), (2027, 8));
+    }
+
+    #[test]
+    fn semantic_date_change_updates_state_and_callback() {
+        let initial = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let expected = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let state = crate::LocalState::new(initial);
+        let captured = Rc::new(RefCell::new(None));
+        let callback = Rc::clone(&captured);
+        let mut picker = DatePicker::from_state(&state)
+            .on_change(move |date| *callback.borrow_mut() = Some(date));
+        let mut doc = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut picker,
+            &crate::a11y::Action::SetValue("2026-11-23".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.with(|date| *date), expected);
+        assert_eq!(*captured.borrow(), Some(expected));
+
+        assert!(!Widget::perform_action(
+            &mut picker,
+            &crate::a11y::Action::SetValue("2026-02-30".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.with(|date| *date), expected);
     }
 
     fn picker_color_fills(focused: bool) -> usize {

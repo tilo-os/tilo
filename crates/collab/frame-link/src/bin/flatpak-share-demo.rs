@@ -1253,7 +1253,7 @@ impl Pipeline {
         // which case flushing "now" instead of "one hour from now" is a
         // harmless fallback, not a panic.
         let flush_now = Instant::now()
-            .checked_add(Duration::from_hours(1))
+            .checked_add(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
         for nal_blob in self.shim.drain_ready(flush_now) {
             if let Some(frame) = self.recv_decoder.decode(&nal_blob) {

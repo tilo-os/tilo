@@ -38,9 +38,12 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     })
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.containers", containers::app_root)
+        &LaunchSpec::new("dev.qos.containers", containers::app_root)
             .shot_root(shot_root)
             .scenarios(&["confirm", "prompt"]),
     );

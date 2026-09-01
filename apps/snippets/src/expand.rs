@@ -186,6 +186,7 @@ impl ExpandModal {
     /// One labelled input row per placeholder, or a "no variables" note
     /// when the snippet has none. Records `field_rects` for hit-testing
     /// and returns the y cursor for the next section.
+    #[allow(clippy::too_many_arguments)]
     fn draw_fields(
         &mut self,
         scene: &mut Scene,
@@ -273,6 +274,7 @@ impl ExpandModal {
     }
 
     /// The live "PREVIEW" panel: the substituted body, syntax-highlighted.
+    #[allow(clippy::too_many_arguments)]
     fn draw_preview(
         &self,
         scene: &mut Scene,

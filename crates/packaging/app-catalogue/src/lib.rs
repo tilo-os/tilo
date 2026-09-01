@@ -65,6 +65,15 @@ pub struct CatalogueApp {
     pub registry: String,
     /// Where the `.qpkg` is fetched from.
     pub download_url: String,
+    /// Signed-root/package-id hash, covered by the registry signature.
+    #[serde(default)]
+    pub qpkg_root_hash_hex: String,
+    /// Expected download size, covered by the registry signature.
+    #[serde(default)]
+    pub qpkg_size_bytes: u64,
+    /// Publisher key the downloaded qpkg must be signed by.
+    #[serde(default)]
+    pub publisher_pubkey_hex: String,
     /// `"verified"` or `"tofu"` — see [`TrustLevel`]. Untrusted entries never become a `CatalogueApp`.
     pub trust: String,
 }
@@ -117,6 +126,9 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
         version: newest.version.clone(),
         registry: registry_name.to_string(),
         download_url: newest.qpkg_url.clone(),
+        qpkg_root_hash_hex: newest.qpkg_root_hash_hex.clone(),
+        qpkg_size_bytes: newest.qpkg_size_bytes,
+        publisher_pubkey_hex: v.entry.publisher_pubkey_hex.clone(),
         trust: match v.trust {
             TrustLevel::Verified => "verified".into(),
             TrustLevel::UnverifiedOwner => "tofu".into(),
@@ -156,24 +168,47 @@ pub fn dedupe_and_subtract(apps: Vec<CatalogueApp>, installed: &[String]) -> Vec
 }
 
 /// Everything the configured registries offer that is not installed.
-/// Blocking — one HTTP round-trip per enabled registry; callers run this on a worker thread.
+/// Blocking, but enabled registries are fetched concurrently so one slow
+/// mirror does not serially delay every healthy source. Results are still
+/// folded in configuration order, preserving the user's registry priority.
 pub fn available() -> CatalogueListing {
     let registries = config::load_registries_no_seed();
+    let enabled: Vec<RegistryConfig> = registries.enabled().cloned().collect();
+    #[allow(
+        clippy::needless_collect,
+        reason = "all registry workers must be spawned before the first join; joining the mapped iterator directly would serialize the HTTP requests"
+    )]
+    let fetched = std::thread::scope(|scope| {
+        let handles: Vec<_> = enabled
+            .iter()
+            .map(|registry| scope.spawn(move || client::fetch_entries(registry)))
+            .collect();
+        handles
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .collect::<Vec<_>>()
+    });
     let mut apps = Vec::new();
     let mut unreachable = Vec::new();
-    for reg in registries.enabled() {
-        match client::fetch_entries(reg) {
-            Ok(entries) => {
-                for v in &entries {
-                    if let Some(app) = entry_to_app(v, &reg.name) {
-                        apps.push(app);
+    for (reg, result) in enabled.iter().zip(fetched) {
+        match result {
+            Err(_) => unreachable.push(UnreachableRegistry {
+                name: reg.name.clone(),
+                detail: "registry worker stopped unexpectedly".to_string(),
+            }),
+            Ok(result) => match result {
+                Ok(entries) => {
+                    for v in &entries {
+                        if let Some(app) = entry_to_app(v, &reg.name) {
+                            apps.push(app);
+                        }
                     }
                 }
-            }
-            Err(e) => unreachable.push(UnreachableRegistry {
-                name: reg.name.clone(),
-                detail: e.to_string(),
-            }),
+                Err(e) => unreachable.push(UnreachableRegistry {
+                    name: reg.name.clone(),
+                    detail: e.to_string(),
+                }),
+            },
         }
     }
     CatalogueListing {
@@ -279,6 +314,9 @@ mod tests {
                 version: "2.0.0".into(),
                 registry: "main".into(),
                 download_url: "https://x/y.qpkg".into(),
+                qpkg_root_hash_hex: "ab".repeat(32),
+                qpkg_size_bytes: 10,
+                publisher_pubkey_hex: "cd".repeat(32),
                 trust: "verified".into(),
             }],
             unreachable: vec![UnreachableRegistry {
@@ -289,7 +327,7 @@ mod tests {
         let json = serde_json::to_string(&listing).expect("encodes");
         assert_eq!(
             json,
-            r#"{"apps":[{"package_id":"dev.qos.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
+            r#"{"apps":[{"package_id":"dev.qos.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","qpkg_root_hash_hex":"abababababababababababababababababababababababababababababababab","qpkg_size_bytes":10,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
         );
     }
 

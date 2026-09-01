@@ -51,18 +51,10 @@ interface ChannelHandle {
   # union (cursor was the only variant in schema v1).
   presence @2 () -> (handle :PresenceHandle);
 
-  # LEGACY — unsigned full-document snapshot. Present so apps that
-  # have not yet been provisioned with a signing identity keep
-  # working across the ui-collab → runtime-collab migration.
-  # Callers on the migration target path use `send` with a
-  # collab-types SignedOp instead. Will be removed once identity
-  # provisioning covers every fleet app.
-  sendUnsignedSnapshot @3 (data :Data) -> ();
-
-  # LEGACY — unsigned incremental Automerge change blob. Same
-  # transitional contract as `sendUnsignedSnapshot`; removal
-  # deferred until the whole fleet has an identity.
-  sendUnsignedIncremental @4 (data :Data) -> ();
+  # Retired unsigned verbs keep their ordinals because Cap'n Proto requires
+  # declarations to remain sequential. They carry no data and have no effect.
+  retiredUnsignedSnapshot @3 () -> ();
+  retiredUnsignedIncremental @4 () -> ();
 
   # Subscribe to broker roster + permission-list updates. Returned
   # stream yields a fresh `ChannelContext` snapshot every time the
@@ -75,11 +67,9 @@ interface ChannelHandle {
   # up to older edits after late-join" UX; see
   # `ScrollbackBatch` for the response shape.
   #
-  # LEGACY — this method does not carry an artifact id, so the
-  # broker keys the read on a `nil` artifact (`ArtifactId::default()`).
-  # Callers that hold a specific artifact should prefer
-  # `fetchScrollbackFor @7`. Kept so schema-v1 clients still resolve.
-  fetchScrollback @6 (beforeSeq :UInt64, max :UInt32) -> (batch :ScrollbackBatch);
+  # Retired artifact-less scrollback ordinal. All reads name an artifact via
+  # `fetchScrollbackFor @7`; the ordinal remains reserved permanently.
+  retiredFetchScrollback @6 () -> ();
 
   # Fetch a page of previously-validated signed ops on a specific
   # artifact. `artifactId` is the 16-byte encoding of the artifact
@@ -291,40 +281,17 @@ interface Stream {
 }
 
 enum OpKind {
-  # What `Stream.read`'s `op` bytes actually are. The stream carries
-  # three kinds of frame and they are not interchangeable: a delta
-  # must be applied incrementally, a whole document must be merged,
-  # and a signed envelope must be decoded before either. Without a
-  # discriminator a reader can only guess, and the only available
-  # guess — "try to decode a signed envelope, drop it if that fails"
-  # — silently discards every unsigned frame.
-  #
-  # `signed` is ordinal 0 so it is also the default: a producer that
-  # predates this field means the postcard-encoded `SignedOp` it has
-  # always sent.
-
+  # Every live stream frame is a postcard-encoded SignedOp.
   signed @0;
-  # `op` is a postcard-encoded `SignedOp`.
-
-  unsignedIncremental @1;
-  # `op` is a raw Automerge change delta, applied incrementally on
-  # top of the document the reader already holds.
-
-  unsignedSnapshot @2;
-  # `op` is a whole Automerge document, merged into the reader's.
-  # Sent to a peer that has just arrived and has no history for the
-  # deltas to apply against.
 }
 
 interface PresenceHandle {
   # Publish this user's cursor position into the channel.
   publishCursor @0 (x :Float32, y :Float32) -> ();
 
-  # LEGACY — pre-`subscribeAll` remote-cursor stream. Yields only
-  # cursor-payload events, dropping caret / selection / arrived /
-  # left. Kept so schema-v1 clients keep compiling; new code uses
-  # `subscribeAll` and discriminates on the payload union.
-  subscribeRemoteCursors @1 () -> (stream :CursorStream);
+  # Retired cursor-only subscription ordinal. `subscribeAll @6` is the sole
+  # presence stream; this ordinal remains reserved permanently.
+  retiredRemoteCursors @1 () -> ();
 
   # Publish the local caret position on the artifact identified by
   # `keyBytes`. `keyBytes` is a postcard-encoded `ui::PresenceKey`;
@@ -366,13 +333,11 @@ interface PresenceHandle {
   # to end and never re-keys them, so exactly one receiver can place the
   # position and the rest can tell that it is not theirs.
   publishPointer @7 (keyBytes :Data, x :Float32, y :Float32) -> ();
-}
 
-interface CursorStream {
-  # Pull the next remote-cursor update. Returns the user id (as a
-  # short string id), the x/y position. Promise resolves when an
-  # update is available.
-  read @0 () -> (userId :Text, x :Float32, y :Float32);
+  # Publish a transient "just typed" range. This is intentionally distinct
+  # from selection: receivers render it as a fading insertion highlight,
+  # while a selection is durable presence until the next caret update.
+  publishTyping @8 (keyBytes :Data, start :UInt64, end :UInt64) -> ();
 }
 
 interface PresenceStream {
@@ -441,6 +406,13 @@ struct PresencePayload {
       x @7 :Float32;
       y @8 :Float32;
     }
+
+    # A transient insertion range. Kept as its own union arm so the local
+    # Cap'n Proto hop preserves the same semantic variant as peer transport.
+    typing :group {
+      start @9 :UInt64;
+      end  @10 :UInt64;
+    }
   }
 }
 
@@ -454,6 +426,12 @@ struct PresencePayload {
 struct ChannelContext {
   collaborators @0 :List(Collaborator);
   permissions   @1 :List(Text);
+  # A session-local Follow command. `followChanged == false` means this is
+  # the ordinary complete roster/permission snapshot above. When true,
+  # clients leave that snapshot untouched and either follow `followTarget`
+  # or stop when it is empty. The compositor never relays this to peers.
+  followTarget  @2 :Text;
+  followChanged @3 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

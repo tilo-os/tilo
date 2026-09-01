@@ -24,10 +24,13 @@ jobs:
       CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
+      # Keep dev and test fingerprints compatible. The all-target check and
+      # example links can then reuse dependencies emitted by nextest instead
+      # of rebuilding the workspace merely to add unused CI debuginfo.
+      CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-      SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
       WGPU_BACKEND: vulkan
       VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       WGPU_ADAPTER_NAME: llvmpipe
@@ -67,6 +70,9 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Check complete workspace formatting
+        run: cargo fmt --all --check
+
       # Build/run tests first so the following checks can reuse emitted
       # rlibs/rmeta instead of compiling metadata before codegen.
       - name: Run every workspace test
@@ -102,14 +108,15 @@ jobs:
           bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
           cargo check --workspace --locked --all-targets
 
-      # `cargo check --all-targets` type-checks examples but does not exercise
-      # their final link. Keep that coverage here, once per day rather than on
-      # every pull request.
-      - name: Build every workspace example
+      # `cargo check --all-targets` type-checks examples but neither links nor
+      # runs their test harnesses. Reuse the test-profile artifacts above to do
+      # both here, once per day rather than in a separate job or on every pull
+      # request.
+      - name: Test every workspace example
         run: >-
           bash tools/ci-measure.sh "nightly workspace examples" --
-          bash scripts/ci-run.sh "cargo build --workspace --examples" --
-          cargo build --workspace --examples --locked
+          bash scripts/ci-run.sh "cargo test --workspace --examples" --
+          cargo test --workspace --examples --locked
 
       - name: Report remote compiler-cache effectiveness
         if: always()

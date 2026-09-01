@@ -224,8 +224,12 @@ impl CalculatorApp {
     /// no-op action, and an empty change wedges the next dispatch. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &CalculatorAction) {
-        self.actions
-            .dispatch(doc, actions::CALCULATOR_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::CALCULATOR_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Calculator", "Calculator", action),
+        );
     }
 
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
@@ -934,7 +938,7 @@ impl Widget for CalculatorApp {
                 },
                 ..Default::default()
             })
-            .unwrap_or(NodeId::from(0u64));
+            .unwrap_or_else(|_| NodeId::from(0u64));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node

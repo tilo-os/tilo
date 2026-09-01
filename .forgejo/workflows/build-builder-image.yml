@@ -85,7 +85,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /tmp/qos-sccache-canary-target
       SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
-      SCCACHE_S3_KEY_PREFIX: quickdesktop/canary/${{ github.run_id }}
+      # The runner injects the production SCCACHE_S3_KEY_PREFIX after ordinary
+      # workflow env. The prepare hook promotes this non-conflicting request
+      # after injection and restarts sccache under the isolated namespace.
+      QOS_SCCACHE_KEY_PREFIX: quickdesktop/canary/${{ github.run_id }}/${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,7 +123,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /tmp/qos-sccache-canary-target
       SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
-      SCCACHE_S3_KEY_PREFIX: quickdesktop/canary/${{ github.run_id }}
+      QOS_SCCACHE_KEY_PREFIX: quickdesktop/canary/${{ github.run_id }}/${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:

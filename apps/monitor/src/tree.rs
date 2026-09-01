@@ -147,10 +147,10 @@ impl Forest {
                 // Detach from its (cyclic) parent so the tree stays acyclic,
                 // then root it.
                 let parent_pid = nodes.get(i).and_then(|n| n.proc.ppid);
-                if let Some(pp) = parent_pid.and_then(|pp| index.get(&pp).copied()) {
-                    if let Some(node_pp) = nodes.get_mut(pp) {
-                        node_pp.children.retain(|&c| c != i);
-                    }
+                if let Some(pp) = parent_pid.and_then(|pp| index.get(&pp).copied())
+                    && let Some(node_pp) = nodes.get_mut(pp)
+                {
+                    node_pp.children.retain(|&c| c != i);
                 }
                 roots.push(i);
                 // Mark its now-reachable subtree so we don't double-root.

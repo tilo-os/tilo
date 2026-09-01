@@ -28,9 +28,11 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
@@ -46,6 +48,20 @@ const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
 const TOAST_TTL: Duration = Duration::from_millis(1800);
+
+fn qr_image_request() -> PickRequest {
+    PickRequest::open("Choose a QR image", "Open")
+        .thread_name("totp-portal-open")
+        .filter(
+            FileFilter::new("QR images")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg"),
+        )
+        .all_files()
+}
 
 /// How the initial vault is populated.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,7 +86,7 @@ pub struct AuthenticatorApp {
     /// and hands the chosen path back over this channel, drained once per
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
 
     rect: Rect,
     root_node: Option<NodeId>,
@@ -81,7 +97,7 @@ pub struct AuthenticatorApp {
 
     last_mouse: Point,
     selected: Option<AccountId>,
-    toast: Option<(String, Instant)>,
+    toast: Option<(String, Instant, ToastKind)>,
     /// The exact code string most recently written to the clipboard by a copy
     /// action. Lets callers (and tests) observe what was copied without
     /// round-tripping the system clipboard, which is unavailable headless.
@@ -134,7 +150,7 @@ impl AuthenticatorApp {
     fn with_mode(seed_mode: SeedMode) -> Self {
         Self {
             vault: Vault::new(),
-            search: TextInput::local(),
+            search: TextInput::local().with_kind(ui::widget::TextInputKind::Search),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
@@ -188,8 +204,16 @@ impl AuthenticatorApp {
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::TotpAction) {
-        self.actions
-            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::TOTP_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action(
+                "org.qos.Authenticator",
+                "Authenticator",
+                action,
+            ),
+        );
     }
 
     /// Re-project the in-memory vault from the now-authoritative document, and —
@@ -227,8 +251,8 @@ impl AuthenticatorApp {
         self.list.set_accounts(visible);
     }
 
-    fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+    fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
+        self.toast = Some((msg.into(), Instant::now(), kind));
     }
 
     fn copy_account(&mut self, id: AccountId) {
@@ -236,7 +260,7 @@ impl AuthenticatorApp {
             let code = totp::current_code(&acc);
             ui::text_selection::clipboard_copy(&code);
             self.last_copied = Some(code);
-            self.toast(format!("Copied {} code", acc.title()));
+            self.toast(format!("Copied {} code", acc.title()), ToastKind::Success);
         }
     }
 
@@ -282,7 +306,7 @@ impl AuthenticatorApp {
                 if self.selected == Some(id) {
                     self.selected = self.vault.ordered().first().map(|a| a.id);
                 }
-                self.toast("Account removed");
+                self.toast("Account removed", ToastKind::Success);
             }
         }
     }
@@ -304,7 +328,7 @@ impl AuthenticatorApp {
                 self.perform_action(state, &crate::actions::add_account_action(&acc, order));
                 self.reload_from_doc(state);
                 self.selected = Some(id);
-                self.toast("Account added");
+                self.toast("Account added", ToastKind::Success);
             }
         }
         self.list_dirty = true;
@@ -422,7 +446,7 @@ impl AuthenticatorApp {
     /// Import a QR code from an image file into the open add panel.
     ///
     /// Choosing the screenshot/photo goes through the **host** file chooser
-    /// (the XDG Desktop Portal, [`crate::portal`]) — the app never draws its
+    /// (the XDG Desktop Portal, [`ui::portal`]) — the app never draws its
     /// own picker (HIG §5). The portal round-trip runs on a worker thread and
     /// the chosen path is drained each frame and decoded by the pure-Rust,
     /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
@@ -438,7 +462,7 @@ impl AuthenticatorApp {
 
     /// Ask the host desktop's file chooser for a QR image. Per HIG §5 the app
     /// never draws its own picker: the portal round-trip runs on a worker
-    /// thread ([`crate::portal::request_open`]) and the chosen path comes back
+    /// thread ([`ui::portal::PickRequest`]) and the chosen path comes back
     /// over a channel drained each frame in [`Self::drain_portal`]. A second
     /// request while one is in flight is ignored, so a double-tap can't stack
     /// two host dialogs.
@@ -446,7 +470,7 @@ impl AuthenticatorApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(qr_image_request().send());
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -462,11 +486,14 @@ impl AuthenticatorApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.decode_qr_path(&path),
+                    PortalOutcome::Opened(path) => self.decode_qr_path(&path),
                     // A cancel is a no-op — the add panel is left as it was.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
-                        self.toast(format!("Couldn't open the file chooser: {reason}"));
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
+                        self.toast(
+                            format!("Couldn't open the file chooser: {reason}"),
+                            ToastKind::Error,
+                        );
                     }
                 }
             }
@@ -484,9 +511,9 @@ impl AuthenticatorApp {
         match crate::qr::decode_image_file(path) {
             Ok(uri) => {
                 self.add_panel.apply_uri(&uri);
-                self.toast("QR code read");
+                self.toast("QR code read", ToastKind::Success);
             }
-            Err(reason) => self.toast(reason),
+            Err(reason) => self.toast(reason, ToastKind::Error),
         }
     }
 
@@ -597,39 +624,20 @@ impl AuthenticatorApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some((msg, when)) = &self.toast else {
+        let Some((msg, when, kind)) = &self.toast else {
             return;
         };
         if when.elapsed() > TOAST_TTL {
             return;
         }
-        let size = 14.0;
-        let (tw, _th) = text_renderer.measure_weighted(msg, size, None, TextWeight::Medium);
-        let w = f64::from(tw) + 40.0;
-        let h = 40.0;
-        let cx = self.rect.center().x;
-        let y1 = self.rect.y1 - 28.0;
-        let pill = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        let shape = RoundedRect::from_rect(pill, h / 2.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.semantic.success,
-            None,
-            &shape,
-        );
-        text_renderer.draw_text_weighted(
+        paint_transient(
             scene,
-            msg,
-            size,
-            Color::WHITE,
-            transform
-                * Affine::translate((
-                    cx - f64::from(tw) / 2.0,
-                    pill.center().y - f64::from(size) / 2.0 - 1.0,
-                )),
-            None,
-            TextWeight::Medium,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, *kind),
         );
     }
 }
@@ -1109,11 +1117,12 @@ mod tests {
         app.apply_list_event(ListEvent::Copy(id), &mut state.doc);
         let after = totp::current_code(&acc);
         assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-        let (msg, _) = app
+        let (msg, _, kind) = app
             .toast
             .clone()
             .expect("copying shows a confirmation toast");
         assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
+        assert_eq!(kind, ToastKind::Success);
         // The copied string is the account's live TOTP code (not its title or
         // an empty string). It equals the code at some instant during the copy,
         // so it must match the value just before or just after — deterministic
@@ -1167,7 +1176,7 @@ mod tests {
     /// dialog; the in-flight guard must preserve it.
     #[test]
     fn qr_cta_routes_to_the_host_portal() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let (mut app, _state) = app_with_state();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
@@ -1184,7 +1193,7 @@ mod tests {
     /// portal result is injected (no real dialog) and the next `sync` loads it.
     #[test]
     fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
         let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1214,7 +1223,7 @@ mod tests {
     /// left exactly as they were and the channel clears.
     #[test]
     fn portal_cancel_leaves_the_add_panel_untouched() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let (mut app, mut state) = app_with_state();
         app.add_panel.open();
         let before = app.add_panel.field_snapshot();
@@ -1393,8 +1402,18 @@ mod tests {
             copied == before || copied == after,
             "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
         );
-        let (msg, _) = app.toast.clone().expect("Enter shows a copy toast");
+        let (msg, _, kind) = app.toast.clone().expect("Enter shows a copy toast");
         assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
+        assert_eq!(kind, ToastKind::Success);
+    }
+
+    #[test]
+    fn toast_severity_distinguishes_failures_from_confirmations() {
+        let (mut app, _) = app_with_state();
+        app.toast("Account added", ToastKind::Success);
+        assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Success));
+        app.toast("Invalid QR image", ToastKind::Error);
+        assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Error));
     }
 
     #[test]

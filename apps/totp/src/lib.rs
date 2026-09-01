@@ -61,7 +61,6 @@ pub mod app;
 pub mod doc;
 pub mod list;
 pub mod model;
-pub mod portal;
 pub mod qr;
 pub mod ring;
 pub mod search_provider;

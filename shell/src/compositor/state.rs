@@ -1689,11 +1689,16 @@ impl CompositorHandler for State {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        // Every accepted client is initialised with a `ClientState` in `native::run`; violating that should panic loudly, not corrupt state.
-        &client
-            .get_data::<ClientState>()
-            .expect("client missing ClientState user-data")
-            .compositor_state
+        // Every accepted client is initialised with a `ClientState` in
+        // `native::run`, so this is never expected to miss. Still, `shell`
+        // runs with `panic = "abort"`: a panic here would end every
+        // collaborator's session, not just this client's, so a missing
+        // slot degrades to a shared fallback instead.
+        static FALLBACK: std::sync::OnceLock<CompositorClientState> = std::sync::OnceLock::new();
+        client.get_data::<ClientState>().map_or_else(
+            || FALLBACK.get_or_init(CompositorClientState::default),
+            |d| &d.compositor_state,
+        )
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -2448,6 +2453,10 @@ mod floating_lifecycle_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic compositor tick geometry is the behavior under test"
+)]
 mod tick_hook_tests {
     use super::*;
     use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -2586,7 +2595,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 42;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, cfg()).expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, &cfg()).expect("session"),
         );
         session.add_viewer(VIEWER, false);
 
@@ -2640,7 +2649,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 55;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg()).expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
         );
         let mut state = make_state();
         state.register_share_session(session);
@@ -2655,7 +2664,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 77;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg()).expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
         );
         let mut state = make_state();
         state.register_share_session(session);

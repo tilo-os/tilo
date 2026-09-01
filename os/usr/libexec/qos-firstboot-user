@@ -23,7 +23,11 @@ if [ -z "$user" ] || [ -z "$hash" ] || [ "$user" = "$hash" ]; then
   exit 1
 fi
 
-if ! id "$user" >/dev/null 2>&1; then
+if id "$user" >/dev/null 2>&1; then
+  echo "qos-firstboot-user: refusing to modify pre-existing account '$user'" >&2
+  shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
+  exit 1
+else
   # `qos-identity` is read access to the machine's device key. The
   # compositor runs in this user's session and presents the device
   # identity on the network — the same identity fs.service presents as
@@ -34,10 +38,6 @@ if ! id "$user" >/dev/null 2>&1; then
   # the brightness keys and the quick-settings slider write. Without it
   # brightness silently does nothing.
   useradd -m -G wheel,qos-identity,video "$user"
-else
-  # Existing accounts from before the backlight rule shipped: joining
-  # the group is idempotent, so this is safe to run on every boot.
-  usermod -aG video "$user" || true
 fi
 
 printf '%s:%s\n' "$user" "$hash" | chpasswd -e

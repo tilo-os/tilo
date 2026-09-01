@@ -14,6 +14,7 @@ name = "disks"
 path = "src/main.rs"
 
 [features]
+thin = ["dep:runtime-dylib"]
 # The real udisks2 transport ships on by default: `live` links udisks2 over
 # D-Bus (zbus) for privileged mount / unmount / format, so a normally-built
 # `disks` performs real operations. The system-bus connection is opened only
@@ -29,13 +30,13 @@ default = ["live"]
 live = ["dep:zbus"]
 
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
 # re-exports its own stack so there is exactly one copy of each in the binary,
 # and it is the one the widget tree was compiled against.
 ui = { path = "../../ui" }
 serde.workspace = true
 serde_json.workspace = true
-tracing-subscriber.workspace = true
 # Pinned to match `apps/chat` so a single zbus copy resolves from the lock.
 zbus = { workspace = true, optional = true, default-features = true }
 

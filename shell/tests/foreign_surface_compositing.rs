@@ -446,6 +446,12 @@ fn painting_does_not_reimport_the_clients_buffer() {
 /// client's pixels — and, because `WindowGroup` only consults the active
 /// host, must not keep the compositor's paint loop awake either.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "chrome's only use is producing rendered via tree_mut(); the write-guard's \
+              lifetime is tied to chrome's borrow, so it can't be dropped before rendered's \
+              last use, and the block already ends right there"
+)]
 fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     let front = 0x5EED_0005;
     let back = 0x5EED_0006;

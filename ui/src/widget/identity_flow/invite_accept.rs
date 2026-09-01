@@ -616,7 +616,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            now.checked_add(Duration::from_hours(1)).unwrap_or(now),
+            now.checked_add(Duration::from_secs(3600)).unwrap_or(now),
         )
         .unwrap();
         env.to_url().unwrap()

@@ -27,29 +27,38 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
-use ui::dnd::DRAG_START_THRESHOLD_PX;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, Scrollable, TextInput};
+use ui::widget::{BlockEditor, Checkbox, CheckboxFace, TextInput, Toggle, ToggleFace};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
+use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
 use crate::event_popovers::{
     EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
+use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
+use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
+use crate::timeline_interaction::{
+    TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
+    TimelineRenderModel, TimelineSpan,
+};
+#[cfg(test)]
+use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
+use crate::topbar::{Action as TopbarAction, LeadingControl, Topbar};
 
 /// Placeholder shown in the empty title field of a new event.
 const TITLE_PLACEHOLDER: &str = "New event";
@@ -62,35 +71,16 @@ const NOTES_PLACEHOLDER: &str = "Add details…";
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
 const EMPTY_ONBOARDING_HINT: &str = "Click a day to add your first event";
 
-const SIDEBAR_W: f64 = 252.0;
-const TOPBAR_H: f64 = 60.0;
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
 
-/// The week/day timelines span the full 24 hours and scroll vertically. Each
-/// hour keeps a legible **minimum** height; on a window too short to fit all
-/// 24 hours at that minimum the body scrolls (reusing the shared
-/// [`Scrollable`] primitive) rather than squashing the slots. On a tall window
-/// the hours grow to fill the viewport and nothing scrolls.
-const TIMELINE_MIN_HOUR_H: f64 = 44.0;
-/// Height of the fixed (non-scrolling) day-header strip above the hour grid.
-const TIMELINE_HEAD_H: f64 = 56.0;
-/// Height of the fixed all-day event strip below the day headers.
-const TIMELINE_ALLDAY_H: f64 = 26.0;
 /// Hour the timeline first scrolls to when the day doesn't fit — the start of a
 /// typical work day, rather than opening at midnight.
 const TIMELINE_INITIAL_HOUR: f64 = 7.0;
-/// Grid snap (minutes) for drag-to-create and drag-to-move on the timeline.
-const TIMELINE_SNAP_MIN: i64 = 15;
 
 /// Width at/above which the sidebar is an inline persistent panel. Below it the
 /// sidebar becomes an overlay drawer (see [`SidebarMode`] and
 /// [`CalendarApp::relayout`]).
-const SIDEBAR_PERSISTENT_MIN: f64 = 900.0;
-/// Below this window width the overlay sidebar drawer covers the WHOLE window
-/// (a full-screen page) rather than a 252px flap over a dimmed calendar — more
-/// readable on phone-width windows.
-const SIDEBAR_FULLSCREEN_MAX: f64 = 560.0;
 /// Width at/above which the event/task editor opens as a centered modal
 /// **overlay** floating over the still-visible calendar. Below it the editor
 /// takes the whole screen as its own pushed page — comfortable on narrow
@@ -106,25 +96,6 @@ const MODAL_BODY_W: f64 = MODAL_W - 2.0 * DETAIL_PAD;
 const MODAL_MARGIN: f64 = 40.0;
 /// Cap on the modal card height so it stays a card, not a full-height column.
 const MODAL_MAX_H: f64 = 720.0;
-
-/// Topbar view-switcher metrics, shared by the draw pass and the fit check so
-/// the two never disagree about whether the switcher fits.
-const SEG_CELL_W: f64 = 56.0;
-const SEG_TOTAL_W: f64 = SEG_CELL_W * 4.0;
-const NEW_BTN_W: f64 = 60.0;
-/// Minimum horizontal room the period title needs beside the switcher before
-/// the switcher folds out of the topbar into the sidebar.
-const TITLE_MIN_W: f64 = 80.0;
-
-/// How the calendars/smart-lists sidebar is presented at the current width.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SidebarMode {
-    /// Inline, always visible, occupies the left edge (wide windows).
-    Persistent,
-    /// Floats over the content behind a scrim; toggled open, hidden by default.
-    /// A 252px flap at tablet width, a full-window page at phone width.
-    Overlay,
-}
 
 /// How the event/task detail editor is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -165,8 +136,9 @@ enum Action {
     Export,
     Import,
     NewEvent,
-    /// Step the visible month by ±1 from the mini-month navigator.
-    ShiftMonth(i32),
+    /// Navigation intent interpreted by the mini-month component. The app
+    /// applies it to the anchor shared by every calendar view.
+    MiniMonth(MiniMonthOutcome),
     CycleColor,
     CycleRecurrence,
     CycleReminder,
@@ -242,91 +214,6 @@ struct FormRects {
     notes_top: f64,
 }
 
-/// Fixed geometry of a week/day timeline, derived purely from the view's
-/// allocated `area`. Shared by the draw pass, the scroll driver, hit-testing
-/// and the drag handlers so they never disagree about where an hour sits.
-///
-/// The hour grid is a **content** surface `content_h` tall (24 × `hour_h`) that
-/// scrolls inside the `[body_top, body_bottom]` viewport; the day headers and
-/// all-day strip above it stay fixed. A content-space y (`0` at 00:00) maps to
-/// the screen via `body_top + y - scroll_offset`.
-#[derive(Clone, Copy, Debug)]
-struct TimelineGeom {
-    gutter: f64,
-    body_top: f64,
-    body_bottom: f64,
-    hour_h: f64,
-    content_h: f64,
-    /// Right edge of the day columns. When the day overflows and the scrollbar
-    /// shows, this stops short of the viewport edge so the bar sits in its own
-    /// lane rather than over the last column.
-    grid_right: f64,
-}
-
-impl TimelineGeom {
-    /// The scrolling body viewport rect for the given horizontal span.
-    fn body(&self, x0: f64, x1: f64) -> Rect {
-        Rect::new(x0, self.body_top, x1, self.body_bottom)
-    }
-}
-
-/// Right-edge lane (logical px) kept clear for the timeline's overlay scrollbar.
-const TIMELINE_BAR_LANE: f64 = 12.0;
-
-/// An in-progress pointer drag on the week/day timeline. Both variants use the
-/// shared drag-start threshold ([`DRAG_START_THRESHOLD_PX`]): a press that never
-/// travels past it stays a plain click (open the event / no-op), while crossing
-/// it promotes to a live drag with on-canvas feedback, committed on release
-/// through the action model.
-#[derive(Clone, Copy, Debug)]
-enum TimelineDrag {
-    /// Dragging across empty grid to carve out a new event. `day` is the column
-    /// grabbed in; `origin`/`current` are logical screen points.
-    Create {
-        day: NaiveDate,
-        origin: Point,
-        current: Point,
-        active: bool,
-    },
-    /// Dragging an existing event to a new time (and, in week view, day).
-    /// `grab_off_min` is the pointer's offset within the block at grab time
-    /// (minutes past the event's start), so the block keeps that point under the
-    /// cursor; `dur_min` preserves the event's duration across the move.
-    Move {
-        id: Id,
-        origin: Point,
-        current: Point,
-        grab_off_min: i64,
-        dur_min: i64,
-        active: bool,
-    },
-}
-
-impl TimelineDrag {
-    fn is_active(&self) -> bool {
-        match self {
-            TimelineDrag::Create { active, .. } | TimelineDrag::Move { active, .. } => *active,
-        }
-    }
-    fn origin(&self) -> Point {
-        match self {
-            TimelineDrag::Create { origin, .. } | TimelineDrag::Move { origin, .. } => *origin,
-        }
-    }
-    fn set_current(&mut self, p: Point) {
-        match self {
-            TimelineDrag::Create { current, .. } | TimelineDrag::Move { current, .. } => {
-                *current = p;
-            }
-        }
-    }
-    fn set_active(&mut self, a: bool) {
-        match self {
-            TimelineDrag::Create { active, .. } | TimelineDrag::Move { active, .. } => *active = a,
-        }
-    }
-}
-
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
@@ -390,27 +277,17 @@ pub struct CalendarApp {
     last_persist: std::time::Instant,
 
     // --- responsive state ------------------------------------------------
-    /// Recomputed every layout from the allocated width.
-    sidebar_mode: SidebarMode,
-    /// Whether the overlay flap is open (only meaningful in `Overlay` mode).
-    sidebar_open: bool,
-    /// Whether the persistent sidebar is collapsed (only meaningful in
-    /// `Persistent` mode — the wide layout). Collapsing hides the sidebar and
-    /// lets the calendar + detail reclaim its width; the overlay flap uses
-    /// `sidebar_open` instead.
-    sidebar_collapsed: bool,
+    /// Responsive drawer state, geometry and chrome interaction.
+    sidebar: Sidebar,
+    /// Responsive navigation chrome and its pointer hit map.
+    topbar: Topbar,
     /// Which narrow screen is showing (only meaningful when the editor is
     /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
     /// How the detail editor is presented — recomputed every layout from width.
     detail_mode: DetailMode,
-    /// Whether the topbar has room for the segmented view switcher. When it
-    /// doesn't, the switcher folds into the sidebar/flap. Recomputed per layout.
-    switcher_in_topbar: bool,
-
     // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
-    sidebar_rect: Rect,
     /// The region right of a persistent sidebar (or full-width under an overlay
     /// one) holding the topbar + calendar view.
     content_rect: Rect,
@@ -435,23 +312,12 @@ pub struct CalendarApp {
     /// (the timeline is painted imperatively, not through a child widget), it
     /// still reuses the shared [`Scrollable`] for offset clamping, wheel /
     /// keyboard / momentum, and the overlay bar.
-    timeline_scroll: Scrollable,
+    timeline: TimelineInteraction,
     /// Vertical scroll of the agenda list, so a short window pages through the
     /// upcoming days instead of clipping them.
     /// Self-contained upcoming-list view: scroll state, input, drawing and row
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
-    /// Whether the timeline scroll has been seeded to the work-day yet. Seeded
-    /// once, the first time the day is too tall to fit, so it opens around
-    /// [`TIMELINE_INITIAL_HOUR`] rather than at midnight.
-    timeline_scroll_seeded: bool,
-    /// Shots-only: pin the timeline scroll to a specific hour (e.g. `0.0` for
-    /// the top of the day, `24.0` for the bottom) so a screenshot can prove the
-    /// full 24h is reachable. `None` in the live app.
-    shots_scroll_hour: Option<f64>,
-    /// An in-progress drag on the week/day timeline (create or move).
-    timeline_drag: Option<TimelineDrag>,
-
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
@@ -547,18 +413,15 @@ impl CalendarApp {
             saved_heads: Vec::new(),
             force_persist: false,
             last_persist: std::time::Instant::now(),
-            sidebar_mode: SidebarMode::Persistent,
-            sidebar_open: false,
-            sidebar_collapsed: false,
+            sidebar: Sidebar::new(),
+            topbar: Topbar::new(),
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
                 NarrowScreen::Calendar
             },
             detail_mode: DetailMode::Overlay,
-            switcher_in_topbar: true,
             rect: Rect::ZERO,
-            sidebar_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
             notes_origin: Point::new(-10000.0, -10000.0),
@@ -569,11 +432,8 @@ impl CalendarApp {
             last_mouse: Point::ZERO,
             status: None,
             dirty: true,
-            timeline_scroll: Scrollable::new_vertical().always_visible(),
+            timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
-            timeline_scroll_seeded: false,
-            shots_scroll_hour: None,
-            timeline_drag: None,
             sync_rx: None,
             syncing: false,
             actions: ui::ActionHost::new(),
@@ -592,7 +452,7 @@ impl CalendarApp {
     /// Pin the week/day timeline scroll to `hour` for a screenshot (`0.0` = top
     /// of the day, `24.0` = clamped to the bottom). Proves the full 24h scrolls.
     pub fn shots_scroll_timeline(&mut self, hour: f64) {
-        self.shots_scroll_hour = Some(hour);
+        self.timeline.pin_hour(hour);
         self.dirty = true;
     }
 
@@ -606,13 +466,13 @@ impl CalendarApp {
 
     /// Open the overlay sidebar flap for a screenshot.
     pub fn shots_open_flap(&mut self) {
-        self.sidebar_open = true;
+        self.sidebar.set_open(true);
         self.dirty = true;
     }
 
     /// Collapse the persistent sidebar for a screenshot (wide layout only).
     pub fn shots_collapse_sidebar(&mut self) {
-        self.sidebar_collapsed = true;
+        self.sidebar.set_collapsed(true);
         self.dirty = true;
     }
 
@@ -1053,8 +913,12 @@ impl CalendarApp {
     /// feedback and reconciled from the document on the next `sync`. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CALENDAR_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CALENDAR_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -1086,7 +950,8 @@ impl CalendarApp {
     pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
         let start = self
             .anchor
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+            // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
         let template = Event {
             id: Uuid::nil(),
             title: String::new(),
@@ -1161,8 +1026,8 @@ impl CalendarApp {
         if matches!(self.detail_mode, DetailMode::FullScreen) {
             self.narrow_screen = NarrowScreen::Detail;
         }
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
-            self.sidebar_open = false;
+        if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
+            self.sidebar.set_open(false);
         }
         self.dirty = true;
     }
@@ -1281,7 +1146,8 @@ impl CalendarApp {
     fn new_event(&mut self, doc: &mut AutoCommit) {
         let start = self
             .anchor
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+            // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
         let ev = Event {
             // Empty title: the form's title field shows its "New event"
             // placeholder rather than literal text the user has to clear. The
@@ -1331,7 +1197,11 @@ impl CalendarApp {
         doc: &mut AutoCommit,
     ) {
         let dur = (end_min - start_min).max(TIMELINE_SNAP_MIN);
-        let start_min = start_min.min(24 * 60 - dur).max(0);
+        // `dur` has no upper bound (a pathological drag could exceed a full
+        // day), so the clamp's own upper bound is floored at 0 rather than
+        // trusting `24 * 60 - dur` to stay non-negative — `clamp` panics if
+        // its bounds are inverted.
+        let start_min = start_min.clamp(0, (24 * 60 - dur).max(0));
         let start = day.and_time(min_to_time(start_min));
         let end = start + Duration::minutes(dur);
         let ev = Event {
@@ -1392,46 +1262,11 @@ impl CalendarApp {
     fn calendar_content_interactive(&self) -> bool {
         self.content_rect.area() > 0.0
             && !(self.detail_open && self.detail_rect.area() > 0.0)
-            && !(matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open)
+            && !(matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open())
     }
 
-    /// Forward a raw event to the timeline scroll container. Returns whether it
-    /// was consumed (a wheel that moved, or a scrollbar interaction).
-    #[allow(clippy::too_many_arguments)]
-    fn forward_to_scroll(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let mut handled = false;
-        let mut ft = *focus_target;
-        self.timeline_scroll.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut ft,
-            node_id,
-            taffy,
-        );
-        if handled {
-            *focus_target = ft;
-            self.dirty = true;
-        }
-        handled
-    }
-
-    /// Route mouse input to the active view's scroll container and — in the
-    /// week/day timeline — its drag-to-create / drag-to-move machine. Returns
-    /// `true` when the event was consumed.
+    /// Route input to the Agenda scroller or the self-contained week/day
+    /// controller. Typed timeline effects return here for domain/CRDT mutation.
     #[allow(clippy::too_many_arguments)]
     fn handle_timeline_input(
         &mut self,
@@ -1444,17 +1279,12 @@ impl CalendarApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        // A view/layout change out from under a live drag abandons it (no
-        // mutation happens until commit, so this is a clean cancel).
-        if self.timeline_drag.is_some() && !matches!(self.view, View::Week | View::Day) {
-            self.timeline_drag = None;
+        if !matches!(self.view, View::Week | View::Day) {
+            self.timeline.cancel_drag();
         }
         if !self.calendar_content_interactive() {
             return false;
         }
-
-        // Agenda: scroll only (no drag). A press that misses the bar falls
-        // through so the row hit-map still opens the event/task.
         if matches!(self.view, View::Agenda) {
             return self.handle_agenda_timeline_input(
                 event,
@@ -1467,74 +1297,52 @@ impl CalendarApp {
                 taffy,
             );
         }
-
         if !matches!(self.view, View::Week | View::Day) {
             return false;
         }
 
         let area = self.view_rect();
         let days = self.timeline_days();
-        let g = self.timeline_geom(area);
-        let body = g.body(area.x0, area.x1);
+        let spans = self.timeline_spans(&days);
+        let outcome = self.timeline.handle_event(
+            TimelineEventCtx {
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            },
+            area,
+            &days,
+            &spans,
+        );
+        if let Some(effect) = outcome.effect {
+            self.apply_timeline_effect(effect, state);
+        }
+        if outcome.handled {
+            self.dirty = true;
+        }
+        outcome.handled
+    }
 
-        match event {
-            WindowEvent::MouseWheel { .. } => self.handle_timeline_wheel(
-                area,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            WindowEvent::CursorMoved { .. } => self.handle_timeline_cursor_moved(
-                area,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.handle_timeline_press(
-                area,
-                &days,
-                g,
-                body,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.handle_timeline_release(
-                area,
-                &days,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            _ => false,
+    fn apply_timeline_effect(&mut self, effect: TimelineEffect, doc: &mut AutoCommit) {
+        match effect {
+            TimelineEffect::Create {
+                day,
+                start_min,
+                end_min,
+            } => self.create_event_in_range(day, start_min, end_min, doc),
+            TimelineEffect::Move {
+                id,
+                day,
+                start_min,
+                dur_min,
+            } => self.move_event(id, day, start_min, dur_min, doc),
+            TimelineEffect::Select(id) => self.apply_action(Action::OpenEvent(id), doc),
+            TimelineEffect::OpenDay(day) => self.apply_action(Action::OpenDay(day), doc),
         }
     }
 
@@ -1580,235 +1388,6 @@ impl CalendarApp {
             }
         }
         false
-    }
-
-    /// `MouseWheel` over the week/day timeline. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_wheel(
-        &mut self,
-        area: Rect,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        if area.contains(p) {
-            return self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        false
-    }
-
-    /// `CursorMoved` over the week/day timeline: scrollbar drag, live
-    /// calendar drag, or bar-hover tracking. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_cursor_moved(
-        &mut self,
-        area: Rect,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        // A scrollbar thumb drag owns every move until release.
-        if self.timeline_scroll.wants_pointer_capture() {
-            return self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        // A live calendar drag updates its target.
-        if self.timeline_drag.is_some() {
-            self.update_timeline_drag();
-            self.dirty = true;
-            return true;
-        }
-        // Otherwise let the bar track hover near the edge (never consumes).
-        if area.contains(p) {
-            self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        false
-    }
-
-    /// A left press on the week/day timeline: scrollbar, grab-to-move an
-    /// existing block, or carve a new event. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_press(
-        &mut self,
-        area: Rect,
-        days: &[NaiveDate],
-        g: TimelineGeom,
-        body: Rect,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        // Presses outside the scrolling grid (headers, gutter top) fall
-        // through to the normal hit-map path.
-        if !body.contains(p) {
-            return false;
-        }
-        // Offer the press to the scrollbar first.
-        if self.forward_to_scroll(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return true;
-        }
-        // Grab an existing block to move it, else carve a new event.
-        if let Some((id, s, en)) = self.timeline_event_at(area, days, p) {
-            let press_min = self.timeline_minute_at(&g, p.y);
-            self.timeline_drag = Some(TimelineDrag::Move {
-                id,
-                origin: p,
-                current: p,
-                grab_off_min: (press_min - s).clamp(0, en - s),
-                dur_min: (en - s).max(TIMELINE_SNAP_MIN),
-                active: false,
-            });
-            self.dirty = true;
-            return true;
-        }
-        // Empty grid (in a day column, not the hour gutter) → carve a new
-        // event by dragging.
-        if p.x >= area.x0 + g.gutter {
-            let col = self.timeline_col_at(area, days.len(), &g, p.x);
-            self.timeline_drag = Some(TimelineDrag::Create {
-                day: days[col],
-                origin: p,
-                current: p,
-                active: false,
-            });
-            self.dirty = true;
-            return true;
-        }
-        false
-    }
-
-    /// A left release on the week/day timeline: scrollbar, drag commit, or a
-    /// plain click. Split out of `handle_timeline_input` to keep it within
-    /// the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_release(
-        &mut self,
-        area: Rect,
-        days: &[NaiveDate],
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        if self.timeline_scroll.wants_pointer_capture() {
-            return self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        if let Some(drag) = self.timeline_drag.take() {
-            if drag.is_active() {
-                self.commit_timeline_drag(drag, area, days, state);
-            } else if let Some(a) = self.hit_action_at(p) {
-                // A press that never dragged is a plain click.
-                self.apply_action(a, state);
-            }
-            self.dirty = true;
-            return true;
-        }
-        false
-    }
-
-    /// Advance a pending timeline drag to the latest pointer position, promoting
-    /// it to a live drag once it clears [`DRAG_START_THRESHOLD_PX`].
-    fn update_timeline_drag(&mut self) {
-        let p = self.last_mouse;
-        let Some(drag) = &mut self.timeline_drag else {
-            return;
-        };
-        drag.set_current(p);
-        if !drag.is_active() && drag.origin().distance(p) >= DRAG_START_THRESHOLD_PX {
-            drag.set_active(true);
-        }
-    }
-
-    /// Commit a completed (active) timeline drag through the action model.
-    fn commit_timeline_drag(
-        &mut self,
-        drag: TimelineDrag,
-        area: Rect,
-        days: &[NaiveDate],
-        doc: &mut AutoCommit,
-    ) {
-        match drag {
-            TimelineDrag::Create { .. } => {
-                if let Some((day, s, e)) = self.timeline_create_range(area, days, &drag) {
-                    self.create_event_in_range(day, s, e, doc);
-                }
-            }
-            TimelineDrag::Move { .. } => {
-                if let Some((day, s, dur, id)) = self.timeline_move_target(area, days, &drag) {
-                    self.move_event(id, day, s, dur, doc);
-                }
-            }
-        }
     }
 
     // --- event form model edits -----------------------------------------
@@ -2033,8 +1612,7 @@ impl CalendarApp {
 
     /// Apply a clock spinner's current value to the start or end time.
     fn set_event_time(&mut self, which: FormPopover, h: u8, m: u8, doc: &mut AutoCommit) {
-        let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0)
-            .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0).unwrap_or(NaiveTime::MIN);
         self.cycle_event(doc, |e| match which {
             FormPopover::StartTime => {
                 e.start = e.start.date().and_time(time);
@@ -2163,9 +1741,8 @@ impl CalendarApp {
     fn step_period(&mut self, dir: i32) {
         self.anchor = match self.view {
             View::Month => date::add_months(self.anchor, dir),
-            View::Week => self.anchor + Duration::days(7 * i64::from(dir)),
+            View::Week | View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
             View::Day => self.anchor + Duration::days(i64::from(dir)),
-            View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
         };
         self.dirty = true;
     }
@@ -2174,9 +1751,8 @@ impl CalendarApp {
     /// `apply_layout`. This is the one place breakpoints are decided, along two
     /// independent axes:
     ///
-    /// * **sidebar** — persistent inline panel at/above [`SIDEBAR_PERSISTENT_MIN`];
-    ///   an overlay drawer below it (a 252px flap, or a full-window page below
-    ///   [`SIDEBAR_FULLSCREEN_MAX`]).
+    /// * **sidebar** — responsive inline panel / overlay drawer, delegated to
+    ///   [`Sidebar`] so its state and geometry stay together.
     /// * **editor** — a centered modal card floating over the still-visible
     ///   calendar at/above [`EDITOR_OVERLAY_MIN`]; a full-screen page that
     ///   replaces the calendar below it (only one of {calendar, detail} is laid
@@ -2184,35 +1760,12 @@ impl CalendarApp {
     fn relayout(&mut self) {
         let r = self.rect;
         // Two independent responsive axes, each re-derived from the current
-        // width so a live resize reflows both: how the sidebar is presented,
-        // and how the detail editor is presented.
-        self.sidebar_mode = if r.width() >= SIDEBAR_PERSISTENT_MIN {
-            SidebarMode::Persistent
-        } else {
-            SidebarMode::Overlay
-        };
+        // width so a live resize reflows both.
+        let content_x0 = self.sidebar.layout(r);
         self.detail_mode = if r.width() >= EDITOR_OVERLAY_MIN {
             DetailMode::Overlay
         } else {
             DetailMode::FullScreen
-        };
-
-        // Sidebar rect. A persistent panel and the tablet-width flap are both
-        // SIDEBAR_W wide; the phone-width drawer covers the whole window so it
-        // reads as a full page.
-        let sidebar_w = if matches!(self.sidebar_mode, SidebarMode::Overlay)
-            && r.width() < SIDEBAR_FULLSCREEN_MAX
-        {
-            r.width()
-        } else {
-            SIDEBAR_W
-        };
-        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + sidebar_w, r.y1);
-        // A persistent sidebar only takes width while it's expanded; collapsed,
-        // or in overlay mode, the content begins at the window's left edge.
-        let content_x0 = match self.sidebar_mode {
-            SidebarMode::Persistent if !self.sidebar_collapsed => r.x0 + SIDEBAR_W,
-            _ => r.x0,
         };
 
         match self.detail_mode {
@@ -2240,10 +1793,16 @@ impl CalendarApp {
             }
         }
 
-        // The switcher stays in the topbar as long as it genuinely fits beside
-        // the period title and New button; only then does it fold into the
-        // sidebar/flap.
-        self.switcher_in_topbar = self.topbar_fits_switcher(self.content_rect.width());
+        // Navigation chrome owns its geometry and the responsive decision to
+        // keep the view switcher here or fold it into the sidebar.
+        let leading = if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
+            LeadingControl::OpenSidebar
+        } else if self.sidebar.is_collapsed() {
+            LeadingControl::ExpandSidebar
+        } else {
+            LeadingControl::None
+        };
+        self.topbar.layout(self.content_rect, leading);
 
         // Point the active view's scroll container at the fresh geometry so a
         // resize reflows the scroll extents (and re-clamps the offset) every
@@ -2299,36 +1858,18 @@ impl CalendarApp {
         }
     }
 
-    /// Point the timeline [`Scrollable`] at the current week/day geometry:
-    /// viewport rect + full-24h content height, seeding the initial work-day
-    /// scroll the first time the day is too tall to fit. Called from `relayout`.
+    /// Point the timeline viewport at its new geometry, seeding the initial
+    /// work-day scroll the first time the full day does not fit.
     fn update_timeline_scroll(&mut self) {
         let area = self.view_rect();
-        let g = self.timeline_geom(area);
-        self.timeline_scroll
-            .set_viewport_rect(g.body(area.x0, area.x1));
-        self.timeline_scroll
-            .set_content_size(area.width() as f32, g.content_h as f32);
-        // Shots-only override: pin the scroll to a chosen hour so a screenshot
-        // can prove the full 24h is reachable (top/bottom of the day).
-        if let Some(hour) = self.shots_scroll_hour {
-            self.timeline_scroll.set_offset_y((hour * g.hour_h) as f32);
-            return;
-        }
-        if !self.timeline_scroll_seeded && self.timeline_scroll.vertical_overflows() {
-            // Open around the work day — or the current time when today is on
-            // screen — rather than at midnight.
-            let days = self.timeline_days();
-            let focus_hour = if days.contains(&self.today) {
-                let now = Local::now().naive_local();
-                (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
-            } else {
-                TIMELINE_INITIAL_HOUR
-            };
-            self.timeline_scroll
-                .set_offset_y((focus_hour * g.hour_h) as f32);
-            self.timeline_scroll_seeded = true;
-        }
+        let days = self.timeline_days();
+        let focus_hour = if days.contains(&self.today) {
+            let now = Local::now().naive_local();
+            (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
+        } else {
+            TIMELINE_INITIAL_HOUR
+        };
+        self.timeline.layout(area, focus_hour);
     }
 
     /// Geometry of the centered modal editor card, sized to a comfortable
@@ -2342,30 +1883,6 @@ impl CalendarApp {
         let cx = content_x0 + content_w / 2.0;
         let cy = r.y0 + r.height() / 2.0;
         Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
-    }
-
-    /// Whether the segmented view switcher fits in the topbar at `content_w`.
-    /// Mirrors `draw_topbar`'s fixed metrics so the two agree; when this is
-    /// false the switcher folds into the sidebar/flap instead. Kept as a pure
-    /// function of width so it is deterministic and directly testable.
-    fn topbar_fits_switcher(&self, content_w: f64) -> bool {
-        if content_w <= 0.0 {
-            return false;
-        }
-        let mut left = 16.0;
-        // Hamburger (overlay) or expand chevron (collapsed persistent) share the
-        // same left slot.
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) || self.sidebar_collapsed {
-            left += 38.0;
-        }
-        left += 74.0; // prev / next chevrons
-        left += 60.0; // Today pill
-        let title_x = left + 14.0;
-        let seg_x1 = content_w - 14.0;
-        let seg_x0 = seg_x1 - SEG_TOTAL_W;
-        let new_x0 = seg_x0 - NEW_BTN_W - 10.0;
-        let title_right = new_x0 - 12.0;
-        title_right - title_x >= TITLE_MIN_W
     }
 
     /// The rect covering the notes editor column inside the detail card/page —
@@ -2385,6 +1902,11 @@ impl CalendarApp {
     /// event's all-day flag, so `draw`, the hit map, and the embedded widgets
     /// all read identical geometry. Returns a zeroed layout when no event is
     /// being edited.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "f is the result being built, r is the source rect, and x/y/w are the \
+                  conventional position/size names for a geometry layout pass"
+    )]
     fn form_layout(&self) -> FormRects {
         let mut f = FormRects::default();
         let r = self.detail_rect;
@@ -2469,15 +1991,6 @@ impl CalendarApp {
         }
     }
 
-    /// Whether the overlay flap is currently shown (always true for a
-    /// persistent sidebar).
-    fn sidebar_visible(&self) -> bool {
-        match self.sidebar_mode {
-            SidebarMode::Persistent => !self.sidebar_collapsed,
-            SidebarMode::Overlay => self.sidebar_open,
-        }
-    }
-
     /// Y offset (from the detail rect top) of the NOTES section + editor. The
     /// narrow detail screen carries a back bar above the body, so its notes
     /// start lower. Single source of truth for both `relayout` (editor origin)
@@ -2497,9 +2010,9 @@ impl CalendarApp {
                 // On narrow layouts the switcher lives in the overlay flap;
                 // picking a view there returns to the calendar screen and
                 // dismisses the flap so the chosen view is visible at once.
-                if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
                     self.narrow_screen = NarrowScreen::Calendar;
-                    self.sidebar_open = false;
+                    self.sidebar.set_open(false);
                 }
             }
             Action::Today => self.anchor = self.today,
@@ -2517,9 +2030,9 @@ impl CalendarApp {
                 self.list_sel = s;
                 // Picking a smart list/project on the narrow flap returns to
                 // the calendar screen and dismisses the flap.
-                if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
                     self.narrow_screen = NarrowScreen::Calendar;
-                    self.sidebar_open = false;
+                    self.sidebar.set_open(false);
                 }
             }
             Action::CloseDetail => {
@@ -2528,9 +2041,9 @@ impl CalendarApp {
                 self.narrow_screen = NarrowScreen::Calendar;
                 self.blur_editor();
             }
-            Action::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
-            Action::DismissSidebar => self.sidebar_open = false,
-            Action::ToggleSidebarCollapsed => self.sidebar_collapsed = !self.sidebar_collapsed,
+            Action::ToggleSidebar => self.sidebar.toggle_open(),
+            Action::DismissSidebar => self.sidebar.set_open(false),
+            Action::ToggleSidebarCollapsed => self.sidebar.toggle_collapsed(),
             Action::BackToCalendar => {
                 self.narrow_screen = NarrowScreen::Calendar;
                 // The calendar screen owns the keyboard once the editor is off
@@ -2553,7 +2066,12 @@ impl CalendarApp {
             Action::Sync => self.start_sync(doc),
             Action::Export => self.export_ics(),
             Action::Import => self.import_ics(doc),
-            Action::ShiftMonth(n) => self.anchor = date::add_months(self.anchor, n),
+            Action::MiniMonth(outcome) => match outcome {
+                MiniMonthOutcome::SelectDate(date) => self.anchor = date,
+                MiniMonthOutcome::ShiftMonth(months) => {
+                    self.anchor = date::add_months(self.anchor, months);
+                }
+            },
             Action::NewEvent => self.new_event(doc),
             Action::CycleColor => {
                 self.cycle_event(doc, |e| {
@@ -2618,13 +2136,20 @@ impl CalendarApp {
             .collect()
     }
 
-    /// Whether `date` carries any *visible* event — drives the mini-month dots.
-    fn day_has_visible_event(&self, date: NaiveDate) -> bool {
+    /// Dates in the mini-month grid carrying at least one visible event. The
+    /// root applies account-visibility policy once; the component only needs
+    /// the dates it should mark.
+    fn mini_month_event_dates(&self) -> HashSet<NaiveDate> {
         let hidden = self.hidden_calendar_ids();
-        self.model
-            .events
-            .iter()
-            .any(|e| e.occurs_on(date) && e.visible_under(&hidden))
+        date::month_grid(self.anchor)
+            .into_iter()
+            .filter(|date| {
+                self.model
+                    .events
+                    .iter()
+                    .any(|event| event.occurs_on(*date) && event.visible_under(&hidden))
+            })
+            .collect()
     }
 
     // ====================================================================
@@ -2638,142 +2163,58 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        if !self.sidebar_visible() {
-            return hits;
-        }
-        let overlay = matches!(self.sidebar_mode, SidebarMode::Overlay);
-        // The overlay flap dims the content behind a scrim; clicking it
-        // dismisses the flap. Drawn before the panel so the panel sits on top.
-        if overlay && self.content_rect.area() > 0.0 || (overlay && self.detail_rect.area() > 0.0) {
-            let behind = if self.content_rect.area() > 0.0 {
-                self.content_rect
-            } else {
-                self.detail_rect
-            };
-            fill_rect(scene, t, c.surfaces.overlay, behind);
-            hits.push((behind, Action::DismissSidebar));
-        }
-
-        let r = self.sidebar_rect;
-        fill_rect(scene, t, c.surfaces.raised, r);
-        if overlay {
-            // Drop shadow along the flap's right edge.
-            scene.fill(
-                Fill::NonZero,
-                t,
-                Color::from_rgba8(0, 0, 0, 70),
-                None,
-                &Rect::new(r.x1, r.y0, r.x1 + 8.0, r.y1),
-            );
-        }
-        stroke_line(
+        let Some(chrome) = self.sidebar.draw_chrome(
             scene,
             t,
-            c.border_standard,
-            Point::new(r.x1, r.y0),
-            Point::new(r.x1, r.y1),
-            1.0,
-        );
-
-        let pad = 18.0;
-        let mut y = r.y0 + 22.0;
-        // No app-name wordmark: the OS owns window chrome and shows "Calendar"
-        // in the titlebar. The sidebar leads with its collapse affordance and
-        // flows the calendar list up into the reclaimed space.
-        // Collapse control — persistent sidebar only. A chevron pointing at the
-        // edge it tucks into (never an X: this hides the panel, it does not
-        // dismiss a dialog). When collapsed, the mirror-image expand chevron
-        // appears in the topbar so the sidebar is always one click away.
-        if !overlay {
-            let cb = Rect::new(r.x1 - pad - 24.0, y - 3.0, r.x1 - pad, y + 21.0);
-            if cb.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, cb, 7.0);
-            }
-            draw_chevron(scene, t, c.neutral[7], cb.center(), true);
-            hits.push((cb, Action::ToggleSidebarCollapsed));
-        } else if r.width() >= self.rect.width() - 0.5 {
-            // Full-screen drawer: it covers the whole window, so there is no
-            // dimmed calendar edge to click — it carries its own close button.
-            let cl = Rect::new(r.x1 - pad - 24.0, y - 4.0, r.x1 - pad, y + 20.0);
-            draw_icon_button(scene, t, theme, cl, cl.contains(self.last_mouse));
-            draw_cross(scene, t, c.neutral[8], cl.center());
-            hits.push((cl, Action::DismissSidebar));
-        }
-        y += 30.0;
-
-        // View switcher — carried by the flap only when the topbar switch has
-        // folded away (a too-narrow topbar). Without it a pointer/touch user
-        // could reach Day/Agenda but never get back to Month. When the topbar
-        // still shows the switch, the flap omits it so there's no duplicate.
-        if overlay && !self.switcher_in_topbar {
-            let seg = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 36.0);
-            fill_round(scene, t, c.surfaces.base, seg, 9.0);
-            stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
-            let cell_w = seg.width() / View::ALL.len() as f64;
-            for (i, v) in View::ALL.iter().enumerate() {
-                let cell = Rect::new(
-                    seg.x0 + cell_w * i as f64,
-                    seg.y0,
-                    seg.x0 + cell_w * (i as f64 + 1.0),
-                    seg.y1,
-                );
-                if self.view == *v {
-                    fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
-                } else if cell.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
-                }
-                let col = if self.view == *v {
-                    Color::WHITE
-                } else {
-                    c.neutral[7]
+            tr,
+            theme,
+            self.rect,
+            self.content_rect,
+            self.detail_rect,
+            self.topbar.switcher_visible(),
+            self.view,
+            self.last_mouse,
+        ) else {
+            return Vec::new();
+        };
+        let mut hits: Vec<_> = chrome
+            .hits
+            .into_iter()
+            .map(|(rect, action)| {
+                let action = match action {
+                    SidebarAction::Dismiss => Action::DismissSidebar,
+                    SidebarAction::ToggleCollapsed => Action::ToggleSidebarCollapsed,
+                    SidebarAction::View(view) => Action::View(view),
+                    SidebarAction::Export => Action::Export,
+                    SidebarAction::Import => Action::Import,
                 };
-                center_text(scene, tr, v.label(), 13.0, col, cell, t);
-                hits.push((cell, Action::View(*v)));
-            }
-            y += 50.0;
-        }
+                (rect, action)
+            })
+            .collect();
+        let r = self.sidebar.rect();
+        let pad = 18.0;
+        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, chrome.body_y, &mut hits);
+        let y = self.draw_sidebar_calendars(scene, t, tr, theme, r, pad, y, &mut hits);
+        self.draw_sidebar_footer(scene, t, tr, theme, r, pad, y, &mut hits);
 
-        // Export / Import .ics buttons (also bound to `e` / `i`).
-        let bw = (r.width() - 24.0 - 8.0) / 2.0;
-        let exp = Rect::new(r.x0 + 12.0, y, r.x0 + 12.0 + bw, y + 32.0);
-        draw_icon_button(scene, t, theme, exp, exp.contains(self.last_mouse));
-        draw_download(
-            scene,
-            t,
-            c.neutral[8],
-            Point::new(exp.x0 + 18.0, exp.center().y),
-        );
-        tr.draw_text(
-            scene,
-            "Export",
-            13.0,
-            c.neutral[8],
-            t * Affine::translate((exp.x0 + 32.0, exp.center().y - 8.0)),
-            None,
-        );
-        hits.push((exp, Action::Export));
-
-        let imp = Rect::new(exp.x1 + 8.0, y, r.x1 - 12.0, y + 32.0);
-        draw_icon_button(scene, t, theme, imp, imp.contains(self.last_mouse));
-        draw_upload(
-            scene,
-            t,
-            c.neutral[8],
-            Point::new(imp.x0 + 18.0, imp.center().y),
-        );
-        tr.draw_text(
-            scene,
-            "Import",
-            13.0,
-            c.neutral[8],
-            t * Affine::translate((imp.x0 + 32.0, imp.center().y - 8.0)),
-            None,
-        );
-        hits.push((imp, Action::Import));
-        y += 46.0;
-
+        hits
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_sidebar_lists(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        pad: f64,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         // Smart lists.
         let smart = [
             ("Inbox", ListSel::Inbox, c.semantic.info),
@@ -2868,10 +2309,29 @@ impl CalendarApp {
             hits.push((row, Action::List(ListSel::Project(p.id))));
             y += 38.0;
         }
+        y
+    }
 
-        // CalDAV calendars from the shared OS accounts store. Each account's
-        // calendars are listed with a visibility checkbox; a Sync affordance in
-        // the heading pulls events from every visible calendar.
+    /// `CalDAV` calendars from the shared OS accounts store. Each account's
+    /// calendars are listed with a visibility checkbox; a Sync affordance in
+    /// the heading pulls events from every visible calendar (part of
+    /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_sidebar_calendars(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        pad: f64,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         if !self.accounts.is_empty() {
             y += 14.0;
             tr.draw_text(
@@ -2962,14 +2422,71 @@ impl CalendarApp {
                 }
             }
         }
+        y
+    }
 
+    /// The footer: the mini upcoming-task rail (when there's room for it
+    /// above the reserved mini-month band) followed by the mini-month
+    /// navigator itself (part of [`Self::draw_sidebar`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_sidebar_footer(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        pad: f64,
+        y: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
         // Reserve the bottom of the sidebar for the mini-month navigator.
-        let mini_top = r.y1 - 196.0;
+        let mini_top = MiniMonth::content_limit(r);
+        let y = self.draw_sidebar_task_rail(scene, t, tr, theme, r, pad, y, mini_top, hits);
+        let event_dates = self.mini_month_event_dates();
+        hits.extend(
+            MiniMonth::draw(
+                scene,
+                t,
+                tr,
+                theme,
+                r,
+                y,
+                self.anchor,
+                self.today,
+                &event_dates,
+                self.last_mouse,
+            )
+            .into_iter()
+            .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
+        );
+    }
+
+    /// The mini upcoming-task rail — only when there are tasks to show AND
+    /// there's vertical room left above the mini-month (the CALENDARS
+    /// section above may have used it up; the agenda/day views still list
+    /// the tasks in full either way) (part of [`Self::draw_sidebar_footer`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_sidebar_task_rail(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        pad: f64,
+        mut y: f64,
+        mini_top: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let rail_tasks = self.model.tasks_for(&self.list_sel, self.today);
-        // Mini upcoming-task rail — only when there are tasks to show AND
-        // there's vertical room left above the mini-month (the CALENDARS
-        // section above may have used it up; the agenda/day views still list
-        // the tasks in full either way).
         if !rail_tasks.is_empty() && y + 56.0 < mini_top {
             let list_title = match &self.list_sel {
                 ListSel::Inbox => "Inbox",
@@ -3065,326 +2582,11 @@ impl CalendarApp {
                 y += 32.0;
             }
         }
-
-        // Mini-month navigator pinned to the sidebar bottom — drawn only when
-        // the sidebar content above it (lists + projects + CALENDARS) hasn't
-        // already grown into its reserved band, so the two never overlap.
-        if y < mini_top - 8.0 {
-            stroke_line(
-                scene,
-                t,
-                c.border_standard,
-                Point::new(r.x0 + pad, mini_top - 8.0),
-                Point::new(r.x1 - pad, mini_top - 8.0),
-                1.0,
-            );
-            let mini_region = Rect::new(r.x0, mini_top, r.x1, r.y1 - 12.0);
-            hits.extend(self.draw_mini_month(scene, t, tr, theme, mini_region));
-        }
-
-        hits
-    }
-
-    /// Compact month navigator drawn in the sidebar: a 6×7 day grid with
-    /// today highlighted, the anchor ringed, a dot under days that have
-    /// events, and prev/next month chevrons. Clicking a day re-anchors the
-    /// active view; the chevrons step the visible month.
-    fn draw_mini_month(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        region: Rect,
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        let pad = 18.0;
-
-        tr.draw_text(
-            scene,
-            &date::month_title(self.anchor),
-            13.0,
-            c.text_primary,
-            t * Affine::translate((region.x0 + pad, region.y0)),
-            None,
-        );
-        let pc = Rect::new(
-            region.x1 - pad - 46.0,
-            region.y0 - 4.0,
-            region.x1 - pad - 24.0,
-            region.y0 + 18.0,
-        );
-        let nc = Rect::new(
-            region.x1 - pad - 22.0,
-            region.y0 - 4.0,
-            region.x1 - pad,
-            region.y0 + 18.0,
-        );
-        if pc.contains(self.last_mouse) {
-            fill_round(scene, t, c.surface_white_5, pc, 6.0);
-        }
-        if nc.contains(self.last_mouse) {
-            fill_round(scene, t, c.surface_white_5, nc, 6.0);
-        }
-        draw_chevron(scene, t, c.neutral[7], pc.center(), true);
-        draw_chevron(scene, t, c.neutral[7], nc.center(), false);
-        hits.push((pc, Action::ShiftMonth(-1)));
-        hits.push((nc, Action::ShiftMonth(1)));
-
-        let grid_x0 = region.x0 + pad;
-        let grid_w = region.width() - 2.0 * pad;
-        let cw = grid_w / 7.0;
-        let head_y = region.y0 + 24.0;
-        for (i, lbl) in date::WEEKDAY_NARROW.iter().enumerate() {
-            center_text(
-                scene,
-                tr,
-                lbl,
-                10.0,
-                c.text_dim,
-                Rect::new(
-                    grid_x0 + cw * i as f64,
-                    head_y,
-                    grid_x0 + cw * (i as f64 + 1.0),
-                    head_y + 14.0,
-                ),
-                t,
-            );
-        }
-
-        let grid = date::month_grid(self.anchor);
-        let cell_h = 22.0;
-        let top = head_y + 18.0;
-        for (idx, day) in grid.iter().enumerate() {
-            let row = (idx / 7) as f64;
-            let col = (idx % 7) as f64;
-            let cell = Rect::new(
-                grid_x0 + cw * col,
-                top + cell_h * row,
-                grid_x0 + cw * (col + 1.0),
-                top + cell_h * (row + 1.0),
-            );
-            let in_month = day.month() == self.anchor.month();
-            let is_today = *day == self.today;
-            let is_anchor = *day == self.anchor;
-            let has_ev = self.day_has_visible_event(*day);
-
-            if is_today {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.accent[5],
-                    None,
-                    &Circle::new(cell.center(), 10.0),
-                );
-            } else if is_anchor {
-                stroke_round(scene, t, c.accent[5], cell.inflate(-3.0, -2.0), 7.0, 1.2);
-            } else if cell.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -2.0), 7.0);
-            }
-            let num_col = if is_today {
-                Color::WHITE
-            } else if !in_month {
-                c.neutral[4]
-            } else {
-                c.neutral[8]
-            };
-            center_text(scene, tr, &format!("{}", day.day()), 11.0, num_col, cell, t);
-            if has_ev && !is_today {
-                let dot = Point::new(cell.center().x, cell.y1 - 2.5);
-                scene.fill(Fill::NonZero, t, c.accent[5], None, &Circle::new(dot, 1.6));
-            }
-            hits.push((cell, Action::PickDate(*day)));
-        }
-
-        hits
-    }
-
-    /// Candidate period titles for the topbar, widest first. The topbar draws
-    /// the widest one that fits the space between the Today pill and the New
-    /// button, so the full range still reads when there's room and degrades to
-    /// a compact form (still showing both endpoints) when there isn't — rather
-    /// than clipping the end date off a single fixed string.
-    fn period_title_variants(&self) -> Vec<String> {
-        match self.view {
-            View::Month => vec![date::month_title(self.anchor)],
-            View::Week => {
-                let w = date::week_days(self.anchor);
-                vec![
-                    date::week_range_long(w[0], w[6]),
-                    date::week_range_short(w[0], w[6]),
-                ]
-            }
-            View::Day => vec![date::fmt_day_long(self.anchor)],
-            View::Agenda => vec!["Upcoming".into()],
-        }
-    }
-
-    fn draw_topbar(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        let content_x0 = self.content_rect.x0;
-        let right_edge = self.content_rect.x1;
-        let r = Rect::new(
-            content_x0,
-            self.rect.y0,
-            right_edge,
-            self.rect.y0 + TOPBAR_H,
-        );
-        fill_rect(scene, t, c.surfaces.base, r);
-        stroke_line(
-            scene,
-            t,
-            c.border_standard,
-            Point::new(r.x0, r.y1),
-            Point::new(r.x1, r.y1),
-            1.0,
-        );
-
-        let cy = r.center().y;
-        let overlay_sidebar = matches!(self.sidebar_mode, SidebarMode::Overlay);
-        // The segmented switch stays in the topbar whenever it genuinely fits
-        // (computed in `relayout`); only when it doesn't does it fold into the
-        // sidebar/flap. Either way the view stays switchable by keyboard.
-        let show_segmented = self.switcher_in_topbar;
-
-        let mut left = r.x0 + 16.0;
-        // Hamburger toggle for the overlay flap (narrow only).
-        if overlay_sidebar {
-            let ham = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
-            draw_icon_button(scene, t, theme, ham, ham.contains(self.last_mouse));
-            draw_hamburger(scene, t, c.neutral[8], ham.center());
-            hits.push((ham, Action::ToggleSidebar));
-            left += 38.0;
-        } else if self.sidebar_collapsed {
-            // Persistent sidebar collapsed → expand chevron (mirror of the
-            // sidebar's collapse control). A chevron, not a hamburger: the
-            // sidebar is inline, not an overlay drawer.
-            let exp = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
-            draw_icon_button(scene, t, theme, exp, exp.contains(self.last_mouse));
-            draw_chevron(scene, t, c.neutral[8], exp.center(), false);
-            hits.push((exp, Action::ToggleSidebarCollapsed));
-            left += 38.0;
-        }
-
-        // prev / next chevrons
-        let prev = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
-        let next = Rect::new(left + 34.0, cy - 15.0, left + 64.0, cy + 15.0);
-        draw_icon_button(scene, t, theme, prev, prev.contains(self.last_mouse));
-        draw_icon_button(scene, t, theme, next, next.contains(self.last_mouse));
-        draw_chevron(scene, t, c.neutral[8], prev.center(), true);
-        draw_chevron(scene, t, c.neutral[8], next.center(), false);
-        hits.push((prev, Action::Prev));
-        hits.push((next, Action::Next));
-        left += 74.0;
-
-        // Today pill
-        let today_btn = Rect::new(left, cy - 15.0, left + 60.0, cy + 15.0);
-        draw_icon_button(
-            scene,
-            t,
-            theme,
-            today_btn,
-            today_btn.contains(self.last_mouse),
-        );
-        center_text(scene, tr, "Today", 13.0, c.neutral[8], today_btn, t);
-        hits.push((today_btn, Action::Today));
-        let title_x = today_btn.x1 + 14.0;
-
-        // Right cluster: segmented view control (when it fits) + New button.
-        let new_w = NEW_BTN_W;
-        let seg_x0 = if show_segmented {
-            let seg_w = SEG_CELL_W;
-            let seg_total = SEG_TOTAL_W;
-            let seg_x1 = right_edge - 14.0;
-            let seg_x0 = seg_x1 - seg_total;
-            let seg = Rect::new(seg_x0, cy - 16.0, seg_x1, cy + 16.0);
-            fill_round(scene, t, c.surfaces.raised, seg, 9.0);
-            stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
-            for (i, v) in View::ALL.iter().enumerate() {
-                let cell = Rect::new(
-                    seg_x0 + seg_w * i as f64,
-                    seg.y0,
-                    seg_x0 + seg_w * (i as f64 + 1.0),
-                    seg.y1,
-                );
-                if self.view == *v {
-                    fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
-                } else if cell.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
-                }
-                let col = if self.view == *v {
-                    Color::WHITE
-                } else {
-                    c.neutral[7]
-                };
-                center_text(scene, tr, v.label(), 13.0, col, cell, t);
-                hits.push((cell, Action::View(*v)));
-            }
-            seg_x0
-        } else {
-            right_edge - 14.0
-        };
-
-        let new_btn = Rect::new(seg_x0 - new_w - 10.0, cy - 16.0, seg_x0 - 10.0, cy + 16.0);
-        fill_round(scene, t, c.accent[5], new_btn, 9.0);
-        draw_plus(scene, t, Color::WHITE, Point::new(new_btn.x0 + 16.0, cy));
-        tr.draw_text(
-            scene,
-            "New",
-            13.0,
-            Color::WHITE,
-            t * Affine::translate((new_btn.x0 + 28.0, cy - 8.0)),
-            None,
-        );
-        hits.push((new_btn, Action::NewEvent));
-
-        // Period title — fills the gap between the Today pill and the New
-        // button. Draw the widest variant that fits so the full range reads
-        // whenever there's room (dropping to a compact both-endpoints form
-        // when there isn't); the clip layer is only a last-resort safety net.
-        let title_right = new_btn.x0 - 12.0;
-        let avail = (title_right - title_x).max(0.0);
-        let variants = self.period_title_variants();
-        let title = variants
-            .iter()
-            .find(|v| f64::from(tr.measure(v, 19.0, None).0) <= avail)
-            .unwrap_or_else(|| variants.last().expect("at least one title variant"));
-        let title_clip = Rect::new(title_x - 2.0, r.y0, title_right, r.y1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &title_clip,
-        );
-        tr.draw_text(
-            scene,
-            title,
-            19.0,
-            c.text_primary,
-            t * Affine::translate((title_x, cy - 11.0)),
-            None,
-        );
-        scene.pop_layer();
-
-        hits
+        y
     }
 
     fn view_rect(&self) -> Rect {
-        Rect::new(
-            self.content_rect.x0,
-            self.rect.y0 + TOPBAR_H,
-            self.content_rect.x1,
-            self.rect.y1,
-        )
+        self.topbar.view_rect()
     }
 
     fn draw_month(
@@ -3406,7 +2608,33 @@ impl CalendarApp {
         let grid_top = area.y0 + header_h;
         let cell_h = (area.height() - header_h) / f64::from(rows);
 
-        // Weekday header.
+        Self::draw_month_header(scene, t, tr, theme, area, cell_w);
+
+        let grid = date::month_grid(self.anchor);
+        for (idx, day) in grid.iter().enumerate() {
+            let row = idx / cols;
+            let col = idx % cols;
+            let cell = Rect::new(
+                area.x0 + cell_w * col as f64,
+                grid_top + cell_h * row as f64,
+                area.x0 + cell_w * (col as f64 + 1.0),
+                grid_top + cell_h * (row as f64 + 1.0),
+            );
+            self.draw_month_cell(scene, t, tr, theme, cell, cell_h, *day, &mut hits);
+        }
+        hits
+    }
+
+    /// The weekday header row (part of [`Self::draw_month`]).
+    fn draw_month_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        cell_w: f64,
+    ) {
+        let c = &theme.tokens.colors;
         for (i, lbl) in date::WEEKDAY_SHORT.iter().enumerate() {
             let weekend = i >= 5;
             let col = if weekend { c.text_dim } else { c.neutral[7] };
@@ -3420,149 +2648,176 @@ impl CalendarApp {
                 None,
             );
         }
+    }
 
-        let grid = date::month_grid(self.anchor);
-        for (idx, day) in grid.iter().enumerate() {
-            let row = idx / cols;
-            let col = idx % cols;
-            let cell = Rect::new(
-                area.x0 + cell_w * col as f64,
-                grid_top + cell_h * row as f64,
-                area.x0 + cell_w * (col as f64 + 1.0),
-                grid_top + cell_h * (row as f64 + 1.0),
+    /// One day cell: grid line, hit targets, background tint, and the date
+    /// number (with a today pill) (part of [`Self::draw_month`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_month_cell(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cell: Rect,
+        cell_h: f64,
+        day: NaiveDate,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
+        // grid lines
+        stroke_round(scene, t, c.border_standard.with_alpha(0.5), cell, 0.0, 0.5);
+
+        // Cell-level click targets are pushed FIRST so the event chips
+        // drawn below win the reverse (topmost-last) hit-scan — clicking a
+        // chip must open that event, not just re-anchor the day. The
+        // date-number strip in turn wins over the empty cell body.
+        hits.push((cell, Action::PickDate(day)));
+        hits.push((
+            Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + 28.0),
+            Action::OpenDay(day),
+        ));
+
+        let in_month = day.month() == self.anchor.month();
+        let is_today = day == self.today;
+        let is_anchor = day == self.anchor;
+        let weekend = day.weekday().num_days_from_monday() >= 5;
+
+        if is_anchor && !is_today {
+            fill_rect(scene, t, c.surface_white_5, cell);
+        }
+        if weekend && in_month {
+            fill_rect(scene, t, c.neutral[1].with_alpha(0.35), cell);
+        }
+
+        // date number, with a today pill.
+        let num = format!("{}", day.day());
+        let num_color = if !in_month {
+            c.neutral[4]
+        } else if weekend {
+            c.text_dim
+        } else {
+            c.neutral[9]
+        };
+        if is_today {
+            let pill = Circle::new(Point::new(cell.x0 + 18.0, cell.y0 + 17.0), 12.0);
+            scene.fill(Fill::NonZero, t, c.accent[5], None, &pill);
+            center_text(
+                scene,
+                tr,
+                &num,
+                12.0,
+                Color::WHITE,
+                Rect::new(cell.x0 + 6.0, cell.y0 + 5.0, cell.x0 + 30.0, cell.y0 + 29.0),
+                t,
             );
-            // grid lines
-            stroke_round(scene, t, c.border_standard.with_alpha(0.5), cell, 0.0, 0.5);
+        } else {
+            tr.draw_text(
+                scene,
+                &num,
+                12.0,
+                num_color,
+                t * Affine::translate((cell.x0 + 8.0, cell.y0 + 6.0)),
+                None,
+            );
+        }
 
-            // Cell-level click targets are pushed FIRST so the event chips
-            // drawn below win the reverse (topmost-last) hit-scan — clicking a
-            // chip must open that event, not just re-anchor the day. The
-            // date-number strip in turn wins over the empty cell body.
-            hits.push((cell, Action::PickDate(*day)));
-            hits.push((
-                Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + 28.0),
-                Action::OpenDay(*day),
-            ));
+        self.draw_month_cell_chips(scene, t, tr, theme, cell, cell_h, day, hits);
+    }
 
-            let in_month = day.month() == self.anchor.month();
-            let is_today = *day == self.today;
-            let is_anchor = *day == self.anchor;
-            let weekend = day.weekday().num_days_from_monday() >= 5;
-
-            if is_anchor && !is_today {
-                fill_rect(scene, t, c.surface_white_5, cell);
-            }
-            if weekend && in_month {
-                fill_rect(scene, t, c.neutral[1].with_alpha(0.35), cell);
-            }
-
-            // date number, with a today pill.
-            let num = format!("{}", day.day());
-            let num_color = if !in_month {
-                c.neutral[4]
-            } else if weekend {
-                c.text_dim
-            } else {
-                c.neutral[9]
-            };
-            if is_today {
-                let pill = Circle::new(Point::new(cell.x0 + 18.0, cell.y0 + 17.0), 12.0);
-                scene.fill(Fill::NonZero, t, c.accent[5], None, &pill);
-                center_text(
-                    scene,
-                    tr,
-                    &num,
-                    12.0,
-                    Color::WHITE,
-                    Rect::new(cell.x0 + 6.0, cell.y0 + 5.0, cell.x0 + 30.0, cell.y0 + 29.0),
-                    t,
-                );
-            } else {
+    /// The event chips inside one day cell, clipped to it (part of
+    /// [`Self::draw_month_cell`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_month_cell_chips(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cell: Rect,
+        cell_h: f64,
+        day: NaiveDate,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &cell,
+        );
+        let evs: Vec<(Id, String, Palette, bool, NaiveDateTime)> = self
+            .visible_events_on(day)
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    e.display_title().to_string(),
+                    e.color,
+                    e.all_day,
+                    e.start,
+                )
+            })
+            .collect();
+        let max_chips = ((cell_h - 30.0) / 20.0).floor().max(0.0) as usize;
+        let mut cy = cell.y0 + 30.0;
+        for (i, (id, title, color, all_day, start)) in evs.iter().enumerate() {
+            if i >= max_chips.clamp(1, 3) {
+                let more = evs.len() - i;
                 tr.draw_text(
                     scene,
-                    &num,
-                    12.0,
-                    num_color,
-                    t * Affine::translate((cell.x0 + 8.0, cell.y0 + 6.0)),
+                    &format!("+{more} more"),
+                    10.0,
+                    c.text_dim,
+                    t * Affine::translate((cell.x0 + 8.0, cy)),
+                    None,
+                );
+                break;
+            }
+            let chip = Rect::new(cell.x0 + 6.0, cy, cell.x1 - 6.0, cy + 17.0);
+            let col = color.color(theme);
+            if *all_day {
+                fill_round(scene, t, col, chip, 4.0);
+                let line = elide_to_width(tr, title, 10.0, chip.width() - 12.0);
+                tr.draw_text(
+                    scene,
+                    &line,
+                    10.0,
+                    Color::WHITE,
+                    t * Affine::translate((chip.x0 + 6.0, chip.y0 + 3.0)),
+                    None,
+                );
+            } else {
+                fill_round(scene, t, col.with_alpha(0.18), chip, 4.0);
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    col,
+                    None,
+                    &Circle::new(Point::new(chip.x0 + 8.0, chip.center().y), 3.0),
+                );
+                let label = format!("{} {}", date::fmt_time(start), title);
+                let line = elide_to_width(tr, &label, 10.0, chip.width() - 22.0);
+                tr.draw_text(
+                    scene,
+                    &line,
+                    10.0,
+                    c.neutral[9],
+                    t * Affine::translate((chip.x0 + 16.0, chip.y0 + 3.0)),
                     None,
                 );
             }
-
-            // Event chips (clip to cell).
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                t,
-                &cell,
-            );
-            let evs: Vec<(Id, String, Palette, bool, NaiveDateTime)> = self
-                .visible_events_on(*day)
-                .iter()
-                .map(|e| {
-                    (
-                        e.id,
-                        e.display_title().to_string(),
-                        e.color,
-                        e.all_day,
-                        e.start,
-                    )
-                })
-                .collect();
-            let max_chips = ((cell_h - 30.0) / 20.0).floor().max(0.0) as usize;
-            let mut cy = cell.y0 + 30.0;
-            for (i, (id, title, color, all_day, start)) in evs.iter().enumerate() {
-                if i >= max_chips.max(1).min(3) {
-                    let more = evs.len() - i;
-                    tr.draw_text(
-                        scene,
-                        &format!("+{more} more"),
-                        10.0,
-                        c.text_dim,
-                        t * Affine::translate((cell.x0 + 8.0, cy)),
-                        None,
-                    );
-                    break;
-                }
-                let chip = Rect::new(cell.x0 + 6.0, cy, cell.x1 - 6.0, cy + 17.0);
-                let col = color.color(theme);
-                if *all_day {
-                    fill_round(scene, t, col, chip, 4.0);
-                    let line = elide_to_width(tr, title, 10.0, chip.width() - 12.0);
-                    tr.draw_text(
-                        scene,
-                        &line,
-                        10.0,
-                        Color::WHITE,
-                        t * Affine::translate((chip.x0 + 6.0, chip.y0 + 3.0)),
-                        None,
-                    );
-                } else {
-                    fill_round(scene, t, col.with_alpha(0.18), chip, 4.0);
-                    scene.fill(
-                        Fill::NonZero,
-                        t,
-                        col,
-                        None,
-                        &Circle::new(Point::new(chip.x0 + 8.0, chip.center().y), 3.0),
-                    );
-                    let label = format!("{} {}", date::fmt_time(start), title);
-                    let line = elide_to_width(tr, &label, 10.0, chip.width() - 22.0);
-                    tr.draw_text(
-                        scene,
-                        &line,
-                        10.0,
-                        c.neutral[9],
-                        t * Affine::translate((chip.x0 + 16.0, chip.y0 + 3.0)),
-                        None,
-                    );
-                }
-                hits.push((chip, Action::OpenEvent(*id)));
-                cy += 20.0;
-            }
-            scene.pop_layer();
+            hits.push((chip, Action::OpenEvent(*id)));
+            cy += 20.0;
         }
-        hits
+        scene.pop_layer();
     }
 
     // ── week / day timeline geometry + hit-testing ──────────────────────
@@ -3575,505 +2830,61 @@ impl CalendarApp {
         }
     }
 
-    /// Fixed geometry of the week/day timeline for the given view `area`. Pure
-    /// function of `area` so draw, scroll, hit-testing and drag all agree.
-    fn timeline_geom(&self, area: Rect) -> TimelineGeom {
-        let body_top = area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H;
-        let body_bottom = (area.y1 - 8.0).max(body_top + 40.0);
-        let viewport_h = (body_bottom - body_top).max(40.0);
-        // Every hour keeps at least the legible minimum; when the viewport can
-        // fit all 24 at that minimum the hours grow to fill it (no scroll),
-        // otherwise the body scrolls the full day.
-        let hour_h = (viewport_h / 24.0).max(TIMELINE_MIN_HOUR_H);
-        let content_h = hour_h * 24.0;
-        // Reserve the scrollbar lane only when the day actually overflows.
-        let grid_right = if content_h > viewport_h + 0.5 {
-            area.x1 - TIMELINE_BAR_LANE
-        } else {
-            area.x1
-        };
-        TimelineGeom {
-            gutter: 56.0,
-            body_top,
-            body_bottom,
-            hour_h,
-            content_h,
-            grid_right,
-        }
-    }
-
-    /// Width of one day column in the timeline.
-    fn timeline_col_w(&self, area: Rect, days_len: usize, g: &TimelineGeom) -> f64 {
-        ((g.grid_right - (area.x0 + g.gutter)) / days_len.max(1) as f64).max(1.0)
-    }
-
-    /// Column index for a screen x, clamped into the grid.
-    fn timeline_col_at(&self, area: Rect, days_len: usize, g: &TimelineGeom, x: f64) -> usize {
-        let grid_x0 = area.x0 + g.gutter;
-        let col_w = self.timeline_col_w(area, days_len, g);
-        (((x - grid_x0) / col_w).floor() as i64).clamp(0, days_len as i64 - 1) as usize
-    }
-
-    /// Minute-of-day (0..=1440) for a screen y, honouring the scroll offset and
-    /// clamped to the content — so a drag past the body edge still resolves.
-    fn timeline_minute_at(&self, g: &TimelineGeom, y: f64) -> i64 {
-        let offset = f64::from(self.timeline_scroll.offset_y());
-        let content_y = (y - g.body_top + offset).clamp(0.0, g.content_h);
-        (((content_y / g.hour_h) * 60.0).round() as i64).clamp(0, 24 * 60)
-    }
-
-    /// Screen rect for an event block on column `col` spanning `[start_min,
-    /// end_min]` minutes-of-day, at the current scroll offset.
-    fn timeline_block_rect(
-        &self,
-        area: Rect,
-        days_len: usize,
-        g: &TimelineGeom,
-        col: usize,
-        start_min: i64,
-        end_min: i64,
-    ) -> Rect {
-        let col_w = self.timeline_col_w(area, days_len, g);
-        let grid_x0 = area.x0 + g.gutter;
-        let x0 = grid_x0 + col_w * col as f64;
-        let offset = f64::from(self.timeline_scroll.offset_y());
-        let top = g.body_top + (start_min as f64 / 60.0) * g.hour_h - offset;
-        let bottom = g.body_top + (end_min as f64 / 60.0) * g.hour_h - offset;
-        Rect::new(x0 + 3.0, top, x0 + col_w - 3.0, bottom.max(top + 16.0))
-    }
-
-    /// The timed event whose block contains `p`, with its minute-of-day span —
-    /// the grab target for a move drag. All-day events (which live in the fixed
-    /// header strip, not the scrolling grid) are excluded.
-    fn timeline_event_at(
-        &self,
-        area: Rect,
-        days: &[NaiveDate],
-        p: Point,
-    ) -> Option<(Id, i64, i64)> {
-        let g = self.timeline_geom(area);
-        let grid_x0 = area.x0 + g.gutter;
-        if p.x < grid_x0 || p.x > area.x1 {
-            return None;
-        }
-        let col = self.timeline_col_at(area, days.len(), &g, p.x);
-        let day = days[col];
-        let spans: Vec<(Id, i64, i64)> = self
-            .visible_events_on(day)
-            .iter()
-            .filter(|e| !e.all_day)
-            .map(|e| {
-                let s = i64::from(e.start.hour()) * 60 + i64::from(e.start.minute());
-                let en = i64::from(e.end.hour()) * 60 + i64::from(e.end.minute());
-                (e.id, s, en.max(s + TIMELINE_SNAP_MIN))
-            })
-            .collect();
-        // Reverse so the topmost (last-drawn) block wins, matching the hit-map.
-        for (id, s, en) in spans.into_iter().rev() {
-            if self
-                .timeline_block_rect(area, days.len(), &g, col, s, en)
-                .contains(p)
-            {
-                return Some((id, s, en));
-            }
-        }
-        None
-    }
-
-    /// Resolve a live create drag to `(day, start_min, end_min)` — snapped to the
-    /// drag grid and ordered so `start <= end`, with a one-slot minimum span.
-    fn timeline_create_range(
-        &self,
-        area: Rect,
-        _days: &[NaiveDate],
-        drag: &TimelineDrag,
-    ) -> Option<(NaiveDate, i64, i64)> {
-        let TimelineDrag::Create {
-            day,
-            origin,
-            current,
-            ..
-        } = drag
-        else {
-            return None;
-        };
-        let g = self.timeline_geom(area);
-        let a = snap_minute(self.timeline_minute_at(&g, origin.y));
-        let b = snap_minute(self.timeline_minute_at(&g, current.y));
-        let (s, mut e) = (a.min(b), a.max(b));
-        if e - s < TIMELINE_SNAP_MIN {
-            e = (s + TIMELINE_SNAP_MIN).min(24 * 60);
-        }
-        Some((*day, s, e))
-    }
-
-    /// Resolve a live move drag to `(new_day, new_start_min, dur_min, id)` —
-    /// column under the cursor, start snapped, duration preserved and clamped
-    /// so the whole event stays within the day.
-    fn timeline_move_target(
-        &self,
-        area: Rect,
-        days: &[NaiveDate],
-        drag: &TimelineDrag,
-    ) -> Option<(NaiveDate, i64, i64, Id)> {
-        let TimelineDrag::Move {
-            id,
-            current,
-            grab_off_min,
-            dur_min,
-            ..
-        } = drag
-        else {
-            return None;
-        };
-        let g = self.timeline_geom(area);
-        let col = self.timeline_col_at(area, days.len(), &g, current.x);
-        let cursor_min = self.timeline_minute_at(&g, current.y);
-        let start = snap_minute(cursor_min - grab_off_min).clamp(0, (24 * 60 - dur_min).max(0));
-        Some((days[col], start, *dur_min, *id))
-    }
-
-    fn draw_timeline(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        fill_rect(scene, t, c.surfaces.base, area);
-
-        let g = self.timeline_geom(area);
-        let grid_x0 = area.x0 + g.gutter;
-        let col_w = self.timeline_col_w(area, days.len(), &g);
-        let offset = f64::from(self.timeline_scroll.offset_y());
-        // content minute-of-day → screen y.
-        let y_at = |min: f64| g.body_top + (min / 60.0) * g.hour_h - offset;
-
-        // Day headers + all-day strip — fixed; they do not scroll with the grid.
-        for (i, day) in days.iter().enumerate() {
-            let x0 = grid_x0 + col_w * i as f64;
-            let head = Rect::new(x0, area.y0, x0 + col_w, area.y0 + TIMELINE_HEAD_H);
-            let is_today = *day == self.today;
-            let weekend = day.weekday().num_days_from_monday() >= 5;
-            if is_today {
-                fill_rect(scene, t, c.accent[5].with_alpha(0.10), head);
-            }
-            tr.draw_text(
-                scene,
-                date::WEEKDAY_SHORT[day.weekday().num_days_from_monday() as usize],
-                11.0,
-                if weekend { c.text_dim } else { c.neutral[7] },
-                t * Affine::translate((x0 + 10.0, area.y0 + 8.0)),
-                None,
-            );
-            let num = format!("{}", day.day());
-            let ncol = if is_today { c.accent[5] } else { c.neutral[9] };
-            tr.draw_text(
-                scene,
-                &num,
-                20.0,
-                ncol,
-                t * Affine::translate((x0 + 10.0, area.y0 + 24.0)),
-                None,
-            );
-            hits.push((head, Action::OpenDay(*day)));
-
-            // all-day chips (first shown in the fixed strip).
-            let allday: Vec<(Id, String, Palette)> = self
-                .visible_events_on(*day)
-                .iter()
-                .filter(|e| e.all_day)
-                .map(|e| (e.id, e.display_title().to_string(), e.color))
-                .collect();
-            let strip = Rect::new(
-                x0 + 2.0,
-                area.y0 + TIMELINE_HEAD_H + 2.0,
-                x0 + col_w - 2.0,
-                area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H - 2.0,
-            );
-            if !allday.is_empty() {
-                let (id, title, color) = &allday[0];
-                fill_round(scene, t, color.color(theme), strip, 4.0);
-                let line = elide_to_width(tr, title, 10.0, strip.width() - 12.0);
-                tr.draw_text(
-                    scene,
-                    &line,
-                    10.0,
-                    Color::WHITE,
-                    t * Affine::translate((strip.x0 + 6.0, strip.y0 + 4.0)),
-                    None,
-                );
-                hits.push((strip, Action::OpenEvent(*id)));
-            }
-        }
-        // Separator under the fixed header band.
-        stroke_line(
-            scene,
-            t,
-            c.border_standard,
-            Point::new(area.x0, g.body_top),
-            Point::new(g.grid_right, g.body_top),
-            0.5,
-        );
-
-        // ── scrolling body: hour grid + timed blocks + now-line + drag ghost ──
-        let body = g.body(area.x0, area.x1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &body,
-        );
-
-        // Hour gridlines + gutter labels (00:00 … 24:00).
-        for h in 0..=24 {
-            let y = y_at(f64::from(h) * 60.0);
-            stroke_line(
-                scene,
-                t,
-                c.border_standard.with_alpha(0.5),
-                Point::new(grid_x0, y),
-                Point::new(g.grid_right, y),
-                0.5,
-            );
-            if h < 24 {
-                tr.draw_text(
-                    scene,
-                    &format!("{h:02}:00"),
-                    10.0,
-                    c.text_dim,
-                    t * Affine::translate((area.x0 + 12.0, y + 2.0)),
-                    None,
-                );
-            }
-        }
-        // Vertical column separators, spanning the body viewport.
-        for i in 0..=days.len() {
-            let x = grid_x0 + col_w * i as f64;
-            stroke_line(
-                scene,
-                t,
-                c.border_standard.with_alpha(0.5),
-                Point::new(x, body.y0),
-                Point::new(x, body.y1),
-                0.5,
-            );
-        }
-
-        // "now" line if today is in range.
-        let now = Local::now().naive_local();
-        if let Some(i) = days.iter().position(|d| *d == self.today) {
-            let y = y_at(f64::from(now.hour()) * 60.0 + f64::from(now.minute()));
-            let x0 = grid_x0 + col_w * i as f64;
-            stroke_line(
-                scene,
-                t,
-                c.semantic.danger,
-                Point::new(x0, y),
-                Point::new(x0 + col_w, y),
-                2.0,
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.semantic.danger,
-                None,
-                &Circle::new(Point::new(x0, y), 3.5),
-            );
-        }
-
-        // The event currently being moved is drawn only as its drag ghost.
-        let moving_id = match self.timeline_drag {
-            Some(TimelineDrag::Move {
-                id, active: true, ..
-            }) => Some(id),
-            _ => None,
-        };
-
-        // Timed event blocks.
-        for (i, day) in days.iter().enumerate() {
-            let timed: Vec<(Id, String, String, Palette, NaiveDateTime, NaiveDateTime)> = self
-                .visible_events_on(*day)
-                .iter()
-                .filter(|e| !e.all_day)
-                .map(|e| {
-                    (
-                        e.id,
-                        e.display_title().to_string(),
-                        e.location.clone(),
-                        e.color,
-                        e.start,
-                        e.end,
-                    )
-                })
-                .collect();
-            for (id, title, loc, color, start, end) in timed {
-                if Some(id) == moving_id {
+    /// Timed event spans supplied to the interaction controller. The host owns
+    /// event visibility policy; the controller owns block hit-testing.
+    fn timeline_spans(&self, days: &[NaiveDate]) -> Vec<TimelineSpan> {
+        let mut spans = Vec::new();
+        for day in days {
+            for event in self.visible_events_on(*day) {
+                if event.all_day {
                     continue;
                 }
-                let s_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
-                let e_min = (i64::from(end.hour()) * 60 + i64::from(end.minute()))
-                    .max(s_min + TIMELINE_SNAP_MIN);
-                let block = self.timeline_block_rect(area, days.len(), &g, i, s_min, e_min);
-                let col = color.color(theme);
-                fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
-                fill_round(
-                    scene,
-                    t,
-                    col,
-                    Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1),
-                    2.0,
-                );
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    t,
-                    &block,
-                );
-                let text_w = block.width() - 20.0;
-                let title_line = elide_to_width(tr, &title, 11.0, text_w);
-                tr.draw_text(
-                    scene,
-                    &title_line,
-                    11.0,
-                    c.neutral[9],
-                    t * Affine::translate((block.x0 + 10.0, block.y0 + 4.0)),
-                    None,
-                );
-                if block.height() > 34.0 {
-                    let sub = format!(
-                        "{}–{} {}",
-                        date::fmt_time(&start),
-                        date::fmt_time(&end),
-                        loc
-                    );
-                    let sub_line = elide_to_width(tr, &sub, 10.0, text_w);
-                    tr.draw_text(
-                        scene,
-                        &sub_line,
-                        10.0,
-                        c.text_dim,
-                        t * Affine::translate((block.x0 + 10.0, block.y0 + 18.0)),
-                        None,
-                    );
-                }
-                scene.pop_layer();
-                // Clamp the click target to the visible body so a block scrolled
-                // up under the header can't be clicked through it.
-                let vis = block.intersect(body);
-                if vis.width() > 0.0 && vis.height() > 0.0 {
-                    hits.push((vis, Action::OpenEvent(id)));
-                }
+                let start_min =
+                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
+                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
+                    .max(start_min + TIMELINE_SNAP_MIN);
+                spans.push(TimelineSpan {
+                    id: event.id,
+                    day: *day,
+                    start_min,
+                    end_min,
+                });
             }
         }
-
-        // Live drag preview (create / move), inside the body clip.
-        self.draw_timeline_drag_ghost(scene, t, tr, theme, area, days, &g);
-
-        scene.pop_layer();
-
-        // Shared overlay scrollbar composited on top of the clipped body.
-        self.timeline_scroll.draw_bar_overlay(scene, t, theme);
-
-        hits
+        spans
     }
 
-    /// Paint the on-canvas preview of a live timeline drag: a translucent block
-    /// spanning the carved-out range (create) or the event at its new slot
-    /// (move), with a time label.
-    fn draw_timeline_drag_ghost(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-        g: &TimelineGeom,
-    ) {
-        let c = &theme.tokens.colors;
-        let Some(drag) = self.timeline_drag else {
-            return;
-        };
-        if !drag.is_active() {
-            return;
-        }
-        let (col, s, e, title, fill, stroke) = match drag {
-            TimelineDrag::Create { .. } => {
-                let Some((day, s, e)) = self.timeline_create_range(area, days, &drag) else {
-                    return;
-                };
-                let Some(col) = days.iter().position(|d| *d == day) else {
-                    return;
-                };
-                (
-                    col,
-                    s,
-                    e,
-                    TITLE_PLACEHOLDER.to_string(),
-                    c.accent[5].with_alpha(0.28),
-                    c.accent[5],
-                )
+    /// Presentation-ready timeline snapshot. Calendar policy decides which
+    /// events are visible and how untitled events are labelled; the timeline
+    /// component owns all geometry and painting from here on.
+    fn timeline_render_events<'a>(&'a self, days: &[NaiveDate]) -> Vec<TimelineRenderEvent<'a>> {
+        let mut events = Vec::new();
+        for day in days {
+            for event in self.visible_events_on(*day) {
+                let start_min =
+                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
+                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
+                    .max(start_min + TIMELINE_SNAP_MIN);
+                events.push(TimelineRenderEvent {
+                    id: event.id,
+                    day: *day,
+                    title: event.display_title(),
+                    location: &event.location,
+                    color: event.color,
+                    start_min,
+                    end_min,
+                    all_day: event.all_day,
+                });
             }
-            TimelineDrag::Move { id, .. } => {
-                let Some((day, s, dur, _)) = self.timeline_move_target(area, days, &drag) else {
-                    return;
-                };
-                let Some(col) = days.iter().position(|d| *d == day) else {
-                    return;
-                };
-                let Some(ev) = self.model.event(id) else {
-                    return;
-                };
-                let col_c = ev.color.color(theme);
-                (
-                    col,
-                    s,
-                    s + dur,
-                    ev.display_title().to_string(),
-                    col_c.with_alpha(0.55),
-                    col_c,
-                )
-            }
-        };
-        let block = self.timeline_block_rect(area, days.len(), g, col, s, e);
-        fill_round(scene, t, fill, block, 6.0);
-        stroke_round(scene, t, stroke, block, 6.0, 1.5);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &block,
-        );
-        let title_line = elide_to_width(tr, &title, 11.0, block.width() - 16.0);
-        tr.draw_text(
-            scene,
-            &title_line,
-            11.0,
-            c.neutral[9],
-            t * Affine::translate((block.x0 + 8.0, block.y0 + 4.0)),
-            None,
-        );
-        if block.height() > 30.0 {
-            tr.draw_text(
-                scene,
-                &format!("{} – {}", fmt_min(s), fmt_min(e)),
-                10.0,
-                c.text_dim,
-                t * Affine::translate((block.x0 + 8.0, block.y0 + 18.0)),
-                None,
-            );
         }
-        scene.pop_layer();
+        events
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform and r/x/y/w are the detail card's rect/body \
+                  position/width — conventional short names for this draw step"
+    )]
     fn draw_detail(
         &self,
         scene: &mut Scene,
@@ -4081,11 +2892,52 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
         let mut hits = Vec::new();
         let r = self.detail_rect;
         let modal = matches!(self.detail_mode, DetailMode::Overlay);
 
+        self.draw_detail_frame(scene, t, theme, r, modal, &mut hits);
+
+        let x = r.x0 + DETAIL_PAD;
+        let w = self.notes_w;
+        let mut y = r.y0 + 18.0;
+
+        // The full-screen editor page is its own pushed screen, so it gets a
+        // Back affordance top-left instead of a close button.
+        if !modal {
+            y += self.draw_detail_back_button(scene, t, tr, theme, r, &mut hits);
+        }
+
+        // Header controls, top-right: a Delete (trash) button for the selected
+        // item, plus a Close (X) on the modal (the full-screen page uses Back).
+        self.draw_detail_header_controls(scene, t, theme, r, modal, &mut hits);
+
+        self.draw_detail_selection(scene, t, tr, theme, x, y, w, &mut hits);
+
+        // Notes header (the editor itself is drawn separately in draw()). For
+        // an event the notes sit below the form; a task uses the fixed offset.
+        self.draw_detail_notes_header(scene, t, tr, theme, r, x, w);
+
+        hits
+    }
+
+    /// The card/panel background — a dimmed floating card in overlay mode,
+    /// or a docked panel with a left border otherwise (part of
+    /// [`Self::draw_detail`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_detail_frame(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        r: Rect,
+        modal: bool,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
         if modal {
             // Dim the calendar behind the card; a click on the dim closes the
             // editor. The card is a floating panel, not a docked strip.
@@ -4109,70 +2961,110 @@ impl CalendarApp {
                 1.0,
             );
         }
+    }
 
-        let x = r.x0 + DETAIL_PAD;
-        let w = self.notes_w;
-        let mut y = r.y0 + 18.0;
-
-        // The full-screen editor page is its own pushed screen, so it gets a
-        // Back affordance top-left instead of a close button.
-        if !modal {
-            let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
-            if back.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, back, 8.0);
-            }
-            draw_back_arrow(
-                scene,
-                t,
-                c.neutral[8],
-                Point::new(back.x0 + 14.0, back.center().y),
-            );
-            tr.draw_text(
-                scene,
-                "Back",
-                13.0,
-                c.neutral[8],
-                t * Affine::translate((back.x0 + 28.0, back.center().y - 8.0)),
-                None,
-            );
-            hits.push((back, Action::BackToCalendar));
-            // Push the detail body below the back bar.
-            y += 34.0;
+    /// The full-screen page's Back affordance, top-left (part of
+    /// [`Self::draw_detail`], non-modal only). Returns the y-advance the
+    /// caller should push the detail body down by.
+    fn draw_detail_back_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        hits: &mut Vec<(Rect, Action)>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
+        if back.contains(self.last_mouse) {
+            fill_round(scene, t, c.surface_white_5, back, 8.0);
         }
+        draw_back_arrow(
+            scene,
+            t,
+            c.neutral[8],
+            Point::new(back.x0 + 14.0, back.center().y),
+        );
+        tr.draw_text(
+            scene,
+            "Back",
+            13.0,
+            c.neutral[8],
+            t * Affine::translate((back.x0 + 28.0, back.center().y - 8.0)),
+            None,
+        );
+        hits.push((back, Action::BackToCalendar));
+        34.0
+    }
 
-        // Header controls, top-right: a Delete (trash) button for the selected
-        // item, plus a Close (X) on the modal (the full-screen page uses Back).
-        {
-            let mut bx = r.x1 - 14.0;
-            if modal {
-                let close = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
-                draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
-                draw_cross(scene, t, c.neutral[8], close.center());
-                hits.push((close, Action::CloseDetail));
-                bx -= 30.0;
-            }
-            let del_action = match self.selection {
-                Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
-                Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
-                None => None,
-            };
-            if let Some(action) = del_action {
-                let del = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
-                let hot = del.contains(self.last_mouse);
-                draw_icon_button(scene, t, theme, del, hot);
-                let col = if hot { c.semantic.danger } else { c.neutral[8] };
-                draw_trash(scene, t, col, del.center());
-                hits.push((del, action));
-            }
+    /// The Close (modal only) and Delete header buttons, top-right (part of
+    /// [`Self::draw_detail`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_detail_header_controls(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        r: Rect,
+        modal: bool,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let mut bx = r.x1 - 14.0;
+        if modal {
+            let close = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
+            draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
+            draw_cross(scene, t, c.neutral[8], close.center());
+            hits.push((close, Action::CloseDetail));
+            bx -= 30.0;
         }
+        let del_action = match self.selection {
+            Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
+            Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
+            None => None,
+        };
+        if let Some(action) = del_action {
+            let del = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
+            let hot = del.contains(self.last_mouse);
+            draw_icon_button(scene, t, theme, del, hot);
+            let col = if hot { c.semantic.danger } else { c.neutral[8] };
+            draw_trash(scene, t, col, del.center());
+            hits.push((del, action));
+        }
+    }
 
+    /// The selected item's body: an event's kind label + colour dot (every
+    /// editable field is drawn by [`Self::draw_event_form`]), or the full
+    /// task detail (part of [`Self::draw_detail`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, x/y/w are the body column's position/width, \
+                  and c is the theme's colour set — conventional short names for this \
+                  draw step"
+    )]
+    fn draw_detail_selection(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        y: f64,
+        w: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
         match self.selection {
             Some(Sel::Event(id)) => {
                 if let Some(e) = self.model.event(id) {
-                    // Kind label + calendar-colour dot only. Every editable
-                    // field (title, dates, times, location, calendar, repeat/
-                    // reminder/colour) is drawn by `draw_event_form`, which
-                    // owns the real inputs and pickers.
                     scene.fill(
                         Fill::NonZero,
                         t,
@@ -4190,93 +3082,142 @@ impl CalendarApp {
                     );
                 }
             }
-            Some(Sel::Task(id)) => {
-                if let Some(tk) = self.model.task(id) {
-                    let box_rect = Rect::new(x, y, x + 18.0, y + 18.0);
-                    draw_checkbox(scene, t, theme, box_rect, tk.done);
-                    hits.push((box_rect, Action::ToggleSelectedTask));
-                    tr.draw_text(
-                        scene,
-                        "TASK",
-                        11.0,
-                        c.text_dim,
-                        t * Affine::translate((x + 28.0, y + 2.0)),
-                        None,
-                    );
-                    y += 26.0;
-                    let title_col = if tk.done { c.text_dim } else { c.text_primary };
-                    tr.draw_text(
-                        scene,
-                        &tk.title,
-                        21.0,
-                        title_col,
-                        t * Affine::translate((x, y)),
-                        Some(w as f32),
-                    );
-                    y += 40.0;
-                    if let Some(due) = tk.due {
-                        field_row(
-                            scene,
-                            tr,
-                            theme,
-                            t,
-                            x,
-                            y,
-                            w,
-                            "Due",
-                            &date::fmt_day_long(due),
-                        );
-                        y += 34.0;
-                    }
-                    field_row(
-                        scene,
-                        tr,
-                        theme,
-                        t,
-                        x,
-                        y,
-                        w,
-                        "Priority",
-                        tk.priority.label(),
-                    );
-                    y += 34.0;
-                    if let Some(p) = tk.project.and_then(|pid| self.model.project(pid)) {
-                        field_row(scene, tr, theme, t, x, y, w, "Project", &p.name);
-                        y += 34.0;
-                    }
-                    let subs = self.model.subtasks_of(id);
-                    if !subs.is_empty() {
-                        tr.draw_text(
-                            scene,
-                            "Subtasks",
-                            12.0,
-                            c.text_dim,
-                            t * Affine::translate((x, y)),
-                            None,
-                        );
-                        y += 22.0;
-                        for s in subs {
-                            let box_rect = Rect::new(x, y, x + 16.0, y + 16.0);
-                            draw_checkbox(scene, t, theme, box_rect, s.done);
-                            hits.push((box_rect, Action::ToggleTask(s.id)));
-                            tr.draw_text(
-                                scene,
-                                &s.title,
-                                13.0,
-                                c.neutral[8],
-                                t * Affine::translate((x + 26.0, y)),
-                                None,
-                            );
-                            y += 24.0;
-                        }
-                    }
-                }
-            }
+            Some(Sel::Task(id)) => self.draw_detail_task(scene, t, tr, theme, x, y, w, id, hits),
             None => {}
         }
+    }
 
-        // Notes header (the editor itself is drawn separately in draw()). For
-        // an event the notes sit below the form; a task uses the fixed offset.
+    /// The full task detail: checkbox + title, due/priority/project fields,
+    /// and the subtask list (part of [`Self::draw_detail_selection`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, x/y/w are the body column's position/width, \
+                  and c is the theme's colour set — conventional short names for this \
+                  draw step"
+    )]
+    fn draw_detail_task(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        mut y: f64,
+        w: f64,
+        id: Id,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let Some(tk) = self.model.task(id) else {
+            return;
+        };
+        let box_rect = Rect::new(x, y, x + 18.0, y + 18.0);
+        draw_checkbox(scene, t, theme, box_rect, tk.done);
+        hits.push((box_rect, Action::ToggleSelectedTask));
+        tr.draw_text(
+            scene,
+            "TASK",
+            11.0,
+            c.text_dim,
+            t * Affine::translate((x + 28.0, y + 2.0)),
+            None,
+        );
+        y += 26.0;
+        let title_col = if tk.done { c.text_dim } else { c.text_primary };
+        tr.draw_text(
+            scene,
+            &tk.title,
+            21.0,
+            title_col,
+            t * Affine::translate((x, y)),
+            Some(w as f32),
+        );
+        y += 40.0;
+        if let Some(due) = tk.due {
+            field_row(
+                scene,
+                tr,
+                theme,
+                t,
+                x,
+                y,
+                w,
+                "Due",
+                &date::fmt_day_long(due),
+            );
+            y += 34.0;
+        }
+        field_row(
+            scene,
+            tr,
+            theme,
+            t,
+            x,
+            y,
+            w,
+            "Priority",
+            tk.priority.label(),
+        );
+        y += 34.0;
+        if let Some(p) = tk.project.and_then(|pid| self.model.project(pid)) {
+            field_row(scene, tr, theme, t, x, y, w, "Project", &p.name);
+            y += 34.0;
+        }
+        let subs = self.model.subtasks_of(id);
+        if !subs.is_empty() {
+            tr.draw_text(
+                scene,
+                "Subtasks",
+                12.0,
+                c.text_dim,
+                t * Affine::translate((x, y)),
+                None,
+            );
+            y += 22.0;
+            for s in subs {
+                let box_rect = Rect::new(x, y, x + 16.0, y + 16.0);
+                draw_checkbox(scene, t, theme, box_rect, s.done);
+                hits.push((box_rect, Action::ToggleTask(s.id)));
+                tr.draw_text(
+                    scene,
+                    &s.title,
+                    13.0,
+                    c.neutral[8],
+                    t * Affine::translate((x + 26.0, y)),
+                    None,
+                );
+                y += 24.0;
+            }
+        }
+    }
+
+    /// The "NOTES" section label + rule, positioned below the event form or
+    /// at the task's fixed offset (part of [`Self::draw_detail`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, r/x/w are the detail card's rect/body \
+                  position/width, and c is the theme's colour set — conventional short \
+                  names for this draw step"
+    )]
+    fn draw_detail_notes_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        x: f64,
+        w: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let notes_top = if matches!(self.selection, Some(Sel::Event(_))) {
             self.form.notes_top
         } else {
@@ -4299,8 +3240,6 @@ impl CalendarApp {
             Point::new(x + w, notes_label_y + 18.0),
             1.0,
         );
-
-        hits
     }
 
     /// Draw the editable event form (title/location inputs, all-day switch,
@@ -4348,10 +3287,51 @@ impl CalendarApp {
             f.allday.x1,
             f.allday.center().y + 12.0,
         );
-        draw_switch(scene, t, theme, sw, e.all_day);
+        Toggle::paint(
+            scene,
+            t,
+            theme,
+            &ToggleFace::new(sw, e.all_day).hovered(sw.contains(mouse)),
+        );
         hits.push((f.allday, Action::ToggleAllDay));
 
-        // --- Starts / Ends rows -----------------------------------------
+        self.draw_event_form_dates(scene, t, tr, theme, &f, &e, mouse, label_x, &mut hits);
+
+        // --- Location (real text input) ---------------------------------
+        self.location_input.draw(scene, t, tr, theme, presence);
+        hits.push((f.location, Action::FocusField(FormField::Location)));
+
+        self.draw_event_form_calendar(scene, t, tr, theme, &f, &e, mouse, &mut hits);
+        Self::draw_event_form_chips(scene, t, tr, theme, &f, &e, label_x, &mut hits);
+
+        hits
+    }
+
+    /// The Starts / Ends date + time field-button rows (part of
+    /// [`Self::draw_event_form`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, f is the form layout, e is the event being \
+                  edited, and c is the theme's colour set — conventional short names for \
+                  this draw step"
+    )]
+    fn draw_event_form_dates(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        f: &FormRects,
+        e: &Event,
+        mouse: Point,
+        label_x: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
         let row = |scene: &mut Scene,
                    tr: &mut TextRenderer,
                    hits: &mut Vec<(Rect, Action)>,
@@ -4383,7 +3363,7 @@ impl CalendarApp {
         row(
             scene,
             tr,
-            &mut hits,
+            hits,
             "Starts",
             f.start_date,
             f.start_time,
@@ -4396,7 +3376,7 @@ impl CalendarApp {
         row(
             scene,
             tr,
-            &mut hits,
+            hits,
             "Ends",
             f.end_date,
             f.end_time,
@@ -4406,12 +3386,32 @@ impl CalendarApp {
             FormPopover::EndTime,
             self.event_popovers.active(),
         );
+    }
 
-        // --- Location (real text input) ---------------------------------
-        self.location_input.draw(scene, t, tr, theme, presence);
-        hits.push((f.location, Action::FocusField(FormField::Location)));
-
-        // --- Calendar selector: colour dot + value + disclosure caret ----
+    /// The calendar selector: colour dot + value + disclosure caret (part
+    /// of [`Self::draw_event_form`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, f is the form layout, e is the event being \
+                  edited, and c is the theme's colour set — conventional short names for \
+                  this draw step"
+    )]
+    fn draw_event_form_calendar(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        f: &FormRects,
+        e: &Event,
+        mouse: Point,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
         let cal_active =
             f.calendar.contains(mouse) || self.event_popovers.active() == FormPopover::Calendar;
         {
@@ -4422,12 +3422,12 @@ impl CalendarApp {
                 c.surfaces.raised
             };
             fill_round(scene, t, bg, r, 8.0);
-            let (bw, border) = if cal_active {
+            let (border_w, border) = if cal_active {
                 (2.0, c.border_focus)
             } else {
                 (1.0, c.border_standard)
             };
-            stroke_round(scene, t, border, r, 8.0, bw);
+            stroke_round(scene, t, border, r, 8.0, border_w);
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -4454,8 +3454,28 @@ impl CalendarApp {
             );
         }
         hits.push((f.calendar, Action::OpenPopover(FormPopover::Calendar)));
+    }
 
-        // --- Repeat / reminder / colour chips (cycle-on-click) ----------
+    /// The repeat / reminder / colour chips, cycled on click (part of
+    /// [`Self::draw_event_form`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::similar_names,
+        reason = "rem_label and rem_chip serve distinct purposes"
+    )]
+    fn draw_event_form_chips(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        f: &FormRects,
+        e: &Event,
+        label_x: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
         let rec_label = if e.recurrence == Recurrence::None {
             "No repeat".to_string()
         } else {
@@ -4472,19 +3492,11 @@ impl CalendarApp {
             false,
         );
         hits.push((rec_chip, Action::CycleRecurrence));
-        #[allow(
-            clippy::similar_names,
-            reason = "rem_label and rem_chip serve distinct purposes"
-        )]
         let rem_label = match e.reminder_min {
             None => "No reminder".to_string(),
             Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
             Some(m) => format!("⏰ {m}m before"),
         };
-        #[allow(
-            clippy::similar_names,
-            reason = "rem_label and rem_chip serve distinct purposes"
-        )]
         let rem_chip = chip(
             scene,
             t,
@@ -4514,8 +3526,6 @@ impl CalendarApp {
             &Circle::new(Point::new(col_chip.x0 + 12.0, col_chip.center().y), 4.0),
         );
         hits.push((col_chip, Action::CycleColor));
-
-        hits
     }
 
     /// Paint the open form popover (date grid / time spinners / calendar list)
@@ -4597,7 +3607,6 @@ impl CalendarApp {
     /// Paint the first-run onboarding: a centered headline + hint over an
     /// otherwise-blank view. Colours come from the theme so it matches the OS.
     fn draw_empty_onboarding(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4631,6 +3640,394 @@ impl CalendarApp {
             t * Affine::translate((cx - hint_w / 2.0, top + f64::from(title_size) + gap)),
             None,
         );
+    }
+
+    /// The open popover owns input first: the picker itself, then (if it
+    /// didn't consume the event) a left click resolved against the hit map
+    /// — the dismiss scrim, a calendar row, or a popover guard (part of
+    /// [`Widget::handle_event`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal event-handling split of an over-length function"
+    )]
+    fn handle_popover_priority(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.handle_popover_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if *handled {
+            self.dirty = true;
+            return;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && let Some(a) = self.hit_action_at(self.last_mouse)
+        {
+            self.apply_action(a, state);
+            *handled = true;
+        }
+        self.dirty = true;
+    }
+
+    /// Keyboard handling: Escape (cancel drag → blur field → dismiss flap →
+    /// pop the narrow detail screen → close detail), Delete (remove the
+    /// selected event/task), Tab (cycle form focus), and global letter/
+    /// arrow shortcuts (part of [`Widget::handle_event`]). Returns `true` if
+    /// the event was consumed.
+    fn handle_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+
+        let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
+        let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
+        let field_focused = self.title_input.is_focused() || self.location_input.is_focused();
+        let notes_focused = editor_active && self.notes_editor.is_focused();
+
+        if matches!(logical_key, Key::Named(NamedKey::Escape))
+            && self.handle_keyboard_escape(field_focused, handled)
+        {
+            return true;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Delete))
+            && self.handle_keyboard_delete(
+                state,
+                editor_active,
+                field_focused,
+                notes_focused,
+                handled,
+            )
+        {
+            return true;
+        }
+
+        // Tab / Shift+Tab move between the form fields (title → location →
+        // notes) on the real key path while an event is being edited.
+        if form_active && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            self.cycle_form_focus(modifiers.state().shift_key());
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+
+        // Global letter/arrow shortcuts fire only when NOT typing into a
+        // text field or the notes editor.
+        if !field_focused && !notes_focused {
+            return self.handle_keyboard_shortcut(logical_key, state, handled);
+        }
+        false
+    }
+
+    /// Escape: cancel a live timeline drag first (it commits nothing), then
+    /// blur a focused field, then dismiss the overlay flap, then pop the
+    /// narrow detail screen, then close the detail. Split out of
+    /// `handle_keyboard` to keep that under the line cap.
+    fn handle_keyboard_escape(&mut self, field_focused: bool, handled: &mut bool) -> bool {
+        if self.timeline.cancel_drag() {
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if field_focused {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open() {
+            self.sidebar.set_open(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if matches!(self.detail_mode, DetailMode::FullScreen)
+            && matches!(self.narrow_screen, NarrowScreen::Detail)
+        {
+            self.narrow_screen = NarrowScreen::Calendar;
+            self.notes_editor.set_focus(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if self.detail_open {
+            self.detail_open = false;
+            self.selection = None;
+            self.narrow_screen = NarrowScreen::Calendar;
+            self.notes_editor.set_focus(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    /// Delete removes the on-screen event/task — but only when the caret
+    /// isn't in a text field or the notes editor (where Delete edits text).
+    /// Mirrors the editor's trash button through the same action. Split out
+    /// of `handle_keyboard` to keep that under the line cap.
+    fn handle_keyboard_delete(
+        &mut self,
+        state: &mut AutoCommit,
+        editor_active: bool,
+        field_focused: bool,
+        notes_focused: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !editor_active || field_focused || notes_focused {
+            return false;
+        }
+        let act = match self.selection {
+            Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
+            Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
+            None => None,
+        };
+        let Some(a) = act else {
+            return false;
+        };
+        self.apply_action(a, state);
+        *handled = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Global letter/arrow shortcuts, fired only when not typing into a text
+    /// field or the notes editor. Split out of `handle_keyboard` to keep
+    /// that under the line cap.
+    fn handle_keyboard_shortcut(
+        &mut self,
+        logical_key: &Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if let Key::Character(ch) = logical_key {
+            let key = ch.to_lowercase();
+            let act = match key.as_str() {
+                "m" => Some(Action::View(View::Month)),
+                "w" => Some(Action::View(View::Week)),
+                "d" => Some(Action::View(View::Day)),
+                "a" => Some(Action::View(View::Agenda)),
+                "t" => Some(Action::Today),
+                "n" => Some(Action::NewEvent),
+                "e" => Some(Action::Export),
+                "i" => Some(Action::Import),
+                "[" => Some(Action::Prev),
+                "]" => Some(Action::Next),
+                _ => None,
+            };
+            if let Some(a) = act {
+                self.apply_action(a, state);
+                *handled = true;
+                return true;
+            }
+        }
+        if let Key::Named(named) = logical_key {
+            let days = match named {
+                NamedKey::ArrowLeft => Some(-1),
+                NamedKey::ArrowRight => Some(1),
+                NamedKey::ArrowUp => Some(-7),
+                NamedKey::ArrowDown => Some(7),
+                _ => None,
+            };
+            if let Some(d) = days {
+                self.move_anchor(d);
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Mouse click resolution: a form text field, the notes region, or the
+    /// generic hit-map (topmost last) (part of [`Widget::handle_event`]).
+    /// Returns `true` if the event was consumed.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal event-handling split of an over-length function"
+    )]
+    fn handle_mouse_click(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+        form_active: bool,
+        in_notes: bool,
+    ) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let p = self.last_mouse;
+        // A click inside a form text field focuses it and lands the caret.
+        if form_active && self.form.title.contains(p) {
+            self.location_input.set_focus(false);
+            self.notes_editor.set_focus(false);
+            self.title_input.set_focus(true);
+            self.title_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if form_active && self.form.location.contains(p) {
+            self.title_input.set_focus(false);
+            self.notes_editor.set_focus(false);
+            self.location_input.set_focus(true);
+            self.location_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        // Clicks inside the notes region go to the editor (focus + caret).
+        if in_notes {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+            if let Some(n) = self.editor_node {
+                self.notes_editor.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            self.dirty = true;
+            return true;
+        }
+        // Otherwise resolve against the hit-map (topmost last).
+        if let Some(a) = self.hit_action_at(p) {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+            self.notes_editor.set_focus(false);
+            self.apply_action(a, state);
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// Forward typing (and other events) to a focused form text field so
+    /// edits land, mirroring the change into the event via
+    /// [`Self::flush_form_edits`] (part of [`Widget::handle_event`]).
+    /// Returns `true` if the caller should stop dispatching.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal event-handling split of an over-length function"
+    )]
+    fn handle_form_field_input(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if self.title_input.is_focused() {
+            self.title_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            self.flush_form_edits(state);
+            self.dirty = true;
+            return *handled;
+        } else if self.location_input.is_focused() {
+            self.location_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            self.flush_form_edits(state);
+            self.dirty = true;
+            return *handled;
+        }
+        false
     }
 }
 
@@ -4769,6 +4166,17 @@ impl Widget for CalendarApp {
         }
         self.editor_node = Some(editor_node);
 
+        // `new_with_children` is typed `-> TaffyResult<NodeId>` for API
+        // generality but only fails for a child `NodeId` belonging to a
+        // different tree, which cannot happen here — `editor_node` was just
+        // built in this same tree above (see `ui::widget::TaffyTreeExt`'s doc
+        // comment) — and `Widget::build_layout` returns a bare `NodeId`
+        // across every implementor, so there is nowhere to surface a
+        // theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "child was just built in this tree; see ui::widget::TaffyTreeExt"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -4786,14 +4194,16 @@ impl Widget for CalendarApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let new_rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
+        let size_changed = (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
+            || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON;
+        if size_changed {
             self.dirty = true;
         }
         self.rect = new_rect;
@@ -4806,6 +4216,12 @@ impl Widget for CalendarApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "107 lines of straight-line paint order: chrome, then the view body, \
+                  then overlays. Splitting it hides the order in which layers are drawn, \
+                  which is the one thing a reader of a draw method needs to see"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -4825,17 +4241,58 @@ impl Widget for CalendarApp {
         // pushed detail).
         let detail_drawn = self.detail_open && self.detail_rect.area() > 0.0;
         if self.content_rect.area() > 0.0 {
-            hits.extend(self.draw_topbar(scene, t, text_renderer, theme));
+            hits.extend(
+                self.topbar
+                    .draw(
+                        scene,
+                        t,
+                        text_renderer,
+                        theme,
+                        self.view,
+                        self.anchor,
+                        self.last_mouse,
+                    )
+                    .iter()
+                    .map(|(rect, action)| {
+                        let action = match action {
+                            TopbarAction::View(view) => Action::View(*view),
+                            TopbarAction::Today => Action::Today,
+                            TopbarAction::Previous => Action::Prev,
+                            TopbarAction::Next => Action::Next,
+                            TopbarAction::NewEvent => Action::NewEvent,
+                            TopbarAction::OpenSidebar => Action::ToggleSidebar,
+                            TopbarAction::ExpandSidebar => Action::ToggleSidebarCollapsed,
+                        };
+                        (*rect, action)
+                    }),
+            );
             let area = self.view_rect();
             match self.view {
                 View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
-                View::Week => {
-                    let days = date::week_days(self.anchor);
-                    hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
-                }
-                View::Day => {
-                    let days = [self.anchor];
-                    hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
+                View::Week | View::Day => {
+                    let days = self.timeline_days();
+                    let events = self.timeline_render_events(&days);
+                    let now = Local::now().naive_local();
+                    let model = TimelineRenderModel {
+                        days: &days,
+                        events: &events,
+                        today: self.today,
+                        now: Some((
+                            self.today,
+                            i64::from(now.hour()) * 60 + i64::from(now.minute()),
+                        )),
+                        untitled: TITLE_PLACEHOLDER,
+                    };
+                    hits.extend(
+                        self.timeline
+                            .draw_timeline(scene, t, text_renderer, theme, area, &model)
+                            .into_iter()
+                            .filter_map(|(rect, effect)| match effect {
+                                TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
+                                TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
+                                TimelineEffect::Create { .. } | TimelineEffect::Move { .. } => None,
+                            }),
+                    );
                 }
                 View::Agenda => {
                     let hidden = self.hidden_calendar_ids();
@@ -4871,7 +4328,7 @@ impl Widget for CalendarApp {
             if !matches!(self.view, View::Agenda)
                 && let Some((title, hint)) = self.empty_onboarding_prompt()
             {
-                self.draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
+                Self::draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
             }
             self.draw_status(scene, t, text_renderer, theme, self.content_rect.x0);
         }
@@ -4920,6 +4377,11 @@ impl Widget for CalendarApp {
         self.hits = hits;
     }
 
+    // This is the widget system's event-dispatch contract, implemented by
+    // every widget; every parameter is independently meaningful (the raw
+    // event, scaling, modifiers, CRDT handle+path, two out-params, and the
+    // node's own identity/layout).
+    #[allow(clippy::too_many_arguments)]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -4950,7 +4412,7 @@ impl Widget for CalendarApp {
 
         // --- Open popover owns input first --------------------------------
         if popover_open {
-            self.handle_popover_event(
+            self.handle_popover_priority(
                 event,
                 scale_factor,
                 *modifiers,
@@ -4961,23 +4423,6 @@ impl Widget for CalendarApp {
                 node_id,
                 taffy,
             );
-            if *handled {
-                self.dirty = true;
-                return;
-            }
-            // A left click the picker didn't consume resolves against the hit
-            // map (the dismiss scrim, a calendar row, or a popover guard).
-            if let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-                && let Some(a) = self.hit_action_at(self.last_mouse)
-            {
-                self.apply_action(a, state);
-                *handled = true;
-            }
-            self.dirty = true;
             return;
         }
 
@@ -4998,247 +4443,40 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // Keyboard.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            let field_focused = self.title_input.is_focused() || self.location_input.is_focused();
-            let notes_focused = editor_active && self.notes_editor.is_focused();
-
-            // Escape: cancel a live timeline drag first (it commits nothing),
-            // then blur a focused field, then dismiss the overlay flap, then pop
-            // the narrow detail screen, then close the detail.
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                if self.timeline_drag.take().is_some() {
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if field_focused {
-                    self.title_input.set_focus(false);
-                    self.location_input.set_focus(false);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open {
-                    self.sidebar_open = false;
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if matches!(self.detail_mode, DetailMode::FullScreen)
-                    && matches!(self.narrow_screen, NarrowScreen::Detail)
-                {
-                    self.narrow_screen = NarrowScreen::Calendar;
-                    self.notes_editor.set_focus(false);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if self.detail_open {
-                    self.detail_open = false;
-                    self.selection = None;
-                    self.narrow_screen = NarrowScreen::Calendar;
-                    self.notes_editor.set_focus(false);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-            }
-
-            // Delete removes the on-screen event/task — but only when the caret
-            // isn't in a text field or the notes editor (where Delete edits
-            // text). Mirrors the editor's trash button through the same action.
-            if matches!(logical_key, Key::Named(NamedKey::Delete))
-                && editor_active
-                && !field_focused
-                && !notes_focused
-            {
-                let act = match self.selection {
-                    Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
-                    Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
-                    None => None,
-                };
-                if let Some(a) = act {
-                    self.apply_action(a, state);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-            }
-
-            // Tab / Shift+Tab move between the form fields (title → location →
-            // notes) on the real key path while an event is being edited.
-            if form_active && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-                self.cycle_form_focus(modifiers.state().shift_key());
-                *handled = true;
-                self.dirty = true;
-                return;
-            }
-
-            // Global letter/arrow shortcuts fire only when NOT typing into a
-            // text field or the notes editor.
-            if !field_focused && !notes_focused {
-                if let Key::Character(ch) = logical_key {
-                    let key = ch.to_lowercase();
-                    let act = match key.as_str() {
-                        "m" => Some(Action::View(View::Month)),
-                        "w" => Some(Action::View(View::Week)),
-                        "d" => Some(Action::View(View::Day)),
-                        "a" => Some(Action::View(View::Agenda)),
-                        "t" => Some(Action::Today),
-                        "n" => Some(Action::NewEvent),
-                        "e" => Some(Action::Export),
-                        "i" => Some(Action::Import),
-                        "[" => Some(Action::Prev),
-                        "]" => Some(Action::Next),
-                        _ => None,
-                    };
-                    if let Some(a) = act {
-                        self.apply_action(a, state);
-                        *handled = true;
-                        return;
-                    }
-                }
-                if let Key::Named(named) = logical_key {
-                    let days = match named {
-                        NamedKey::ArrowLeft => Some(-1),
-                        NamedKey::ArrowRight => Some(1),
-                        NamedKey::ArrowUp => Some(-7),
-                        NamedKey::ArrowDown => Some(7),
-                        _ => None,
-                    };
-                    if let Some(d) = days {
-                        self.move_anchor(d);
-                        *handled = true;
-                        return;
-                    }
-                }
-            }
+        if self.handle_keyboard(event, *modifiers, state, handled) {
+            return;
         }
 
-        // Mouse click resolution.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            let p = self.last_mouse;
-            // A click inside a form text field focuses it and lands the caret.
-            if form_active && self.form.title.contains(p) {
-                self.location_input.set_focus(false);
-                self.notes_editor.set_focus(false);
-                self.title_input.set_focus(true);
-                self.title_input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-                *handled = true;
-                self.dirty = true;
-                return;
-            }
-            if form_active && self.form.location.contains(p) {
-                self.title_input.set_focus(false);
-                self.notes_editor.set_focus(false);
-                self.location_input.set_focus(true);
-                self.location_input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-                *handled = true;
-                self.dirty = true;
-                return;
-            }
-            // Clicks inside the notes region go to the editor (focus + caret).
-            if in_notes {
-                self.title_input.set_focus(false);
-                self.location_input.set_focus(false);
-                if let Some(n) = self.editor_node {
-                    self.notes_editor.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                self.dirty = true;
-                return;
-            }
-            // Otherwise resolve against the hit-map (topmost last).
-            if let Some(a) = self.hit_action_at(p) {
-                self.title_input.set_focus(false);
-                self.location_input.set_focus(false);
-                self.notes_editor.set_focus(false);
-                self.apply_action(a, state);
-                *handled = true;
-                return;
-            }
+        if self.handle_mouse_click(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+            form_active,
+            in_notes,
+        ) {
+            return;
         }
 
         // Forward typing (and other events) to a focused form text field so
         // edits land, mirroring the change into the event via `flush_form_edits`.
-        if self.title_input.is_focused() {
-            self.title_input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            self.flush_form_edits(state);
-            self.dirty = true;
-            if *handled {
-                return;
-            }
-        } else if self.location_input.is_focused() {
-            self.location_input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            self.flush_form_edits(state);
-            self.dirty = true;
-            if *handled {
-                return;
-            }
+        if self.handle_form_field_input(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
         }
 
         // Forward remaining events (key typing, mouse move) to the editor
@@ -5272,7 +4510,7 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
-            || self.timeline_scroll.needs_redraw()
+            || self.timeline.needs_redraw()
             || self.agenda.needs_redraw()
     }
 
@@ -5281,7 +4519,7 @@ impl Widget for CalendarApp {
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
-        self.timeline_scroll.mark_drawn();
+        self.timeline.mark_drawn();
         self.agenda.mark_drawn();
     }
 
@@ -5300,9 +4538,7 @@ impl Widget for CalendarApp {
         // so its result is drained in `sync` the moment it arrives, without
         // waiting for an unrelated input event — and while a scroll container is
         // still settling momentum / fading its bar.
-        self.syncing
-            || self.timeline_scroll.needs_animation_frame()
-            || self.agenda.needs_animation_frame()
+        self.syncing || self.timeline.needs_animation_frame() || self.agenda.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -5310,7 +4546,7 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
-            || self.timeline_scroll.is_layout_dirty()
+            || self.timeline.is_layout_dirty()
             || self.agenda.is_layout_dirty()
     }
 
@@ -5342,45 +4578,12 @@ impl Widget for CalendarApp {
     }
 }
 
-// ========================================================================
-// Drawing primitives (free functions).
-// ========================================================================
-
-pub(crate) fn fill_rect(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
-    scene.fill(Fill::NonZero, t, color, None, &r);
-}
-
-pub(crate) fn fill_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, radius: f64) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-
-pub(crate) fn stroke_round(
-    scene: &mut Scene,
-    t: Affine,
-    color: Color,
-    r: Rect,
-    radius: f64,
-    w: f64,
-) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-
-pub(crate) fn stroke_line(scene: &mut Scene, t: Affine, color: Color, a: Point, b: Point, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &Line::new(a, b));
-}
-
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, r is the rect being centred in, and w/x/y are the \
+              measured width and centred position — conventional short names for this \
+              draw step"
+)]
 pub(crate) fn center_text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -5403,7 +4606,7 @@ pub(crate) fn center_text(
     );
 }
 
-fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover: bool) {
+pub(crate) fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover: bool) {
     let c = &theme.tokens.colors;
     let bg = if hover {
         c.surface_white_10
@@ -5414,7 +4617,7 @@ fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover:
     stroke_round(scene, t, c.border_standard, r, 8.0, 1.0);
 }
 
-fn draw_chevron(scene: &mut Scene, t: Affine, color: Color, center: Point, left: bool) {
+pub(crate) fn draw_chevron(scene: &mut Scene, t: Affine, color: Color, center: Point, left: bool) {
     // `left == true` draws a "<" (points left); false draws ">".
     let dx = if left { -4.0 } else { 4.0 };
     let mut p = BezPath::new();
@@ -5439,7 +4642,7 @@ fn draw_caret(scene: &mut Scene, t: Affine, color: Color, center: Point, expande
     scene.stroke(&Stroke::new(1.6), t, color, None, &p);
 }
 
-fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(
         scene,
         t,
@@ -5458,7 +4661,7 @@ fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     );
 }
 
-fn draw_hamburger(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_hamburger(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     for dy in [-5.0, 0.0, 5.0] {
         stroke_line(
             scene,
@@ -5488,7 +4691,7 @@ fn draw_back_arrow(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     scene.stroke(&Stroke::new(1.7), t, color, None, &p);
 }
 
-fn draw_cross(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_cross(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(
         scene,
         t,
@@ -5602,33 +4805,27 @@ pub(crate) fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
 }
 
 pub(crate) fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, done: bool) {
-    let c = &theme.tokens.colors;
-    if done {
-        fill_round(scene, t, c.accent[5], r, 4.0);
-        draw_check(scene, t, Color::WHITE, r);
-    } else {
-        stroke_round(scene, t, c.neutral[5], r, 4.0, 1.6);
-    }
-}
-
-/// Round a minute-of-day to the timeline's drag snap grid, clamped to the day.
-fn snap_minute(m: i64) -> i64 {
-    let step = TIMELINE_SNAP_MIN;
-    (((m + step / 2) / step) * step).clamp(0, 24 * 60)
-}
-
-/// Format a minute-of-day as `HH:MM` (24:00 for the end of the day).
-fn fmt_min(min: i64) -> String {
-    let m = min.clamp(0, 24 * 60);
-    format!("{:02}:{:02}", m / 60, m % 60)
+    Checkbox::paint(
+        scene,
+        t,
+        theme,
+        &CheckboxFace::new(r, done).transparent_unchecked(),
+    );
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.
 fn min_to_time(min: i64) -> NaiveTime {
     let m = min.clamp(0, 24 * 60 - 1);
-    NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap()
+    // `m` is clamped to 0..=1439, so hour/minute are always in-range and this
+    // is always `Some`; the fallback is unreachable.
+    NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap_or(NaiveTime::MIN)
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, n is the count, and c/s/w/r are the colour set/count \
+              text/badge width/badge rect locals — conventional short names for this draw step"
+)]
 fn draw_count_badge(
     scene: &mut Scene,
     t: Affine,
@@ -5647,6 +4844,11 @@ fn draw_count_badge(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, x/y/w are the field's position/width, and c is \
+              the theme's colour set — conventional short names for this draw step"
+)]
 fn field_row(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -5677,7 +4879,7 @@ fn field_row(
     );
 }
 
-fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // Down-arrow into a tray.
     stroke_line(
         scene,
@@ -5702,7 +4904,7 @@ fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     );
 }
 
-fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // Up-arrow rising out of a tray (mirror of `draw_download`).
     stroke_line(
         scene,
@@ -5777,28 +4979,17 @@ fn draw_field_button(
     }
 }
 
-/// A pill switch (used for the all-day toggle). Filled accent track + white
-/// knob when on; muted track with the knob on the left when off.
-fn draw_switch(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
-    let c = &theme.tokens.colors;
-    let track = if on { c.accent[5] } else { c.neutral[4] };
-    fill_round(scene, t, track, r, r.height() / 2.0);
-    let knob_r = r.height() / 2.0 - 3.0;
-    let cx = if on {
-        r.x1 - knob_r - 3.0
-    } else {
-        r.x0 + knob_r + 3.0
-    };
-    scene.fill(
-        Fill::NonZero,
-        t,
-        Color::WHITE,
-        None,
-        &Circle::new(Point::new(cx, r.center().y), knob_r),
-    );
-}
-
 /// Draw a small pill chip and return its rect.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is an independently-meaningful piece of the chip's own geometry/label"
+)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, x/y are the chip's position, and c/r are the \
+              theme's colour set and the resulting rect — conventional short names for \
+              this draw step"
+)]
 fn chip(
     scene: &mut Scene,
     t: Affine,
@@ -5839,41 +5030,28 @@ fn elide(s: &str, max: usize) -> String {
     }
 }
 
-/// Truncate `text` with a trailing ellipsis so it renders within `max_px` at
-/// `size`, measured against the real text shaper so the cut matches the drawn
-/// glyphs (a fixed character budget can't, since glyph widths vary). Returns
-/// the whole string when it already fits, and a lone ellipsis when not even one
-/// character does. This is what keeps event titles from being hard-sliced
-/// mid-glyph in the dense month/week grids.
-fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> String {
-    if max_px <= 0.0 {
-        return String::new();
-    }
-    if f64::from(tr.measure(text, size, None).0) <= max_px {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    // Largest prefix length whose "<prefix>…" still fits within `max_px`.
-    let mut lo = 0usize;
-    let mut hi = chars.len().saturating_sub(1);
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().chain(std::iter::once(&'…')).collect();
-        if f64::from(tr.measure(&candidate, size, None).0) <= max_px {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let mut out: String = chars[..lo].iter().collect();
-    out.push('…');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn task_checkbox_paints_both_completion_states() {
+        let theme = Theme::dark();
+        let rect = Rect::new(4.0, 6.0, 22.0, 24.0);
+        let mut unchecked = Scene::new();
+        draw_checkbox(&mut unchecked, Affine::IDENTITY, &theme, rect, false);
+        let mut checked = Scene::new();
+        draw_checkbox(&mut checked, Affine::IDENTITY, &theme, rect, true);
+
+        let unchecked_tags = unchecked.encoding().draw_tags.len();
+        let checked_tags = checked.encoding().draw_tags.len();
+        assert!(unchecked_tags > 0, "unchecked state keeps its outline");
+        assert!(
+            checked_tags > unchecked_tags,
+            "checked state adds its fill and check mark"
+        );
+    }
 
     #[test]
     fn demo_app_seeds_model_and_selection() {
@@ -5896,7 +5074,7 @@ mod tests {
         // Wide first frame: persistent sidebar, detail docked beside calendar.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert!(app.content_rect.width() > 0.0);
         assert!(app.detail_rect.width() > 0.0);
         let wide_content = app.content_rect;
@@ -5906,7 +5084,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.relayout();
         assert_eq!(
-            app.sidebar_mode,
+            app.sidebar.mode(),
             SidebarMode::Overlay,
             "breakpoint must re-derive from the current width, not the first frame"
         );
@@ -5922,7 +5100,7 @@ mod tests {
         // Back to wide — proves it toggles both directions, not just once.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert!(app.detail_rect.width() > 0.0);
         assert_eq!(app.content_rect, wide_content);
     }
@@ -5974,7 +5152,7 @@ mod tests {
         // Beyond the panel breakpoints, the *grid inside a view* must also
         // re-derive its cell geometry from the current width on every frame —
         // "lays out once, breaks after resize" is the reported bug. Both widths
-        // here sit ABOVE every panel breakpoint (>= SIDEBAR_PERSISTENT_MIN), so a
+        // here sit above every panel breakpoint, so a
         // change in cell width can only be the grid itself reflowing, not a
         // breakpoint flip. Measured on the real path: the hit rects that live
         // clicks resolve against, populated by driving `draw` through `Harness`.
@@ -6000,10 +5178,9 @@ mod tests {
 
             // Resize narrower — still wide enough that the sidebar stays docked,
             // isolating the grid's own reflow from any breakpoint change.
-            assert!(1000.0 >= SIDEBAR_PERSISTENT_MIN);
             hn.w = 1000;
             hn.relayout();
-            assert_eq!(hn.app.sidebar_mode, SidebarMode::Persistent);
+            assert_eq!(hn.app.sidebar.mode(), SidebarMode::Persistent);
             let narrow = widest_cell(&hn.app, view);
             assert!(
                 narrow + 1.0 < wide,
@@ -6203,10 +5380,10 @@ mod tests {
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert_eq!(app.detail_mode, DetailMode::Overlay);
         // Sidebar is inline (content starts to its right).
-        assert!(app.content_rect.x0 >= app.sidebar_rect.x1 - 0.5);
+        assert!(app.content_rect.x0 >= app.sidebar.rect().x1 - 0.5);
         // The editor is a centered modal floating OVER the calendar: the
         // calendar keeps its full content width behind it, and the card is
         // inset from every content edge (not a docked strip on the right).
@@ -6241,13 +5418,13 @@ mod tests {
     fn narrow_window_collapses_sidebar_to_overlay() {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
-        app.sidebar_open = false;
+        app.sidebar.set_open(false);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         // Overlay sidebar floats over the content from the left edge: content
         // starts at the window's left edge, not to the sidebar's right.
         assert_eq!(app.content_rect.x0, app.rect.x0);
-        assert!(!app.sidebar_visible(), "overlay flap is closed by default");
+        assert!(!app.sidebar.visible(), "overlay flap is closed by default");
     }
 
     #[test]
@@ -6260,17 +5437,17 @@ mod tests {
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert!(app.sidebar_visible(), "sidebar shown when expanded");
+        assert!(app.sidebar.visible(), "sidebar shown when expanded");
         let expanded_content_x0 = app.content_rect.x0;
         assert!(
-            expanded_content_x0 >= app.sidebar_rect.x1 - 0.5,
+            expanded_content_x0 >= app.sidebar.rect().x1 - 0.5,
             "expanded: content starts to the right of the sidebar"
         );
 
         // Collapse: sidebar hidden, content reclaims the left edge, editor stays.
-        app.sidebar_collapsed = true;
+        app.sidebar.set_collapsed(true);
         app.relayout();
-        assert!(!app.sidebar_visible(), "collapsed sidebar is hidden");
+        assert!(!app.sidebar.visible(), "collapsed sidebar is hidden");
         assert_eq!(
             app.content_rect.x0, app.rect.x0,
             "content reclaims the sidebar edge"
@@ -6288,9 +5465,9 @@ mod tests {
         );
 
         // Expand again — proves it toggles both directions.
-        app.sidebar_collapsed = false;
+        app.sidebar.set_collapsed(false);
         app.relayout();
-        assert!(app.sidebar_visible());
+        assert!(app.sidebar.visible());
         assert_eq!(
             app.content_rect.x0, expanded_content_x0,
             "expanding restores the layout"
@@ -6330,12 +5507,12 @@ mod tests {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
         app.relayout();
-        app.sidebar_open = true;
+        app.sidebar.set_open(true);
         let id = app.model.events[0].id;
         app.select_event(id);
         assert_eq!(app.narrow_screen, NarrowScreen::Detail);
         assert!(
-            !app.sidebar_open,
+            !app.sidebar.is_open(),
             "opening a detail dismisses the overlay flap"
         );
     }
@@ -6386,7 +5563,7 @@ mod tests {
     fn view_switcher_stays_in_topbar_until_it_genuinely_doesnt_fit() {
         // Issue: the switcher folded into the sidebar too eagerly. It must stay
         // in the topbar at normal/large widths and only fold when it truly
-        // can't fit. Assert the real fit decision that `draw_topbar` reads.
+        // can't fit. Assert the real fit decision that `Topbar::draw` reads.
         let mut app = CalendarApp::new_demo();
         // Isolate the switcher logic on the calendar screen (no pushed detail
         // zeroing the content width out from under us).
@@ -6397,7 +5574,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
         assert!(
-            app.switcher_in_topbar,
+            app.topbar.switcher_visible(),
             "wide window keeps the switcher in the topbar"
         );
 
@@ -6405,9 +5582,9 @@ mod tests {
         // previous behaviour wrongly folded it away here.
         app.rect = Rect::new(0.0, 0.0, 780.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
-            app.switcher_in_topbar,
+            app.topbar.switcher_visible(),
             "a roomy topbar keeps the switcher even with an overlay sidebar"
         );
 
@@ -6415,7 +5592,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
         app.relayout();
         assert!(
-            !app.switcher_in_topbar,
+            !app.topbar.switcher_visible(),
             "a cramped topbar folds the switcher into the sidebar"
         );
     }
@@ -6428,17 +5605,17 @@ mod tests {
 
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
-            app.sidebar_rect.width() < app.rect.width() - 1.0,
+            app.sidebar.rect().width() < app.rect.width() - 1.0,
             "tablet width: a flap, not full-width"
         );
 
         app.rect = Rect::new(0.0, 0.0, 420.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
-            (app.sidebar_rect.width() - app.rect.width()).abs() < 0.5,
+            (app.sidebar.rect().width() - app.rect.width()).abs() < 0.5,
             "phone width: the sidebar drawer is a full-screen page"
         );
     }
@@ -6449,11 +5626,11 @@ mod tests {
         // close (no dimmed edge to click). Drive the real click path.
         let mut h = Harness::new(420, 800);
         h.app.shots_show_calendar();
-        h.app.sidebar_open = true;
+        h.app.sidebar.set_open(true);
         h.relayout();
-        assert!(h.app.sidebar_visible(), "flap is open");
+        assert!(h.app.sidebar.visible(), "flap is open");
         assert!(
-            (h.app.sidebar_rect.width() - h.app.rect.width()).abs() < 0.5,
+            (h.app.sidebar.rect().width() - h.app.rect.width()).abs() < 0.5,
             "the drawer is full-screen at this width"
         );
         // Two DismissSidebar targets exist: the (hidden) scrim behind and the
@@ -6468,7 +5645,7 @@ mod tests {
             .expect("a close button in the full-screen drawer");
         h.click(close);
         assert!(
-            !h.app.sidebar_open,
+            !h.app.sidebar.is_open(),
             "clicking close dismissed the full-screen drawer"
         );
     }
@@ -6856,6 +6033,25 @@ mod tests {
     }
 
     #[test]
+    fn mini_month_outcome_updates_the_shared_calendar_anchor() {
+        let mut h = Harness::new(1280, 1200);
+        h.app.shots_show_calendar();
+        h.relayout();
+        let before = h.app.anchor;
+        let previous = h
+            .hit_center(|action| matches!(action, Action::MiniMonth(_)))
+            .expect("the sidebar mini-month has a previous-month target");
+
+        h.click(previous);
+
+        assert_eq!(
+            h.app.anchor,
+            date::add_months(before, -1),
+            "the component interprets its target and the root updates the anchor"
+        );
+    }
+
+    #[test]
     fn week_timeline_keeps_min_slot_height_and_scrolls_the_full_day() {
         // The reported bug: a short window squashed the fixed 06:00–21:00 slots
         // and hid everything outside them. Fixed: every hour keeps at least the
@@ -6865,7 +6061,7 @@ mod tests {
         h.app.view = View::Week;
         h.relayout();
 
-        let g = h.app.timeline_geom(h.app.view_rect());
+        let g = TimelineInteraction::test_geometry(h.app.view_rect());
         assert!(
             (g.hour_h - TIMELINE_MIN_HOUR_H).abs() < 0.001,
             "a short window pins the hour height to the legible minimum, got {}",
@@ -6877,7 +6073,7 @@ mod tests {
             g.content_h
         );
         assert!(
-            h.app.timeline_scroll.vertical_overflows(),
+            h.app.timeline.vertical_overflows(),
             "the full day is taller than the viewport, so it scrolls"
         );
         let vp = (g.body_bottom - g.body_top) as f32;
@@ -6891,14 +6087,14 @@ mod tests {
         tall.app.shots_show_calendar();
         tall.app.view = View::Week;
         tall.relayout();
-        let gt = tall.app.timeline_geom(tall.app.view_rect());
+        let gt = TimelineInteraction::test_geometry(tall.app.view_rect());
         assert!(
             gt.hour_h > TIMELINE_MIN_HOUR_H,
             "a tall window grows the hours to fill the space, got {}",
             gt.hour_h
         );
         assert!(
-            !tall.app.timeline_scroll.vertical_overflows(),
+            !tall.app.timeline.vertical_overflows(),
             "the whole day fits, so nothing scrolls"
         );
     }
@@ -6910,17 +6106,17 @@ mod tests {
         h.app.view = View::Week;
         h.relayout();
         // Pin the scroll to the top so an early, empty slot is on screen.
-        h.app.timeline_scroll.set_offset_y(0.0);
+        h.app.timeline.test_set_offset_y(0.0);
         h.relayout();
 
         let area = h.app.view_rect();
-        let g = h.app.timeline_geom(area);
+        let g = TimelineInteraction::test_geometry(area);
         let days = h.app.timeline_days();
         let col = 0usize;
         let grid_x0 = area.x0 + g.gutter;
-        let col_w = h.app.timeline_col_w(area, days.len(), &g);
+        let col_w = TimelineInteraction::test_column_width(area, days.len(), g);
         let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
-        let offset = f64::from(h.app.timeline_scroll.offset_y());
+        let offset = f64::from(h.app.timeline.test_offset_y());
         let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
 
         let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
@@ -6983,7 +6179,7 @@ mod tests {
         assert_eq!(start0.time(), min_to_time(11 * 60));
 
         let area = h.app.view_rect();
-        let g = h.app.timeline_geom(area);
+        let g = TimelineInteraction::test_geometry(area);
         let days = h.app.timeline_days();
         let col = days
             .iter()
@@ -6991,7 +6187,8 @@ mod tests {
             .expect("today is in the week");
         let block = h
             .app
-            .timeline_block_rect(area, days.len(), &g, col, 11 * 60, 12 * 60);
+            .timeline
+            .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
         let x = block.center().x;
         // Grab near the block top and drag down two hours.
         let from = Point::new(x, block.y0 + 3.0);
@@ -7134,16 +6331,16 @@ mod tests {
         // user collapses the rail from).
         h.app.shots_show_calendar();
         h.relayout();
-        assert!(h.app.sidebar_visible(), "starts expanded on a wide window");
+        assert!(h.app.sidebar.visible(), "starts expanded on a wide window");
         let collapse = h
             .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
             .expect("collapse chevron present in the persistent sidebar");
         h.click(collapse);
         assert!(
-            h.app.sidebar_collapsed,
+            h.app.sidebar.is_collapsed(),
             "clicking the chevron collapsed the sidebar"
         );
-        assert!(!h.app.sidebar_visible());
+        assert!(!h.app.sidebar.visible());
 
         // Re-lay so the collapsed topbar's expand chevron enters the hit-map.
         h.relayout();
@@ -7152,10 +6349,10 @@ mod tests {
             .expect("expand chevron present in the topbar when collapsed");
         h.click(expand);
         assert!(
-            !h.app.sidebar_collapsed,
+            !h.app.sidebar.is_collapsed(),
             "clicking the topbar chevron expanded the sidebar"
         );
-        assert!(h.app.sidebar_visible());
+        assert!(h.app.sidebar.visible());
     }
 
     #[test]
@@ -7235,12 +6432,12 @@ mod tests {
         // real `handle_event` click path, not a synthetic call.
         let mut h = Harness::new(560, 720);
         assert_eq!(
-            h.app.sidebar_mode,
+            h.app.sidebar.mode(),
             SidebarMode::Overlay,
             "560px is a narrow layout"
         );
         // Open the flap and re-lay so its hit-map is populated.
-        h.app.sidebar_open = true;
+        h.app.sidebar.set_open(true);
         h.relayout();
         assert_eq!(h.app.view, View::Month);
         let p = h
@@ -7252,7 +6449,10 @@ mod tests {
             View::Week,
             "clicking the flap switcher changed the view"
         );
-        assert!(!h.app.sidebar_open, "picking a view dismisses the flap");
+        assert!(
+            !h.app.sidebar.is_open(),
+            "picking a view dismisses the flap"
+        );
         assert_eq!(
             h.app.narrow_screen,
             NarrowScreen::Calendar,
@@ -7345,6 +6545,20 @@ mod tests {
         // events on the spot (and re-checking must bring them back with no
         // re-sync). Assert on the real draw path — the Day timeline's click
         // hit-map, which is exactly what a user clicks.
+        fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                &PresenceCtx::empty(),
+            );
+            app.hits
+                .iter()
+                .any(|(_, a)| matches!(a, Action::OpenEvent(id) if *id == eid))
+        }
+
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
@@ -7376,20 +6590,6 @@ mod tests {
         let eid = ev.id;
         app.model.events.push(ev);
         app.model.events.sort_by_key(|e| e.start);
-
-        fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
-            let mut scene = Scene::new();
-            app.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                tr,
-                theme,
-                &PresenceCtx::empty(),
-            );
-            app.hits
-                .iter()
-                .any(|(_, a)| matches!(a, Action::OpenEvent(id) if *id == eid))
-        }
 
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -7477,12 +6677,6 @@ mod tests {
 
     #[test]
     fn collapsing_an_account_hides_its_calendar_rows_in_the_sidebar() {
-        let mut app = CalendarApp::new_demo();
-        let mut state = AutoCommit::new();
-        app.sync(&mut state, &automerge::ROOT);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
-        app.relayout();
-
         fn cal_rows(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme) -> usize {
             let mut scene = Scene::new();
             app.draw(
@@ -7497,6 +6691,12 @@ mod tests {
                 .filter(|(_, a)| matches!(a, Action::ToggleCalendarVisible(_)))
                 .count()
         }
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
+        app.relayout();
 
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

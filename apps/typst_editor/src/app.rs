@@ -45,9 +45,40 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingIo {
+    OpenTyp,
+    SaveTyp,
+    ExportPdf,
+}
+
+fn typ_filter() -> FileFilter {
+    FileFilter::new("Typst source").glob("*.typ")
+}
+
+fn typ_open_request() -> PickRequest {
+    PickRequest::open("Open a Typst file", "Open")
+        .thread_name("typst-portal-open")
+        .filter(typ_filter())
+        .all_files()
+}
+
+fn typ_save_request(suggested: &str) -> PickRequest {
+    PickRequest::save("Save Typst file", "Save", suggested)
+        .thread_name("typst-portal-save")
+        .filter(typ_filter())
+}
+
+fn pdf_export_request(suggested: &str) -> PickRequest {
+    PickRequest::save("Export PDF", "Export", suggested)
+        .thread_name("typst-portal-pdf")
+        .filter(FileFilter::new("PDF document").glob("*.pdf"))
+}
 use ui::widget::Widget;
 
 use crate::compile::{self, CompileOutput, WorldParts};
@@ -148,7 +179,7 @@ pub struct TypstApp {
     /// An in-flight host file dialog: the operation and the channel its chosen
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
-    io: Option<(crate::portal::PendingIo, crate::portal::PortalChannel)>,
+    io: Option<(PendingIo, PortalChannel)>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -157,6 +188,9 @@ pub struct TypstApp {
     /// doc access) for the caret readout and change detection. The editor body
     /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
+    /// A native source splice is committed by the widget host rather than an
+    /// action envelope; this rising edge supplies its durable provenance.
+    native_edit_pending: bool,
 
     // --- view state ---
     /// Editor↔preview horizontal split, 0..1 of the content width.
@@ -293,6 +327,7 @@ impl TypstApp {
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
+            native_edit_pending: false,
             split_ratio: 0.46,
             show_diagnostics: false,
             err_count: 0,
@@ -383,7 +418,7 @@ impl TypstApp {
             // Text degrades to a no-op instead of crashing the app.
             let id = doc
                 .put_object(&ROOT, "source", ObjType::Text)
-                .unwrap_or_else(|_| ROOT);
+                .unwrap_or(ROOT);
             let seed = self
                 .documents
                 .get(self.current)
@@ -506,10 +541,7 @@ impl TypstApp {
             .documents
             .get(self.current)
             .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
-        self.io = Some((
-            crate::portal::PendingIo::SaveTyp,
-            crate::portal::request_save(&name),
-        ));
+        self.io = Some((PendingIo::SaveTyp, typ_save_request(&name).send()));
         self.set_flash("Choose where to save…".into());
     }
 
@@ -550,10 +582,7 @@ impl TypstApp {
             .with_extension("pdf")
             .to_string_lossy()
             .to_string();
-        self.io = Some((
-            crate::portal::PendingIo::ExportPdf,
-            crate::portal::request_export_pdf(&pdf_name),
-        ));
+        self.io = Some((PendingIo::ExportPdf, pdf_export_request(&pdf_name).send()));
         self.set_flash("Choose where to export the PDF…".into());
     }
 
@@ -582,11 +611,7 @@ impl TypstApp {
     /// the open document with a `.pdf` extension. Returns the written path.
     /// Split out so a test can drive it against a scratch directory.
     #[cfg(test)]
-    fn export_pdf_to(
-        &mut self,
-        doc: &mut AutoCommit,
-        dir: &std::path::Path,
-    ) -> Result<PathBuf, String> {
+    fn export_pdf_to(&self, doc: &AutoCommit, dir: &std::path::Path) -> Result<PathBuf, String> {
         let stem = self
             .documents
             .get(self.current)
@@ -606,10 +631,7 @@ impl TypstApp {
         if self.io.is_some() {
             return;
         }
-        self.io = Some((
-            crate::portal::PendingIo::OpenTyp,
-            crate::portal::request_open(),
-        ));
+        self.io = Some((PendingIo::OpenTyp, typ_open_request().send()));
         self.set_flash("Choose a .typ file to open…".into());
     }
 
@@ -636,7 +658,9 @@ impl TypstApp {
             .iter()
             .position(|d| d.name == name && d.from_disk)
         {
-            self.documents[i].source = src;
+            if let Some(existing) = self.documents.get_mut(i) {
+                existing.source = src;
+            }
             i
         } else {
             self.documents.push(Document {
@@ -653,7 +677,6 @@ impl TypstApp {
     /// the last frame, and run it against the chosen path. The UI thread never
     /// blocks: the portal round-trip lives on its own worker.
     fn drain_io(&mut self, doc: &mut AutoCommit) {
-        use crate::portal::{PendingIo, PortalOutcome};
         let Some((op, rx)) = &self.io else { return };
         let op = *op;
         match rx.try_recv() {
@@ -777,7 +800,12 @@ impl TypstApp {
         let caret = self.editor.caret().min(self.source_cache.len());
         let mut line = 1usize;
         let mut col = 1usize;
-        for ch in self.source_cache[..caret].chars() {
+        // Walk char boundaries directly rather than byte-slicing the source —
+        // `caret` is a byte offset and isn't guaranteed to land on one.
+        for (i, ch) in self.source_cache.char_indices() {
+            if i >= caret {
+                break;
+            }
             if ch == '\n' {
                 line += 1;
                 col = 1;
@@ -1614,7 +1642,7 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
     let mut keep = chars.len();
     while keep > 1 {
         keep -= 1;
-        let candidate: String = chars[..keep].iter().collect::<String>() + "…";
+        let candidate: String = chars.iter().take(keep).collect::<String>() + "…";
         let (w, _) = tr.measure_weighted(&candidate, PILL_FONT, None, TextWeight::Semibold);
         if f64::from(w) <= max_w {
             return candidate;
@@ -1662,6 +1690,8 @@ impl Widget for TypstApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1676,7 +1706,9 @@ impl Widget for TypstApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         let rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1775,16 +1807,41 @@ impl Widget for TypstApp {
             ..
         } = event
         {
-            self.handle_keyboard_shortcut(logical_key, event, modifiers, doc, &src_id, handled);
+            self.handle_keyboard_shortcut(logical_key, event, *modifiers, doc, &src_id, handled);
             return;
         }
 
         // --- pointer ---
-        self.handle_pointer_event(event, scale_factor, modifiers, doc, &src_id, handled);
+        self.handle_pointer_event(event, scale_factor, *modifiers, doc, &src_id, handled);
     }
 
     fn name(&self) -> &'static str {
         "TypstEditor"
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.native_edit_pending
+    }
+
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        self.native_edit_pending.then(|| {
+            let document = self
+                .documents
+                .get(self.current)
+                .map_or("Untitled.typ", |document| document.name.as_str());
+            ui::qos_actions::ActionContext::for_resource(
+                "Edit source",
+                format!("typst.document:{document}"),
+                "typst.document",
+                document,
+            )
+            .with_app("org.qos.Typst", "Typst")
+            .with_facet(ui::qos_actions::ActionFacet::new("file-type", "Typst"))
+        })
+    }
+
+    fn on_commit(&mut self) {
+        self.native_edit_pending = false;
     }
 
     fn get_rect(&self) -> Rect {
@@ -1823,7 +1880,7 @@ impl TypstApp {
         &mut self,
         logical_key: &Key,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
@@ -1910,8 +1967,12 @@ impl TypstApp {
             }
         }
         // Route remaining keys to the focused editor.
-        if self.editor.focused && self.editor.handle_key(event, modifiers, doc, src_id) {
-            *handled = true;
+        if self.editor.focused {
+            let before = doc.pending_ops();
+            if self.editor.handle_key(event, &modifiers, doc, src_id) {
+                *handled = true;
+                self.native_edit_pending |= doc.pending_ops() > before;
+            }
         }
     }
 
@@ -1922,7 +1983,7 @@ impl TypstApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
@@ -1992,7 +2053,7 @@ impl TypstApp {
         &mut self,
         position: &winit::dpi::PhysicalPosition<f64>,
         scale_factor: f64,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
     ) {
@@ -2052,7 +2113,7 @@ impl TypstApp {
     /// tracked by the most recent `CursorMoved`.
     fn handle_left_press(
         &mut self,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
@@ -2121,6 +2182,7 @@ impl TypstApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
@@ -2205,6 +2267,36 @@ mod tests {
         // Welcome demo compiles cleanly into at least one page.
         assert!(app.preview.page_count() >= 1, "rendered a page");
         assert_eq!(app.err_count, 0, "welcome demo has no errors");
+    }
+
+    #[test]
+    fn source_edit_requests_a_semantically_stamped_commit() {
+        let (mut app, mut doc) = fresh();
+        let before = app.read_source(&doc);
+
+        assert!(send(&mut app, &mut doc, &char_press("x")));
+        assert_ne!(app.read_source(&doc), before, "the source really changed");
+        assert!(app.needs_commit());
+
+        let context = app.take_commit_context().expect("native edit provenance");
+        assert_eq!(context.action_label, "Edit source");
+        assert_eq!(
+            context.app.as_ref().map(|app| app.id.as_str()),
+            Some("org.qos.Typst")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.kind.as_str()),
+            Some("typst.document")
+        );
+
+        app.on_commit();
+        assert!(
+            !app.needs_commit(),
+            "commit acknowledgement clears the latch"
+        );
     }
 
     /// A focused editor that isn't compiling or flashing must report no need
@@ -2586,10 +2678,10 @@ mod tests {
     /// touches the user's documents folder.
     #[test]
     fn export_pdf_writes_a_real_pdf_file() {
-        let (mut app, mut doc) = fresh();
+        let (app, doc) = fresh();
         let dir = unique_dir("pdf");
         let path = app
-            .export_pdf_to(&mut doc, &dir)
+            .export_pdf_to(&doc, &dir)
             .expect("the clean demo document exports");
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("pdf"));
         let bytes = std::fs::read(&path).expect("the pdf was written to disk");
@@ -2604,7 +2696,6 @@ mod tests {
     /// path.
     #[test]
     fn portal_open_then_save_round_trips_a_real_file() {
-        use crate::portal::{PendingIo, PortalOutcome};
         let (mut app, mut doc) = fresh();
         let dir = unique_dir("portal");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2614,7 +2705,7 @@ mod tests {
         // Inject an Open outcome and sync: the file loads into the CRDT source.
         app.io = Some((
             PendingIo::OpenTyp,
-            crate::portal::inject_for_test(PortalOutcome::Opened(src_path)),
+            ui::portal::inject_for_test(PortalOutcome::Opened(src_path)),
         ));
         app.sync(&mut doc, &ROOT);
         assert!(
@@ -2631,7 +2722,7 @@ mod tests {
         let out_path = dir.join("saved.typ");
         app.io = Some((
             PendingIo::SaveTyp,
-            crate::portal::inject_for_test(PortalOutcome::Opened(out_path.clone())),
+            ui::portal::inject_for_test(PortalOutcome::Opened(out_path.clone())),
         ));
         app.sync(&mut doc, &ROOT);
         let written = std::fs::read_to_string(&out_path).expect("the save wrote the file");
@@ -2647,12 +2738,11 @@ mod tests {
     /// A cancelled chooser clears the in-flight dialog and changes nothing.
     #[test]
     fn portal_cancel_is_silent() {
-        use crate::portal::{PendingIo, PortalOutcome};
         let (mut app, mut doc) = fresh();
         let before = app.read_source(&doc);
         app.io = Some((
             PendingIo::OpenTyp,
-            crate::portal::inject_for_test(PortalOutcome::Cancelled),
+            ui::portal::inject_for_test(PortalOutcome::Cancelled),
         ));
         app.sync(&mut doc, &ROOT);
         assert!(app.io.is_none());

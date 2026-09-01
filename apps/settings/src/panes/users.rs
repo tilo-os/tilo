@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use runtime_identity::{IdentitySummary, KeyProtection};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Widget};
+use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -325,16 +325,19 @@ impl UsersPane {
 
     fn add_form(&self) -> El {
         let full = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Name)
             .with_id(FULL_NAME_KEY)
             .with_on_change_path(FULL_NAME_KEY)
             .with_placeholder("Full name")
             .with_font_size(13.0);
         let user = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Username)
             .with_id(USERNAME_KEY)
             .with_on_change_path(USERNAME_KEY)
             .with_placeholder("login-name")
             .with_font_size(13.0);
         let password = TextInput::local()
+            .with_kind(TextInputKind::Password)
             .with_id("users.form.password")
             .with_external_buffer(self.password_buffer.clone())
             .with_secret(true)

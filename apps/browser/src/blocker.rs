@@ -82,7 +82,7 @@ const LISTS: &[(&str, &str)] = &[
 const EXCLUDED_LISTS: &[&str] = &["ublock-quick-fixes.txt", "adguard-base.txt"];
 
 /// Re-download a cached list after this age.
-const CACHE_MAX_AGE: Duration = Duration::from_hours(168);
+const CACHE_MAX_AGE: Duration = Duration::from_secs(604_800);
 
 /// Load + compile the filter lists in the background and install the
 /// compiled content filter into `engine` when ready.
@@ -91,12 +91,11 @@ const CACHE_MAX_AGE: Duration = Duration::from_hours(168);
 /// ([`user_scripts`]) is installed separately by the app, since it maps
 /// to a different engine capability (user scripts, not content filters).
 ///
-/// # Panics
-///
-/// Panics if the OS refuses to spawn the background loader thread (e.g.
-/// the process is out of resources).
+/// If the OS refuses to spawn the background loader thread (e.g. the
+/// process is out of resources), ad blocking is simply left disabled for
+/// this session rather than taking the whole app down with it.
 pub fn spawn_filter_loader(engine: SharedEngine) {
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("filter-loader".into())
         .spawn(move || match load_and_compile() {
             Ok((version, filter)) => {
@@ -116,8 +115,10 @@ pub fn spawn_filter_loader(engine: SharedEngine) {
                 });
             }
             Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
-        })
-        .expect("spawn filter-loader thread");
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("ad blocking unavailable: could not spawn filter-loader thread: {err}");
+    }
 }
 
 /// JavaScript user scripts for scriptlet-style blocking that the

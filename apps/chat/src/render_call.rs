@@ -53,8 +53,9 @@ pub(crate) enum CallStage {
 }
 
 /// One expanded-overlay control button, as laid out by
-/// [`ChatApp::overlay_controls_layout`]: `(label, active, danger, hit, rect)`.
-type OverlayButton = (&'static str, bool, bool, Hit, Rect);
+/// [`ChatApp::overlay_controls_layout`]:
+/// `(label, active, danger, enabled, hit, rect)`.
+type OverlayButton = (&'static str, bool, bool, bool, Hit, Rect);
 
 impl ChatApp {
     /// The call roster, host-first, from the shared voice membership. Falls
@@ -466,6 +467,7 @@ impl ChatApp {
                 on,
                 danger,
                 hovered,
+                true,
             );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
@@ -745,10 +747,14 @@ impl ChatApp {
         let (bar, buttons) = self.overlay_controls_layout();
         fill_round(scene, tf, bar, 16.0, c.neutral[1]);
         stroke_round(scene, tf, bar, 16.0, c.border_white_10, 1.0);
-        for (label_txt, on, danger, hit, r) in buttons {
+        for (label_txt, on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
-            Self::ctl(scene, tf, tr, theme, r, label_txt, on, danger, hovered);
-            ChatApp::push_hit(hits, r, hit);
+            Self::ctl(
+                scene, tf, tr, theme, r, label_txt, on, danger, hovered, enabled,
+            );
+            if enabled {
+                ChatApp::push_hit(hits, r, hit);
+            }
         }
     }
 
@@ -834,19 +840,24 @@ impl ChatApp {
 
     /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
     /// to fit the current window width. Returns the bar background rect and
-    /// each button's `(label, active, danger, hit, rect)`. Shared by the
+    /// each button's `(label, active, danger, enabled, hit, rect)`. Shared by the
     /// background pass (which bounds the tile region above the bar), the
     /// foreground pass (which draws it), and the layout pass (which sizes the
     /// tile band) — so all three agree without a `TextRenderer`. Button widths
     /// are derived from the fixed label lengths rather than measured, which
     /// keeps the whole call layout resolvable on a single headless frame.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deterministic layout pass must keep wrapped call controls, their hit targets and the returned bar bounds identical"
+    )]
     pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<OverlayButton>) {
         let sharing = self.sharing_screen();
-        let specs: [(&'static str, bool, bool, Hit); 6] = [
+        let specs: [(&'static str, bool, bool, bool, Hit); 6] = [
             (
                 if self.call.muted { "Unmute" } else { "Mute" },
                 self.call.muted,
                 false,
+                self.call_allows(crate::call::CallAction::Speak),
                 Hit::CallMute,
             ),
             (
@@ -857,12 +868,14 @@ impl ChatApp {
                 },
                 self.call.deafened,
                 false,
+                self.call_allows(crate::call::CallAction::Speak),
                 Hit::CallDeafen,
             ),
             (
                 "Audio only",
                 self.call.audio_only,
                 false,
+                self.call_allows(crate::call::CallAction::Camera),
                 Hit::CallAudioOnly,
             ),
             (
@@ -873,10 +886,13 @@ impl ChatApp {
                 },
                 sharing,
                 false,
+                // Stop remains available after a permission downgrade so the
+                // person can always cease a transmission they already began.
+                sharing || self.call_allows(crate::call::CallAction::ShareScreen),
                 Hit::CallShareScreen,
             ),
-            ("Collapse", false, false, Hit::CallExpand),
-            ("Leave", false, true, Hit::CallLeave),
+            ("Collapse", false, false, true, Hit::CallExpand),
+            ("Leave", false, true, true, Hit::CallLeave),
         ];
         let gap = 8.0;
         let row_gap = 8.0;
@@ -939,8 +955,8 @@ impl ChatApp {
                     continue;
                 };
                 let r = Rect::new(x, ry, x + w, ry + bh);
-                let (label_txt, on, danger, hit) = spec.clone();
-                out.push((label_txt, on, danger, hit, r));
+                let (label_txt, on, danger, enabled, hit) = spec;
+                out.push((*label_txt, *on, *danger, *enabled, hit.clone(), r));
                 x += w + gap;
             }
             ry += bh + row_gap;
@@ -1098,9 +1114,15 @@ impl ChatApp {
         on: bool,
         danger: bool,
         hovered: bool,
+        enabled: bool,
     ) {
         let c = &theme.tokens.colors;
-        let (bg, fg) = if danger && hovered {
+        let (bg, fg) = if !enabled {
+            (
+                c.surface_white_10.with_alpha_factor(0.45),
+                c.text_dim.with_alpha_factor(0.45),
+            )
+        } else if danger && hovered {
             (c.semantic.danger, Color::WHITE)
         } else if danger {
             (c.semantic.danger.with_alpha_factor(0.16), c.semantic.danger)

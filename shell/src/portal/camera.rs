@@ -8,6 +8,14 @@
 //! backend with `subtitle="Allow access to your camera?"` (or similar);
 //! the request is classified as a Camera capability from the title/subtitle/options dict — see [`classify`].
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus AccessDialog signature requires unused positional parameters (handle, \
+              parent_window); zbus's #[interface] macro deserialises them into these named \
+              parameters and forwards them by identifier into its generated dispatcher, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 
 use zbus::interface;
@@ -32,6 +40,10 @@ impl AccessBackend {
 #[interface(name = "org.freedesktop.impl.portal.Access")]
 impl AccessBackend {
     /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Access.AccessDialog D-Bus signature"
+    )]
     async fn access_dialog(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,

@@ -8,10 +8,10 @@
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
 //!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
-//!     [--encrypt] [--pin] [--fido2] --yes
+//!     --encrypt --pin [--fido2] --yes
 //! ```
 //!
-//! `--encrypt` opts into full-disk encryption. The backend builds the LUKS2
+//! Native qOS always uses full-disk encryption. The backend builds the LUKS2
 //! layout itself and installs `bootc ... to-filesystem` into the opened
 //! mapping, because `--block-setup tpm2-luks` can only produce a volume whose
 //! single keyslot is sealed to a TPM:
@@ -20,15 +20,19 @@
 //!   It is the factor no hardware failure can take away, so every other one
 //!   is layered on top of it;
 //! * with `--pin`, the secret on the **second stdin line** (after the account
-//!   password, never on the command line) becomes a **TPM2+PIN** keyslot
-//!   where there is a TPM, and an ordinary passphrase keyslot where there is
-//!   not — so a TPM-less machine unlocks with something short to type;
+//!   password, never on the command line) becomes a **TPM2+PIN** keyslot only
+//!   when Secure Boot, kernel lockdown, and a dedicated installed-target
+//!   preflight prove a continuous verified-boot boundary, and an ordinary
+//!   passphrase keyslot otherwise;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
-//! `--encrypt` does **not** require a TPM: absence of the hardware costs the
-//! silent unlock, not the encryption. `--pin`/`--fido2` require `--encrypt`.
-//! Omitting `--encrypt` keeps the default unencrypted layout.
+//! Encryption does **not** require a TPM. With verified TPM2 boot through the
+//! installed target, `--pin` becomes the single startup PIN bound to that TPM;
+//! otherwise it becomes the normal disk-unlock passphrase. The privileged
+//! backend independently checks this boundary and enforces both flags, so an
+//! older or malformed UI fails closed instead of installing plaintext or
+//! weakening the credential policy.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
@@ -66,6 +70,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use zeroize::Zeroizing;
 
 /// Path to the privileged install backend installed on the live medium.
 pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
@@ -73,8 +78,15 @@ pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
 pub const POWER_BIN: &str = "/usr/libexec/qos-power";
 
 /// User-selected install options threaded through to the backend.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
+    /// Empty for a whole-disk erase. Otherwise the pre-created, empty Linux
+    /// partition that becomes the qOS root while every sibling partition is
+    /// preserved.
+    pub alongside_root: String,
+    /// Existing EFI System Partition reused by an alongside install. It is
+    /// mounted but never formatted.
+    pub alongside_efi: String,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
     /// Hostname seeded into the installed system.
@@ -88,19 +100,12 @@ pub struct InstallOptions {
     /// Optional xkb variant (e.g. `dvorak`, `colemak`). Empty ⇒ no
     /// variant; the flag is then omitted.
     pub keyvariant: String,
-    /// Full-disk encryption (LUKS2, multi-factor). `true` ⇒ the backend is
-    /// passed `--encrypt`: a volume with an always-generated recovery key,
-    /// plus whichever of TPM2 / passphrase / FIDO2 the machine and the other
-    /// options allow. No TPM is required. Default `false` (unencrypted).
-    pub encrypt: bool,
-    /// Unlock secret. Only meaningful when [`Self::encrypt`] is `true` and
-    /// non-empty: the backend is passed `--pin` and the value is sent as the
-    /// second stdin line. It becomes a TPM2+PIN keyslot on a machine with a
-    /// TPM, and the boot passphrase on one without. Empty ⇒ omitted, which on
-    /// a TPM-less machine leaves the recovery key as the only way in.
-    pub pin: String,
+    /// Mandatory unlock secret, sent as the second stdin line rather than on
+    /// argv. It becomes a TPM2+PIN keyslot only with verified TPM2 boot, and
+    /// the boot passphrase otherwise. The backend rejects an empty value.
+    pub pin: Zeroizing<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
-    /// meaningful with [`Self::encrypt`]; maps to `--fido2`. A token must
+    /// meaningful alongside mandatory LUKS encryption; maps to `--fido2`. A token must
     /// be present at install time, but its absence never aborts the
     /// install. Default `false`.
     pub fido2: bool,
@@ -109,13 +114,14 @@ pub struct InstallOptions {
 impl Default for InstallOptions {
     fn default() -> Self {
         Self {
+            alongside_root: String::new(),
+            alongside_efi: String::new(),
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
-            encrypt: false,
-            pin: String::new(),
+            pin: Zeroizing::new(String::new()),
             fido2: false,
         }
     }
@@ -149,6 +155,13 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         .arg(&opts.filesystem)
         .arg("--hostname")
         .arg(&opts.hostname);
+    if !opts.alongside_root.is_empty() {
+        cmd.arg("--alongside")
+            .arg("--root-partition")
+            .arg(&opts.alongside_root)
+            .arg("--efi-partition")
+            .arg(&opts.alongside_efi);
+    }
     if !opts.timezone.trim().is_empty() {
         cmd.arg("--timezone").arg(opts.timezone.trim());
     }
@@ -159,20 +172,14 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
     }
-    // Opt-in full-disk encryption (multi-factor LUKS2). The backend builds the
-    // volume itself with an always-generated recovery key; the PIN and FIDO2
-    // factors are only meaningful alongside it.
-    if opts.encrypt {
-        cmd.arg("--encrypt");
-        // A non-empty PIN means "enrol a secret-protected keyslot": TPM2+PIN
-        // where there is a TPM, a plain passphrase where there is not. The bare
-        // flag goes on argv; the value travels on stdin.
-        if !opts.pin.is_empty() {
-            cmd.arg("--pin");
-        }
-        if opts.fido2 {
-            cmd.arg("--fido2");
-        }
+    // Encryption is a native-qOS invariant, not a user option. Keep the flag
+    // explicit as defense in depth even though the backend defaults to LUKS.
+    cmd.arg("--encrypt");
+    if !opts.pin.is_empty() {
+        cmd.arg("--pin");
+    }
+    if opts.fido2 {
+        cmd.arg("--fido2");
     }
     cmd.arg("--yes");
     cmd
@@ -283,9 +290,9 @@ pub fn run_install<F: FnMut(String)>(
     opts: &InstallOptions,
     on_line: F,
 ) -> std::io::Result<bool> {
-    // The PIN only travels on stdin (and only when encryption is on with a
-    // PIN); it mirrors the `--pin` flag added by `install_command`.
-    let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {
+    // The PIN only travels on stdin; it mirrors the `--pin` flag added by
+    // `install_command`.
+    let extra: Vec<&str> = if !opts.pin.is_empty() {
         vec![opts.pin.as_str()]
     } else {
         Vec::new()
@@ -318,9 +325,9 @@ mod tests {
             timezone: "Europe/Amsterdam".to_string(),
             keymap: "de".to_string(),
             keyvariant: String::new(),
-            encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/sda", "ada", &opts);
         assert_eq!(cmd.get_program(), INSTALL_BIN);
@@ -340,6 +347,7 @@ mod tests {
                 "Europe/Amsterdam",
                 "--keymap",
                 "de",
+                "--encrypt",
                 "--yes",
             ]
         );
@@ -354,9 +362,9 @@ mod tests {
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: "dvorak".to_string(),
-            encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -375,9 +383,30 @@ mod tests {
                 "us",
                 "--keyvariant",
                 "dvorak",
+                "--encrypt",
                 "--yes",
             ]
         );
+    }
+
+    #[test]
+    fn install_command_names_both_alongside_partitions() {
+        let opts = InstallOptions {
+            alongside_root: "/dev/nvme0n1p4".into(),
+            alongside_efi: "/dev/nvme0n1p1".into(),
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/nvme0n1", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--root-partition", "/dev/nvme0n1p4"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
+        );
+        assert!(args.contains(&"--alongside"));
     }
 
     #[test]
@@ -388,9 +417,9 @@ mod tests {
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: String::new(),
-            encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -405,6 +434,7 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--encrypt",
                 "--yes",
             ]
         );
@@ -422,9 +452,9 @@ mod tests {
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: "dvorak".to_string(),
-            encrypt: false,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -433,18 +463,16 @@ mod tests {
     }
 
     #[test]
-    fn install_command_appends_encrypt_when_enabled() {
-        // Encryption on: a bare `--encrypt` flag is appended just before
-        // `--yes`.
+    fn install_command_always_appends_encrypt() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
-            encrypt: true,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -486,9 +514,9 @@ mod tests {
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
-            encrypt: true,
-            pin: "1234".to_string(),
+            pin: "1234".to_string().into(),
             fido2: true,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -519,25 +547,22 @@ mod tests {
     }
 
     #[test]
-    fn install_command_pin_and_fido2_require_encrypt() {
-        // pin / fido2 set but encryption OFF: neither flag is emitted, since
-        // they are only meaningful with --encrypt (the backend rejects them
-        // otherwise).
+    fn install_command_keeps_encryption_with_additional_factors() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
-            encrypt: false,
-            pin: "1234".to_string(),
+            pin: "1234".to_string().into(),
             fido2: true,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.contains(&"--encrypt"));
-        assert!(!args.contains(&"--pin"));
-        assert!(!args.contains(&"--fido2"));
+        assert!(args.contains(&"--encrypt"));
+        assert!(args.contains(&"--pin"));
+        assert!(args.contains(&"--fido2"));
     }
 
     #[test]
@@ -549,9 +574,9 @@ mod tests {
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
-            encrypt: true,
-            pin: String::new(),
+            pin: String::new().into(),
             fido2: true,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -561,14 +586,11 @@ mod tests {
     }
 
     #[test]
-    fn install_command_omits_encrypt_by_default() {
+    fn install_command_encrypts_by_default() {
         let opts = InstallOptions::default();
         let cmd = install_command("/dev/vda", "qq", &opts);
         let mut args = cmd.get_args().map(|a| a.to_str().unwrap());
-        assert!(
-            !args.any(|a| a == "--encrypt"),
-            "default options must not request encryption"
-        );
+        assert!(args.any(|a| a == "--encrypt"));
     }
 
     #[test]
@@ -579,7 +601,6 @@ mod tests {
         assert!(o.timezone.is_empty());
         assert_eq!(o.keymap, "us");
         assert!(o.keyvariant.is_empty());
-        assert!(!o.encrypt, "encryption is opt-in (default off)");
         assert!(o.pin.is_empty(), "no TPM2 PIN by default");
         assert!(!o.fido2, "FIDO2 enrolment is opt-in (default off)");
     }
@@ -627,12 +648,11 @@ mod tests {
         // logic at a stub via stream_command indirectly by building the same
         // extra-stdin vector run_install builds, then driving a stub command.
         let opts = InstallOptions {
-            encrypt: true,
-            pin: "9182".to_string(),
+            pin: "9182".to_string().into(),
             ..InstallOptions::default()
         };
         // Mirror run_install's stdin-extra derivation.
-        let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {
+        let extra: Vec<&str> = if !opts.pin.is_empty() {
             vec![opts.pin.as_str()]
         } else {
             Vec::new()
@@ -652,11 +672,10 @@ mod tests {
         // Encryption on but no PIN ⇒ nothing extra on stdin (the backend
         // doesn't read a PIN line when `--pin` wasn't passed).
         let opts = InstallOptions {
-            encrypt: true,
-            pin: String::new(),
+            pin: String::new().into(),
             ..InstallOptions::default()
         };
-        let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {
+        let extra: Vec<&str> = if !opts.pin.is_empty() {
             vec![opts.pin.as_str()]
         } else {
             Vec::new()

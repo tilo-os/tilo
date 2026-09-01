@@ -18,18 +18,25 @@
 #   3. os/dev/disk-image.sh -> os/output/installer/qcow2/disk.qcow2.
 #
 # Flags: --stub-ui (no cargo; placeholder UI)  --no-cargo (reuse os/qos-installer)
+#        --dev-login (local diagnostics only; requires QOS_INSTALLER_DEV_PASSWORD)
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 STUB_UI=0
 DO_CARGO=1
+DEV_LOGIN=0
 for a in "$@"; do
   case "$a" in
     --stub-ui) STUB_UI=1; DO_CARGO=0 ;;
     --no-cargo) DO_CARGO=0 ;;
+    --dev-login) DEV_LOGIN=1 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) die "unknown arg: $a" ;;
   esac
 done
+
+if [ "$DEV_LOGIN" = 1 ] && [ -z "${QOS_INSTALLER_DEV_PASSWORD:-}" ]; then
+  die "--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD"
+fi
 
 # Containerfile.installer is `FROM localhost/qos:latest`, so the base desktop
 # image must already exist in ROOTLESS podman storage (the build is rootless).
@@ -61,7 +68,9 @@ else
 fi
 
 msg "2/3 podman build $QOS_INSTALLER_IMAGE (rootless)"
-podman build -t "$QOS_INSTALLER_IMAGE" -f "$QOS_OS_DIR/Containerfile.installer" "$QOS_OS_DIR"
+podman build \
+  --build-arg "QOS_INSTALLER_DEV_SSH=$DEV_LOGIN" \
+  -t "$QOS_INSTALLER_IMAGE" -f "$QOS_OS_DIR/Containerfile.installer" "$QOS_OS_DIR"
 
 msg "3/3 disk image -> installer qcow2"
 # The live root is sized generously: the self-install model copies the booted
@@ -70,19 +79,18 @@ msg "3/3 disk image -> installer qcow2"
 # root runs out mid-copy ("no space left on device"). The qcow2 stays sparse, so
 # the file is still small.
 #
-# The login account here is for SSH/console debugging of the installer itself
-# (vm.sh boot-installer forwards :22) and is deliberately NOT the desktop
-# account: it has no qos-identity, because the live medium has no device key to
-# read. The account the installer creates on the TARGET disk comes from the
-# installer UI and has nothing to do with this one.
-#
 # `qos.installer=1` is not passed here — it lives in the image, as
 # /usr/lib/bootc/kargs.d/50-installer.toml (see os/Containerfile.installer).
 rm -rf "$QOS_INSTALLER_OUTPUT/qcow2" "$QOS_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
-"$QOS_OS_DIR/dev/disk-image.sh" "$QOS_INSTALLER_IMAGE" \
-  "$(dirname "$QOS_INSTALLER_DISK")" \
-  --root-min 30G \
-  --user "tester:quickdesktop:wheel"
+DISK_ARGS=(
+  "$QOS_INSTALLER_IMAGE"
+  "$(dirname "$QOS_INSTALLER_DISK")"
+  --root-min 30G
+)
+if [ "$DEV_LOGIN" = 1 ]; then
+  DISK_ARGS+=(--user "tester:${QOS_INSTALLER_DEV_PASSWORD}:wheel")
+fi
+"$QOS_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"
 
 msg "DONE: $QOS_INSTALLER_DISK"
 ls -lh "$QOS_INSTALLER_DISK"

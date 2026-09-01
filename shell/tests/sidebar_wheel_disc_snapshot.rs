@@ -89,7 +89,7 @@ fn screenshots_dir() -> PathBuf {
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
-                .unwrap_or(Path::new("."))
+                .unwrap_or_else(|| Path::new("."))
                 .join("target")
         },
         PathBuf::from,
@@ -338,6 +338,12 @@ const RIM_SHADOW_CLEARANCE: f64 = 36.0;
 /// something to differ against; over black an alpha ramp reads as almost
 /// no delta and would pass on a smear.
 #[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "c (centre point) and x/y/r/g/b (pixel coordinate and colour channels) are the \
+              idiomatic short names for geometry/colour code; spelling them out would add \
+              noise, not clarity"
+)]
 fn the_band_is_filled_flat_with_a_single_colour() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");
@@ -451,6 +457,12 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
 /// with it — three themes giving three different answers is what a
 /// hardcoded palette cannot do.
 #[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "c (centre point), a (angle) and x/y/r/g/b (pixel coordinate and colour \
+              channels) are the idiomatic short names for geometry/colour code; spelling \
+              them out would add noise, not clarity"
+)]
 fn the_disc_takes_its_colours_from_the_theme() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");

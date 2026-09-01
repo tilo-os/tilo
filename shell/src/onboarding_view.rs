@@ -11,61 +11,196 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
+use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
-use ui::widget::{Banner, Button, Card, Checkbox, Column, Row, Spacer, Text, TextInput, Widget};
+use ui::widget::{
+    Banner, Button, Card, Checkbox, Column, FilePicker, FilePickerMode, ProgressBar, Row,
+    Scrollable, Spacer, Text, TextInput, Widget,
+};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{Modifiers, WindowEvent};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::onboarding::{
     ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY, INTRO_POINTS, INTRO_TITLE, MintedIdentity,
     NO_RECOVERY_POINTS, NO_RECOVERY_TITLE, Onboarding, Screen,
 };
 
-/// Measure for the ceremony's column, in logical px — body text at 13px
-/// wants roughly this width to land near 70 characters a line, or the eye loses the start of the next line.
-const CONTENT_WIDTH: f32 = 620.0;
+const PANEL_MAX_WIDTH: f32 = 720.0;
+const PANEL_MAX_HEIGHT: f32 = 620.0;
+const VIEWPORT_GUTTER: f32 = 32.0;
+
+/// Context for the compositor-owned identity ceremony. Both variants keep
+/// the same security gates; the host version only makes clear that qOS is not
+/// replacing the login/account setup the surrounding Linux system completed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OnboardingContext {
+    #[default]
+    FullSystem,
+    HostDesktop,
+}
+
+pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your qOS identity";
+pub const HOST_DESKTOP_INTRO_BODY: &str = "You are already signed in to this computer. Before the qOS desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.";
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_CONNECT: &str = "onboarding.connect";
+pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
+pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
+pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
 pub const KEY_FINISH: &str = "onboarding.finish";
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
-type Importer = Box<dyn Fn(&PathBuf) -> Result<MintedIdentity, String> + Send>;
+type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
+type Exporter = Box<dyn Fn(&PathBuf, &PathBuf, &[u8]) -> Result<(), String> + Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickerPurpose {
+    ImportIdentity,
+    BackupIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Invalidation {
+    #[default]
+    Clean,
+    Structure,
+    Focus,
+    StructureAndFocus,
+}
+
+impl Invalidation {
+    fn structure(&mut self) {
+        *self = match *self {
+            Self::Clean | Self::Structure => Self::Structure,
+            Self::Focus | Self::StructureAndFocus => Self::StructureAndFocus,
+        };
+    }
+
+    fn focus(&mut self) {
+        *self = match *self {
+            Self::Clean | Self::Focus => Self::Focus,
+            Self::Structure | Self::StructureAndFocus => Self::StructureAndFocus,
+        };
+    }
+
+    fn both(&mut self) {
+        *self = Self::StructureAndFocus;
+    }
+
+    fn take_structure(&mut self) -> bool {
+        let present = matches!(self, Self::Structure | Self::StructureAndFocus);
+        if present {
+            *self = match *self {
+                Self::Structure => Self::Clean,
+                Self::StructureAndFocus => Self::Focus,
+                state => state,
+            };
+        }
+        present
+    }
+
+    fn take_focus(&mut self) -> bool {
+        let present = matches!(self, Self::Focus | Self::StructureAndFocus);
+        if present {
+            *self = match *self {
+                Self::Focus => Self::Clean,
+                Self::StructureAndFocus => Self::Structure,
+                state => state,
+            };
+        }
+        present
+    }
+}
 
 pub struct OnboardingView {
     flow: Onboarding,
+    context: OnboardingContext,
     minter: Minter,
     importer: Importer,
+    exporter: Exporter,
     /// Set when minting failed, shown in place of the success screen — loud,
     /// since booting on into a desktop that silently has no identity is what this flow replaces.
     error: Option<String>,
+    backup_error: Option<String>,
+    backup_saved: Option<PathBuf>,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
-    structure_dirty: bool,
+    invalidation: Invalidation,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    transition_started: Instant,
+    transition_duration: Duration,
+    transition_direction: f64,
+    reduce_motion: bool,
+    picker: Option<(PickerPurpose, FilePicker)>,
+    connect_passphrase: Arc<Mutex<String>>,
+    backup_passphrase: Arc<Mutex<String>>,
+    backup_confirmation: Arc<Mutex<String>>,
 }
 
 impl OnboardingView {
     /// Build a ceremony that mints into `identity_dir`.
     pub fn new(identity_dir: PathBuf) -> Self {
+        Self::new_in_context(identity_dir, OnboardingContext::FullSystem)
+    }
+
+    /// Build the reduced identity-only ceremony for qOS installed as a
+    /// desktop session on an existing Linux host.
+    pub fn new_for_host_desktop(identity_dir: PathBuf) -> Self {
+        Self::new_in_context(identity_dir, OnboardingContext::HostDesktop)
+    }
+
+    fn new_in_context(identity_dir: PathBuf, context: OnboardingContext) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir;
-        Self::with_handlers(
-            Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string())),
-            Box::new(move |source| {
+        let minter: Minter = match context {
+            OnboardingContext::FullSystem => {
+                Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string()))
+            }
+            OnboardingContext::HostDesktop => Box::new(move || {
+                crate::onboarding::mint_into_for_legacy_linux_host(&mint_dir)
+                    .map_err(|e| e.to_string())
+            }),
+        };
+        Self::with_all_handlers_in_context(
+            minter,
+            Box::new(move |source, passphrase| {
                 let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
-                let profile = store.import(source).map_err(|error| error.to_string())?;
-                crate::firstboot::ensure_device_certificate_for_record(
-                    &profile.record_path,
+                let profile = if passphrase.is_empty() {
+                    // Explicit compatibility path for schema-1 exports from
+                    // older qOS builds. New backups always require a
+                    // passphrase and never expose plaintext JSON.
+                    store.import(source).map_err(|error| error.to_string())?
+                } else {
+                    store
+                        .import_portable(source, passphrase)
+                        .map_err(|error| error.to_string())?
+                };
+                let runtime_id = profile
+                    .record_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
+                runtime_identity::set_active_identity(&import_dir, runtime_id)
+                    .map_err(|error| error.to_string())?;
+                // Restoring on a fresh machine must provision the exact same
+                // complete root -> device chain as minting. The narrower
+                // identity-keyed certificate helper leaves the legacy system
+                // owner/certificate absent until a later login repair.
+                crate::firstboot::ensure_collaboration_identity(
+                    &import_dir,
                     &crate::firstboot::collaboration_identity_paths(),
                 )
                 .map_err(|error| error.to_string())?;
@@ -80,6 +215,12 @@ impl OnboardingView {
                     path: profile.record_path,
                 })
             }),
+            Box::new(move |identity, destination, passphrase| {
+                runtime_identity::export_portable_backup(identity, destination, passphrase)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }),
+            context,
         )
     }
 
@@ -87,20 +228,54 @@ impl OnboardingView {
     pub fn with_minter(minter: Minter) -> Self {
         Self::with_handlers(
             minter,
-            Box::new(|_| Err("identity import is unavailable in this test".to_string())),
+            Box::new(|_, _| Err("identity import is unavailable in this test".to_string())),
         )
     }
 
     fn with_handlers(minter: Minter, importer: Importer) -> Self {
-        Self {
-            flow: Onboarding::new(),
+        Self::with_all_handlers(
             minter,
             importer,
+            Box::new(|_, _, _| Err("identity backup is unavailable in this test".to_string())),
+        )
+    }
+
+    fn with_all_handlers(minter: Minter, importer: Importer, exporter: Exporter) -> Self {
+        Self::with_all_handlers_in_context(
+            minter,
+            importer,
+            exporter,
+            OnboardingContext::FullSystem,
+        )
+    }
+
+    fn with_all_handlers_in_context(
+        minter: Minter,
+        importer: Importer,
+        exporter: Exporter,
+        context: OnboardingContext,
+    ) -> Self {
+        Self {
+            flow: Onboarding::new(),
+            context,
+            minter,
+            importer,
+            exporter,
             error: None,
+            backup_error: None,
+            backup_saved: None,
             finished: false,
-            structure_dirty: false,
+            invalidation: Invalidation::Focus,
             composed: None,
             rect: Rect::ZERO,
+            transition_started: Instant::now(),
+            transition_duration: ui::tokens::motion::Motion::default().durations.slow(),
+            transition_direction: 1.0,
+            reduce_motion: false,
+            picker: None,
+            connect_passphrase: Arc::new(Mutex::new(String::new())),
+            backup_passphrase: Arc::new(Mutex::new(String::new())),
+            backup_confirmation: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -117,40 +292,101 @@ impl OnboardingView {
         self.finished
     }
 
-    fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
+    /// Put the entrance transition in its steady state for deterministic
+    /// offscreen review. Production never calls this; the live compositor
+    /// advances the exact same transition on animation frames.
+    #[doc(hidden)]
+    pub fn settle_motion_for_snapshot(&mut self) {
+        let now = Instant::now();
+        self.transition_started = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+    }
+
+    fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
+        let (step, stage) = match self.flow.screen() {
+            Screen::Intro => (1, "Choose"),
+            Screen::Connect | Screen::NoRecovery => (2, "Protect"),
+            Screen::Done => (3, "Ready"),
+        };
         let body: Box<dyn Widget> = match self.flow.screen() {
             Screen::Intro => self.intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
             Screen::Done => self.done(theme),
         };
-        Box::new(Column::new().with_no_padding().with_gap(16.0).push(body))
+        let spacing = &theme.tokens.spacing;
+        let progress_value = match step {
+            1 => 1.0 / 3.0,
+            2 => 2.0 / 3.0,
+            _ => 1.0,
+        };
+        let progress = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s2)
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Text::new("qOS  •  PRIVATE BY DESIGN")
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Text::new(&format!("{stage}  ·  {step} of 3"))
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
+                    )),
+            ))
+            .push(Box::new(ProgressBar::new(progress_value).with_label(
+                format!("Identity setup, step {step} of 3: {stage}"),
+            )));
+        let content = Column::new()
+            .with_intrinsic_height()
+            .with_gap(spacing.s6)
+            .push(Box::new(progress))
+            .push(body);
+        Box::new(
+            Scrollable::new_vertical()
+                .with_height(panel_height)
+                .with_content_gutter(spacing.s3)
+                .with_child(Box::new(content)),
+        )
     }
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
-        let mut list = Column::new().with_no_padding().with_gap(10.0);
+        let spacing = &theme.tokens.spacing;
+        let mut list = Column::new().with_no_padding().with_gap(spacing.s3);
         for point in INTRO_POINTS {
-            list = list.push(bullet(point));
+            list = list.push(bullet(point, theme));
         }
+        let (title, body) = match self.context {
+            OnboardingContext::FullSystem => (INTRO_TITLE, INTRO_BODY),
+            OnboardingContext::HostDesktop => (HOST_DESKTOP_INTRO_TITLE, HOST_DESKTOP_INTRO_BODY),
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
-                .with_gap(20.0)
-                .push(heading(INTRO_TITLE))
-                .push(paragraph(INTRO_BODY, theme))
+                .with_intrinsic_height()
+                .with_gap(spacing.s6)
+                .push(heading(title, theme))
+                .push(paragraph(body, theme))
                 .push(Box::new(Card::titled("What it is for", Box::new(list))))
                 .push(actions(vec![
-                    Box::new(Button::new(
-                        "onboarding.connect.button",
-                        "Connect existing identity",
-                        Some(KEY_CONNECT),
-                    )),
+                    Box::new(
+                        Button::new(
+                            "onboarding.connect.button",
+                            "Use existing",
+                            Some(KEY_CONNECT),
+                        )
+                        .with_icon(ui::icons::Icon::ExternalLink),
+                    ),
                     Box::new(
                         Button::new(
                             "onboarding.begin.button",
-                            "Create new identity",
+                            "Create identity",
                             Some(KEY_BEGIN),
                         )
+                        .with_icon(ui::icons::Icon::ArrowRight)
                         .with_style(ui::widget::ButtonStyle::Primary),
                     ),
                 ])),
@@ -161,14 +397,22 @@ impl OnboardingView {
         let path = TextInput::new(Vec::new())
             .with_id("onboarding.connect.path.field")
             .with_on_change_path(KEY_CONNECT_PATH)
-            .with_placeholder("/path/to/primary.json")
-            .with_font_size(13.0);
+            .with_placeholder("Choose an encrypted backup or legacy identity JSON")
+            .with_font_size(theme.tokens.typography.scale.base);
+        let passphrase = secret_input(
+            "onboarding.connect.passphrase.field",
+            &self.connect_passphrase,
+            "Passphrase for encrypted backups",
+        )
+        .with_font_size(theme.tokens.typography.scale.base);
+        let spacing = &theme.tokens.spacing;
         let mut body = Column::new()
                 .with_no_padding()
-                .with_gap(20.0)
-                .push(heading("Connect an existing identity"))
+                .with_intrinsic_height()
+                .with_gap(spacing.s6)
+                .push(heading("Connect an existing identity", theme))
                 .push(paragraph(
-                    "Choose a qOS identity record exported from another device. It is validated and copied into this user's private identity store before use.",
+                    "Bring an encrypted backup from another qOS device. It is authenticated and validated locally before this machine is certified. For a legacy unencrypted JSON export, leave the passphrase empty.",
                     theme,
                 ));
         if let Some(error) = &self.error {
@@ -176,138 +420,250 @@ impl OnboardingView {
                 Banner::error("That identity could not be connected").with_message(error.clone()),
             ));
         }
+        let file_row = Row::new().push(Box::new(path)).push(Box::new(
+            Button::new(
+                "onboarding.connect.browse.button",
+                "Browse…",
+                Some(KEY_CONNECT_BROWSE),
+            )
+            .with_icon(ui::icons::Icon::Folder),
+        ));
         Box::new(
-            body.push(Box::new(Card::titled("Identity record", Box::new(path))))
-                .push(actions(vec![Box::new(
-                    Button::new(
-                        "onboarding.import.button",
-                        "Connect identity",
-                        Some(KEY_IMPORT),
-                    )
-                    .with_style(ui::widget::ButtonStyle::Primary),
-                )])),
+            body.push(Box::new(Card::titled("Identity file", Box::new(file_row))))
+                .push(Box::new(Card::titled(
+                    "Backup passphrase",
+                    Box::new(passphrase),
+                )))
+                .push(actions(vec![
+                    back_button(),
+                    Box::new(
+                        Button::new("onboarding.import.button", "Connect", Some(KEY_IMPORT))
+                            .with_icon(ui::icons::Icon::ArrowRight)
+                            .with_style(ui::widget::ButtonStyle::Primary),
+                    ),
+                ])),
         )
     }
 
-    fn no_recovery(&self, _theme: &Theme) -> Box<dyn Widget> {
-        let mut list = Column::new().with_no_padding().with_gap(14.0);
+    fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
+        let spacing = &theme.tokens.spacing;
+        let mut list = Column::new().with_no_padding().with_gap(spacing.s4);
         for point in NO_RECOVERY_POINTS {
-            list = list.push(bullet(point));
+            list = list.push(bullet(point, theme));
         }
         // The gate. Disabled until the box is ticked, so the primary action can't be clicked past the consequence.
-        let create = Button::new(
-            "onboarding.create.button",
-            "Create my identity",
-            Some(KEY_CREATE),
-        )
-        .with_style(ui::widget::ButtonStyle::Primary)
-        .with_enabled(self.flow.can_create());
+        let create = Button::new("onboarding.create.button", "Create", Some(KEY_CREATE))
+            .with_icon(ui::icons::Icon::Shield)
+            .with_style(ui::widget::ButtonStyle::Primary)
+            .with_enabled(self.flow.can_create());
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s6)
+            .push(heading("Keep the key to your identity", theme))
+            .push(Box::new(
+                Banner::warning(NO_RECOVERY_TITLE)
+                    .with_message(
+                        "There is no reset button. Read this once, then choose deliberately.",
+                    )
+                    .with_icon(ui::icons::Icon::Shield),
+            ));
+        if let Some(error) = &self.error {
+            body = body.push(Box::new(
+                Banner::error("Your identity was not created").with_message(error.clone()),
+            ));
+        }
         Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_gap(20.0)
-                .push(Box::new(Banner::warning(NO_RECOVERY_TITLE).with_message(
-                    "Read this before continuing — it cannot be undone later.",
-                )))
-                .push(Box::new(Card::new(Box::new(list))))
+            body.push(Box::new(Card::new(Box::new(list))))
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(
                             Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                                 .with_accessible_name(ACKNOWLEDGEMENT),
                         ))
-                        .push(Box::new(Text::new(ACKNOWLEDGEMENT).with_size(13.0))),
+                        .push(Box::new(
+                            Text::new(ACKNOWLEDGEMENT)
+                                .with_role(ui::tokens::typography::TextRole::Body),
+                        )),
                 ))
-                .push(actions(vec![Box::new(create)])),
+                .push(actions(vec![back_button(), Box::new(create)])),
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the completion card is kept together so its backup and finish states remain coherent"
+    )]
     fn done(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
                 Column::new()
                     .with_no_padding()
-                    .with_gap(20.0)
+                    .with_intrinsic_height()
+                    .with_gap(theme.tokens.spacing.s6)
                     .push(Box::new(
                         Banner::error("Your identity could not be created")
                             .with_message(err.clone()),
                     ))
                     .push(paragraph(
-                        "The desktop will start, but nothing you do will be signed until this \
-                         is fixed. Your edits will still save; other people just will not be \
-                         able to tell they came from you.",
+                        "Nothing was written and the desktop is still protected. Go back and try again after checking storage and permissions.",
                         theme,
                     ))
-                    .push(actions(vec![Box::new(Button::new(
-                        "onboarding.finish.button",
-                        "Continue anyway",
-                        Some(KEY_FINISH),
-                    ))])),
+                    .push(actions(vec![back_button()])),
             );
         }
         let minted = self.flow.minted();
         let fingerprint = minted
             .map(super::onboarding::MintedIdentity::grouped_fingerprint)
             .unwrap_or_default();
-        let path = minted
-            .map(|m| m.path.display().to_string())
-            .unwrap_or_default();
         let detail = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(8.0)
+            .with_gap(theme.tokens.spacing.s2)
             .push(Box::new(
-                Text::new(&fingerprint)
-                    .with_size(15.0)
-                    .with_font_family(ui::text_render::FontChoice::Monospace),
+                Text::new(&fingerprint).with_role(ui::tokens::typography::TextRole::Code),
             ))
             .push(Box::new(
-                Text::new(&format!("Stored at {path}, readable only by you."))
-                    .with_size(11.0)
+                Text::new("Others may use this fingerprint to verify that this identity is yours.")
+                    .with_role(ui::tokens::typography::TextRole::Caption)
                     .with_color(theme.text_dim),
             ));
+        let backup_fields = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s3)
+            .push(Box::new(secret_input(
+                "onboarding.backup.passphrase",
+                &self.backup_passphrase,
+                "Long, unique passphrase — 12+ characters",
+            )))
+            .push(Box::new(secret_input(
+                "onboarding.backup.confirmation",
+                &self.backup_confirmation,
+                "Confirm passphrase",
+            )));
+        let mut backup = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s3)
+            .push(paragraph(
+                "Save an encrypted copy to another drive. qOS verifies the finished file before calling it a backup; keep its passphrase somewhere separate.",
+                theme,
+            ))
+            .push(Box::new(backup_fields));
+        if let Some(error) = &self.backup_error {
+            backup = backup.push(Box::new(
+                Banner::error("The backup was not saved").with_message(error.clone()),
+            ));
+        }
+        if let Some(path) = &self.backup_saved {
+            backup = backup.push(Box::new(
+                Banner::success("Encrypted backup verified")
+                    .with_message(path.display().to_string())
+                    .with_icon(ui::icons::Icon::Check),
+            ));
+        }
+        let mut backup_button = Button::new(
+            "onboarding.backup.button",
+            if self.backup_saved.is_some() {
+                "Save another copy"
+            } else {
+                "Save backup…"
+            },
+            Some(KEY_BACKUP_BROWSE),
+        );
+        if self.backup_saved.is_none() {
+            backup_button = backup_button.with_style(ui::widget::ButtonStyle::Primary);
+        }
+        backup = backup.push(actions(vec![Box::new(backup_button)]));
+        let finish_label = if self.backup_saved.is_some() {
+            match self.context {
+                OnboardingContext::FullSystem => "Enter qOS",
+                OnboardingContext::HostDesktop => "Open qOS desktop",
+            }
+        } else {
+            "Skip for now"
+        };
+        let mut finish = Button::new("onboarding.finish.button", finish_label, Some(KEY_FINISH))
+            .with_icon(ui::icons::Icon::ArrowRight);
+        if self.backup_saved.is_some() {
+            finish = finish.with_style(ui::widget::ButtonStyle::Primary);
+        }
+        let system_care = match self.context {
+            OnboardingContext::FullSystem => {
+                "qOS checks signed system updates automatically after setup when the machine is \
+                 online. You can check, stage, and roll back releases in Settings."
+            }
+            OnboardingContext::HostDesktop => {
+                "Your Linux distribution remains responsible for OS updates and system time. \
+                 This host-session package does not install or run qOS bootc update services."
+            }
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
-                .with_gap(20.0)
-                .push(Box::new(Banner::success(DONE_TITLE)))
+                .with_intrinsic_height()
+                .with_gap(theme.tokens.spacing.s6)
+                .push(heading(DONE_TITLE, theme))
+                .push(Box::new(
+                    Banner::success("Identity stored on this device")
+                        .with_icon(ui::icons::Icon::Check),
+                ))
                 .push(paragraph(DONE_BODY, theme))
-                .push(Box::new(Card::titled("Fingerprint", Box::new(detail))))
+                .push(paragraph(
+                    "The desktop can open now. Device-to-device sharing stays off unless you \
+                     explicitly enable peer sync; after enabling it, sign out and back in once \
+                     to start the peer session.",
+                    theme,
+                ))
+                .push(Box::new(Card::titled(
+                    "System care",
+                    paragraph(system_care, theme),
+                )))
+                .push(Box::new(Card::titled("Your fingerprint", Box::new(detail))))
+                .push(Box::new(Card::titled(
+                    "Make a portable backup",
+                    Box::new(backup),
+                )))
                 // Repeated deliberately: the last moment the user is looking at the
                 // subject is the one fact they need to carry away from the whole ceremony.
                 .push(paragraph(
-                    "There is still no way to recover this key. If this device goes, so does \
-                     this identity.",
+                    "There is no recovery service. If this device goes and you have no \
+                     encrypted portable backup, this identity goes with it.",
                     theme,
                 ))
-                .push(actions(vec![Box::new(
-                    Button::new(
-                        "onboarding.finish.button",
-                        "Start using qOS",
-                        Some(KEY_FINISH),
-                    )
-                    .with_style(ui::widget::ButtonStyle::Primary),
-                )])),
+                .push(actions(vec![Box::new(finish)])),
         )
     }
 }
 
-fn heading(text: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_size(26.0))
+fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
 /// one — a dark-theme dim grey on a light background is barely legible.
 fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_size(13.0).with_color(theme.text_dim))
+    Box::new(
+        Text::new(text)
+            .with_role(ui::tokens::typography::TextRole::Body)
+            .with_color(theme.text_dim),
+    )
 }
 
 /// A list item.
 ///
 /// The marker is part of the same `Text` rather than a sibling in a
 /// `Row`: these lines wrap, and a marker in its own column detaches from its sentence.
-fn bullet(text: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(&format!("•   {text}")).with_size(13.0))
+fn bullet(text: &str, _theme: &Theme) -> Box<dyn Widget> {
+    Box::new(Text::new(&format!("•   {text}")).with_role(ui::tokens::typography::TextRole::Body))
+}
+
+fn back_button() -> Box<dyn Widget> {
+    Box::new(
+        Button::new("onboarding.back.button", "Back", Some(KEY_BACK))
+            .with_icon(ui::icons::Icon::ArrowLeft),
+    )
 }
 
 /// A right-aligned action row, so the primary button lands where the eye finishes reading.
@@ -336,9 +692,233 @@ fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
     }
 }
 
+fn secret_input(id: &str, buffer: &Arc<Mutex<String>>, placeholder: &str) -> TextInput {
+    let input = TextInput::local()
+        .with_id(id)
+        .with_external_buffer(Arc::clone(buffer))
+        .with_placeholder(placeholder)
+        .with_secret(true);
+    match buffer.lock() {
+        Ok(value) => input.with_initial_value(&value),
+        Err(_) => input,
+    }
+}
+
+fn clear_secret(buffer: &Arc<Mutex<String>>) {
+    if let Ok(mut value) = buffer.lock() {
+        value.zeroize();
+    }
+}
+
+impl OnboardingView {
+    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        if theme.name.eq_ignore_ascii_case("high contrast") {
+            return;
+        }
+
+        // Quiet, theme-derived depth: two broad accent blooms make the
+        // trusted setup surface distinct without becoming illustration.
+        let bloom = colors.accent[5].with_alpha_factor(0.10);
+        let radius = self.rect.width().max(self.rect.height()) * 0.34;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            bloom,
+            None,
+            &Circle::new(Point::new(self.rect.x0, self.rect.y0), radius),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[3].with_alpha_factor(0.07),
+            None,
+            &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
+        );
+    }
+
+    fn transition_reveal(&mut self, theme: &Theme) -> f32 {
+        self.reduce_motion = theme.reduce_motion;
+        self.transition_duration = theme.tokens.motion.durations.slow();
+        let duration = self.transition_duration;
+        let elapsed = self.transition_started.elapsed();
+        let raw = if duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the eased value is clamped to 0..=1 before conversion for vello opacity"
+        )]
+        if theme.reduce_motion {
+            1.0
+        } else {
+            ui::ease_out(f64::from(raw)) as f32
+        }
+    }
+
+    fn draw_composed(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if self.composed.is_none() {
+            return;
+        }
+        let reveal = self.transition_reveal(theme);
+        let Some(composed) = self.composed.as_mut() else {
+            return;
+        };
+        let colors = &theme.tokens.colors;
+        let panel = composed.get_rect();
+        if panel.area() > 0.0 {
+            if !theme.name.eq_ignore_ascii_case("high contrast") {
+                ui::surface::soft_shadow(
+                    scene,
+                    transform,
+                    panel,
+                    colors.neutral[0],
+                    42.0,
+                    18.0,
+                    0.42,
+                );
+            }
+            let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &shape,
+            );
+        }
+
+        let mut local = Scene::new();
+        composed.draw(&mut local, Affine::IDENTITY, text_renderer, theme, presence);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            reveal,
+            transform,
+            &self.rect,
+        );
+        scene.append(
+            &local,
+            Some(
+                transform.pre_translate(
+                    (
+                        self.transition_direction * f64::from(1.0 - reveal) * 22.0,
+                        f64::from(1.0 - reveal) * 8.0,
+                    )
+                        .into(),
+                ),
+            ),
+        );
+        scene.pop_layer();
+    }
+
+    fn draw_picker(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let Some((_, picker)) = self.picker.as_mut() else {
+            return;
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.56),
+            None,
+            &self.rect,
+        );
+        picker.set_rect(onboarding_picker_rect(self.rect));
+        picker.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl Drop for OnboardingView {
+    fn drop(&mut self) {
+        clear_secret(&self.connect_passphrase);
+        clear_secret(&self.backup_passphrase);
+        clear_secret(&self.backup_confirmation);
+    }
+}
+
 impl Widget for OnboardingView {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
+
+        // Pull widget-local edits (notably passphrases) into their process-local
+        // buffers before interpreting action keys from the same input frame.
+        if let Some(c) = &mut self.composed {
+            c.sync(state, root);
+        }
+
+        let picker_outcome = self
+            .picker
+            .as_mut()
+            .and_then(|(purpose, picker)| picker.take_outcome().map(|outcome| (*purpose, outcome)));
+        if let Some((purpose, outcome)) = picker_outcome {
+            if let ui::widget::FilePickerOutcome::Selected(paths) = outcome
+                && let Some(path) = paths.into_iter().next()
+            {
+                match purpose {
+                    PickerPurpose::ImportIdentity => {
+                        let _ = state.put(
+                            root,
+                            KEY_CONNECT_PATH,
+                            ScalarValue::Str(path.to_string_lossy().into_owned().into()),
+                        );
+                        self.error = None;
+                    }
+                    PickerPurpose::BackupIdentity => {
+                        let passphrase = Zeroizing::new(
+                            self.backup_passphrase
+                                .lock()
+                                .map(|value| value.as_bytes().to_vec())
+                                .unwrap_or_default(),
+                        );
+                        let export = self.flow.minted().map_or_else(
+                            || Err("the identity is not ready to back up".to_string()),
+                            |identity| (self.exporter)(&identity.path, &path, &passphrase),
+                        );
+                        match export {
+                            Ok(()) => {
+                                self.backup_saved = Some(path);
+                                self.backup_error = None;
+                                clear_secret(&self.backup_passphrase);
+                                clear_secret(&self.backup_confirmation);
+                            }
+                            Err(error) => {
+                                self.backup_error = Some(error);
+                            }
+                        }
+                    }
+                }
+            }
+            self.picker = None;
+            self.invalidation.both();
+        }
 
         if read_bool(state, root, KEY_BEGIN) {
             let _ = state.put(root, KEY_BEGIN, ScalarValue::Boolean(false));
@@ -350,18 +930,88 @@ impl Widget for OnboardingView {
             self.flow.begin_connect();
         }
 
+        if read_bool(state, root, KEY_CONNECT_BROWSE) {
+            let _ = state.put(root, KEY_CONNECT_BROWSE, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Connect && self.picker.is_none() {
+                let (initial, roots) = onboarding_picker_scope();
+                self.picker = Some((
+                    PickerPurpose::ImportIdentity,
+                    FilePicker::new("Choose a qOS identity", initial, roots).with_filters(vec![
+                        ui::widget::file_picker::FileFilter::new(
+                            "qOS identity",
+                            &["qos-identity", "qos-identity-backup", "json"],
+                        ),
+                        ui::widget::file_picker::FileFilter::all(),
+                    ]),
+                ));
+                self.invalidation.focus();
+            }
+        }
+
+        if read_bool(state, root, KEY_BACKUP_BROWSE) {
+            let _ = state.put(root, KEY_BACKUP_BROWSE, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Done && self.picker.is_none() {
+                self.backup_error = match (
+                    self.backup_passphrase.lock(),
+                    self.backup_confirmation.lock(),
+                ) {
+                    (Ok(passphrase), Ok(_)) if passphrase.chars().count() < 12 => Some(
+                        "Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe."
+                            .to_string(),
+                    ),
+                    (Ok(passphrase), Ok(confirmation)) if *passphrase != *confirmation => {
+                        Some("The two passphrases do not match.".to_string())
+                    }
+                    (Ok(_), Ok(_)) => None,
+                    _ => Some("The passphrase fields are temporarily unavailable.".to_string()),
+                };
+                if self.backup_error.is_none() {
+                    let (initial, roots) = onboarding_picker_scope();
+                    self.picker = Some((
+                        PickerPurpose::BackupIdentity,
+                        FilePicker::new("Save encrypted identity backup", initial, roots)
+                            .with_mode(FilePickerMode::Save)
+                            .with_filters(vec![ui::widget::file_picker::FileFilter::new(
+                                "Encrypted qOS identity",
+                                &["qos-identity"],
+                            )])
+                            .with_filename("qos-identity-backup.qos-identity"),
+                    ));
+                    self.invalidation.focus();
+                } else {
+                    self.invalidation.structure();
+                }
+            }
+        }
+
+        if read_bool(state, root, KEY_BACK) {
+            let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
+            self.error = None;
+            clear_secret(&self.connect_passphrase);
+            self.flow.back();
+        }
+
         if read_bool(state, root, KEY_IMPORT) {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
             if self.flow.screen() == Screen::Connect {
-                match (self.importer)(&source) {
+                let passphrase = Zeroizing::new(
+                    self.connect_passphrase
+                        .lock()
+                        .map(|value| value.as_bytes().to_vec())
+                        .unwrap_or_default(),
+                );
+                let import = (self.importer)(&source, &passphrase);
+                match import {
                     Ok(identity) => {
                         self.error = None;
                         self.flow.complete_connected(identity);
+                        clear_secret(&self.connect_passphrase);
                     }
                     Err(error) => {
                         tracing::error!(target: "qos::onboarding", %error, "identity import failed");
                         self.error = Some(error);
+                        self.invalidation.structure();
                     }
                 }
             }
@@ -371,13 +1021,14 @@ impl Widget for OnboardingView {
         let understood = read_bool(state, root, KEY_UNDERSTOOD);
         if understood != self.flow.acknowledged() {
             self.flow.set_acknowledged(understood);
-            self.structure_dirty = true;
+            self.invalidation.structure();
         }
 
         if read_bool(state, root, KEY_CREATE) {
             let _ = state.put(root, KEY_CREATE, ScalarValue::Boolean(false));
             // `can_create` is checked inside `complete` too — this is the outer guard, that one is the invariant.
             if self.flow.can_create() {
+                self.error = None;
                 match (self.minter)() {
                     Ok(minted) => {
                         self.flow.complete(minted);
@@ -385,12 +1036,9 @@ impl Widget for OnboardingView {
                     Err(e) => {
                         tracing::error!(target: "qos::onboarding", error = %e, "identity minting failed");
                         self.error = Some(e);
-                        // Force the result screen so the failure is shown rather than leaving the user on a dead button.
-                        self.flow.set_acknowledged(true);
-                        self.flow.complete(MintedIdentity {
-                            fingerprint: String::new(),
-                            path: PathBuf::new(),
-                        });
+                        // Stay on the protected step. A failed write is not a
+                        // completed identity and must never release the desktop.
+                        self.invalidation.structure();
                     }
                 }
             }
@@ -398,15 +1046,22 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
-            self.finished = true;
+            self.finished = self.flow.is_done();
+            if self.finished {
+                clear_secret(&self.connect_passphrase);
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+            }
         }
 
         if self.flow.screen() != before {
-            self.structure_dirty = true;
-        }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+            self.transition_direction = if screen_order(self.flow.screen()) < screen_order(before) {
+                -1.0
+            } else {
+                1.0
+            };
+            self.invalidation.both();
+            self.transition_started = Instant::now();
         }
     }
 
@@ -416,18 +1071,22 @@ impl Widget for OnboardingView {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
+        self.reduce_motion = theme.reduce_motion;
+        self.transition_duration = theme.tokens.motion.durations.slow();
+        let mut composed = self.build_composition(theme, PANEL_MAX_HEIGHT);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
-        // Hold the text to a comfortable measure and let the root centre it —
-        // full-screen, so without this the copy would run the width of a 4K display.
+        // Keep a readable measure on large displays and shrink all the way to
+        // a phone-like viewport. The body scrolls vertically when its copy is
+        // taller than the bounded setup surface.
         if let Ok(mut cs) = taffy.style(child).cloned() {
-            cs.size.width = taffy::Dimension::length(CONTENT_WIDTH);
-            // Auto height, or the column claims the full viewport and there's nothing left for the root to centre.
-            cs.size.height = taffy::Dimension::auto();
+            cs.size.width = taffy::Dimension::percent(1.0);
+            cs.size.height = taffy::Dimension::percent(1.0);
+            cs.max_size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
+            cs.max_size.height = taffy::Dimension::length(PANEL_MAX_HEIGHT);
             cs.flex_grow = 0.0;
-            cs.flex_shrink = 0.0;
+            cs.flex_shrink = 1.0;
             let _ = taffy.set_style(child, cs);
         }
 
@@ -440,15 +1099,21 @@ impl Widget for OnboardingView {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
+            padding: taffy::Rect {
+                left: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
+                right: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
+                top: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
+                bottom: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
+            },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -471,9 +1136,9 @@ impl Widget for OnboardingView {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.draw_backdrop(scene, transform, theme);
+        self.draw_composed(scene, transform, text_renderer, theme, presence);
+        self.draw_picker(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -489,6 +1154,25 @@ impl Widget for OnboardingView {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if let Some((_, picker)) = self.picker.as_mut() {
+            picker.set_rect(onboarding_picker_rect(self.rect));
+            let mut picker_taffy = TaffyTree::<()>::new();
+            if let Ok(picker_node) = picker_taffy.new_leaf(taffy::Style::default()) {
+                picker.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    picker_node,
+                    &picker_taffy,
+                );
+            }
+            *handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -508,6 +1192,9 @@ impl Widget for OnboardingView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some((_, picker)) = self.picker.as_ref() {
+            return vec![picker];
+        }
         self.composed
             .as_ref()
             .map(std::convert::AsRef::as_ref)
@@ -516,6 +1203,9 @@ impl Widget for OnboardingView {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some((_, picker)) = self.picker.as_mut() {
+            return vec![picker];
+        }
         self.composed
             .as_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
@@ -535,14 +1225,98 @@ impl Widget for OnboardingView {
         self.rect
     }
 
+    fn take_focus_reset(&mut self) -> bool {
+        self.invalidation.take_focus()
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
+        let own = self.invalidation.take_structure();
         let child = self
             .composed
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
+
+    fn needs_animation_frame(&self) -> bool {
+        (!self.reduce_motion && self.transition_started.elapsed() < self.transition_duration)
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|(_, picker)| picker.needs_animation_frame())
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|child| child.needs_animation_frame())
+    }
+}
+
+fn screen_order(screen: Screen) -> u8 {
+    match screen {
+        Screen::Intro => 0,
+        Screen::Connect | Screen::NoRecovery => 1,
+        Screen::Done => 2,
+    }
+}
+
+/// OOBE is trusted compositor chrome, so its chooser follows the user rather
+/// than an application's capability scope. Keep roots narrow: the home tree
+/// plus conventional removable-media mount roots, never the whole filesystem.
+fn onboarding_picker_scope() -> (PathBuf, Vec<PathBuf>) {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_dir());
+    let mut roots = Vec::new();
+    if let Some(home) = home.as_ref() {
+        roots.push(home.clone());
+    }
+    let user = std::env::var_os("USER").filter(|value| !value.is_empty());
+    let mut media_roots = Vec::new();
+    if let Some(user) = user {
+        for base in [PathBuf::from("/run/media"), PathBuf::from("/media")] {
+            let candidate = base.join(&user);
+            if candidate.is_dir() {
+                media_roots.push(candidate);
+            }
+        }
+    }
+    if media_roots.is_empty() && PathBuf::from("/media").is_dir() {
+        media_roots.push(PathBuf::from("/media"));
+    }
+    let mounted = media_roots
+        .iter()
+        .find(|root| directory_has_subdirectory(root))
+        .cloned();
+    roots.extend(media_roots);
+    let initial = mounted
+        .or_else(|| home.clone())
+        .unwrap_or_else(std::env::temp_dir);
+    if roots.is_empty() {
+        roots.push(initial.clone());
+    }
+    (initial, roots)
+}
+
+fn directory_has_subdirectory(path: &std::path::Path) -> bool {
+    std::fs::read_dir(path).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+        })
+    })
+}
+
+fn onboarding_picker_rect(viewport: Rect) -> Rect {
+    let width = (viewport.width() * 0.78)
+        .clamp(420.0, 900.0)
+        .min(viewport.width());
+    let height = (viewport.height() * 0.78)
+        .clamp(320.0, 640.0)
+        .min(viewport.height());
+    let x0 = viewport.x0 + (viewport.width() - width) / 2.0;
+    let y0 = viewport.y0 + (viewport.height() - height) / 2.0;
+    Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 #[cfg(test)]
@@ -566,6 +1340,21 @@ mod tests {
 
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    #[test]
+    fn structure_and_focus_invalidations_are_consumed_independently() {
+        let mut invalidation = Invalidation::default();
+        invalidation.both();
+
+        assert!(invalidation.take_structure());
+        assert!(!invalidation.take_structure());
+        assert!(invalidation.take_focus());
+        assert!(!invalidation.take_focus());
+
+        invalidation.both();
+        assert!(invalidation.take_focus());
+        assert!(invalidation.take_structure());
     }
 
     /// The whole point: clicking through without ticking the box must not produce a key.
@@ -633,7 +1422,15 @@ mod tests {
         press(&mut doc, KEY_CREATE);
         v.sync(&mut doc, &automerge::ROOT);
         assert_eq!(v.error(), Some("disk full"));
-        assert_eq!(v.flow().screen(), Screen::Done, "the failure gets a screen");
+        assert_eq!(
+            v.flow().screen(),
+            Screen::NoRecovery,
+            "a failed write is not a completed identity"
+        );
+        assert!(!v.flow().is_done());
+        press(&mut doc, KEY_FINISH);
+        v.sync(&mut doc, &automerge::ROOT);
+        assert!(!v.finished(), "failure must not release the desktop");
     }
 
     #[test]
@@ -641,9 +1438,68 @@ mod tests {
         let (mut v, _) = view();
         let mut doc = AutoCommit::new();
         assert!(!v.finished());
+        press(&mut doc, KEY_BEGIN);
+        v.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_UNDERSTOOD);
+        v.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_CREATE);
+        v.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_FINISH);
         v.sync(&mut doc, &automerge::ROOT);
         assert!(v.finished());
+    }
+
+    #[test]
+    fn host_desktop_context_keeps_the_identity_creation_gate() {
+        let mut view = OnboardingView::with_all_handlers_in_context(
+            Box::new(|| {
+                Ok(MintedIdentity {
+                    fingerprint: "ab".repeat(32),
+                    path: PathBuf::from("/identity/primary.json"),
+                })
+            }),
+            Box::new(|_, _| Err("unused".into())),
+            Box::new(|_, _, _| Err("unused".into())),
+            OnboardingContext::HostDesktop,
+        );
+        assert_eq!(view.context, OnboardingContext::HostDesktop);
+        assert!(!view.flow.can_create());
+        view.flow.begin();
+        assert!(!view.flow.can_create());
+        view.flow.set_acknowledged(true);
+        assert!(view.flow.can_create());
+    }
+
+    #[test]
+    fn host_desktop_copy_does_not_claim_to_replace_the_linux_login() {
+        let copy = HOST_DESKTOP_INTRO_BODY.to_ascii_lowercase();
+        assert!(copy.contains("already signed in"));
+        assert!(copy.contains("does not replace your linux login"));
+        assert!(copy.contains("does not") && copy.contains("online account"));
+        assert!(copy.contains("not all cryptographically signed"));
+    }
+
+    #[test]
+    fn screen_transitions_track_forward_and_back_direction() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        view.sync(&mut doc, &root);
+        let _ = doc.put(&root, KEY_BEGIN, true);
+        view.sync(&mut doc, &root);
+        assert_eq!(view.transition_direction, 1.0);
+        let _ = doc.put(&root, KEY_BACK, true);
+        view.sync(&mut doc, &root);
+        assert_eq!(view.transition_direction, -1.0);
+    }
+
+    #[test]
+    fn reduced_motion_does_not_request_transition_frames() {
+        let (mut view, _) = view();
+        view.reduce_motion = true;
+        view.composed = None;
+        view.picker = None;
+        assert!(!view.needs_animation_frame());
     }
 
     #[test]
@@ -652,7 +1508,7 @@ mod tests {
         let imported_for_handler = imported.clone();
         let mut view = OnboardingView::with_handlers(
             Box::new(|| Err("create should not run".to_string())),
-            Box::new(move |path| {
+            Box::new(move |path, _| {
                 imported_for_handler.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(path, &PathBuf::from("/media/backup/primary.json"));
                 Ok(MintedIdentity {
@@ -681,7 +1537,7 @@ mod tests {
     fn failed_connect_stays_on_connect_screen_and_shows_error() {
         let mut view = OnboardingView::with_handlers(
             Box::new(|| Err("create should not run".to_string())),
-            Box::new(|_| Err("not a qOS identity".to_string())),
+            Box::new(|_, _| Err("not a qOS identity".to_string())),
         );
         let mut doc = AutoCommit::new();
         press(&mut doc, KEY_CONNECT);
@@ -690,6 +1546,72 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(view.flow().screen(), Screen::Connect);
         assert_eq!(view.error(), Some("not a qOS identity"));
+    }
+
+    #[test]
+    fn connect_browse_opens_a_shell_owned_modal_picker() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_CONNECT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_CONNECT_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_some());
+
+        view.picker.as_mut().expect("picker").1.click_cancel();
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_none());
+        assert_eq!(view.flow().screen(), Screen::Connect);
+    }
+
+    #[test]
+    fn portable_backup_requires_matching_strong_passphrases_and_reports_success() {
+        let exports = Arc::new(AtomicUsize::new(0));
+        let exports_for_handler = Arc::clone(&exports);
+        let mut view = OnboardingView::with_all_handlers(
+            Box::new(|| Err("unused".to_string())),
+            Box::new(|_, _| Err("unused".to_string())),
+            Box::new(move |identity, destination, passphrase| {
+                assert_eq!(identity, &PathBuf::from("/identity/primary.json"));
+                assert_eq!(
+                    destination.file_name().and_then(|name| name.to_str()),
+                    Some("qos-identity-backup.qos-identity")
+                );
+                assert_eq!(passphrase, b"correct horse battery staple");
+                exports_for_handler.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        view.flow.begin();
+        view.flow.set_acknowledged(true);
+        assert!(view.flow.complete(MintedIdentity {
+            fingerprint: "ef".repeat(32),
+            path: PathBuf::from("/identity/primary.json"),
+        }));
+        let mut doc = AutoCommit::new();
+
+        *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
+        *view.backup_confirmation.lock().unwrap() = "does not match".into();
+        press(&mut doc, KEY_BACKUP_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_none());
+        assert!(
+            view.backup_error
+                .as_deref()
+                .unwrap()
+                .contains("do not match")
+        );
+
+        *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        press(&mut doc, KEY_BACKUP_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
+        view.picker.as_mut().expect("save picker").1.click_open();
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(exports.load(Ordering::SeqCst), 1);
+        assert!(view.backup_saved.is_some());
+        assert!(view.backup_error.is_none());
+        assert!(view.backup_passphrase.lock().unwrap().is_empty());
+        assert!(view.backup_confirmation.lock().unwrap().is_empty());
     }
 
     /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
@@ -712,5 +1634,44 @@ mod tests {
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
         }
+
+        let (mut connect, _) = view();
+        let mut connect_doc = AutoCommit::new();
+        press(&mut connect_doc, KEY_CONNECT);
+        connect.sync(&mut connect_doc, &automerge::ROOT);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
+    }
+
+    #[test]
+    fn narrow_layout_keeps_the_setup_surface_inside_the_viewport() {
+        let (mut view, _) = view();
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(420.0),
+                    height: taffy::AvailableSpace::Definite(640.0),
+                },
+                |known, available, node_id, _, _| {
+                    node_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                            (*ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("narrow setup layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let panel = view.composed.as_ref().expect("composition").get_rect();
+        assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
+        assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
     }
 }

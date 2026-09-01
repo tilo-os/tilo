@@ -459,6 +459,10 @@ fn protrusion_width(
 /// Per-word style flags, bundled so the fragment-building functions below
 /// don't take four separate `bool` parameters.
 #[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent style toggle (space-before, bold, italic, mono); this struct exists specifically to replace four bool arguments, so un-bundling them would defeat its purpose"
+)]
 struct WordFlags {
     space_before: bool,
     bold: bool,

@@ -20,13 +20,32 @@ Prefer a semantic role from the active theme:
 use ui::tokens::TextRole;
 use ui::widget::Text;
 
-let body = Text::new("A readable paragraph").with_role(TextRole::Body, &theme);
-let heading = Text::new("Documents").with_role(TextRole::Heading, &theme);
+let body = Text::new("A readable paragraph").with_role(TextRole::Body);
+let heading = Text::new("Documents").with_role(TextRole::Heading);
 ```
 
 The available roles are `Caption`, `Label`, `Body`, `Reading`, `Title`,
-`Heading`, `Display`, and `Code`. Roles resolve all font metrics together and
-follow UI/text scaling because they are built from the active theme tokens.
+`Heading`, `Display`, and `Code`. Roles resolve size, leading, weight, style,
+and family together. A retained `Text` resolves its role again during layout,
+so changing the active theme or text/UI scale updates it without rebuilding
+the application widget tree. Hyphenation, OpenType, alignment, wrapping, and
+fragmentation modifiers compose with a role. An explicit core typography
+modifier such as `with_size`, `with_weight`, `with_font_family`, or
+`with_style` opts out of live role styling and keeps that text custom without
+discarding its semantic intent.
+
+`Title` and `Display` expose level-1 headings to accessibility tools;
+`Heading` exposes level 2. Nested sections can retain the visual role while
+setting their document outline explicitly:
+
+```rust
+let subsection = Text::new("Keyboard shortcuts")
+    .with_role(TextRole::Heading)
+    .with_heading_level(3);
+```
+
+Body, label, caption, reading, and code roles remain static text. This makes
+screen-reader heading navigation match the visible hierarchy by default.
 
 Use an explicit style only when text has a real typographic requirement that
 does not match a role:
@@ -220,7 +239,7 @@ For example, reading text can opt in without constructing a custom shaper:
 
 ```rust
 Text::new("Internationalization demonstrates typography.")
-    .with_role(TextRole::Reading, theme)
+    .with_role(TextRole::Reading)
     .with_auto_hyphenation("en-US")
 ```
 

@@ -115,6 +115,11 @@ impl Denial {
 /// What the compositor last told the firewall about the screen; a default
 /// view has observed nothing, so every check needing it refuses deliberately.
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent frame-observation flags, not a state machine; \
+              splitting them into an enum would not make any check here clearer"
+)]
 pub struct ShellView {
     /// Foreign tiles front-to-back, as [`crate::compositor::client_input::foreign_tiles`] enumerates them.
     tiles: Vec<(SurfaceId, Rect)>,
@@ -149,6 +154,7 @@ impl ShellView {
     }
 
     /// Mark the session locked; the lock surface isn't part of the tiled tree, so this stops a remote peer driving what's underneath it directly.
+    #[must_use]
     pub fn locked(mut self, locked: bool) -> Self {
         self.session_locked = locked;
         self
@@ -162,6 +168,12 @@ impl ShellView {
     /// Whether the compositor has published anything at all.
     pub fn observed(&self) -> bool {
         self.observed
+    }
+
+    /// Whether trusted compositor chrome currently occludes client content
+    /// and owns the seat. Remote input must be denied while this is true.
+    pub fn chrome_captures_input(&self) -> bool {
+        self.chrome_captures
     }
 
     /// The on-screen rect of `surface`, if it is currently on screen.
@@ -200,6 +212,11 @@ struct PeerState {
 
 /// Modifier keys held, tracked per side so a two-Ctrl release order can't leave a phantom modifier latched.
 #[derive(Debug, Default, Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one bool per physical modifier key, matched directly against keycodes below; \
+              an enum set would not simplify the per-key toggle logic"
+)]
 struct HeldMods {
     ctrl_left: bool,
     ctrl_right: bool,
@@ -313,6 +330,14 @@ impl RemoteInputFirewall {
     /// Run the region, z-order, scrubber and rate-limit checks; share existence
     /// and read-only are already checked by the caller. Returns the translated
     /// event to inject, or the rule that refused it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Denial`] naming the first check the event fails: no
+    /// screen has been observed yet, the peer's pointer has no last-known
+    /// position, the event targets a point/surface outside what the peer may
+    /// currently reach, a system chord or focus-mute rule applies, or the
+    /// peer has exceeded its event-rate or click-burst budget.
     pub fn review(
         &mut self,
         peer: PeerId,
@@ -514,7 +539,7 @@ impl RemoteInputFirewall {
             prune(&mut state.clicks, now, CLICK_BURST_WINDOW);
             state.clicks.push_back(now);
             if state.clicks.len() > CLICK_BURST_LIMIT {
-                state.blocked_until = Some(now + CLICK_BURST_BLOCK);
+                state.blocked_until = Some(now.checked_add(CLICK_BURST_BLOCK).unwrap_or(now));
                 state.clicks.clear();
                 return Err(Denial::ClickBurst);
             }
@@ -992,7 +1017,7 @@ mod tests {
         assert_eq!(fw.host_override(Instant::now()), Some(Denial::KillSwitch));
         // Time does not lift it — only the host does.
         assert_eq!(
-            fw.host_override(Instant::now() + Duration::from_hours(1)),
+            fw.host_override(Instant::now() + Duration::from_secs(3600)),
             Some(Denial::KillSwitch),
         );
         fw.clear_kill_switch();
@@ -1203,8 +1228,8 @@ mod production_path {
     /// would — modifier keycodes in their own events, wire `modifiers` left at zero.
     #[test]
     fn ctrl_alt_f2_from_a_guest_never_reaches_a_client() {
-        let mut state = staged();
         const F2: u32 = 60;
+        let mut state = staged();
 
         for code in [29u32 /* Ctrl */, 56 /* Alt */] {
             state
@@ -1240,8 +1265,8 @@ mod production_path {
     /// Scrubber, focus guard: the host moves focus to a private window and the guest's keyboard goes silent mid-stream.
     #[test]
     fn keystrokes_stop_the_instant_the_host_focuses_a_private_window() {
-        let mut state = staged();
         const A: u32 = 30;
+        let mut state = staged();
 
         state
             .review_remote_input(
@@ -1301,7 +1326,7 @@ mod production_path {
         let started = std::time::Instant::now();
 
         for i in 0..MAX_EVENTS_PER_SECOND {
-            let y = 10.0 + (i % 100) as f64;
+            let y = 10.0 + f64::from(u32::try_from(i % 100).unwrap_or(0));
             state
                 .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y })
                 .unwrap_or_else(|d| panic!("event {i} refused as {d:?}, inside the budget"));
@@ -1368,8 +1393,8 @@ mod production_path {
     /// Scrubber: `Super` opens the shell's launcher and is the first half of every compositor chord; a guest never gets to press it.
     #[test]
     fn the_super_key_from_a_guest_never_reaches_a_client() {
-        let mut state = staged();
         const LEFT_META: u32 = 125;
+        let mut state = staged();
 
         let verdict = state.review_remote_input(
             PEER,
@@ -1434,8 +1459,8 @@ mod production_path {
     /// Kill switch: one press stops every peer, and keeps them stopped.
     #[test]
     fn the_kill_switch_stops_every_peer_and_drops_their_write_access() {
-        let mut state = staged();
         const OTHER_PEER: PeerId = 4;
+        let mut state = staged();
         state
             .share_registry
             .insert(OTHER_PEER, SHARED, StreamingShare::new());

@@ -91,7 +91,7 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 
     // Bounded wait: the child builds a throw-away FontSystem, which is
     // slow on a cold fontconfig cache but nowhere near this long.
-    let deadline = Instant::now() + Duration::from_mins(3);
+    let deadline = Instant::now() + Duration::from_secs(180);
     let status = loop {
         match child.try_wait().expect("try_wait") {
             Some(status) => break status,

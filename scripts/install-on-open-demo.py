@@ -7,44 +7,49 @@ tab and draws its own UI. No install button, no progress dialog, no
 second step.
 
 This script reproduces that end to end, headless, and *checks* it — it
-is not a screenshot generator. Every claim below is read off the
+is not merely a screenshot generator. Every claim below is read off the
 compositor's own state over the test-control socket, and the run exits
 non-zero the moment one of them is false:
 
-  1. The registry offers Sheets and the machine does not have it.
+  1. The registry offers Notes and the machine does not have it.
   2. The palette row for it is byte-identical to an installed app's:
-     same "Open Sheets" title, same subtitle shape, no "install",
+     same "Open Notes" title, same subtitle shape, no "install",
      "download", "fetch" or "available" anywhere in it.
   3. Enter — a real keystroke, not a click on the row — activates it.
-  4. Sheets becomes a `TileContent::Foreign` tab and presents frames of
-     its own (`frame_seq > 0`), so the picture is the app's spreadsheet
-     grid rather than the compositor's first-frame placeholder.
+  4. Notes becomes a `TileContent::Foreign` tab and presents frames of
+     its own (`frame_seq > 0`), so the picture is the Notes client rather
+     than the compositor's first-frame placeholder.
 
 Three screenshots land in `--out`: `palette.png` (the row), `pending.png`
 (the one moment the machine admits the app is coming from somewhere) and
-`tab.png` (the app running). The last one is the point; the first only
-proves what the operator saw before they pressed the key.
+`tab.png` (Notes visibly running). Pass `--record PATH` to capture the same
+verified run as a browser-ready H.264 MP4. The recorder samples the live
+headless compositor; it does not replay a `shots` fixture or assemble a
+facsimile out of unrelated screenshots.
 
-    scripts/install-on-open-demo.py --out target/install-on-open
+    scripts/install-on-open-demo.py --out target/install-on-open \\
+        --record target/install-on-open/notes-open.mp4
 
 On the day, run it in the mode that sets the scene and gets out of the
-way — registry up, Sheets absent, a real window to point a camera at —
+way — registry up, Notes absent, a real window to point a camera at —
 and type it yourself:
 
     scripts/install-on-open-demo.py --backend winit --stage-only
 
 Everything it needs is built by:
 
-    cargo build -p shell -p sheets -p install -p launcher
+    cargo build -p shell -p notes -p install -p launcher
+    cargo build --release -p notes
     cargo build -p app-catalogue --bins --examples
 
 ## What is real and what is staged
 
 Real: the `.qpkg` is packed and signed by `pkg`, served over a live HTTP
 socket, fetched by `qos-catalogue`, verified fail-closed and unpacked by
-`qos-install`, then started by `qos-launcher` inside bwrap. The
-compositor is the shipping binary on its headless backend, which paints
-through the same passes a monitor does.
+`qos-install`, then started by `qos-launcher` inside bwrap. The compositor
+is a test-enabled build of the shipping compositor/layout/paint code on its
+headless backend; release builds omit the control socket, not those paint
+passes.
 
 Staged: the registry is a loopback server on this machine rather than a
 hosted one, and `HOME` is the synthetic tree `scripts/demo-home.py`
@@ -91,11 +96,11 @@ def _load_demo_home():
 
 stage_home = _load_demo_home().stage
 
-PACKAGE_ID = "dev.qos.sheets"
-DISPLAY_NAME = "Sheets"
-# What the operator types. Deliberately not the whole name: the row has
-# to be found by typing, the way a person finds it.
-QUERY = "Sheets"
+PACKAGE_ID = "dev.qos.notes"
+DISPLAY_NAME = "Notes"
+# What the operator types. It is sent as individual text events on camera,
+# rather than appearing as an already-complete fixture query.
+QUERY = "Notes"
 
 # Words that must never reach a row for an app the machine has to fetch.
 # The row says "open", because opening is what the user asked for.
@@ -117,6 +122,44 @@ SCRUB = (
 )
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def parse_size(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\s*([1-9][0-9]*)[xX]([1-9][0-9]*)\s*", value)
+    if match is None:
+        raise argparse.ArgumentTypeError("size must be WIDTHxHEIGHT, for example 1600x900")
+    width, height = (int(match.group(1)), int(match.group(2)))
+    if width > 16384 or height > 16384:
+        raise argparse.ArgumentTypeError("size dimensions must not exceed 16384")
+    return width, height
+
+
+def png_size(path: pathlib.Path) -> tuple[int, int]:
+    """Read a PNG's IHDR dimensions without adding an image dependency."""
+    header = path.read_bytes()[:24]
+    if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        raise RuntimeError(f"not a valid PNG: {path}")
+    return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+
+
+def video_size(path: pathlib.Path) -> tuple[int, int]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise RuntimeError("validating --record needs ffprobe in PATH")
+    output = subprocess.run(
+        [
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    try:
+        return parse_size(output)
+    except argparse.ArgumentTypeError as error:
+        raise RuntimeError(f"ffprobe returned invalid dimensions {output!r}") from error
 
 
 # ---------------------------------------------------------------------
@@ -184,7 +227,7 @@ class Registry:
 
     The example's own default payload is `/bin/true`, which installs
     fine and exits immediately — it proves the fetch and never proves
-    the open. Pointing it at the Sheets binary is what makes step 4
+    the open. Pointing it at the Notes binary is what makes step 4
     possible at all.
     """
 
@@ -382,6 +425,86 @@ class Compositor:
 
 
 # ---------------------------------------------------------------------
+# live compositor recorder
+# ---------------------------------------------------------------------
+
+class FrameRecorder:
+    """Turn verified, event-driven compositor frames into a short MP4.
+
+    This deliberately drives the compositor's live ``snapshot`` operation
+    rather than borrowing a pre-written ``shots`` scenario.  A snapshot is a
+    fresh paint of the same FrameBuilder that presents the desktop, including
+    adopted Wayland client buffers, so the last frames can only contain Notes
+    after the real package has been installed, launched and presented.
+
+    Captures are event-driven, not a polling screen recorder.  A 1600x900
+    snapshot is itself a GPU paint/readback/PNG encode; continuously requesting
+    one starves the Wayland client whose startup this demo is meant to show.
+    Instead the driver captures the real state at each meaningful beat and
+    gives that beat a deliberate on-screen duration.  Package installation and
+    client startup run unobserved between ``pending`` and ``notes-final``; no
+    unrelated frames or fabricated UI are substituted for them.
+    """
+
+    def __init__(self, compositor: Compositor, frames_dir: pathlib.Path):
+        self.compositor = compositor
+        self.frames_dir = frames_dir
+        self.samples: list[tuple[pathlib.Path, float, str]] = []
+
+    def start(self) -> None:
+        if self.frames_dir.exists():
+            shutil.rmtree(self.frames_dir)
+        self.frames_dir.mkdir(parents=True)
+
+    def capture(self, label: str, duration: float,
+                *, mirror: pathlib.Path | None = None) -> pathlib.Path:
+        if duration <= 0:
+            raise ValueError("recorded beat duration must be positive")
+        index = len(self.samples)
+        safe_label = re.sub(r"[^a-z0-9-]+", "-", label.lower()).strip("-")
+        path = self.frames_dir / f"frame-{index:02d}-{safe_label}.png"
+        self.compositor.snapshot(path)
+        if not path.exists() or path.stat().st_size == 0:
+            raise RuntimeError(f"snapshot did not produce {path}")
+        self.samples.append((path, duration, label))
+        if mirror is not None:
+            mirror.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, mirror)
+        return path
+
+    def stop(self) -> None:
+        if len(self.samples) < 2:
+            raise RuntimeError(
+                f"snapshot recorder produced only {len(self.samples)} frame(s)")
+
+    def encode(self, output: pathlib.Path, *, output_fps: int = 30) -> None:
+        """Encode the deliberately timed event frames."""
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("--record needs ffmpeg in PATH")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        timeline = self.frames_dir / "timeline.ffconcat"
+        lines = ["ffconcat version 1.0"]
+        for path, duration, _label in self.samples:
+            lines.extend((f"file '{path.name}'", f"duration {duration:.6f}"))
+        # concat ignores the final duration unless the final file is repeated.
+        lines.append(f"file '{self.samples[-1][0].name}'")
+        timeline.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        subprocess.run(
+            [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "warning",
+                "-f", "concat", "-safe", "0", "-i", timeline.name,
+                "-vf", f"fps={output_fps},format=yuv420p",
+                "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-movflags", "+faststart", str(output.resolve()),
+            ],
+            cwd=self.frames_dir,
+            check=True,
+        )
+
+
+# ---------------------------------------------------------------------
 # checks
 # ---------------------------------------------------------------------
 
@@ -488,6 +611,29 @@ def wait_for_first_frame(comp: Compositor, timeout: float) -> dict | None:
     return best
 
 
+def check_frame_in_viewport(frame: dict, viewport: tuple[int, int]) -> None:
+    """Refuse a proof whose client exists but is clipped out of the picture."""
+    rect = frame.get("rect") or {}
+    try:
+        x = float(rect["x"])
+        y = float(rect["y"])
+        width = float(rect["w"])
+        height = float(rect["h"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise Failure(f"Notes frame has no usable compositor rect: {frame}") from error
+    view_width, view_height = viewport
+    check(width > 0 and height > 0, f"Notes frame has an empty rect: {rect}")
+    tolerance = 0.5
+    check(
+        x >= -tolerance
+        and y >= -tolerance
+        and x + width <= view_width + tolerance
+        and y + height <= view_height + tolerance,
+        f"Notes rect ({x:.1f}, {y:.1f}, {width:.1f}, {height:.1f}) is not fully "
+        f"inside the {view_width}x{view_height} capture viewport",
+    )
+
+
 def app_log_lines(logpath: pathlib.Path, package_id: str) -> list[str]:
     text = ANSI.sub("", logpath.read_text(errors="replace"))
     tag = f"[app {package_id}] "
@@ -502,6 +648,9 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--worktree", type=pathlib.Path, default=here,
                    help="repo root holding target/debug (default: this script's repo)")
+    p.add_argument("--payload", type=pathlib.Path,
+                   help="Notes executable to package (default: "
+                        "WORKTREE/target/release/notes)")
     p.add_argument("--out", type=pathlib.Path,
                    default=here / "target" / "install-on-open",
                    help="directory for screenshots and logs")
@@ -519,7 +668,7 @@ def main() -> int:
                         "display; winit opens a real window to film "
                         "(default: headless)")
     p.add_argument("--stage-only", action="store_true",
-                   help="set the scene and stop: registry up, Sheets absent, "
+                   help="set the scene and stop: registry up, Notes absent, "
                         "compositor running with the right environment. Nothing "
                         "is driven — the operator types. This is the filming "
                         "mode; Ctrl-C tears it down")
@@ -532,12 +681,38 @@ def main() -> int:
     p.add_argument("--hold", type=float, default=0.0,
                    help="extra seconds to leave the session up after the "
                         "final capture (for filming a live window)")
+    p.add_argument("--record", "--video", dest="record", type=pathlib.Path,
+                   help="record the verified interaction to an H.264 MP4 by "
+                        "sampling the live compositor (requires ffmpeg)")
+    p.add_argument("--size", type=parse_size, default=(1600, 900), metavar="WxH",
+                   help="headless capture viewport (default: 1600x900)")
+    p.add_argument("--typing-delay", type=float, default=0.22,
+                   help="on-screen seconds per typed character (default: 0.22)")
+    p.add_argument("--pre-roll", type=float, default=0.65,
+                   help="seconds of the desktop before opening search (default: 0.65)")
+    p.add_argument("--final-hold", type=float, default=2.0,
+                   help="seconds to hold on Notes visibly running (default: 2)")
+    p.add_argument("--keep-recording-frames", action="store_true",
+                   help="retain the event PNG sequence used for --record")
     args = p.parse_args()
 
+    if min(args.typing_delay, args.pre_roll, args.final_hold) < 0:
+        p.error("--typing-delay, --pre-roll and --final-hold cannot be negative")
+    if args.record is not None and args.backend != "headless":
+        p.error("--record uses --backend headless so --size and output geometry are deterministic")
+    if args.record is not None and args.stage_only:
+        p.error("--record and --stage-only are different modes and cannot be combined")
+    if args.record is not None and min(args.typing_delay, args.pre_roll, args.final_hold) <= 0:
+        p.error("recorded beat durations must be positive")
+
     target = args.worktree / "target" / "debug"
+    release_notes = args.payload or args.worktree / "target" / "release" / "notes"
     binaries = {
         "shell": target / "shell",
-        "sheets": target / "sheets",
+        # The package on camera should be the binary a user would fetch, not a
+        # 300+ MB debug executable.  Keep the compositor debug-built because
+        # QOS_TEST_CONTROL is deliberately absent from shipped release builds.
+        "notes": release_notes,
         "qos-install": target / "qos-install",
         "qos-launcher": target / "qos-launcher",
         "qos-catalogue": target / "qos-catalogue",
@@ -546,7 +721,8 @@ def main() -> int:
     missing = [f"{k} ({v})" for k, v in binaries.items() if not v.exists()]
     if missing:
         print("FAIL: not built:\n  " + "\n  ".join(missing), file=sys.stderr)
-        print("\n  cargo build -p shell -p sheets -p install -p launcher"
+        print("\n  cargo build -p shell -p notes -p install -p launcher"
+              "\n  cargo build --release -p notes"
               "\n  cargo build -p app-catalogue --bins --examples", file=sys.stderr)
         return 1
 
@@ -566,7 +742,7 @@ def main() -> int:
     home = pathlib.Path(home_env["HOME"])
 
     # One workspace, one strip, nothing in it. The compositor's default
-    # bootstrap seeds demo tabs, and a capture of those plus Sheets is
+    # bootstrap seeds demo tabs, and a capture of those plus Notes is
     # half somebody else's app.
     qos_dir = pathlib.Path(home_env["XDG_CONFIG_HOME"]) / "qos"
     qos_dir.mkdir(parents=True, exist_ok=True)
@@ -591,13 +767,14 @@ def main() -> int:
     env_extra = {
         **home_env,
         # The install root. Empty, which is what makes "this machine
-        # does not have Sheets" true rather than asserted.
+        # does not have Notes" true rather than asserted.
         "QOS_APPS_DATA_DIR": str(apps_dir),
         "QOS_STORE_CONFIG_DIR": str(store_config),
         "QOS_STORE_CACHE_DIR": str(store_cache),
         "QOS_CATALOGUE_BIN": str(binaries["qos-catalogue"]),
         "QOS_INSTALL_BIN": str(binaries["qos-install"]),
         "QOS_LAUNCHER_BIN": str(binaries["qos-launcher"]),
+        "NIRIOS_HEADLESS_SIZE": f"{args.size[0]}x{args.size[1]}",
     }
 
     shell_log = args.out / "compositor.log"
@@ -610,10 +787,10 @@ def main() -> int:
     print(f"staged HOME: {home}")
     print(f"install root: {apps_dir}  (empty)")
 
-    with Registry(binaries["serve-test-registry"], binaries["sheets"],
+    with Registry(binaries["serve-test-registry"], binaries["notes"],
                   store_config, registry_log) as reg:
         print(f"registry: {reg.base_url}  serving {PACKAGE_ID} packed from "
-              f"{binaries['sheets']}")
+              f"{binaries['notes']}")
 
         # --- 1. offered, and not here ---------------------------------
         probe_env = {**os.environ, **env_extra}
@@ -640,7 +817,7 @@ def main() -> int:
                         args.backend) as comp:
             if args.stage_only:
                 print("\nthe scene is set — nothing has been driven.\n")
-                print(f"  Sheets is offered and not installed")
+                print(f"  Notes is offered and not installed")
                 print(f"  compositor:  {args.backend} backend, "
                       f"log {shell_log}")
                 print(f"  socket:      {comp.sock}")
@@ -654,9 +831,33 @@ def main() -> int:
                 except KeyboardInterrupt:
                     print("\ntearing down.")
                 return 0
+            recorder = None
             try:
+                if args.record is not None:
+                    # Warm the shell's own catalogue cache before the take.  The
+                    # first palette query schedules an asynchronous registry
+                    # refresh; filming that implementation detail leaves a
+                    # blank result list for a couple of seconds.  This dry run
+                    # fetches no package and launches nothing.  The recorded
+                    # run below still begins with an empty install root and
+                    # performs the complete signed fetch/install/open path.
+                    comp.open_palette(args.chord)
+                    time.sleep(0.4)
+                    comp.type_text(QUERY)
+                    time.sleep(0.5)
+                    _, warm_row = wait_for_row(comp, args.row_timeout)
+                    check_row_wording(warm_row)
+                    comp.key("Escape")
+                    time.sleep(0.35)
+
+                    recorder = FrameRecorder(comp, args.out / "recording-frames")
+                    recorder.start()
+                    recorder.capture("desktop", args.pre_roll)
+
                 comp.open_palette(args.chord)
                 time.sleep(0.6)
+                if recorder is not None:
+                    recorder.capture("palette-open", 0.35)
                 pal = comp.palette()
                 check(pal.get("visible") is True,
                       f"{args.chord} must open the palette; palette was {pal}")
@@ -667,22 +868,37 @@ def main() -> int:
                 # indistinguishable from the outside.
                 scope = comp.state().get("chrome", {}).get("search_scope")
                 print(f"  scope: {scope}")
-                # The catalogue's first answer is a cold cache. Give the
-                # background fetch the moment it needs before typing, so
-                # the row is there when the name is finished.
-                time.sleep(2.0)
+                # A check-only run has a cold in-process cache; a filmed run
+                # warmed it above so the letters and matching row can arrive
+                # at a human pace with no artificial blank pause.
+                if args.record is None:
+                    time.sleep(2.0)
 
-                comp.type_text(QUERY)
+                # Send the same text events a keyboard does, one readable
+                # beat at a time when a camera is running.
+                if args.record is not None:
+                    for character in QUERY:
+                        comp.type_text(character)
+                        # Give the real provider/layout pass a tick, then paint
+                        # exactly what it produced for this prefix.
+                        time.sleep(0.08)
+                        recorder.capture(f"query-{comp.palette().get('query', '')}",
+                                         args.typing_delay)
+                else:
+                    comp.type_text(QUERY)
                 time.sleep(1.0)
                 pal, row = wait_for_row(comp, args.row_timeout)
                 check_row_wording(row)
                 # Enter takes the selected row, so "the row exists" is
-                # not the same claim as "Enter opens Sheets".
+                # not the same claim as "Enter opens Notes".
                 check(pal.get("selected_id") == row["id"],
                       f"Enter must be about to activate {row['label']!r} "
                       f"({row['id']}), but the selected row is "
                       f"{pal.get('selected_id')!r} out of {pal.get('rows')}")
-                comp.snapshot(palette_png)
+                if recorder is not None:
+                    recorder.capture("verified-result", 0.45, mirror=palette_png)
+                else:
+                    comp.snapshot(palette_png)
                 print(f"  palette row: {row['label']!r} / "
                       f"{row.get('description')!r}  → {palette_png}")
 
@@ -693,7 +909,7 @@ def main() -> int:
                 # quietly doing nothing.
                 before = len(comp.notifications())
                 comp.key("Enter")
-                time.sleep(1.0)
+                time.sleep(0.2)
                 after = comp.notifications()
                 check(len(after) > before or any(
                     DISPLAY_NAME in n.get("title", "") for n in after),
@@ -707,26 +923,67 @@ def main() -> int:
                 # from somewhere. Captured while it is still up: it is
                 # retired by the app starting, not by a timer, so it is
                 # gone from the final frame.
-                comp.snapshot(pending_png)
+                if recorder is not None:
+                    recorder.capture("opening", 0.65, mirror=pending_png)
+                else:
+                    comp.snapshot(pending_png)
 
                 # --- 4. tab, then a frame of its own ----------------
                 adopted = wait_for_tab(comp, args.tab_timeout)
                 check(bool(adopted),
-                      "no tab appeared for Sheets. Compositor log: "
+                      "no tab appeared for Notes. Compositor log: "
                       + " | ".join(app_log_lines(shell_log, PACKAGE_ID)[-6:]))
                 print(f"  adopted as a tab: {', '.join(adopted)}")
 
                 frame = wait_for_first_frame(comp, args.frame_timeout)
                 comp.key("Escape")  # dismiss the palette before the capture
                 time.sleep(0.5)
-                comp.snapshot(tab_png)
+                if recorder is not None:
+                    final_beat = args.final_hold / 3.0
+                    recorder.capture("notes-final-1", final_beat, mirror=tab_png)
+                else:
+                    comp.snapshot(tab_png)
                 check(frame is not None,
                       "the compositor tracked no frames for the tab at all")
                 check((frame.get("frame_seq") or 0) > 0,
                       "the tab never presented a frame of its own — "
-                      f"{tab_png} is the first-frame placeholder, not Sheets "
+                      f"{tab_png} is the first-frame placeholder, not Notes "
                       f"({frame})")
+                check_frame_in_viewport(frame, args.size)
+                check(png_size(tab_png) == args.size,
+                      f"poster is {png_size(tab_png)[0]}x{png_size(tab_png)[1]}, "
+                      f"expected {args.size[0]}x{args.size[1]}")
                 print(f"  first frame: frame_seq={frame['frame_seq']}  → {tab_png}")
+
+                if recorder is not None:
+                    # Three independently painted final frames: the timeline
+                    # ends on the actual client, and one lucky snapshot cannot
+                    # stand in for a stable presented state.
+                    recorder.capture("notes-final-2", final_beat)
+                    recorder.capture("notes-final-3", final_beat)
+                    recorder.stop()
+                    final_notes_frames = [
+                        current for current in comp.foreign_frames()
+                        if PACKAGE_ID in str(current.get("app_id", ""))
+                        and (current.get("frame_seq") or 0) > 0
+                    ]
+                    check(bool(final_notes_frames),
+                          "the final recorded state does not contain a presented "
+                          f"frame from {PACKAGE_ID}")
+                    check_frame_in_viewport(final_notes_frames[0], args.size)
+                    print("  final captured client: "
+                          f"{final_notes_frames[0].get('app_id')} "
+                          f"frame_seq={final_notes_frames[0].get('frame_seq')} "
+                          f"rect={final_notes_frames[0].get('rect')}")
+                    recorder.encode(args.record)
+                    check(video_size(args.record) == args.size,
+                          f"video is {video_size(args.record)[0]}x"
+                          f"{video_size(args.record)[1]}, expected "
+                          f"{args.size[0]}x{args.size[1]}")
+                    print(f"  recorded: {len(recorder.samples)} verified event frames "
+                          f"→ {args.record}")
+                    if not args.keep_recording_frames:
+                        shutil.rmtree(recorder.frames_dir)
 
                 # With a tab in front of you the two chords stop being
                 # interchangeable, and this is where that becomes
@@ -738,7 +995,7 @@ def main() -> int:
                 for chord in ("super-k", "ctrl-k"):
                     comp.open_palette(chord)
                     time.sleep(0.5)
-                    print(f"  with Sheets focused, {chord} → scope "
+                    print(f"  with Notes focused, {chord} → scope "
                           f"{comp.state().get('chrome', {}).get('search_scope')}")
                     comp.key("Escape")
                     time.sleep(0.3)
@@ -746,7 +1003,12 @@ def main() -> int:
                 if args.hold > 0:
                     print(f"  holding for {args.hold:.0f}s ...")
                     time.sleep(args.hold)
-            except (Failure, RuntimeError) as e:
+            except (Failure, RuntimeError, OSError, subprocess.CalledProcessError) as e:
+                if recorder is not None:
+                    try:
+                        recorder.stop()
+                    except RuntimeError as record_error:
+                        print(f"      recorder teardown: {record_error}", file=sys.stderr)
                 print(f"FAIL: {e}", file=sys.stderr)
                 print(f"      compositor log: {shell_log}", file=sys.stderr)
                 print(f"      registry log:   {registry_log}", file=sys.stderr)
@@ -757,6 +1019,8 @@ def main() -> int:
     print(f"  {palette_png}")
     print(f"  {pending_png}")
     print(f"  {tab_png}")
+    if args.record is not None:
+        print(f"  {args.record}")
     return 0
 
 

@@ -129,11 +129,17 @@ mod tests {
     use super::*;
 
     fn gradient(w: u32, h: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        let mut out = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4) as usize);
         for y in 0..h {
             for x in 0..w {
-                out.push(((x * 255) / w.max(1)) as u8);
-                out.push(((y * 255) / h.max(1)) as u8);
+                out.push(
+                    u8::try_from(x.saturating_mul(255).checked_div(w.max(1)).unwrap_or(0))
+                        .unwrap_or(255),
+                );
+                out.push(
+                    u8::try_from(y.saturating_mul(255).checked_div(h.max(1)).unwrap_or(0))
+                        .unwrap_or(255),
+                );
                 out.push(128);
                 out.push(255);
             }

@@ -27,6 +27,8 @@ pub fn default_socket_path() -> PathBuf {
 /// Returns an error if creating the socket directory, binding to the socket,
 /// or setting socket permissions fails.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -35,7 +37,6 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket)?;
     // Lock the socket to user-only.
-    use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
     Ok(listener)
 }
@@ -63,6 +64,12 @@ pub async fn serve(listener: UnixListener, router: Router) -> anyhow::Result<()>
 /// # Errors
 ///
 /// Returns an error if the RPC system encounters an error.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc's RpcSystem is !Send by design (single-threaded object model); this \
+              future is only ever driven via tokio::task::spawn_local on a LocalSet, never sent \
+              across threads"
+)]
 pub async fn handle_connection(
     stream: tokio::net::UnixStream,
     router: Router,
@@ -74,7 +81,7 @@ pub async fn handle_connection(
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let service = FormatRouterService::new(router);
     let client: format_router::Client = capnp_rpc::new_client(service);

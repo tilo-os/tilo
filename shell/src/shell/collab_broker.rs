@@ -12,7 +12,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use collab_types::{
-    ArtifactId, ChannelState, OpClass, RedactedMarker, ValidationError, validate_inbound_op,
+    ArtifactId, ArtifactKind, ChannelState, DocumentMutation, OpClass, RedactedMarker,
+    ValidationError, document_artifact_id, document_attestation_id, validate_admitted_inbound_op,
 };
 use ui::collaboration::CollabEvent;
 
@@ -22,8 +23,8 @@ pub use crate::shell::collab_core::{
 };
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::network::{
-    InboundAppCrdt, InboundAppCrdtSigned, InboundAppPresence, InboundScrollbackRequest,
-    InboundScrollbackResponse, ShellNetwork,
+    InboundAppPresence, InboundDocument, InboundScrollbackRequest, InboundScrollbackResponse,
+    ShellNetwork,
 };
 
 /// What a room calls the peers in it, keyed by the handle presence
@@ -308,7 +309,7 @@ impl RoomSubscription {
 }
 
 impl FanoutState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
@@ -406,6 +407,24 @@ pub struct BrokerHandle {
     channels: Arc<Mutex<BrokerChannels>>,
 }
 
+/// Cloneable, thread-safe slice of the broker used by shell chrome. Keeping
+/// the join handles out of the closure avoids extending broker lifetime or
+/// creating an ownership cycle with the root widget.
+#[derive(Clone)]
+pub struct SessionFollowDispatcher {
+    fanout: Arc<FanoutState>,
+}
+
+impl SessionFollowDispatcher {
+    pub fn set(&self, room: &str, peer_id: Option<String>) {
+        self.fanout.fanout_to_route(
+            &CollabEvent::FollowChanged { peer_id },
+            u64::MAX,
+            &CrdtRoute::cluster(room.to_string()),
+        );
+    }
+}
+
 impl BrokerHandle {
     /// Number of typed connections accepted since this broker started.
     pub fn peer_count(&self) -> usize {
@@ -426,6 +445,25 @@ impl BrokerHandle {
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
         self.fanout
             .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
+    }
+
+    /// Bind every local app in `room` to one participant's published view,
+    /// or release the binding. This is session-local and never enters the
+    /// peer publisher; each app already receives that participant's normal
+    /// view-presence frames and applies them through `ui::App::follow`.
+    pub fn set_follow_target(&self, room: &str, peer_id: Option<String>) {
+        self.fanout_event(
+            &CollabEvent::FollowChanged { peer_id },
+            None,
+            &CrdtRoute::cluster(room.to_string()),
+        );
+    }
+
+    #[must_use]
+    pub fn follow_dispatcher(&self) -> SessionFollowDispatcher {
+        SessionFollowDispatcher {
+            fanout: Arc::clone(&self.fanout),
+        }
     }
 
     /// Subscribe this process to the rooms it hosts. The sink runs on
@@ -492,43 +530,36 @@ impl Drop for BrokerHandle {
 pub fn spawn_native(
     capnp_socket_path: PathBuf,
     peer_sync: &Option<Arc<ShellNetwork>>,
-) -> std::io::Result<BrokerHandle> {
-    let identity = LocalIdentity::from_network(peer_sync.clone());
-    let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync.as_ref(), &identity, &publisher)
-}
-
-/// Test-only variant of [`spawn_native`] that takes an explicit
-/// [`LocalIdentity`] instead of deriving one from `peer_sync`.
-///
-/// # Errors
-///
-/// Same failure mode as [`spawn_native`]: the Cap'n Proto socket at
-/// `capnp_socket_path` could not be bound.
-#[cfg(test)]
-pub fn spawn_native_with_identity(
-    capnp_socket_path: PathBuf,
-    peer_sync: &Option<Arc<ShellNetwork>>,
-    identity: &Arc<LocalIdentity>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync.as_ref(), identity, &publisher)
+    spawn_inner(
+        capnp_socket_path,
+        peer_sync.as_ref(),
+        &publisher,
+        Some(membership),
+        None,
+    )
 }
 
-/// Test-only variant of [`spawn_native`] that takes an explicit
-/// [`PeerPublisher`] and runs with no peer-sync network at all.
-///
-/// # Errors
-///
-/// Same failure mode as [`spawn_native`]: the Cap'n Proto socket at
-/// `capnp_socket_path` could not be bound.
-#[cfg(test)]
-pub fn spawn_native_with_publisher(
+/// Spawn the production broker pipeline with an explicit enrolled-device set.
+/// Intended for integration harnesses that do not have the desktop identity
+/// registry on disk; certificate, proof, membership, role, and op validation
+/// remain identical to production.
+#[doc(hidden)]
+pub fn spawn_native_harness(
     capnp_socket_path: PathBuf,
-    publisher: &Arc<PeerPublisher>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
 ) -> std::io::Result<BrokerHandle> {
-    let identity = LocalIdentity::from_network(None);
-    spawn_inner(capnp_socket_path, None, &identity, publisher)
+    let publisher = PeerPublisher::disabled();
+    spawn_inner(
+        capnp_socket_path,
+        None,
+        &publisher,
+        Some(membership),
+        Some(Arc::new(trusted_devices)),
+    )
 }
 
 /// Inbound queues + shared fanout state the drain thread polls each
@@ -537,10 +568,8 @@ pub fn spawn_native_with_publisher(
 /// itself — see the `drain_*` methods below, extracted from what used
 /// to be one large loop body.
 struct DrainQueues {
-    inbound: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    snapshot_inbound: Arc<Mutex<Vec<InboundAppCrdt>>>,
     presence_inbound: Arc<Mutex<Vec<InboundAppPresence>>>,
-    signed_inbound: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    documents: Arc<Mutex<Vec<InboundDocument>>>,
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
     table: Arc<FanoutState>,
@@ -562,68 +591,10 @@ impl DrainQueues {
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) -> bool {
-        self.drain_incremental()
-            && self.drain_snapshots()
-            && self.drain_presence(labels, announced)
-            && self.drain_signed(labels, announced)
+        self.drain_presence(labels, announced)
+            && self.drain_documents(labels, announced)
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
-    }
-
-    /// Drain inbound unsigned CRDT increments.
-    fn drain_incremental(&self) -> bool {
-        let drained: Vec<_> = {
-            let Ok(mut buf) = self.inbound.lock() else {
-                return false;
-            };
-            std::mem::take(&mut *buf)
-        };
-        for entry in drained {
-            tracing::info!(
-                target: "qos_collab_probe",
-                app = %entry.app_id,
-                cluster = %entry.cluster_id,
-                record = %entry.record_id,
-                bytes = entry.data.len(),
-                "PROBE drain incremental -> local fanout",
-            );
-            let event = CollabEvent::CRDTIncremental { data: entry.data };
-            // Deliver only to apps that announced the same
-            // app+cluster; no local peer skipped by id since
-            // the update originated outside this host.
-            let route = CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
-            self.table.fanout_to_route(&event, u64::MAX, &route);
-        }
-        true
-    }
-
-    /// Drain inbound whole-document snapshots, sent because this
-    /// host's app announced `Arrived`. Delivered as `CRDTUpdate`, which
-    /// the toolkit merges rather than assigns — a snapshot arriving
-    /// after the local user typed must not discard it. Routed by the
-    /// full record triple: a document merged into the wrong record is
-    /// unrecoverable, not just noisy.
-    fn drain_snapshots(&self) -> bool {
-        let drained_snapshots: Vec<_> = {
-            let Ok(mut buf) = self.snapshot_inbound.lock() else {
-                return false;
-            };
-            std::mem::take(&mut *buf)
-        };
-        for entry in drained_snapshots {
-            tracing::info!(
-                target: "qos_collab_probe",
-                app = %entry.app_id,
-                cluster = %entry.cluster_id,
-                record = %entry.record_id,
-                bytes = entry.data.len(),
-                "PROBE drain snapshot -> local fanout",
-            );
-            let event = CollabEvent::CRDTUpdate { data: entry.data };
-            let route = CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
-            self.table.fanout_to_route(&event, u64::MAX, &route);
-        }
-        true
     }
 
     /// Drain inbound presence, attributed to its sender. Cluster scope,
@@ -646,12 +617,6 @@ impl DrainQueues {
             let Some((key, payload)) = decoded else {
                 continue;
             };
-            // `Arrived` means the peer has no document
-            // yet; note it so the next snapshot this
-            // host's apps produce gets published.
-            if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
-                self.net.note_snapshot_request(&entry.cluster_id);
-            }
             let user_id = remote_participant_id(
                 &entry.cluster_id,
                 entry.peer,
@@ -673,13 +638,13 @@ impl DrainQueues {
 
     /// Validate inbound signed ops against local channel state, record
     /// on success, fan to local apps.
-    fn drain_signed(
+    fn drain_documents(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) -> bool {
         let drained_signed: Vec<_> = {
-            let Ok(mut buf) = self.signed_inbound.lock() else {
+            let Ok(mut buf) = self.documents.lock() else {
                 return false;
             };
             std::mem::take(&mut *buf)
@@ -687,29 +652,33 @@ impl DrainQueues {
         for entry in drained_signed {
             let envelope = *entry.envelope;
             let artifact = envelope.artifact;
-            let validation = {
+            let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
+            let mutation = validate_document_route(&route, &envelope);
+            let validation = if let Err(reason) = &mutation {
+                Err(reason.clone())
+            } else {
                 let Ok(mut ch) = self.channels.lock() else {
-                    continue;
+                    return false;
                 };
                 let state = ch.state_for(artifact);
-                validate_inbound_op(&envelope, state)
+                state.artifacts.insert(artifact, ArtifactKind::Note);
+                state.artifact_apps.insert(artifact, entry.app_id.clone());
+                validate_admitted_inbound_op(
+                    &envelope,
+                    entry.role,
+                    state,
+                    std::time::SystemTime::now(),
+                    Duration::from_secs(300),
+                )
             };
-            match validation {
-                Ok(()) => {
-                    // Built from individual fields, not `&entry` —
-                    // `entry.envelope` was moved out above, and a
-                    // struct with a moved-out field can no longer be
-                    // borrowed as a whole.
-                    let route =
-                        CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
-                    self.accept_signed_op(
-                        envelope, artifact, entry.peer, &route, labels, announced,
-                    );
+            match (mutation, validation) {
+                (Ok(_), Ok(())) => {
+                    self.accept_signed_op(envelope, entry.peer, &route, labels, announced);
                 }
-                Err(ValidationError::OpAlreadyRedacted { target }) => {
+                (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
                     self.record_already_redacted(envelope, artifact, target);
                 }
-                Err(reason) => {
+                (_, Err(reason)) => {
                     tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
                     if let Ok(mut ch) = self.channels.lock() {
                         ch.audit.record(
@@ -722,23 +691,24 @@ impl DrainQueues {
                         );
                     }
                 }
+                (Err(_), Ok(())) => return false,
             }
         }
         true
     }
 
     /// Record a signed op that passed validation and fan it to local
-    /// apps — the `Ok(())` arm of [`Self::drain_signed`]'s per-entry
+    /// apps — the `Ok(())` arm of [`Self::drain_documents`]'s per-entry
     /// match, split out to keep that match's arms short.
     fn accept_signed_op(
         &self,
         envelope: collab_types::SignedOp,
-        artifact: ArtifactId,
         peer: u64,
         route: &CrdtRoute,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) {
+        let artifact = envelope.artifact;
         if let Ok(mut ch) = self.channels.lock() {
             let state = ch.state_for(artifact);
             state.record_validated_op(envelope.clone());
@@ -762,13 +732,11 @@ impl DrainQueues {
             labels,
             announced,
         );
-        let event = CollabEvent::SignedCRDTIncremental {
+        let event = CollabEvent::Document {
             envelope: Box::new(envelope),
             from_user_id,
         };
-        // Same app + cluster stamp as unsigned envelopes; an
-        // unaddressed one (too old to stamp) is dropped, not shown to
-        // every app.
+        // An unaddressed route is dropped rather than shown to every app.
         self.table.fanout_to_route(&event, u64::MAX, route);
     }
 
@@ -872,11 +840,26 @@ impl DrainQueues {
     }
 }
 
+fn validate_document_route(
+    route: &CrdtRoute,
+    envelope: &collab_types::SignedOp,
+) -> Result<DocumentMutation, ValidationError> {
+    if envelope.artifact != document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id)
+        || envelope.attestation_id
+            != document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id)
+        || envelope.encryption.is_some()
+    {
+        return Err(ValidationError::DocumentRouteMismatch);
+    }
+    DocumentMutation::decode(&envelope.payload).map_err(|_| ValidationError::DocumentRouteMismatch)
+}
+
 fn spawn_inner(
     capnp_socket_path: PathBuf,
     peer_sync: Option<&Arc<ShellNetwork>>,
-    identity: &Arc<LocalIdentity>,
     publisher: &Arc<PeerPublisher>,
+    membership: Option<crate::shell::state::WorkspaceTreeHandle>,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -887,18 +870,15 @@ fn spawn_inner(
     let pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Inbound-drain: when peer-sync is on, drain `ShellNetwork`'s queues
-    // every 100ms and fan to local apps — unsigned/signed CRDT deltas,
-    // snapshots, presence, and cooperative scrollback requests/responses.
+    // Inbound-drain: when peer-sync is on, drain signed documents, presence,
+    // and cooperative scrollback requests/responses every 100ms.
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
-            inbound: net.inbound_app_crdt_handle(),
             presence_inbound: net.inbound_app_presence_handle(),
-            snapshot_inbound: net.inbound_app_crdt_snapshot_handle(),
-            signed_inbound: net.inbound_app_crdt_signed_handle(),
+            documents: net.inbound_documents_handle(),
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
             table: Arc::clone(&table),
@@ -935,7 +915,8 @@ fn spawn_inner(
         &table,
         Arc::clone(&channels),
         Arc::clone(publisher),
-        Arc::clone(identity),
+        membership,
+        trusted_devices,
         Arc::clone(&capnp_quit),
     )?;
 
@@ -1043,6 +1024,53 @@ mod tests {
     const PEER: &str = "peer@5537458103208628978";
 
     #[test]
+    fn document_routes_stay_with_their_app_and_record() {
+        let document = CrdtRoute::record("dev.qos.notes", "room-1", "note-1");
+
+        assert!(document.delivers_to(&document));
+        assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.files", "room-1", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.notes", "room-1", "note-2",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.notes", "room-2", "note-1",)));
+    }
+
+    #[test]
+    fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
+        let route = CrdtRoute::record("dev.qos.notes", "room-1", "record-1");
+        let (signing, author) = collab_types::generate_keypair();
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"whole document".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            author,
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, &signing).expect("signed snapshot");
+
+        assert!(matches!(
+            validate_document_route(&route, &envelope),
+            Ok(DocumentMutation::Snapshot(data)) if data == b"whole document"
+        ));
+        assert_eq!(
+            validate_document_route(
+                &CrdtRoute::record("dev.qos.notes", "room-1", "record-2"),
+                &envelope,
+            ),
+            Err(ValidationError::DocumentRouteMismatch),
+            "an envelope signed for one record cannot be replayed as another",
+        );
+        envelope.payload = b"untyped bytes".to_vec();
+        assert_eq!(
+            validate_document_route(&route, &envelope),
+            Err(ValidationError::DocumentRouteMismatch),
+        );
+    }
+
+    #[test]
     fn a_named_peer_is_announced_and_then_left_alone() {
         assert_eq!(
             super::roster_announcement(None, Some("bob"), PEER),
@@ -1132,6 +1160,33 @@ mod tests {
             vec![(format!("peer@{HANDLE}"), "bob".to_string())],
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
+        );
+    }
+
+    #[test]
+    fn follow_dispatcher_is_local_and_room_scoped() {
+        let table = Arc::new(super::FanoutState::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::FollowChanged { peer_id } = event
+                    && let Ok(mut rows) = sink_seen.lock()
+                {
+                    rows.push(peer_id.clone());
+                }
+            }),
+        );
+        let dispatcher = super::SessionFollowDispatcher {
+            fanout: Arc::clone(&table),
+        };
+        dispatcher.set("room-2", Some("peer@wrong".into()));
+        dispatcher.set("room-1", Some("peer@7".into()));
+        dispatcher.set("room-1", None);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("peer@7".to_string()), None]
         );
     }
 

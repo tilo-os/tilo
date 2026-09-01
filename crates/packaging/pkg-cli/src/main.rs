@@ -329,8 +329,12 @@ fn cmd_verify(trusted_hex: &[String], file: &Path) -> Result<()> {
 }
 
 fn cmd_inspect(file: &Path) -> Result<()> {
+    let archive_size = std::fs::metadata(file)
+        .with_context(|| format!("stat {}", file.display()))?
+        .len();
     let (id, store) = read_qpkg(file)?;
     println!("package-id: {id}");
+    println!("archive-size: {archive_size} bytes");
     let signed_bytes = store
         .get(&BlobHash(*id.as_bytes()))
         .map_err(|e| anyhow!("store: {e}"))?
@@ -362,6 +366,17 @@ fn cmd_inspect(file: &Path) -> Result<()> {
         .map_err(|e| anyhow!("store: {e}"))?
         .ok_or_else(|| anyhow!("collection blob missing"))?;
     let collection = Collection::decode(&collection_bytes)?;
+    let payload_size: u64 = collection
+        .entries
+        .values()
+        .filter_map(|hash| store.get(hash).ok().flatten())
+        .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        .sum();
+    println!("payload-size: {payload_size} bytes");
+    println!(
+        "package-overhead: {} bytes",
+        archive_size.saturating_sub(payload_size)
+    );
     println!("--- payload ({} files) ---", collection.entries.len());
     for (p, h) in &collection.entries {
         let size = store.get(h).ok().flatten().map_or(0, |b| b.len());
@@ -526,7 +541,13 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
     // Per-file blobs.
     for (h, b) in store.iter() {
         // Skip the three blobs already written under human-readable names;
-        // they also live under blobs/<hex> for tooling that dedupes by hash.
+        // readers ingest those names into the same content-addressed store.
+        if *h == BlobHash(*id.as_bytes())
+            || *h == signed_decoded.manifest_hash
+            || *h == signed_decoded.payload_root_hash
+        {
+            continue;
+        }
         let name = format!("blobs/{h}");
         tar_append_bytes(&mut tar, &name, b)?;
     }

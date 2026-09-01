@@ -495,6 +495,15 @@ impl OskWidget {
     }
 
     /// The layout currently on screen.
+    ///
+    /// # Panics
+    /// Never in practice: `layouts` always holds at least the symbols layer
+    /// plus one letter layout (see the field doc on `OskWidget::layouts`),
+    /// so the last-resort fallback below always has something to return.
+    #[allow(
+        clippy::unreachable,
+        reason = "layouts is guaranteed non-empty by construction; see this fn's # Panics doc"
+    )]
     fn current_layout(&self) -> &KeyboardLayout {
         let name = self.active_layout_name();
         self.layouts
@@ -578,7 +587,10 @@ impl OskWidget {
     /// refilled with predictions.
     fn commit_current_word(&mut self) {
         if !self.current_word.is_empty() {
-            self.prev_word = Some(self.current_word.to_lowercase());
+            let committed = self.current_word.to_lowercase();
+            self.predictor
+                .learn_transition(self.prev_word.as_deref(), &committed);
+            self.prev_word = Some(committed);
             self.current_word.clear();
         }
         self.refresh_next_word_suggestions();
@@ -625,7 +637,10 @@ impl OskWidget {
         }
         self.pending_text.push_str(word);
         self.current_word.clear();
-        self.prev_word = Some(word.to_lowercase());
+        let committed = word.to_lowercase();
+        self.predictor
+            .learn_transition(self.prev_word.as_deref(), &committed);
+        self.prev_word = Some(committed);
         self.refresh_next_word_suggestions();
     }
 
@@ -643,7 +658,10 @@ impl OskWidget {
             // Next-word pick: insert "word ".
             self.pending_text.push_str(&s.word);
             self.pending_text.push(' ');
-            self.prev_word = Some(s.word.to_lowercase());
+            let committed = s.word.to_lowercase();
+            self.predictor
+                .learn_transition(self.prev_word.as_deref(), &committed);
+            self.prev_word = Some(committed);
             self.refresh_next_word_suggestions();
         } else {
             self.replace_current_word(&s.word);
@@ -725,6 +743,13 @@ impl OskWidget {
 /// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
 /// doesn't take four separate `bool` parameters.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this struct IS the bool-bundling fix for draw_cell's argument count; \
+              its four fields are independent interaction/visual flags for one \
+              cell, and splitting them into sub-structs would not express any \
+              real invariant between them"
+)]
 struct CellState {
     hovered: bool,
     pressed: bool,

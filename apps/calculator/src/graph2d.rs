@@ -331,6 +331,7 @@ impl Graph2dScreen {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
