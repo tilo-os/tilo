@@ -48,7 +48,7 @@ pub enum EventOutcome {
     RemoveMember(UserId),
     Revoke(String),
     SelectTab(WsTab),
-    CopyInvite,
+    CreateInvite,
     EditName,
     CommitName,
 }
@@ -71,7 +71,6 @@ pub struct WorkspaceSettingsOverlay {
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
-    invite_copied_at: Option<Instant>,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -84,7 +83,6 @@ impl Default for WorkspaceSettingsOverlay {
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
-            invite_copied_at: None,
         }
     }
 }
@@ -170,11 +168,11 @@ impl WorkspaceSettingsOverlay {
         )
     }
 
-    pub fn copy_rect(&self) -> Rect {
-        Self::copy_rect_for(self.rect())
+    pub fn invite_rect(&self) -> Rect {
+        Self::invite_rect_for(self.rect())
     }
 
-    pub fn copy_rect_for(card: Rect) -> Rect {
+    pub fn invite_rect_for(card: Rect) -> Rect {
         let body = Self::body_rect_for(card);
         let link_y = body.y0 + 202.0;
         Rect::new(body.x1 - 88.0, link_y, body.x1 - 16.0, link_y + 34.0)
@@ -186,14 +184,6 @@ impl WorkspaceSettingsOverlay {
 
     pub fn is_animating(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
-    }
-
-    pub fn invite_copied_at(&self) -> Option<Instant> {
-        self.invite_copied_at
-    }
-
-    pub fn mark_invite_copied(&mut self, now: Instant) {
-        self.invite_copied_at = Some(now);
     }
 
     pub fn tab_pill_rect(&self, tab: WsTab) -> Rect {
@@ -382,8 +372,8 @@ impl WorkspaceSettingsOverlay {
                 return EventOutcome::SelectTab(*tab);
             }
         }
-        if matches!(active_tab, WsTab::General) && self.copy_rect().contains(point) {
-            return EventOutcome::CopyInvite;
+        if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
+            return EventOutcome::CreateInvite;
         }
         if self.name_rect().contains(point) {
             EventOutcome::EditName
@@ -471,13 +461,16 @@ impl WorkspaceSettingsOverlay {
             active_name.as_str(),
             body_y,
         );
+        let can_invite = tree.active_workspace().is_some_and(|workspace| {
+            tree.governs_room(workspace.room) && workspace.may_administer(&state.local_user_id)
+        });
         let invite_y = self.draw_ws_settings_invite_link(
             scene,
             transform,
             text_renderer,
             theme,
             rect,
-            &tree,
+            can_invite,
             body_y,
         );
         let collab_y = invite_y + 72.0;
@@ -1068,11 +1061,11 @@ impl WorkspaceSettingsOverlay {
         editing
     }
 
-    /// Sharing card with the workspace's stable invitation URI.
+    /// Sharing card that opens the signed invite composer.
     #[allow(
         clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the tree the invite \
-                  URL is derived from; matching every other draw_ws_settings_* helper \
+        reason = "one positional argument per painted value, plus the invite permission \
+                  state; matching every other draw_ws_settings_* helper \
                   in this impl"
     )]
     fn draw_ws_settings_invite_link(
@@ -1082,7 +1075,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        tree: &WorkspaceTree,
+        can_invite: bool,
         _body_y: f64,
     ) -> f64 {
         let tokens = &theme.tokens;
@@ -1111,51 +1104,49 @@ impl WorkspaceSettingsOverlay {
             None,
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
-        // Mirrors WorkspaceSettings::invite_link's format so the URL is
-        // stable per workspace id.
-        let invite_url = tree.active_workspace().map_or_else(
-            || "quickdesktop://invite/0".to_string(),
-            |w| format!("quickdesktop://invite/{}", u64::from(w.id)),
-        );
+        let invite_url = if can_invite {
+            "Choose a person and role; qOS signs a one-hour invite."
+        } else {
+            "Only a governing administrator can create workspace invites."
+        };
         text_renderer.draw_text(
             scene,
-            &invite_url,
+            invite_url,
             tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
             None,
         );
-        let copy_btn = self.copy_rect();
+        let invite_btn = self.invite_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5],
+            if can_invite {
+                colors.accent[5]
+            } else {
+                colors.surfaces.base
+            },
             None,
             &RoundedRect::from_rect(
-                copy_btn,
-                ui::chrome::ChromeRole::Control.radius(theme, copy_btn.height()),
+                invite_btn,
+                ui::chrome::ChromeRole::Control.radius(theme, invite_btn.height()),
             ),
         );
-        // "Copied" replaces the label briefly, or the button looks
-        // indistinguishable from one that did nothing.
-        let copy_label = if self
-            .invite_copied_at()
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
-        {
-            "Copied"
-        } else {
-            "Copy"
-        };
-        let (cw, _ch) = text_renderer.measure(copy_label, tokens.typography.scale.sm, None);
+        let invite_label = "Create";
+        let (cw, _ch) = text_renderer.measure(invite_label, tokens.typography.scale.sm, None);
         text_renderer.draw_text(
             scene,
-            copy_label,
+            invite_label,
             tokens.typography.scale.sm,
-            colors.text_primary,
+            if can_invite {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
             transform.pre_translate(
                 (
-                    copy_btn.x0 + (copy_btn.width() - f64::from(cw)) / 2.0,
-                    copy_btn.y0 + 9.0,
+                    invite_btn.x0 + (invite_btn.width() - f64::from(cw)) / 2.0,
+                    invite_btn.y0 + 9.0,
                 )
                     .into(),
             ),
@@ -1224,7 +1215,7 @@ impl WorkspaceSettingsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            "Anyone with this link must still pass the workspace's secure join flow.",
+            "Invites bind the workspace, recipient role, expiry and this device's identity.",
             tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
@@ -1347,10 +1338,10 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         return forced;
     }
     let user = state.active_local_user();
-    state
-        .tree()
-        .active_workspace()
-        .is_some_and(|workspace| workspace.may_administer(&user))
+    let tree = state.tree();
+    tree.active_workspace().is_some_and(|workspace| {
+        tree.governs_room(workspace.room) && workspace.may_administer(&user)
+    })
 }
 
 #[cfg(test)]

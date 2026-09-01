@@ -22,6 +22,63 @@ use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::IdentityRecord;
 
+/// Human-facing name of the Unix account running this session.
+///
+/// This is only used by the compatibility path where qDesktop is installed
+/// on top of an existing Linux distribution. Native qOS setup has its own
+/// identity ceremony and must not derive identity metadata from a Unix
+/// account that happens to run the session.
+#[cfg(unix)]
+pub fn login_account_display_name() -> String {
+    use std::ffi::CStr;
+
+    let uid = unsafe { libc::geteuid() };
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status == 0 && !result.is_null() {
+        let pwd = unsafe { pwd.assume_init() };
+        let username = unsafe { CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        let gecos = unsafe { CStr::from_ptr(pwd.pw_gecos) }
+            .to_string_lossy()
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !gecos.is_empty() {
+            return gecos;
+        }
+        if !username.is_empty() {
+            return username;
+        }
+    }
+    std::env::var("USER")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("User {uid}"))
+}
+
+#[cfg(not(unix))]
+pub fn login_account_display_name() -> String {
+    std::env::var("USER")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Local user".to_string())
+}
+
 /// File name for the primary single-device identity record. Matches
 /// what the runtime identity broker migrates and what `DiskIdentityStore`
 /// writes via the UI's identity-flow ceremony.
@@ -96,6 +153,14 @@ pub enum ProvisionOutcome {
     Created { pubkey_hex: String },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdentityProvisioningContext {
+    /// Native qOS: the dedicated OOBE owns the identity and storage policy.
+    NativeQos,
+    /// qDesktop added to a pre-existing Linux distribution and user account.
+    LegacyLinuxHost,
+}
+
 /// Compute the quick-desktop config dir (`<config-base>/quick-desktop`) following the same XDG fallback rules the peer-sync marker uses.
 fn resolve_config_dir(
     xdg_config_home: Option<OsString>,
@@ -128,9 +193,18 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if file system operations fail (permission denied, I/O error, etc.).
 pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
+    ensure_primary_identity_in_context(identity_dir, IdentityProvisioningContext::NativeQos)
+}
+
+fn ensure_primary_identity_in_context(
+    identity_dir: &Path,
+    context: IdentityProvisioningContext,
+) -> Result<ProvisionOutcome, io::Error> {
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
-        protect_identity_record(identity_dir)?;
+        if context == IdentityProvisioningContext::NativeQos {
+            protect_identity_record(identity_dir)?;
+        }
         return Ok(ProvisionOutcome::Existing);
     }
 
@@ -140,9 +214,13 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|e| io::Error::other(e.to_string()))?;
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+    let display_name = match context {
+        IdentityProvisioningContext::NativeQos => String::new(),
+        IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
+    };
     let record = IdentityRecord::from_threshold_identity(
         &identity,
-        "",
+        &display_name,
         [128, 128, 128],
         std::time::SystemTime::now(),
     )
@@ -175,6 +253,36 @@ pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
 ) -> Result<ProvisionOutcome, io::Error> {
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::NativeQos,
+    )
+}
+
+/// Provision collaboration identity for qDesktop installed on an existing
+/// Linux distribution.
+///
+/// A newly minted identity is labelled from the current passwd entry so it is
+/// visibly associated with the already-authenticated Unix user. An existing
+/// identity record is used as-is: this compatibility path does not introduce
+/// another login, password, or storage migration.
+pub fn ensure_collaboration_identity_for_legacy_linux_host(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::LegacyLinuxHost,
+    )
+}
+
+fn ensure_collaboration_identity_in_context(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    context: IdentityProvisioningContext,
+) -> Result<ProvisionOutcome, io::Error> {
     fs::create_dir_all(identity_dir)?;
     #[cfg(unix)]
     {
@@ -186,10 +294,12 @@ pub fn ensure_collaboration_identity(
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
         if let Some(path) = runtime_identity::resolve_active_identity(identity_dir) {
-            protect_identity_record_at(identity_dir, &path)?;
+            if context == IdentityProvisioningContext::NativeQos {
+                protect_identity_record_at(identity_dir, &path)?;
+            }
             (path, ProvisionOutcome::Existing)
         } else {
-            let outcome = ensure_primary_identity(identity_dir)?;
+            let outcome = ensure_primary_identity_in_context(identity_dir, context)?;
             (primary_path, outcome)
         };
 
@@ -655,10 +765,54 @@ mod tests {
                 panic!("expected Created on empty dir, got {other:?}")
             }
         }
+        let identity = runtime_identity::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
+            .expect("load created identity");
+        assert_eq!(
+            identity.display_name(),
+            "",
+            "native qOS must not infer personal identity from its Unix implementation account"
+        );
         // Second run leaves it alone.
         assert_eq!(
             ensure_primary_identity(&dir).expect("provision ok (2nd)"),
             ProvisionOutcome::Existing
+        );
+    }
+
+    #[test]
+    fn legacy_linux_host_associates_a_fresh_identity_with_the_unix_account() {
+        let tmp = TmpDir::new("legacy-host-account");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+
+        assert!(matches!(
+            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                .expect("provision host identity"),
+            ProvisionOutcome::Created { .. }
+        ));
+        let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            .expect("load host identity");
+        assert_eq!(identity.display_name(), login_account_display_name());
+    }
+
+    #[test]
+    fn legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity() {
+        let tmp = TmpDir::new("legacy-host-existing");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_primary_identity(&personal).expect("seed existing identity");
+        let record_path = personal.join(PRIMARY_IDENTITY_FILE);
+        let before = std::fs::read(&record_path).expect("read identity before host setup");
+
+        assert_eq!(
+            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                .expect("associate existing host identity"),
+            ProvisionOutcome::Existing
+        );
+        assert_eq!(
+            std::fs::read(record_path).expect("read identity after host setup"),
+            before,
+            "the legacy-host compatibility path must use an existing identity as-is"
         );
     }
 

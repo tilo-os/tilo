@@ -115,6 +115,7 @@ impl WorkspaceTreeReplica {
             msgs.push(NeighbourMsg::SyncReq {
                 since,
                 room: room.to_string(),
+                invite_id: None,
             });
         }
         drop(tree);
@@ -159,7 +160,7 @@ impl WorkspaceTreeReplica {
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
-            NeighbourMsg::SyncReq { since, room } => {
+            NeighbourMsg::SyncReq { since, room, .. } => {
                 // A roomless request is the transport's peer-join kick, not a request for
                 // everything — answering with a document would be the leak this closes.
                 let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
@@ -515,6 +516,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                 room: stranger_room.to_string(),
+                invite_id: None,
             },
         );
         assert!(
@@ -538,6 +540,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: Vec::new(),
                 room: String::new(),
+                invite_id: None,
             },
         );
 
@@ -809,6 +812,7 @@ mod tests {
             .push(NeighbourMsg::SyncReq {
                 since: vec![1],
                 room: String::new(),
+                invite_id: None,
             });
         rep.pending_outgoing
             .lock()
@@ -816,6 +820,7 @@ mod tests {
             .push(NeighbourMsg::SyncReq {
                 since: vec![2],
                 room: String::new(),
+                invite_id: None,
             });
 
         let drained = rep.drain_outgoing();
@@ -848,7 +853,7 @@ mod tests {
         let queued = rep.drain_outgoing();
         assert_eq!(queued.len(), 1, "one SyncReq per room this machine is in");
         match &queued[0] {
-            NeighbourMsg::SyncReq { since, room: r } => {
+            NeighbourMsg::SyncReq { since, room: r, .. } => {
                 assert!(
                     !since.is_empty(),
                     "encoded `since` must be a valid JSON array, got empty vec"
@@ -986,6 +991,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: since.clone(),
                 room: elsewhere.to_string(),
+                invite_id: None,
             },
         );
         assert!(
@@ -1000,6 +1006,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: since.clone(),
                 room: room.to_string(),
+                invite_id: None,
             },
         );
         assert!(
@@ -1013,6 +1020,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since,
                 room: room.to_string(),
+                invite_id: None,
             },
         );
         assert!(
