@@ -325,6 +325,38 @@ impl IdentityRegistryStore {
         Ok(profile)
     }
 
+    /// Restore an encrypted portable backup into the managed identity store.
+    ///
+    /// Decryption remains inside `runtime-identity`; this registry only sees
+    /// the public fingerprint and the final secured metadata path. Re-importing
+    /// a backup already present on this login is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if backup verification, migration, import, registration,
+    /// or registry persistence fails.
+    pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
+        let info = runtime_identity::verify_portable_backup(source, passphrase)?;
+        let id = hex_encode(&info.group_public_key);
+        let mut registry = self.migrate_legacy_primary()?;
+        if let Some(existing) = registry.identities.get(&id) {
+            return Ok(existing.clone());
+        }
+
+        // Runtime ids are capped at 64 characters and must start with a
+        // letter. The full fingerprint remains the registry's stable id.
+        let runtime_id = format!("identity-{}", &id[..55]);
+        let destination = runtime_identity::import_portable_backup(
+            source,
+            passphrase,
+            &self.identity_dir,
+            &runtime_id,
+        )?;
+        let profile = registry.register_record(&destination)?.clone();
+        self.save(&registry)?;
+        Ok(profile)
+    }
+
     /// Bind an identity to a workspace in the registry.
     ///
     /// # Errors

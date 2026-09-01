@@ -161,5 +161,21 @@ fn main() -> Result<(), String> {
         800,
         600,
     )?;
+    shoot(
+        &Theme::dark().with_text_scale(1.3),
+        &dir.join("8-done-large-text.png"),
+        &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
+        1000,
+        720,
+    )?;
+    shoot(
+        &Theme::high_contrast()
+            .with_ui_scale(1.25)
+            .with_reduce_motion(true),
+        &dir.join("9-connect-scaled-high-contrast.png"),
+        &[KEY_CONNECT],
+        800,
+        640,
+    )?;
     Ok(())
 }
