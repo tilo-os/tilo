@@ -29,19 +29,23 @@ fedora)
     dnf clean all
     ;;
 arch)
-    # ARM's redirected DBPath is seeded immediately before PRoot starts. Avoid
-    # pacman's sync-db replacement there—the downloaded files disappear under
-    # this qemu/PRoot combination—while still applying a complete upgrade.
+    packages=(
+        curl git base-devel rustup clang cmake pkgconf capnproto file namcap
+        libxkbcommon wayland seatd libinput systemd-libs libdrm mesa
+        pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3
+        gstreamer gst-plugins-base-libs
+    )
+    # Under QEMU/PRoot, libalpm's faccessat probe cannot reopen sync databases
+    # that were seeded by the host even though ordinary guest stat calls see
+    # them. Refresh, upgrade, resolve, and install in one pacman transaction;
+    # the redirected database/cache live on explicit host-backed PRoot binds,
+    # so pacman's atomic downloads persist for the whole transaction.
     if [[ $(uname -m) == aarch64 ]]; then
-        pacman -Su --noconfirm
+        pacman -Syu --needed --noconfirm "${packages[@]}"
     else
         pacman -Syu --noconfirm
+        pacman -S --needed --noconfirm "${packages[@]}"
     fi
-    pacman -S --needed --noconfirm \
-        curl git base-devel rustup clang cmake pkgconf capnproto file namcap \
-        libxkbcommon wayland seatd libinput systemd-libs libdrm mesa \
-        pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3 \
-        gstreamer gst-plugins-base-libs
     ;;
 *)
     echo "unknown distro: $distro" >&2
