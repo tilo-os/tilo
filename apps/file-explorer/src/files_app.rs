@@ -3396,6 +3396,7 @@ mod open_with_tests {
 /// `apply_command`, `sync`, and the fs mutations (never through a tautological
 /// helper). These are the paths the review flagged as untested.
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod command_path_tests {
     use super::*;
     use crate::model::Entry;
@@ -4138,6 +4139,7 @@ mod command_path_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod responsive_body_tests {
     //! The places list is a *navigation* sidebar over the file view, on the
     //! shared `NavShell`: a comfortably-wide window docks it beside the files;
