@@ -30,6 +30,11 @@ mod tests {
             "windows-use-recommendation",
             "windows-choose-windows-iso",
             "windows-open-recovery-desktop",
+            "windows-escalate-install-to-vm",
+            "windows-restart-appliance",
+            "windows-suspend-appliance",
+            "windows-resume-appliance",
+            "windows-shutdown-appliance",
         ] {
             assert_ne!(t(key), key, "missing Fluent key: {key}");
         }
