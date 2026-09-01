@@ -8,8 +8,8 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 use vello::Scene;
-use vello::kurbo::Affine;
-use vello::peniko::{Color, FontData as Font, StyleRef};
+use vello::kurbo::{Affine, BezPath, Point, Rect};
+use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
 
 use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 
@@ -185,12 +185,68 @@ pub enum FontChoice {
 /// Paragraph hyphenation policy. It is deliberately opt-in: short UI labels
 /// and identifiers should never acquire language-dependent line endings, while
 /// reading text can request TeX/Liang patterns with a BCP-47 language tag.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+/// Application-supplied discretionary hyphenation. Returned offsets are in
+/// the original UTF-8 byte space; invalid, edge, and non-character boundaries
+/// are ignored by the renderer.
+pub trait Hyphenator: Send + Sync {
+    fn breaks(&self, text: &str) -> Vec<usize>;
+
+    /// Stable identity for shape/measurement caches. Change this value when
+    /// the algorithm, dictionary, or user settings change.
+    fn cache_key(&self) -> u64;
+}
+
+#[derive(Clone, Default)]
 pub enum Hyphenation {
     #[default]
     None,
     /// Automatically insert discretionary breaks for this BCP-47 language.
     Auto(String),
+    /// Use an application-supplied algorithm without changing the source
+    /// string or replacing the text widget.
+    Custom(Arc<dyn Hyphenator>),
+}
+
+impl std::fmt::Debug for Hyphenation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => formatter.write_str("None"),
+            Self::Auto(language) => formatter.debug_tuple("Auto").field(language).finish(),
+            Self::Custom(hyphenator) => formatter
+                .debug_tuple("Custom")
+                .field(&hyphenator.cache_key())
+                .finish(),
+        }
+    }
+}
+
+impl PartialEq for Hyphenation {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::Auto(left), Self::Auto(right)) => left == right,
+            (Self::Custom(left), Self::Custom(right)) => left.cache_key() == right.cache_key(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Hyphenation {}
+
+impl std::hash::Hash for Hyphenation {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::None => 0_u8.hash(state),
+            Self::Auto(language) => {
+                1_u8.hash(state);
+                language.hash(state);
+            }
+            Self::Custom(hyphenator) => {
+                2_u8.hash(state);
+                hyphenator.cache_key().hash(state);
+            }
+        }
+    }
 }
 
 /// A four-byte OpenType feature or variation tag (`kern`, `dlig`, `opsz`, …).
@@ -320,6 +376,25 @@ impl Hyphenation {
             return None;
         };
         hypher::Lang::from_iso([first.to_ascii_lowercase(), second.to_ascii_lowercase()])
+    }
+
+    pub(crate) fn offset_map(&self, text: &str) -> OffsetMap {
+        match self {
+            Self::Custom(hyphenator) => {
+                OffsetMap::for_text_with_breaks(text, None, &hyphenator.breaks(text))
+            }
+            Self::None | Self::Auto(_) => {
+                OffsetMap::for_text_with_hyphenation(text, self.language())
+            }
+        }
+    }
+
+    fn discretionary_breaks(&self, text: &str) -> Vec<usize> {
+        match self {
+            Self::None => Vec::new(),
+            Self::Auto(language) => crate::text_break::discretionary_hyphen_breaks(text, language),
+            Self::Custom(hyphenator) => hyphenator.breaks(text),
+        }
     }
 
     fn cache_hash(&self) -> u64 {
@@ -532,6 +607,14 @@ impl TextStyle {
         self
     }
 
+    /// Use a custom discretionary-break algorithm. The same policy is used
+    /// for measurement and painting, and participates in cache identity.
+    #[must_use]
+    pub fn with_hyphenator(mut self, hyphenator: Arc<dyn Hyphenator>) -> Self {
+        self.hyphenation = Hyphenation::Custom(hyphenator);
+        self
+    }
+
     /// Disable discretionary hyphenation while retaining the rest of a style.
     #[must_use]
     pub fn without_hyphenation(mut self) -> Self {
@@ -656,6 +739,423 @@ impl FontChoice {
         }
         h.finish()
     }
+}
+
+/// Width/height offered to a pluggable text layout engine.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TextLayoutConstraints {
+    pub max_width: Option<f32>,
+    pub max_height: Option<f32>,
+}
+
+/// Replaceable measurement/painting boundary used by [`crate::widget::Text`].
+/// Implementations keep localization, accessibility, Taffy integration, scene
+/// caching, and inspection supplied by the standard widget.
+pub trait TextLayoutEngine {
+    fn measure(
+        &mut self,
+        renderer: &mut TextRenderer,
+        text: &str,
+        constraints: TextLayoutConstraints,
+        style: &TextStyle,
+    ) -> (f32, f32);
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw(
+        &mut self,
+        renderer: &mut TextRenderer,
+        scene: &mut Scene,
+        text: &str,
+        constraints: TextLayoutConstraints,
+        style: &TextStyle,
+        color: Color,
+        transform: Affine,
+    );
+
+    /// Change when internal layout-affecting configuration changes.
+    fn revision(&self) -> u64 {
+        0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextFlowRegionError {
+    TooFewPoints,
+    NonFinitePoint,
+    EmptyBounds,
+}
+
+impl std::fmt::Display for TextFlowRegionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooFewPoints => {
+                formatter.write_str("a text-flow polygon needs at least 3 points")
+            }
+            Self::NonFinitePoint => formatter.write_str("text-flow polygon points must be finite"),
+            Self::EmptyBounds => formatter.write_str("text-flow polygon must have non-zero bounds"),
+        }
+    }
+}
+
+impl std::error::Error for TextFlowRegionError {}
+
+/// Non-rectangular local-coordinate region used for both line fitting and
+/// exact scene clipping. Concave polygons may produce several independent
+/// spans on one baseline, allowing text to flow around an inset or cutout.
+#[derive(Clone, Debug)]
+pub struct TextFlowRegion {
+    points: Vec<Point>,
+    path: BezPath,
+    bounds: Rect,
+    cache_key: u64,
+}
+
+impl TextFlowRegion {
+    /// Build a closed polygon. Points are local to the Text widget's origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for fewer than three points, non-finite coordinates,
+    /// or a polygon whose bounding box has no area.
+    pub fn polygon(points: impl IntoIterator<Item = Point>) -> Result<Self, TextFlowRegionError> {
+        use std::hash::{Hash, Hasher};
+
+        let points: Vec<_> = points.into_iter().collect();
+        if points.len() < 3 {
+            return Err(TextFlowRegionError::TooFewPoints);
+        }
+        if points
+            .iter()
+            .any(|point| !point.x.is_finite() || !point.y.is_finite())
+        {
+            return Err(TextFlowRegionError::NonFinitePoint);
+        }
+        let min_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = points
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let bounds = Rect::new(min_x, min_y, max_x, max_y);
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            return Err(TextFlowRegionError::EmptyBounds);
+        }
+        let mut path = BezPath::new();
+        let Some(first) = points.first().copied() else {
+            return Err(TextFlowRegionError::TooFewPoints);
+        };
+        path.move_to(first);
+        for point in points.iter().skip(1) {
+            path.line_to(*point);
+        }
+        path.close_path();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for point in &points {
+            point.x.to_bits().hash(&mut hasher);
+            point.y.to_bits().hash(&mut hasher);
+        }
+        Ok(Self {
+            points,
+            path,
+            bounds,
+            cache_key: hasher.finish(),
+        })
+    }
+
+    #[must_use]
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    #[must_use]
+    pub fn cache_key(&self) -> u64 {
+        self.cache_key
+    }
+
+    fn spans_at(&self, y: f64, max_width: f64) -> Vec<std::ops::Range<f32>> {
+        let mut crossings = Vec::new();
+        for (first, second) in self
+            .points
+            .iter()
+            .copied()
+            .zip(self.points.iter().copied().cycle().skip(1))
+            .take(self.points.len())
+        {
+            if (first.y <= y && second.y > y) || (second.y <= y && first.y > y) {
+                let t = (y - first.y) / (second.y - first.y);
+                crossings.push(first.x + t * (second.x - first.x));
+            }
+        }
+        crossings.sort_by(f64::total_cmp);
+        crossings
+            .chunks_exact(2)
+            .filter_map(|pair| {
+                let [start, end] = pair else {
+                    return None;
+                };
+                let start = start.max(0.0).min(max_width);
+                let end = end.max(0.0).min(max_width);
+                (end > start).then(|| float_range(start, end))
+            })
+            .collect()
+    }
+
+    fn spans_for_band(&self, top: f32, height: f32, max_width: f32) -> Vec<std::ops::Range<f32>> {
+        let epsilon = f64::from(height.max(1.0)) * 0.01;
+        let samples = [
+            f64::from(top) + epsilon,
+            f64::from(top + height * 0.5),
+            f64::from(top + height) - epsilon,
+        ];
+        let mut spans = self.spans_at(samples[0], f64::from(max_width));
+        for y in samples.into_iter().skip(1) {
+            spans = intersect_spans(&spans, &self.spans_at(y, f64::from(max_width)));
+        }
+        spans
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "validated finite flow-region coordinates are ordinary logical pixels"
+)]
+fn float_range(start: f64, end: f64) -> std::ops::Range<f32> {
+    start as f32..end as f32
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "validated finite flow-region coordinates are ordinary logical pixels"
+)]
+fn flow_pixel(value: f64) -> f32 {
+    value as f32
+}
+
+fn intersect_spans(
+    left: &[std::ops::Range<f32>],
+    right: &[std::ops::Range<f32>],
+) -> Vec<std::ops::Range<f32>> {
+    let mut intersections = Vec::new();
+    for a in left {
+        for b in right {
+            let start = a.start.max(b.start);
+            let end = a.end.min(b.end);
+            if end > start {
+                intersections.push(start..end);
+            }
+        }
+    }
+    intersections
+}
+
+#[derive(Clone, Debug)]
+struct FlowLine {
+    text: String,
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FlowLayout {
+    lines: Vec<FlowLine>,
+    width: f32,
+    height: f32,
+}
+
+/// Built-in layout engine that fits text into and clips it against a polygon.
+#[derive(Clone, Debug)]
+pub struct PolygonTextLayout {
+    region: TextFlowRegion,
+}
+
+impl PolygonTextLayout {
+    #[must_use]
+    pub fn new(region: TextFlowRegion) -> Self {
+        Self { region }
+    }
+
+    #[must_use]
+    pub fn region(&self) -> &TextFlowRegion {
+        &self.region
+    }
+
+    fn layout(
+        &self,
+        renderer: &mut TextRenderer,
+        text: &str,
+        constraints: TextLayoutConstraints,
+        style: &TextStyle,
+    ) -> FlowLayout {
+        use std::collections::{BTreeMap, HashSet};
+
+        if text.is_empty() {
+            return FlowLayout::default();
+        }
+        let max_width = constraints
+            .max_width
+            .unwrap_or_else(|| flow_pixel(self.region.bounds.x1))
+            .max(0.0);
+        let max_height = constraints
+            .max_height
+            .unwrap_or_else(|| flow_pixel(self.region.bounds.y1))
+            .max(0.0);
+        let line_height = style.line_height_px().max(1.0);
+        let mut opportunities = BTreeMap::new();
+        for (byte, kind) in crate::text_break::line_break_opportunities(text) {
+            opportunities.insert(byte, kind == LineBreakKind::Mandatory);
+        }
+        let hyphen_breaks: HashSet<_> = style
+            .hyphenation
+            .discretionary_breaks(text)
+            .into_iter()
+            .filter(|byte| *byte > 0 && *byte < text.len() && text.is_char_boundary(*byte))
+            .collect();
+        for byte in &hyphen_breaks {
+            opportunities.entry(*byte).or_insert(false);
+        }
+
+        let mut layout = FlowLayout::default();
+        let mut source = 0_usize;
+        let mut y = flow_pixel(self.region.bounds.y0.max(0.0));
+        let bottom = max_height.min(flow_pixel(self.region.bounds.y1));
+        while source < text.len() && y + line_height <= bottom + f32::EPSILON {
+            let spans = self.region.spans_for_band(y, line_height, max_width);
+            let mut forced_next_line = false;
+            for span in spans {
+                source = skip_flow_whitespace(text, source);
+                if source >= text.len() {
+                    break;
+                }
+                let available = span.end - span.start;
+                let mut best = None;
+                for (&end, &mandatory) in opportunities.range(source.saturating_add(1)..) {
+                    let raw = text.get(source..end).unwrap_or_default();
+                    let visible = raw.trim_end_matches(char::is_whitespace);
+                    let hyphen = hyphen_breaks.contains(&end) && !mandatory;
+                    let mut candidate = visible.to_owned();
+                    if hyphen && !candidate.is_empty() {
+                        candidate.push('\u{2010}');
+                    }
+                    let width = renderer.measure_style(&candidate, None, style).0;
+                    if width <= available || best.is_none() {
+                        if width <= available {
+                            best = Some((end, candidate, width, mandatory));
+                        }
+                        if mandatory {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                let chosen =
+                    best.or_else(|| force_flow_fragment(renderer, text, source, available, style));
+                let Some((end, fragment, width, mandatory)) = chosen else {
+                    break;
+                };
+                if !fragment.is_empty() {
+                    layout.width = layout.width.max(span.start + width);
+                    layout.lines.push(FlowLine {
+                        text: fragment,
+                        x: span.start,
+                        y,
+                    });
+                }
+                source = end;
+                if mandatory {
+                    forced_next_line = true;
+                    break;
+                }
+            }
+            layout.height = (y + line_height).max(layout.height);
+            y += line_height;
+            if forced_next_line {
+                source = skip_flow_whitespace(text, source);
+            }
+        }
+        layout
+    }
+}
+
+impl TextLayoutEngine for PolygonTextLayout {
+    fn measure(
+        &mut self,
+        renderer: &mut TextRenderer,
+        text: &str,
+        constraints: TextLayoutConstraints,
+        style: &TextStyle,
+    ) -> (f32, f32) {
+        let layout = self.layout(renderer, text, constraints, style);
+        (layout.width, layout.height)
+    }
+
+    fn draw(
+        &mut self,
+        renderer: &mut TextRenderer,
+        scene: &mut Scene,
+        text: &str,
+        constraints: TextLayoutConstraints,
+        style: &TextStyle,
+        color: Color,
+        transform: Affine,
+    ) {
+        let layout = self.layout(renderer, text, constraints, style);
+        scene.push_clip_layer(Fill::NonZero, transform, &self.region.path);
+        for line in layout.lines {
+            let line_transform =
+                transform.pre_translate((f64::from(line.x), f64::from(line.y)).into());
+            renderer.draw_style(scene, &line.text, color, line_transform, None, style);
+        }
+        scene.pop_layer();
+    }
+
+    fn revision(&self) -> u64 {
+        self.region.cache_key()
+    }
+}
+
+fn skip_flow_whitespace(text: &str, mut byte: usize) -> usize {
+    while let Some(character) = text.get(byte..).and_then(|rest| rest.chars().next()) {
+        if !character.is_whitespace() {
+            break;
+        }
+        byte = byte.saturating_add(character.len_utf8());
+    }
+    byte
+}
+
+fn force_flow_fragment(
+    renderer: &mut TextRenderer,
+    text: &str,
+    source: usize,
+    available: f32,
+    style: &TextStyle,
+) -> Option<(usize, String, f32, bool)> {
+    let tail = text.get(source..)?;
+    let mut best = None;
+    for (offset, character) in tail.char_indices() {
+        let end = source
+            .saturating_add(offset)
+            .saturating_add(character.len_utf8());
+        let fragment = text.get(source..end)?.to_owned();
+        let width = renderer.measure_style(&fragment, None, style).0;
+        if width <= available || best.is_none() {
+            best = Some((end, fragment, width, false));
+        } else {
+            break;
+        }
+    }
+    best
 }
 
 /// Hashable cache key for measured-text results. `max_width` is encoded as a
@@ -928,8 +1428,7 @@ impl TextRenderer {
         let attrs = style.cosmic_attrs();
         // cosmic-text 0.19: setters are lazy and no longer take FontSystem;
         // set_text gained a trailing `Option<Align>` arg.
-        let offset_map = max_width
-            .map(|_| OffsetMap::for_text_with_hyphenation(text, style.hyphenation.language()));
+        let offset_map = max_width.map(|_| style.hyphenation.offset_map(text));
         let shaping_text = offset_map
             .as_ref()
             .map_or(std::borrow::Cow::Borrowed(text), |map| map.shape_text(text));
@@ -1311,8 +1810,7 @@ impl TextRenderer {
         let line_height = style.line_height_px();
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.size, line_height));
         let attrs = style.cosmic_attrs();
-        let offset_map = max_width
-            .map(|_| OffsetMap::for_text_with_hyphenation(text, style.hyphenation.language()));
+        let offset_map = max_width.map(|_| style.hyphenation.offset_map(text));
         let shaping_text = offset_map
             .as_ref()
             .map_or(std::borrow::Cow::Borrowed(text), |map| map.shape_text(text));
@@ -1686,6 +2184,108 @@ impl TextRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EveryThirdByte;
+
+    impl Hyphenator for EveryThirdByte {
+        fn breaks(&self, text: &str) -> Vec<usize> {
+            (3..text.len())
+                .step_by(3)
+                .filter(|byte| text.is_char_boundary(*byte))
+                .collect()
+        }
+
+        fn cache_key(&self) -> u64 {
+            0x4355_5354_4f4d
+        }
+    }
+
+    fn notched_region() -> TextFlowRegion {
+        TextFlowRegion::polygon([
+            Point::new(0.0, 0.0),
+            Point::new(200.0, 0.0),
+            Point::new(200.0, 120.0),
+            Point::new(120.0, 120.0),
+            Point::new(120.0, 30.0),
+            Point::new(80.0, 30.0),
+            Point::new(80.0, 120.0),
+            Point::new(0.0, 120.0),
+        ])
+        .expect("valid concave flow polygon")
+    }
+
+    #[test]
+    fn custom_hyphenator_inserts_source_mapped_discretionary_breaks() {
+        let style = TextStyle::new(18.0).with_hyphenator(Arc::new(EveryThirdByte));
+        let map = style.hyphenation.offset_map("customizable");
+        assert_eq!(
+            map.shape_text("customizable"),
+            "cus\u{ad}tom\u{ad}iza\u{ad}ble"
+        );
+        assert_ne!(
+            style.hyphenation.cache_hash(),
+            Hyphenation::None.cache_hash()
+        );
+        for source in 0..="customizable".len() {
+            assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+        }
+    }
+
+    #[test]
+    fn polygon_flow_computes_conservative_spans_and_clips_paint() {
+        use vello_encoding::DrawTag;
+
+        let region = notched_region();
+        assert_eq!(region.spans_for_band(0.0, 20.0, 200.0), [0.0..200.0]);
+        assert_eq!(
+            region.spans_for_band(50.0, 20.0, 200.0),
+            [0.0..80.0, 120.0..200.0]
+        );
+
+        let mut renderer = TextRenderer::new();
+        let style = TextStyle::new(16.0).with_line_height(1.25);
+        let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
+        let engine = PolygonTextLayout::new(region);
+        let layout = engine.layout(
+            &mut renderer,
+            text,
+            TextLayoutConstraints {
+                max_width: Some(200.0),
+                max_height: Some(120.0),
+            },
+            &style,
+        );
+        assert!(layout.lines.iter().any(|line| line.x == 0.0));
+        assert!(layout.lines.iter().any(|line| line.x >= 120.0));
+        assert!(layout.width <= 200.0);
+        assert!(layout.height <= 120.0);
+
+        let mut engine = engine;
+        let mut scene = Scene::new();
+        engine.draw(
+            &mut renderer,
+            &mut scene,
+            text,
+            TextLayoutConstraints {
+                max_width: Some(200.0),
+                max_height: Some(120.0),
+            },
+            &style,
+            Color::WHITE,
+            Affine::IDENTITY,
+        );
+        let begin = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .position(|tag| *tag == DrawTag::BEGIN_CLIP);
+        let end = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .rposition(|tag| *tag == DrawTag::END_CLIP);
+        assert!(begin.zip(end).is_some_and(|(begin, end)| begin < end));
+    }
 
     #[test]
     fn product_font_system_pins_every_generic_family() {

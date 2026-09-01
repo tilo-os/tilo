@@ -10,6 +10,7 @@ use vello::peniko::Color;
 
 use ui::ColorCompat;
 use ui::Widget;
+use ui::format::bytes as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -2243,9 +2244,9 @@ impl ChatApp {
             rect.y1 - 22.0,
         );
         let meta = if vid_w > 0 && vid_h > 0 {
-            format!("{vid_w}×{vid_h} · {}", human_size(size))
+            format!("{vid_w}×{vid_h} · {}", format_bytes(size))
         } else {
-            format!("video · {}", human_size(size))
+            format!("video · {}", format_bytes(size))
         };
         label(
             scene,
@@ -3254,7 +3255,7 @@ impl ChatApp {
                 scene,
                 tr,
                 tf,
-                &human_size(e.size),
+                &format_bytes(e.size),
                 11.0,
                 c.text_dim,
                 thumb.x1 + 12.0,
@@ -3340,18 +3341,6 @@ fn video_card_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
     }
 }
 
-fn human_size(bytes: u64) -> String {
-    const K: f64 = 1024.0;
-    let b = bytes as f64;
-    if b < K {
-        format!("{bytes} B")
-    } else if b < K * K {
-        format!("{:.1} KB", b / K)
-    } else {
-        format!("{:.1} MB", b / (K * K))
-    }
-}
-
 /// The user-facing metadata line for a file-attachment chip: the file type
 /// (derived from the display name's extension) and a human-readable size.
 ///
@@ -3367,8 +3356,8 @@ fn file_chip_meta(name: &str, size: u64) -> String {
         .map(|e| e.to_string_lossy().to_uppercase())
         .filter(|e| !e.is_empty());
     match ext {
-        Some(e) => format!("{e} · {}", human_size(size)),
-        None => human_size(size),
+        Some(e) => format!("{e} · {}", format_bytes(size)),
+        None => format_bytes(size),
     }
 }
 
@@ -3377,7 +3366,7 @@ const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
 
 #[cfg(test)]
 mod tests {
-    use super::{file_chip_meta, human_size};
+    use super::file_chip_meta;
 
     /// Defect regression: the attachment chip must never leak the internal
     /// mount path. The demo's shared note lives at
@@ -3403,7 +3392,10 @@ mod tests {
             "chip meta still carries stale 'shared via' copy: {meta:?}"
         );
         // It still tells the user the real, useful facts: type + size.
-        assert_eq!(meta, "MD · 18.5 KB", "chip meta should be type + size only");
+        assert_eq!(
+            meta, "MD · 18.5 KiB",
+            "chip meta should be type + size only"
+        );
     }
 
     #[test]
@@ -3414,9 +3406,7 @@ mod tests {
     }
 
     #[test]
-    fn human_size_scales_bytes_kb_mb() {
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(1536), "1.5 KB");
-        assert!(human_size(3_000_000).ends_with(" MB"));
+    fn attachment_size_uses_canonical_binary_units() {
+        assert_eq!(file_chip_meta("archive.zip", 1536), "ZIP · 1.5 KiB");
     }
 }

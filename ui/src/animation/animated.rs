@@ -286,7 +286,20 @@ impl Transition {
     /// No-op when the intent is unchanged AND the animation has settled, so
     /// repeated calls each frame don't restart the curve.
     pub fn set_open(&mut self, open: bool, duration: Duration, curve: Curve) {
-        let now = Instant::now();
+        self.set_open_at(open, duration, curve, Instant::now());
+    }
+
+    /// [`Self::set_open`] against a caller-supplied clock.
+    ///
+    /// Every other reader here — [`Self::value`], [`Self::is_visible`],
+    /// [`Self::is_animating`] — already takes `now`; `set_open` was the one
+    /// that reached for the clock itself. That asymmetry is untestable: a
+    /// test could start a transition and ask whether it was still running,
+    /// but the two calls read the clock independently, so a scheduler stall
+    /// longer than the animation between them let it finish and the
+    /// assertion flip. Pinning both ends to one instant makes such a test a
+    /// statement about the animation rather than about the machine's load.
+    pub fn set_open_at(&mut self, open: bool, duration: Duration, curve: Curve, now: Instant) {
         if open == self.open && self.anim.done(now) {
             return;
         }

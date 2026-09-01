@@ -73,7 +73,7 @@ If you want to test the production image manually:
 ### Useful VM Commands
 
 -   **Check FUSE Mount**: `mountpoint /var/workspace`
--   **Inspect Cache**: `ls -lah /var/cache/qos-fs`
+-   **Inspect Cache**: `ls -lah /var/cache/quick-fs`
 -   **Run Apps**:
     -   `terminal`
     -   `file-explorer`

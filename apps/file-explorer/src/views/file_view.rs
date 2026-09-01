@@ -36,7 +36,11 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use thumbnail::{FileCategory, ThumbKey, ThumbState, ThumbnailService, category_for_path};
 
 use crate::command::{CommandSink, FileCommand, push};
-use crate::model::{Entry, SortBy, SortOrder, SyncState, ViewMode, format_modified, human_size};
+use crate::i18n::{arg, t, t_args};
+use crate::model::{
+    AvailabilityPolicy, AvailabilityProjection, Entry, ReplicaEvidence, Residency, SortBy,
+    SortOrder, SyncState, TransferPhase, ViewMode, format_modified, human_size,
+};
 use ui::SelectionModel;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use ui::image_store::paint_image_cover;
@@ -113,24 +117,24 @@ struct RowTextLayout {
 /// A list column the header exposes for click-to-sort. `sort_col` is the index
 /// the app's `SortColumn` command understands (1 = name, 2 = size, 3 = date).
 struct ColSpec {
-    header: &'static str,
+    header_key: &'static str,
     sort_col: usize,
     sort_by: SortBy,
 }
 
 const LIST_COLUMNS: [ColSpec; 3] = [
     ColSpec {
-        header: "Name",
+        header_key: "files-column-name",
         sort_col: 1,
         sort_by: SortBy::Name,
     },
     ColSpec {
-        header: "Size",
+        header_key: "files-column-size",
         sort_col: 2,
         sort_by: SortBy::Size,
     },
     ColSpec {
-        header: "Modified",
+        header_key: "files-column-modified",
         sort_col: 3,
         sort_by: SortBy::Modified,
     },
@@ -531,9 +535,10 @@ impl FileView {
             }
             let cr = self.header_col_rect(i);
             let ty = top + (header_h - f64::from(hsize)) / 2.0;
+            let header = t(col.header_key);
             tr.draw_text(
                 scene,
-                col.header,
+                &header,
                 hsize,
                 tokens.colors.text_dim,
                 transform * Affine::translate((cr.x0, ty)),
@@ -545,7 +550,7 @@ impl FileView {
                 } else {
                     "\u{25BE}"
                 };
-                let (lw, _) = tr.measure(col.header, hsize, None);
+                let (lw, _) = tr.measure(&header, hsize, None);
                 tr.draw_text(
                     scene,
                     caret,
@@ -650,7 +655,16 @@ impl FileView {
             },
         );
         // Sync-state emblem for workspace files (cloud / downloading / local).
-        if let Some(state) = entry.sync_state {
+        if let Some(availability) = &entry.availability {
+            draw_availability_badge(
+                scene,
+                transform,
+                file_icon_rect,
+                availability,
+                self.scale,
+                theme,
+            );
+        } else if let Some(state) = entry.sync_state {
             draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
         }
         let name_x = icon_x + icon_size_px + 10.0;
@@ -754,6 +768,9 @@ impl FileView {
     /// UI thread would be the jank the off-thread service exists to avoid, and
     /// that tuple still changes whenever the content does.
     fn thumb_key(ctx: &ThumbCtx, entry: &Entry) -> ThumbKey {
+        if let Some(hash) = entry.content_hash {
+            return ThumbKey::of_hash(hash, ctx.service.edge());
+        }
         let mtime_ms = entry
             .modified
             .map_or(0, |t| t.timestamp_millis().max(0) as u64);
@@ -795,19 +812,18 @@ impl FileView {
             return ctx.service.request_file(key, category, entry.path.clone());
         }
         let path = entry.path.clone();
-        let from_host = ctx
-            .service
-            .request_encoded(key, category, move || crate::model::read_thumb_xattr(&path));
-        // The host handed over no preview for it. When the content is already
-        // here, decoding it ourselves costs a read we are free to make — so a
-        // photograph in the workspace looks like the photograph, rather than
-        // falling back to a type glyph because the metadata channel happened to
-        // be silent. Only a file whose bytes are elsewhere keeps the badge:
-        // previewing it is never worth hydrating it.
-        if matches!(from_host, ThumbState::Badge(_)) && entry.content_is_local() {
-            return ctx.service.request_file(key, category, entry.path.clone());
+        if entry.content_is_local() {
+            let fallback = path.clone();
+            ctx.service
+                .request_encoded_or_file(key, category, fallback, move || {
+                    crate::model::read_thumb_xattr(&path)
+                })
+        } else {
+            // Projected content may use a separately available host preview,
+            // but the fallback deliberately has no source-file branch.
+            ctx.service
+                .request_encoded(key, category, move || crate::model::read_thumb_xattr(&path))
         }
-        from_host
     }
 
     /// The `peniko` image for a ready thumbnail, converted once and memoised by
@@ -1027,7 +1043,16 @@ impl FileView {
                 },
             );
             // Sync-state emblem for workspace files (cloud / downloading / local).
-            if let Some(state) = entry.sync_state {
+            if let Some(availability) = &entry.availability {
+                draw_availability_badge(
+                    scene,
+                    transform,
+                    file_icon_rect,
+                    availability,
+                    self.scale,
+                    theme,
+                );
+            } else if let Some(state) = entry.sync_state {
                 draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
             }
             // Label centred under the tile, truncated to the cell width.
@@ -1342,13 +1367,30 @@ impl Widget for FileView {
         let value = primary
             .and_then(|i| self.entries.get(i))
             .map(|e| e.name.clone());
+        let children = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                AccessNode::new(Role::ListItem)
+                    .with_name(entry.name.clone())
+                    .with_description(accessible_entry_description(entry))
+                    .with_position(index + 1, self.entries.len())
+                    .with_state(AccessState {
+                        selected: self.selection.is_selected(index),
+                        ..Default::default()
+                    })
+            })
+            .collect();
         let mut node = AccessNode::new(Role::List)
+            .with_name(t("files-a11y-list"))
             .with_optional_value(value)
             .with_state(AccessState {
                 focusable: true,
                 focused: self.is_focused,
                 ..Default::default()
-            });
+            })
+            .with_children(children);
         if let Some(i) = primary
             && i < self.entries.len()
         {
@@ -1356,6 +1398,69 @@ impl Widget for FileView {
         }
         Some(node)
     }
+}
+
+/// Concise row metadata for non-visual navigation. The badge glyphs communicate
+/// all of these facts visually; keeping the same state in the semantic row
+/// prevents a screen-reader user from having to open Properties for every file.
+fn accessible_entry_description(entry: &Entry) -> String {
+    let mut facts = Vec::new();
+    if entry.is_dir {
+        facts.push(t("files-a11y-folder"));
+    } else {
+        facts.push(t_args("files-a11y-file", &[arg("size", human_size(entry))]));
+    }
+
+    if let Some(availability) = &entry.availability {
+        use crate::model::{AvailabilityPolicy, ReplicaEvidence, Residency, TransferPhase};
+        if availability.transfer.last_error.is_some() {
+            facts.push(t("files-a11y-transfer-failed"));
+        } else {
+            match availability.transfer.phase {
+                TransferPhase::Queued => facts.push(t("files-a11y-transfer-queued")),
+                TransferPhase::Downloading => facts.push(t("files-a11y-downloading")),
+                TransferPhase::Uploading => facts.push(t("files-a11y-uploading")),
+                TransferPhase::Verifying => facts.push(t("files-a11y-verifying")),
+                TransferPhase::Idle => match availability.residency {
+                    Residency::NotResident => facts.push(t("files-a11y-online-only")),
+                    Residency::Partial { .. } => facts.push(t("files-a11y-partly-offline")),
+                    Residency::Resident { .. } => facts.push(t("files-a11y-available-offline")),
+                },
+            }
+        }
+        if availability.policy == AvailabilityPolicy::Pinned {
+            facts.push(if availability.policy_inherited {
+                t("files-a11y-kept-offline-parent")
+            } else {
+                t("files-a11y-kept-offline")
+            });
+        }
+        match availability.replicas {
+            ReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
+            ReplicaEvidence::Known { durable, .. } if durable > 0 => {
+                facts.push(t("files-a11y-durably-replicated"));
+            }
+            ReplicaEvidence::Known { .. } => facts.push(t("files-a11y-not-durably-replicated")),
+        }
+    } else if let Some(sync) = entry.sync_state {
+        facts.push(match sync {
+            SyncState::Local => t("files-a11y-available-offline"),
+            SyncState::Projected => t("files-a11y-online-only"),
+            SyncState::Downloading => t("files-a11y-downloading"),
+        });
+    }
+
+    if let Some(share) = &entry.share {
+        let active = share.active_grants();
+        facts.push(t_args(
+            "files-a11y-shared-recipients",
+            &[arg("count", i64::try_from(active).unwrap_or(i64::MAX))],
+        ));
+    }
+    if entry.is_conflict() {
+        facts.push(t("files-a11y-version-conflict"));
+    }
+    facts.join(". ")
 }
 
 /// The badge glyph + colour for a workspace file's sync state. Follows the
@@ -1373,6 +1478,33 @@ fn sync_badge(state: SyncState, theme: &Theme) -> (Icon, Color) {
     }
 }
 
+fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, Color) {
+    let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+    if state.transfer.last_error.is_some() {
+        return (Icon::Ban, accent);
+    }
+    match state.transfer.phase {
+        TransferPhase::Queued | TransferPhase::Verifying => return (Icon::Refresh, accent),
+        TransferPhase::Downloading => return (Icon::Download, accent),
+        TransferPhase::Uploading => return (Icon::Send, accent),
+        TransferPhase::Idle => {}
+    }
+    if state.policy == AvailabilityPolicy::Pinned {
+        return (Icon::Star, accent);
+    }
+    match state.residency {
+        Residency::NotResident => (Icon::CloudDownload, theme.tokens.colors.text_dim),
+        Residency::Partial { .. } => (Icon::Download, theme.tokens.colors.text_dim),
+        Residency::Resident { .. } if state.safely_replicated() => {
+            (Icon::Shield, theme.tokens.colors.text_dim)
+        }
+        Residency::Resident { .. } => match state.replicas {
+            ReplicaEvidence::Unknown => (Icon::Info, theme.tokens.colors.text_dim),
+            ReplicaEvidence::Known { .. } => (Icon::Info, accent),
+        },
+    }
+}
+
 /// Paint the sync-state emblem over the bottom-right corner of a file's icon,
 /// on an opaque disc so it stays legible over a selected row's accent fill.
 /// `icon_rect` is the file icon's box; `scale` sizes the badge with the icon.
@@ -1385,6 +1517,18 @@ fn draw_sync_badge(
     theme: &Theme,
 ) {
     let (icon, color) = sync_badge(state, theme);
+    draw_badge(scene, transform, icon_rect, icon, color, scale, theme);
+}
+
+fn draw_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    icon_rect: Rect,
+    icon: Icon,
+    color: Color,
+    scale: f64,
+    theme: &Theme,
+) {
     // The badge overlaps the icon's lower-right corner (the standard emblem
     // position); size it relative to the icon so it scales with zoom.
     let bsz = (icon_rect.width() * 0.62).max(9.0);
@@ -1412,6 +1556,18 @@ fn draw_sync_badge(
         color,
         LUCIDE_DEFAULT_STROKE_PX * scale.max(1.0),
     );
+}
+
+fn draw_availability_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    icon_rect: Rect,
+    state: &AvailabilityProjection,
+    scale: f64,
+    theme: &Theme,
+) {
+    let (icon, color) = availability_badge(state, theme);
+    draw_badge(scene, transform, icon_rect, icon, color, scale, theme);
 }
 
 /// Cull a row/cell whose vertical extent falls entirely outside the scroll
@@ -1489,6 +1645,7 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::command::{FileCommand, new_sink};
@@ -1526,6 +1683,12 @@ mod tests {
             modified: None,
             mime: String::new(),
             sync_state: None,
+            content_hash: None,
+            record_id: None,
+            availability: None,
+            share: None,
+            history: None,
+            rich_metadata: None,
         }
     }
 
@@ -1540,6 +1703,69 @@ mod tests {
         v.rect = Rect::new(0.0, 0.0, width, 600.0);
         v.columns = v.columns_for_width(width);
         v
+    }
+
+    #[test]
+    fn accessibility_exposes_each_file_selection_and_collaboration_state() {
+        use ui::widget::Widget;
+
+        let sink = new_sink();
+        let mut selection = SelectionModel::new();
+        selection.select_only(1);
+        let mut entries = vec![ent("folder", true), ent("report.pdf", false)];
+        entries[1].size = 4_000;
+        entries[1].availability = Some(availability_with(
+            "idle",
+            &serde_json::json!({"state": "resident", "bytes": 4000}),
+            "pinned",
+            &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
+            false,
+        ));
+        entries[1].share = crate::model::ShareProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": uuid::Uuid::nil().to_string(),
+                "observed_at_ms": 1,
+                "grants": [{
+                    "grant_id": uuid::Uuid::nil().to_string(),
+                    "subject": {"kind": "bearer_link"},
+                    "permission": "View",
+                    "expires_at_ms": null,
+                    "revoked": false,
+                    "expired": false,
+                    "used": false,
+                    "exhausted": false,
+                    "status": "active",
+                    "redemptions": 0,
+                    "max_redemptions": 1
+                }]
+            }))
+            .unwrap(),
+        );
+
+        let view = FileView::new(&entries, &selection, &sink);
+        let node = Widget::accessibility(&view).expect("file view has semantics");
+        assert_eq!(node.name.as_deref(), Some("Files"));
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(node.children[0].name.as_deref(), Some("folder"));
+        assert!(!node.children[0].state.selected);
+        assert_eq!(node.children[1].name.as_deref(), Some("report.pdf"));
+        assert!(node.children[1].state.selected);
+        assert_eq!(node.children[1].pos_in_set, Some(2));
+        assert_eq!(node.children[1].set_size, Some(2));
+        let description = node.children[1].description.as_deref().unwrap_or_default();
+        for fact in [
+            "File, 4\u{a0}kB",
+            "Available offline",
+            "Kept offline",
+            "Durably replicated",
+            "Shared with 1 recipient",
+        ] {
+            assert!(
+                description.contains(fact),
+                "missing `{fact}` in {description:?}"
+            );
+        }
     }
 
     #[test]
@@ -1607,6 +1833,12 @@ mod tests {
             modified: None,
             mime: String::new(),
             sync_state: None,
+            content_hash: None,
+            record_id: None,
+            availability: None,
+            share: None,
+            history: None,
+            rich_metadata: None,
         };
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -1634,6 +1866,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn workspace_thumbnail_keys_follow_content_across_renames() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_service, ctx) = thumb_ctx(dir.path());
+        let mut a = ent("before.png", false);
+        a.path = PathBuf::from("/var/workspace/before.png");
+        a.content_hash = Some([0x44; 32]);
+        let mut b = a.clone();
+        b.name = "after.png".into();
+        b.path = PathBuf::from("/var/workspace/after.png");
+        b.modified = Some(chrono::Local::now());
+        assert_eq!(
+            FileView::thumb_key(&ctx, &a),
+            FileView::thumb_key(&ctx, &b),
+            "the same content reuses its preview after a path/mtime change"
+        );
+    }
+
     /// A small PNG on disk, as an `Entry` with no sync state (an ordinary
     /// local file, or a workspace root the driver never annotated). Bigger
     /// than the host-provided preview used in the tests below but still
@@ -1654,6 +1904,12 @@ mod tests {
             modified: None,
             mime: String::new(),
             sync_state: None,
+            content_hash: None,
+            record_id: None,
+            availability: None,
+            share: None,
+            history: None,
+            rich_metadata: None,
         }
     }
 
@@ -1756,12 +2012,17 @@ mod tests {
         let key = FileView::thumb_key(&ctx, &entry);
         assert!(matches!(
             FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
+            ThumbState::Loading
+        ));
+        service.block_until_idle(std::time::Duration::from_secs(5));
+        assert!(matches!(
+            FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Badge(thumbnail::FileCategory::Image)
         ));
         assert_eq!(
             service.pending(),
             0,
-            "nothing was read, so nothing was hydrated"
+            "the metadata-only request settled without decoding the source file"
         );
     }
 
@@ -1867,13 +2128,16 @@ mod tests {
         // At rest the content's top aligns with the viewport top → the header
         // sits at the content top.
         v.rect = Rect::new(0.0, 0.0, 600.0, 800.0);
-        assert_eq!(v.header_top(vp), 0.0);
+        assert!(v.header_top(vp).abs() < f64::EPSILON);
         // Scrolled: the content is pushed up (rect.y0 < viewport top) so the
         // header pins to the viewport's top edge and stays visible.
         v.rect = Rect::new(0.0, -250.0, 600.0, 550.0);
-        assert_eq!(v.header_top(vp), 0.0, "pinned to the viewport top");
+        assert!(
+            v.header_top(vp).abs() < f64::EPSILON,
+            "pinned to the viewport top"
+        );
         // Without a viewport the header just tracks the content top.
-        assert_eq!(v.header_top(None), -250.0);
+        assert!((v.header_top(None) + 250.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1995,6 +2259,95 @@ mod tests {
             theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
             "downloading badge uses the accent colour",
         );
+    }
+
+    fn availability_with(
+        phase: &str,
+        residency: &serde_json::Value,
+        policy: &str,
+        replicas: &serde_json::Value,
+        error: bool,
+    ) -> AvailabilityProjection {
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+            "residency": residency,
+            "transfer": {
+                "phase": phase,
+                "progress": null,
+                "last_error": if error { Some("network") } else { None },
+                "last_error_at_ms": if error { Some(7) } else { None },
+                "error_truncated": false
+            },
+            "policy": policy,
+            "replicas": replicas,
+            "freshness": {
+                "metadata_observed_at_ms": 1,
+                "local_verified_at_ms": 2,
+                "replicas_observed_at_ms": 3
+            }
+        });
+        AvailabilityProjection::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn rich_availability_badges_are_honest_and_actionable() {
+        let theme = Theme::dark();
+        let unknown = availability_with(
+            "idle",
+            &serde_json::json!({"state": "resident", "bytes": 1}),
+            "automatic",
+            &serde_json::json!({"state": "unknown"}),
+            false,
+        );
+        let zero = availability_with(
+            "idle",
+            &serde_json::json!({"state": "resident", "bytes": 1}),
+            "automatic",
+            &serde_json::json!({"state": "known", "reachable": 0, "durable": 0}),
+            false,
+        );
+        let safe = availability_with(
+            "idle",
+            &serde_json::json!({"state": "resident", "bytes": 1}),
+            "automatic",
+            &serde_json::json!({"state": "known", "reachable": 1, "durable": 1}),
+            false,
+        );
+        assert_eq!(availability_badge(&unknown, &theme).0, Icon::Info);
+        assert_eq!(availability_badge(&zero, &theme).0, Icon::Info);
+        assert_ne!(
+            availability_badge(&unknown, &theme).1,
+            availability_badge(&zero, &theme).1,
+            "unknown and known-zero replica evidence must remain distinct"
+        );
+        assert_eq!(availability_badge(&safe, &theme).0, Icon::Shield);
+
+        let downloading = availability_with(
+            "downloading",
+            &serde_json::json!({"state": "partial", "resident_bytes": 1}),
+            "automatic",
+            &serde_json::json!({"state": "unknown"}),
+            false,
+        );
+        assert_eq!(availability_badge(&downloading, &theme).0, Icon::Download);
+        let pinned = availability_with(
+            "idle",
+            &serde_json::json!({"state": "resident", "bytes": 1}),
+            "pinned",
+            &serde_json::json!({"state": "unknown"}),
+            false,
+        );
+        assert_eq!(availability_badge(&pinned, &theme).0, Icon::Star);
+        let failed = availability_with(
+            "idle",
+            &serde_json::json!({"state": "not_resident"}),
+            "automatic",
+            &serde_json::json!({"state": "unknown"}),
+            true,
+        );
+        assert_eq!(availability_badge(&failed, &theme).0, Icon::Ban);
     }
 
     #[test]

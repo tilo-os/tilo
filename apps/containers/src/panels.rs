@@ -2859,58 +2859,6 @@ impl ContainersApp {
         self.push_hit(close, Hit::PromptCancel); // reuse the dismiss path
     }
 
-    pub(crate) fn draw_toast(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        full: Rect,
-        toast: &crate::app::Toast,
-    ) {
-        let c = &theme.tokens.colors;
-        let accent = if toast.error {
-            c.semantic.danger
-        } else {
-            c.semantic.success
-        };
-        let (tw, _) = tr.measure(&toast.message, theme.tokens.typography.scale.sm, None);
-        let w = (f64::from(tw) + 64.0).min(full.width() - 48.0);
-        let h = 44.0;
-        let toast_rect = Rect::new(
-            full.center().x - w / 2.0,
-            full.y1 - h - 24.0,
-            full.center().x + w / 2.0,
-            full.y1 - 24.0,
-        );
-        draw::fill_round(
-            scene,
-            toast_rect,
-            f64::from(theme.tokens.radii.md),
-            c.neutral[2],
-        );
-        draw::stroke_round(
-            scene,
-            toast_rect,
-            f64::from(theme.tokens.radii.md),
-            1.0,
-            draw::with_alpha(accent, 160),
-        );
-        let dot =
-            vello::kurbo::Circle::new(Point::new(toast_rect.x0 + 20.0, toast_rect.center().y), 4.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, accent, None, &dot);
-        draw::text_clip(
-            scene,
-            tr,
-            &toast.message,
-            &draw::TextStyle {
-                size: theme.tokens.typography.scale.sm,
-                color: c.text_primary,
-                weight: TextWeight::Medium,
-            },
-            Point::new(toast_rect.x0 + 34.0, toast_rect.center().y - 7.0),
-            w - 48.0,
-        );
-    }
-
     // =================================================================
     // Shared helpers
     // =================================================================

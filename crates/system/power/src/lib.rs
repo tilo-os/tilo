@@ -48,28 +48,44 @@
 )]
 
 pub mod battery;
+#[cfg(feature = "service")]
 pub mod bridge;
+#[cfg(feature = "service")]
 pub mod config;
+#[cfg(feature = "service")]
 pub mod history;
+#[cfg(feature = "service")]
 pub mod inhibit;
+#[cfg(feature = "service")]
 pub mod logind;
 pub mod policy;
+#[cfg(feature = "service")]
 pub mod profiles;
+#[cfg(feature = "service")]
 pub mod service;
 pub mod sysfs;
+#[cfg(feature = "service")]
 pub mod upower;
 
 pub use battery::{BatteryEvent, BatteryMonitor, BatterySnapshot, BatteryState};
+#[cfg(feature = "service")]
 pub use bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
+#[cfg(feature = "service")]
 pub use config::{default_policy, load_policy, policy_from_settings_json};
+#[cfg(feature = "service")]
 pub use history::{
     BatteryHistory, BatteryHistoryPoint, PowerSourceKind, load_battery_history, load_ups_history,
     record_power_history,
 };
+#[cfg(feature = "service")]
 pub use inhibit::{InhibitRegistry, InhibitToken};
+#[cfg(feature = "service")]
 pub use logind::{LogindInhibitor, LogindManager};
 pub use policy::{PowerAction, PowerPolicy};
+#[cfg(feature = "service")]
 pub use profiles::PowerProfilesMonitor;
+#[cfg(feature = "service")]
 pub use service::PowerService;
 pub use sysfs::{battery_snapshot as sysfs_battery_snapshot, on_battery as sysfs_on_battery};
+#[cfg(feature = "service")]
 pub use upower::UPowerMonitor;

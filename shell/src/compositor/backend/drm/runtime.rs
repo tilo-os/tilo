@@ -1987,6 +1987,10 @@ where
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic output geometry fixtures use exactly representable values"
+)]
 mod tests {
     use super::*;
     use crate::compositor::backend::drm::devices::ModeInfo;

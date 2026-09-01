@@ -6,15 +6,15 @@
 # the internal desktop id. `DesktopNames` below is the machine-facing id and
 # is a contract with the portal — the two are deliberately different.
 #
-# `Exec` runs shell in its default mode (`--mode native` as of
-# Phase 7), so the binary itself binds the wayland-N socket. No `cage`
-# wrapper — see /etc/greetd/config.toml for why.
+# `Exec` uses the qOS session wrapper, which activates the standard systemd
+# graphical-session targets, waits for verified identity enrollment, then runs
+# shell in its default native mode. It is not a nested compositor wrapper.
 #
 # `DesktopNames=nirios` is what the xdg-desktop-portal `qos.portal`
 # file matches via `UseIn=nirios` to activate our portal backend.
 Name=qOS
 GenericName=Desktop
 Comment=Collaborative spatial desktop environment
-Exec=/usr/bin/shell --backend drm
+Exec=/usr/libexec/qos-session --backend drm
 Type=Application
 DesktopNames=nirios
