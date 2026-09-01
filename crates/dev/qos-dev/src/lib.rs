@@ -4705,6 +4705,10 @@ fn source_catalog() -> String {
         "starter-title = Your first qOS app\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
+starter-updates-label = Receive updates\n\
+starter-refresh-label = Refresh interval\n\
+starter-volume-label = Volume\n\
+starter-region-label = Region\n\
 starter-greeting = Hello, { $name }!\n\
 data-name-column = Name\n\
 data-actions-column = Actions\n\
@@ -4751,11 +4755,9 @@ fn app_test(spec: &AppSpec) -> String {
     source
 }
 
-fn template_app_test(spec: &AppSpec) -> String {
-    let crate_name = &spec.crate_name;
-    match spec.template {
-        Template::Starter => format!(
-            r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+fn starter_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
 
 #[test]
 fn app_responds_to_semantic_input() {{
@@ -4780,9 +4782,47 @@ fn app_responds_to_semantic_input() {{
             .name_contains("Ada"),
     )
     .expect("derived greeting semantics match");
+    app.perform_named("updates-checkbox", &Action::ToggleCheck)
+        .expect("the generated local checkbox remains addressable");
+    app.expect(
+        &SemanticExpectation::named("updates-checkbox")
+            .role(Role::Checkbox)
+            .checked(false),
+    )
+    .expect("typed boolean binding updates checkbox semantics");
+    app.perform_named("refresh-input", &Action::SetValue("30".into()))
+        .expect("the generated number input remains addressable");
+    app.expect(
+        &SemanticExpectation::named("refresh-input")
+            .role(Role::SpinButton)
+            .value("30 min"),
+    )
+    .expect("typed numeric binding updates spinbutton semantics");
+    app.perform_named("volume-slider", &Action::SetValue("75%".into()))
+        .expect("the generated slider remains addressable");
+    app.expect(
+        &SemanticExpectation::named("volume-slider")
+            .role(Role::Slider)
+            .value("75%"),
+    )
+    .expect("typed numeric binding updates slider semantics");
+    app.perform_named("region-select", &Action::SetValue("Asia/Tokyo".into()))
+        .expect("the generated dropdown remains addressable");
+    app.expect(
+        &SemanticExpectation::named("region-select")
+            .role(Role::ComboBox)
+            .value("Asia/Tokyo"),
+    )
+    .expect("typed choice binding updates combobox semantics");
 }}
 "#
-        ),
+    )
+}
+
+fn template_app_test(spec: &AppSpec) -> String {
+    let crate_name = &spec.crate_name;
+    match spec.template {
+        Template::Starter => starter_app_test(crate_name),
         Template::Data => format!(
             r#"use std::time::Duration;
 use ui::a11y::{{Action, Role}};
@@ -6574,7 +6614,14 @@ mod tests {
         assert!(!library.contains("with_accessible_name(\"starter-name-label\")"));
         assert!(!library.contains("Column::new()"));
         assert!(library.contains("with_id(\"name-input\")"));
-        assert!(library.contains("on_change(name.text_sink())"));
+        assert!(library.contains("TextInput::from_state(&name)"));
+        assert!(library.contains("Checkbox::from_state(&updates)"));
+        assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
+        assert!(library.contains("Slider::from_state(&volume)"));
+        assert!(library.contains("Dropdown::from_state("));
+        assert!(library.contains("labeled_check(\"starter-updates-label\", updates)"));
+        assert!(!library.contains("on_change(name.text_sink())"));
+        assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));
         assert!(library.contains("locales::install()"));
         let locale_registry =
@@ -6588,6 +6635,11 @@ mod tests {
         assert!(app_test.contains("perform_named(\"name-input\""));
         assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
         assert!(app_test.contains("name_contains(\"Ada\")"));
+        assert!(app_test.contains("perform_named(\"updates-checkbox\""));
+        assert!(app_test.contains("perform_named(\"refresh-input\""));
+        assert!(app_test.contains("perform_named(\"volume-slider\""));
+        assert!(app_test.contains("perform_named(\"region-select\""));
+        assert!(app_test.contains("checked(false)"));
 
         let report = doctor_app(&destination).expect("doctor generated app");
         assert!(report.is_ready(), "{}", report.summary());
@@ -7038,7 +7090,8 @@ mod tests {
         };
         let source = app_lib(&spec);
         assert!(source.contains("LocalState::new"));
-        assert!(source.contains("TextInput::local()"));
+        assert!(source.contains("TextInput::from_state(&payload)"));
+        assert!(!source.contains("payload.text_sink()"));
         assert!(source.contains("ModelView::from_state"));
         assert!(source.contains("QrWidget::new"));
         assert!(source.contains("with_id(\"qr-output\")"));

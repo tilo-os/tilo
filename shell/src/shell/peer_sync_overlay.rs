@@ -18,7 +18,10 @@ use ui::theme::Theme;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
     IssueInvite,
-    IssueInviteFor(String),
+    IssueInviteFor {
+        name: String,
+        role: crate::network::invite::InviteRole,
+    },
     AcceptInvite(String),
 }
 
@@ -29,12 +32,14 @@ pub struct PeerSyncSnapshot {
     pub connect_input: Option<String>,
     pub invite_name: Option<String>,
     pub invite_for: Option<String>,
+    pub invite_role: crate::network::invite::InviteRole,
     pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Button {
     CreateInvite,
+    CycleRole,
     Join,
     Cancel,
     CopyToken,
@@ -124,17 +129,17 @@ impl PeerSyncOverlay {
             (PeerSyncRequest::IssueInvite, Ok(token)) => {
                 self.finish_invite(token, None, copy_result);
             }
-            (PeerSyncRequest::IssueInviteFor(name), Ok(token)) => {
+            (PeerSyncRequest::IssueInviteFor { name, .. }, Ok(token)) => {
                 self.finish_invite(token, Some(name.clone()), copy_result);
             }
-            (PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInviteFor(_), Err(error)) => {
+            (PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInviteFor { .. }, Err(error)) => {
                 self.state.invite_token = None;
                 self.state.invite_for = None;
                 self.state.status = Some(format!("Invite failed: {error}"));
             }
-            (PeerSyncRequest::AcceptInvite(_), Ok(workspace)) => {
+            (PeerSyncRequest::AcceptInvite(_), Ok(room)) => {
                 self.state.connect_input = None;
-                self.state.status = Some(format!("Joined workspace {workspace}"));
+                self.state.status = Some(format!("Joined room {room}"));
             }
             (PeerSyncRequest::AcceptInvite(_), Err(error)) => {
                 self.state.status = Some(format!("Refused: {error}"));
@@ -228,6 +233,10 @@ impl PeerSyncOverlay {
                 EventOutcome::consumed()
             }
             Key::Named(NamedKey::Enter) if composer_open => self.submit_invite(),
+            Key::Named(NamedKey::Tab) if composer_open => {
+                self.state.invite_role = self.state.invite_role.next();
+                EventOutcome::consumed()
+            }
             Key::Named(NamedKey::Enter) if connect_open => self.submit_connect(),
             Key::Named(NamedKey::Backspace) if connect_open || composer_open => {
                 self.active_input_mut(connect_open).map(String::pop);
@@ -261,6 +270,10 @@ impl PeerSyncOverlay {
     fn activate(&mut self, button: Button) -> EventOutcome {
         match button {
             Button::CreateInvite => self.submit_invite(),
+            Button::CycleRole => {
+                self.state.invite_role = self.state.invite_role.next();
+                EventOutcome::consumed()
+            }
             Button::Join => self.submit_connect(),
             Button::Cancel => {
                 self.state.connect_input = None;
@@ -288,7 +301,13 @@ impl PeerSyncOverlay {
             self.state.status = Some("Say who this invite is for".to_string());
             return EventOutcome::consumed();
         }
-        EventOutcome::request(PeerSyncRequest::IssueInviteFor(name), true)
+        EventOutcome::request(
+            PeerSyncRequest::IssueInviteFor {
+                name,
+                role: self.state.invite_role,
+            },
+            true,
+        )
     }
 
     fn submit_connect(&self) -> EventOutcome {
@@ -426,7 +445,18 @@ impl PeerSyncOverlay {
     ) -> f64 {
         if let Some(typed) = self.state.invite_name.as_deref() {
             draw_naming(
-                scene, transform, text, theme, rect, pad, y, body, name, avail, typed,
+                scene,
+                transform,
+                text,
+                theme,
+                rect,
+                pad,
+                y,
+                body,
+                name,
+                avail,
+                typed,
+                self.state.invite_role,
             )
         } else if let Some(token) = self.state.invite_token.as_deref() {
             draw_invite(
@@ -474,26 +504,30 @@ impl PeerSyncOverlay {
         pad: f64,
         body: f32,
     ) {
-        let buttons: &[(&str, Button)] = if self.state.invite_name.is_some() {
-            &[
-                ("Create invite", Button::CreateInvite),
-                ("Cancel", Button::Cancel),
+        let buttons: Vec<(String, Button)> = if self.state.invite_name.is_some() {
+            vec![
+                ("Create invite".into(), Button::CreateInvite),
+                (
+                    format!("Role: {}", self.state.invite_role.label()),
+                    Button::CycleRole,
+                ),
+                ("Cancel".into(), Button::Cancel),
             ]
         } else if self.state.connect_input.is_some() {
-            &[
-                ("Join", Button::Join),
-                ("Cancel", Button::Cancel),
-                ("Paste", Button::PasteToken),
+            vec![
+                ("Join".into(), Button::Join),
+                ("Cancel".into(), Button::Cancel),
+                ("Paste".into(), Button::PasteToken),
             ]
         } else {
-            &[("Copy", Button::CopyToken)]
+            vec![("Copy".into(), Button::CopyToken)]
         };
         let colors = &theme.tokens.colors;
         let bh = 30.0;
         let by = rect.y1 - pad - bh;
         let mut bx = rect.x1 - pad;
-        for (label, button) in buttons.iter().copied() {
-            let (tw, th) = text.measure(label, body, None);
+        for (label, button) in buttons {
+            let (tw, th) = text.measure(&label, body, None);
             let bw = f64::from(tw) + 26.0;
             let brect = Rect::new(bx - bw, by, bx, by + bh);
             let primary = matches!(
@@ -513,7 +547,7 @@ impl PeerSyncOverlay {
             );
             text.draw_text(
                 scene,
-                label,
+                &label,
                 body,
                 colors.text_primary,
                 transform.pre_translate(
@@ -537,6 +571,7 @@ impl PeerSyncOverlay {
                 (
                     match button {
                         Button::CreateInvite => "create",
+                        Button::CycleRole => "role",
                         Button::Join => "join",
                         Button::Cancel => "cancel",
                         Button::CopyToken => "copy",
@@ -628,6 +663,7 @@ fn draw_naming(
     name: f32,
     avail: f64,
     typed: &str,
+    role: crate::network::invite::InviteRole,
 ) -> f64 {
     let colors = &theme.tokens.colors;
     text.draw_text(
@@ -684,7 +720,10 @@ fn draw_naming(
     );
     y = field.y1 + 12.0;
     let note = text.elide_to_width(
-        "Shown beside their cursor throughout this workspace.",
+        &format!(
+            "They join as {} · use the Role button or Tab to change.",
+            role.label()
+        ),
         body,
         f64_to_f32(avail),
     );
@@ -715,7 +754,11 @@ fn draw_invite(
     let parsed = parse_invite(token);
     let who = invite_for.unwrap_or("Anyone with this invite");
     let sub = parsed.as_ref().map_or_else(String::new, |t| {
-        format!("Expires in {}", time_until(t.expiry_unix_seconds))
+        format!(
+            "{} · expires in {}",
+            t.role.label(),
+            time_until(t.expiry_unix_seconds)
+        )
     });
     y = draw_person(
         scene,
@@ -764,7 +807,11 @@ fn draw_receiving(
             theme,
             Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 44.0),
             "Invite received",
-            &format!("Expires in {}", time_until(t.expiry_unix_seconds)),
+            &format!(
+                "{} access · expires in {}",
+                t.role.label(),
+                time_until(t.expiry_unix_seconds)
+            ),
             false,
         ) + 12.0;
         return draw_code(
@@ -963,7 +1010,10 @@ mod tests {
         );
         assert_eq!(
             submit.request,
-            Some(PeerSyncRequest::IssueInviteFor("Ada".into()))
+            Some(PeerSyncRequest::IssueInviteFor {
+                name: "Ada".into(),
+                role: crate::network::invite::InviteRole::Editor,
+            })
         );
         overlay.finish_request(
             submit.request.as_ref().unwrap(),
@@ -971,6 +1021,30 @@ mod tests {
             submit.copy_result,
         );
         assert_eq!(overlay.state.invite_name.as_deref(), Some("Ada"));
+    }
+
+    #[test]
+    fn invite_role_is_keyboard_selectable_and_reaches_the_request() {
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_invite();
+        overlay.handle_event(
+            &key(Key::Character("Lin".into())),
+            Modifiers::default(),
+            None,
+        );
+        overlay.handle_event(&key(Key::Named(NamedKey::Tab)), Modifiers::default(), None);
+        let submit = overlay.handle_event(
+            &key(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            None,
+        );
+        assert_eq!(
+            submit.request,
+            Some(PeerSyncRequest::IssueInviteFor {
+                name: "Lin".into(),
+                role: crate::network::invite::InviteRole::Viewer,
+            })
+        );
     }
 
     #[test]
