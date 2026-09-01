@@ -21,6 +21,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
+qos-actions = { path = "../../crates/collab/actions" }
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }

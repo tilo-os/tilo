@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -30,12 +30,12 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
     Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, RedactedMarker, ResourceRef,
-    SignedOp, ValidationError, document_artifact_id, document_attestation_id, role_permits,
+    SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, channel_handle, collab_service, context_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, action_input, channel_handle, collab_service, context_stream, invocation_stream,
+    presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -228,6 +228,61 @@ struct ContextEnvelope {
     permissions: Vec<String>,
 }
 
+/// Input contract published for one live application action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublishedInput {
+    None,
+    Text {
+        prompt: String,
+        placeholder: String,
+        wants_content: bool,
+    },
+}
+
+/// One inert operation published by a live application connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedAction {
+    pub resource: String,
+    pub action: String,
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action_label: String,
+    pub description: Option<String>,
+    pub operation_kind: qos_actions::OperationKind,
+    pub params: Vec<qos_actions::ActionParam>,
+    pub input: PublishedInput,
+}
+
+/// A live application's complete, level-triggered action surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedSurface {
+    pub peer_id: u64,
+    pub app_id: String,
+    pub route: CrdtRoute,
+    pub actions: Vec<PublishedAction>,
+}
+
+#[derive(Clone, Debug)]
+struct InvocationEnvelope {
+    id: u64,
+    resource: String,
+    action: String,
+    argument: Option<String>,
+    actor: String,
+}
+
+/// The application's terminal answer to a directed invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationCompletion {
+    pub code: String,
+    pub message: String,
+}
+
+struct PendingInvocation {
+    peer_id: u64,
+    tx: std::sync::mpsc::Sender<InvocationCompletion>,
+}
+
 /// One subscription onto the broker fanout. Slot-indexed inside a
 /// [`ChannelSubscribers`] table so it can be dropped en masse when
 /// the connection tears down.
@@ -271,6 +326,12 @@ pub struct CapnpBrokerState {
     /// certified join fails closed when they have no authority to consult.
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    /// Latest complete action surface per live connection.
+    surfaces: Mutex<HashMap<u64, PublishedSurface>>,
+    /// Directed invocation stream registered by each application connection.
+    invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
+    pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    invocation_id: AtomicU64,
 }
 
 impl CapnpBrokerState {
@@ -294,7 +355,125 @@ impl CapnpBrokerState {
             publisher,
             membership,
             trusted_devices,
+            surfaces: Mutex::new(HashMap::new()),
+            invocation_subscribers: Mutex::new(HashMap::new()),
+            pending_invocations: Mutex::new(HashMap::new()),
+            invocation_id: AtomicU64::new(1),
         })
+    }
+
+    /// Snapshot every action surface currently published by a connected app.
+    pub fn published_surfaces(&self) -> Vec<PublishedSurface> {
+        self.surfaces
+            .lock()
+            .map(|surfaces| surfaces.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Address one operation back to the exact connection that published it.
+    /// The returned receiver resolves only after the application reports a
+    /// structured completion; dropping the connection resolves as a refusal.
+    pub fn invoke(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<std::sync::mpsc::Receiver<InvocationCompletion>, String> {
+        let offered = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| surfaces.get(&peer_id).cloned())
+            .and_then(|surface| {
+                let action = surface
+                    .actions
+                    .iter()
+                    .find(|candidate| candidate.resource == resource && candidate.action == action)
+                    .cloned()?;
+                Some((surface, action))
+            })
+            .ok_or_else(|| "the application no longer publishes that action".to_string())?;
+        let sender = self
+            .invocation_subscribers
+            .lock()
+            .ok()
+            .and_then(|subscribers| subscribers.get(&peer_id).cloned())
+            .ok_or_else(|| "the application has no invocation stream".to_string())?;
+        if offered.0.route.cluster_id.is_empty() {
+            return Err("the application is not attached to a workspace".into());
+        }
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
+        let tree = membership.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+        let caller = workspace.actor_for_person(&actor.to_string());
+        let target = ResourceRef::Action {
+            app: offered.0.app_id.clone(),
+            action: action.to_string(),
+        };
+        let verb = if offered.1.operation_kind == qos_actions::OperationKind::View {
+            Verb::Read
+        } else {
+            Verb::Write
+        };
+        if workspace.decide(&caller, &target, verb) != CapDecision::Allow {
+            return Err("the caller is not allowed to invoke that application action".into());
+        }
+        drop(tree);
+        let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending_invocations
+            .lock()
+            .map_err(|_| "the invocation registry is unavailable".to_string())?
+            .insert(id, PendingInvocation { peer_id, tx });
+        if sender
+            .send(InvocationEnvelope {
+                id,
+                resource: resource.to_string(),
+                action: action.to_string(),
+                argument: argument.map(str::to_string),
+                actor: actor.to_string(),
+            })
+            .is_err()
+        {
+            let _ = self
+                .pending_invocations
+                .lock()
+                .map(|mut pending| pending.remove(&id));
+            return Err("the application invocation stream closed".into());
+        }
+        Ok(rx)
+    }
+
+    fn remove_connection(&self, peer_id: u64) {
+        if let Ok(mut surfaces) = self.surfaces.lock() {
+            surfaces.remove(&peer_id);
+        }
+        if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
+        if let Ok(mut pending) = self.pending_invocations.lock() {
+            let ids = pending
+                .iter()
+                .filter_map(|(id, invocation)| (invocation.peer_id == peer_id).then_some(*id))
+                .collect::<Vec<_>>();
+            for id in ids {
+                if let Some(invocation) = pending.remove(&id) {
+                    let _ = invocation.tx.send(InvocationCompletion {
+                        code: "action_failed".into(),
+                        message: "application disconnected before completing the action".into(),
+                    });
+                }
+            }
+        }
     }
 
     /// `joinChannel(channelId, identity)` carries no announced handle,
@@ -451,6 +630,9 @@ impl CapnpBrokerState {
             CollabEvent::ScrollbackBatch { .. } => {
                 // Per-request in the capnp schema, not a stream; apps
                 // wanting late history repeat `fetchScrollbackFor`.
+            }
+            CollabEvent::Invocation { .. } => {
+                // Invocations are point-to-point and never enter fanout.
             }
         }
     }
@@ -706,6 +888,12 @@ struct CapnpChannelHandle {
     verified_identity: AdmittedJoinIdentity,
 }
 
+impl Drop for CapnpChannelHandle {
+    fn drop(&mut self) {
+        self.state.remove_connection(self.peer_id);
+    }
+}
+
 impl CapnpChannelHandle {
     /// A record-scoped connection names its record inside the channel id
     /// (the SDK joins `<cluster>#record:<id>`), parsed back out here.
@@ -844,6 +1032,162 @@ impl channel_handle::Server for CapnpChannelHandle {
             let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
             let batch = results.get().init_batch();
             fill_scrollback_batch(batch, &ops, exhausted)?;
+            Ok(())
+        })
+    }
+
+    fn publish_actions(
+        self: Rc<Self>,
+        params: channel_handle::PublishActionsParams,
+        _results: channel_handle::PublishActionsResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let route = self.route();
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let app_id = request.get_app_id()?.to_str()?.to_owned();
+            if route.app_id.is_empty() || app_id != route.app_id {
+                return Err(capnp::Error::failed(
+                    "publishActions appId must match the certified connection route".into(),
+                ));
+            }
+            let rows = request.get_actions()?;
+            let mut actions = Vec::with_capacity(rows.len() as usize);
+            for index in 0..rows.len() {
+                let row = rows.get(index);
+                let resource = row.get_resource()?.to_str()?.to_owned();
+                let action = row.get_action()?.to_str()?.to_owned();
+                if resource.is_empty()
+                    || action.is_empty()
+                    || resource.contains(qos_actions::KEY_SEP)
+                    || action.contains(qos_actions::KEY_SEP)
+                    || actions.iter().any(|candidate: &PublishedAction| {
+                        candidate.resource == resource && candidate.action == action
+                    })
+                {
+                    return Err(capnp::Error::failed(
+                        "exported action addresses must be non-empty, unique, and contain no separator"
+                            .into(),
+                    ));
+                }
+                let description = row.get_description()?.to_str()?.to_owned();
+                let input = match row.get_input()?.which()? {
+                    action_input::Which::None(()) => PublishedInput::None,
+                    action_input::Which::Text(text) => PublishedInput::Text {
+                        prompt: text.get_prompt()?.to_str()?.to_owned(),
+                        placeholder: text.get_placeholder()?.to_str()?.to_owned(),
+                        wants_content: text.get_wants_content(),
+                    },
+                };
+                actions.push(PublishedAction {
+                    resource,
+                    action,
+                    resource_kind: row.get_resource_kind()?.to_str()?.to_owned(),
+                    resource_label: row.get_resource_label()?.to_str()?.to_owned(),
+                    action_label: row.get_action_label()?.to_str()?.to_owned(),
+                    description: (!description.is_empty()).then_some(description),
+                    operation_kind: match row.get_operation_kind()?.to_str()? {
+                        "" | "document" => qos_actions::OperationKind::Document,
+                        "effect" => qos_actions::OperationKind::Effect,
+                        "view" => qos_actions::OperationKind::View,
+                        other => {
+                            return Err(capnp::Error::failed(format!(
+                                "unknown exported operation kind `{other}`"
+                            )));
+                        }
+                    },
+                    params: {
+                        let json = row.get_params_json()?.to_str()?;
+                        if json.is_empty() {
+                            Vec::new()
+                        } else {
+                            serde_json::from_str(json).map_err(|error| {
+                                capnp::Error::failed(format!(
+                                    "invalid exported action parameters: {error}"
+                                ))
+                            })?
+                        }
+                    },
+                    input,
+                });
+            }
+            state
+                .surfaces
+                .lock()
+                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
+                .insert(
+                    peer_id,
+                    PublishedSurface {
+                        peer_id,
+                        app_id,
+                        route,
+                        actions,
+                    },
+                );
+            Ok(())
+        })
+    }
+
+    fn subscribe_invocations(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeInvocationsParams,
+        mut results: channel_handle::SubscribeInvocationsResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
+            subscribers.insert(self.peer_id, tx);
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "invocation subscriber registry unavailable".into(),
+            ));
+        }
+        let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
+            rx: Rc::new(AsyncMutex::new(rx)),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    fn complete_invocation(
+        self: Rc<Self>,
+        params: channel_handle::CompleteInvocationParams,
+        _results: channel_handle::CompleteInvocationResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let id = request.get_id();
+            let completion = InvocationCompletion {
+                code: request.get_code()?.to_str()?.to_owned(),
+                message: request.get_message()?.to_str()?.to_owned(),
+            };
+            let mut registry = state
+                .pending_invocations
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            if registry.get(&id).map(|pending| pending.peer_id) != Some(peer_id) {
+                return Err(capnp::Error::failed(
+                    "an application may complete only its own invocation".into(),
+                ));
+            }
+            let pending = registry
+                .remove(&id)
+                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            let _ = pending.tx.send(completion);
             Ok(())
         })
     }
@@ -1268,6 +1612,35 @@ impl stream::Server for OpStreamServer {
 
 struct PresenceStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<PresenceEnvelope>>>,
+}
+
+struct InvocationStreamServer {
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+}
+
+impl invocation_stream::Server for InvocationStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: invocation_stream::ReadParams,
+        mut results: invocation_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let mut guard = rx.lock().await;
+            let invocation = guard.recv().await.ok_or_else(|| {
+                capnp::Error::disconnected("application invocation stream closed".into())
+            })?;
+            drop(guard);
+            let mut result = results.get();
+            result.set_id(invocation.id);
+            result.set_resource(&invocation.resource);
+            result.set_action(&invocation.action);
+            result.set_argument(invocation.argument.as_deref().unwrap_or(""));
+            result.set_has_argument(invocation.argument.is_some());
+            result.set_actor(&invocation.actor);
+            Ok(())
+        })
+    }
 }
 
 impl presence_stream::Server for PresenceStreamServer {
@@ -2027,6 +2400,90 @@ mod tests {
                 .authorize_certified_document(&other_record, &admitted, &op)
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
+        );
+    }
+
+    #[test]
+    fn live_action_invocation_is_fresh_directed_and_permission_checked() {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(31),
+            "Action room",
+        );
+        workspace.set_owner("owner");
+        let route = CrdtRoute::app("dev.qos.files", workspace.room.to_string());
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            None,
+        );
+        state.surfaces.lock().expect("surfaces").insert(
+            7,
+            PublishedSurface {
+                peer_id: 7,
+                app_id: "dev.qos.files".into(),
+                route,
+                actions: vec![PublishedAction {
+                    resource: "files.entry:/tmp/report".into(),
+                    action: "reveal".into(),
+                    resource_kind: "files.entry".into(),
+                    resource_label: "report".into(),
+                    action_label: "Reveal".into(),
+                    description: None,
+                    operation_kind: qos_actions::OperationKind::View,
+                    params: Vec::new(),
+                    input: PublishedInput::None,
+                }],
+            },
+        );
+        let (tx, mut invocations) = mpsc::unbounded_channel();
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(7, tx);
+
+        let completion = state
+            .invoke(7, "files.entry:/tmp/report", "reveal", None, "owner")
+            .expect("owner can invoke current offer");
+        let invocation = invocations.try_recv().expect("directed invocation");
+        assert_eq!(invocation.resource, "files.entry:/tmp/report");
+        assert!(
+            state
+                .invoke(7, "files.entry:/tmp/report", "gone", None, "owner")
+                .is_err(),
+            "an address absent from the current level-triggered surface is stale"
+        );
+        assert!(
+            state
+                .invoke(7, "files.entry:/tmp/report", "reveal", None, "stranger")
+                .is_err(),
+            "broker authorization is checked again at delivery time"
+        );
+        let pending = state
+            .pending_invocations
+            .lock()
+            .expect("pending")
+            .remove(&invocation.id)
+            .expect("completion slot");
+        pending
+            .tx
+            .send(InvocationCompletion {
+                code: String::new(),
+                message: String::new(),
+            })
+            .expect("caller still waiting");
+        assert_eq!(
+            completion.recv().expect("completion"),
+            InvocationCompletion {
+                code: String::new(),
+                message: String::new(),
+            }
         );
     }
 }

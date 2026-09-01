@@ -236,6 +236,8 @@ struct Rendered {
 }
 
 pub struct PhotosApp {
+    /// Canonical dispatcher shared by toolbar edits and exported document actions.
+    actions: ui::ActionHost,
     /// Decoded original, before any edit. `None` until a file opens.
     original: Option<(String, Rgba)>,
     rendered: Option<Rendered>,
@@ -275,6 +277,7 @@ impl PhotosApp {
             buttons.push((*hit, build_button(*hit, key, *icon, *face, &pending)));
         }
         Self {
+            actions: ui::ActionHost::new(),
             original: None,
             rendered: None,
             viewer: None,
@@ -543,8 +546,44 @@ impl PhotosApp {
 
     /// Apply `next` to the document as an undoable edit.
     fn commit_edits(&mut self, doc: &mut AutoCommit, next: Edits) {
-        PhotosDoc::set_edits(doc, &next);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::PHOTOS_ACTION_TYPE,
+            &crate::actions::PhotosAction::set(&next),
+            qos_actions::ActionContext::for_action(
+                "org.qos.Photos",
+                "Photos",
+                &crate::actions::PhotosAction::set(&next),
+            ),
+        );
         self.notice = None;
+    }
+
+    fn perform_effect(&mut self, operation: crate::actions::PhotosOperation, doc: &AutoCommit) {
+        match operation {
+            crate::actions::PhotosOperation::OpenPicker => {
+                self.picker = Some(
+                    ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
+                        .thread_name("photos-portal-open")
+                        .filter(
+                            ui::portal::FileFilter::new(&tr("photos-filter-images"))
+                                .mimetype("image/png")
+                                .mimetype("image/jpeg")
+                                .mimetype("image/webp"),
+                        )
+                        .all_files()
+                        .send(),
+                );
+            }
+            crate::actions::PhotosOperation::Copy => {
+                self.copy_to_clipboard();
+            }
+            crate::actions::PhotosOperation::SaveSuggested => {
+                if let Some(open) = PhotosDoc::image(doc) {
+                    self.save_to(&Self::suggested_save_path(&open));
+                }
+            }
+        }
     }
 
     /// Re-derive the rendering if the path or the edits have moved.
@@ -607,18 +646,7 @@ impl PhotosApp {
         let edits = PhotosDoc::edits(doc);
         match hit {
             Hit::Open => {
-                self.picker = Some(
-                    ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
-                        .thread_name("photos-portal-open")
-                        .filter(
-                            ui::portal::FileFilter::new(&tr("photos-filter-images"))
-                                .mimetype("image/png")
-                                .mimetype("image/jpeg")
-                                .mimetype("image/webp"),
-                        )
-                        .all_files()
-                        .send(),
-                );
+                self.perform_effect(crate::actions::PhotosOperation::OpenPicker, doc);
             }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
             Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
@@ -634,13 +662,10 @@ impl PhotosApp {
             }
             Hit::Reset => self.commit_edits(doc, Edits::default()),
             Hit::Copy => {
-                self.copy_to_clipboard();
+                self.perform_effect(crate::actions::PhotosOperation::Copy, doc);
             }
             Hit::Save => {
-                if let Some(open) = PhotosDoc::image(doc) {
-                    let path = Self::suggested_save_path(&open);
-                    self.save_to(&path);
-                }
+                self.perform_effect(crate::actions::PhotosOperation::SaveSuggested, doc);
             }
         }
     }
@@ -920,6 +945,28 @@ fn to_peniko(img: &Rgba) -> ImageData {
 }
 
 impl Widget for PhotosApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_effect(operation, doc);
+        Ok(true)
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         PhotosDoc::seed(doc);
         self.drain_picker(doc);

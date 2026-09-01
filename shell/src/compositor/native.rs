@@ -31,6 +31,7 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
                 "type": p.ty.label(),
                 "required": p.required,
                 "description": p.description,
+                "choices": p.choices,
             })
         })
         .collect()
@@ -2293,6 +2294,14 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+    if let Some(action_broker) = collab_broker
+        .as_ref()
+        .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker)
+    {
+        frame_builder
+            .host_mut()
+            .attach_app_action_broker(action_broker);
+    }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;

@@ -22,6 +22,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::PathSegment;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
@@ -976,6 +977,110 @@ fn enter_pressed(event: &WindowEvent) -> bool {
 // =====================================================================
 
 impl Widget for ContainersApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("containers", "containers.engine", "Containers");
+        for container in &self.engine.containers {
+            let mut resource = Resource::new(
+                format!("container:{}", container.id),
+                "containers.container",
+                container.name.clone(),
+            );
+            let verbs: &[(&str, &str)] = if container.status.is_running() {
+                &[
+                    ("stop", "Stop"),
+                    ("restart", "Restart"),
+                    ("pause", "Pause"),
+                    ("shell", "Open shell"),
+                ]
+            } else {
+                &[("start", "Start"), ("remove", "Remove")]
+            };
+            for (verb, label) in verbs {
+                let payload = vec![(*verb).to_string(), container.id.clone()];
+                if let Ok(spec) = ActionSpec::operation(
+                    *verb,
+                    *label,
+                    OperationKind::Effect,
+                    "containers.container",
+                    &payload,
+                ) {
+                    resource.actions.push(spec);
+                }
+            }
+            root.children.push(resource);
+        }
+        for image in &self.engine.images {
+            let reference = image.reference();
+            let payload = vec!["remove".to_string(), reference.clone()];
+            let mut resource =
+                Resource::new(format!("image:{reference}"), "containers.image", reference);
+            if let Ok(spec) = ActionSpec::operation(
+                "remove",
+                "Remove image",
+                OperationKind::Effect,
+                "containers.image",
+                &payload,
+            ) {
+                resource.actions.push(spec);
+            }
+            root.children.push(resource);
+        }
+        for volume in &self.engine.volumes {
+            let payload = vec!["remove".to_string(), volume.name.clone()];
+            let mut resource = Resource::new(
+                format!("volume:{}", volume.name),
+                "containers.volume",
+                volume.name.clone(),
+            );
+            if let Ok(spec) = ActionSpec::operation(
+                "remove",
+                "Remove volume",
+                OperationKind::Effect,
+                "containers.volume",
+                &payload,
+            ) {
+                resource.actions.push(spec);
+            }
+            root.children.push(resource);
+        }
+        vec![root]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let Some(verb) = args.first().map(String::as_str) else {
+            return Err("missing operation".into());
+        };
+        let Some(target) = args.get(1).map(String::as_str) else {
+            return Err("missing target".into());
+        };
+        match type_id {
+            "containers.container" => match verb {
+                "start" => self.apply_action(Action::Start, target),
+                "stop" => self.apply_action(Action::Stop, target),
+                "restart" => self.apply_action(Action::Restart, target),
+                "pause" => self.apply_action(Action::Pause, target),
+                "remove" => self.apply_action(Action::Remove, target),
+                "shell" => self.attach_shell(target),
+                _ => return Ok(false),
+            },
+            "containers.image" if verb == "remove" => self.remove_image(target),
+            "containers.volume" if verb == "remove" => self.remove_volume(target),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.drain_bg(doc);
         // Seed a representative selection on the very first sync of a demo /
