@@ -61,6 +61,7 @@ prepare() {
     trap 'rm -rf -- "${stage:-}"' EXIT
     cp -- "$GUEST_SOURCE/Install-qOSRemoteApp.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSGuestBridge.ps1" "$stage/"
+    cp -- "$GUEST_SOURCE/Start-qOSFocusedApp.ps1" "$stage/"
     head -c 32 /dev/urandom > "$stage/qos-bridge.secret"
     install -m 0600 -o root -g root "$stage/qos-bridge.secret" "$SECRET"
     cat > "$stage/qos-bridge.json" <<'EOF'
