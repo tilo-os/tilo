@@ -357,15 +357,16 @@ fn hunk_preview(h: &MergeHunk) -> String {
 /// hunks, which are semantically interchangeable until one changes.
 fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in h
-        .base
-        .iter()
-        .chain(&h.ours)
-        .chain(&h.theirs)
-        .flat_map(|line| line.bytes().chain([0xff]))
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    for (section, lines) in [&h.base, &h.ours, &h.theirs].into_iter().enumerate() {
+        // Separate base/ours/theirs as well as individual lines: otherwise
+        // `base=[a], ours=[b]` would hash like `base=[a,b], ours=[]`.
+        for byte in [u8::try_from(section).unwrap_or(0)]
+            .into_iter()
+            .chain(lines.iter().flat_map(|line| line.bytes().chain([0xff])))
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
     }
     format!("diffmerge.conflict:{hash:016x}:{occurrence}")
 }
