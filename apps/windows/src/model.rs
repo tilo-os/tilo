@@ -2,24 +2,79 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Route { Wine, Proton, Vm }
+pub enum Route {
+    Wine,
+    Proton,
+    Vm,
+}
 impl Route {
     pub const ALL: [Self; 3] = [Self::Wine, Self::Proton, Self::Vm];
-    pub const fn label(self) -> &'static str { match self { Self::Wine => "Wine", Self::Proton => "Proton", Self::Vm => "Windows VM" } }
-    pub const fn short(self) -> &'static str { match self { Self::Wine => "WINE", Self::Proton => "PROTON", Self::Vm => "VM" } }
-    pub const fn security_summary(self) -> &'static str { match self { Self::Wine | Self::Proton => "Private capsule; only granted files and devices are visible.", Self::Vm => "Single managed VM; files arrive through its exchange portal." } }
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wine => "Wine",
+            Self::Proton => "Proton",
+            Self::Vm => "Windows VM",
+        }
+    }
+    pub const fn short(self) -> &'static str {
+        match self {
+            Self::Wine => "WINE",
+            Self::Proton => "PROTON",
+            Self::Vm => "VM",
+        }
+    }
+    pub const fn security_summary(self) -> &'static str {
+        match self {
+            Self::Wine | Self::Proton => {
+                "Private capsule; only granted files and devices are visible."
+            }
+            Self::Vm => "Single managed VM; files arrive through its exchange portal.",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Confidence { Verified, Community, Heuristic, Fallback }
-impl Confidence { pub const fn label(self) -> &'static str { match self { Self::Verified => "Verified", Self::Community => "Community recipe", Self::Heuristic => "Best match", Self::Fallback => "Fallback" } } }
+pub enum Confidence {
+    Verified,
+    Community,
+    Heuristic,
+    Fallback,
+}
+impl Confidence {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Verified => "Verified",
+            Self::Community => "Community recipe",
+            Self::Heuristic => "Best match",
+            Self::Fallback => "Fallback",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AppStatus { Ready, Running, NeedsAttention, Installing }
-impl AppStatus { pub const fn label(self) -> &'static str { match self { Self::Ready => "Ready", Self::Running => "Running", Self::NeedsAttention => "Needs attention", Self::Installing => "Installing" } } }
+pub enum AppStatus {
+    Ready,
+    Running,
+    NeedsAttention,
+    Installing,
+}
+impl AppStatus {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "Ready",
+            Self::Running => "Running",
+            Self::NeedsAttention => "Needs attention",
+            Self::Installing => "Installing",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Grant { pub label: String, pub detail: String, pub enabled: bool }
+pub struct Grant {
+    pub label: String,
+    pub detail: String,
+    pub enabled: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowsApp {
@@ -40,20 +95,42 @@ pub struct WindowsApp {
 }
 
 impl WindowsApp {
-    pub fn uses_override(&self) -> bool { self.route != self.recommended_route }
+    pub fn uses_override(&self) -> bool {
+        self.route != self.recommended_route
+    }
     pub fn access_summary(&self) -> String {
-        let enabled: Vec<&str> = self.grants.iter().filter(|grant| grant.enabled).map(|grant| grant.label.as_str()).collect();
-        if enabled.is_empty() { "No host access".to_string() } else { enabled.join(", ") }
+        let enabled: Vec<&str> = self
+            .grants
+            .iter()
+            .filter(|grant| grant.enabled)
+            .map(|grant| grant.label.as_str())
+            .collect();
+        if enabled.is_empty() {
+            "No host access".to_string()
+        } else {
+            enabled.join(", ")
+        }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApplianceState { pub ready: bool, pub detail: String, pub running_apps: usize }
+pub struct ApplianceState {
+    pub ready: bool,
+    pub detail: String,
+    pub running_apps: usize,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Catalogue { pub apps: Vec<WindowsApp>, pub vm: ApplianceState }
+pub struct Catalogue {
+    pub apps: Vec<WindowsApp>,
+    pub vm: ApplianceState,
+}
 
 impl Catalogue {
-    pub fn app(&self, id: &str) -> Option<&WindowsApp> { self.apps.iter().find(|app| app.id == id) }
-    pub fn app_mut(&mut self, id: &str) -> Option<&mut WindowsApp> { self.apps.iter_mut().find(|app| app.id == id) }
+    pub fn app(&self, id: &str) -> Option<&WindowsApp> {
+        self.apps.iter().find(|app| app.id == id)
+    }
+    pub fn app_mut(&mut self, id: &str) -> Option<&mut WindowsApp> {
+        self.apps.iter_mut().find(|app| app.id == id)
+    }
 }
