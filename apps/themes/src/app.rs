@@ -127,7 +127,8 @@ pub struct ThemesApp {
     /// Theme id accepted through the canonical external-operation route. It is
     /// drained by `sync`, where mutable document access is available, so the
     /// store write and active-id action remain one semantic transaction.
-    pending_apply: Option<String>,
+    pending_apply: Option<(String, qos_actions::InvocationId)>,
+    completed_apply: Option<qos_actions::InvocationUpdate>,
 
     /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
     scroll: f64,
@@ -209,6 +210,7 @@ impl ThemesApp {
             structure_dirty: false,
             actions: ui::ActionHost::new(),
             pending_apply: None,
+            completed_apply: None,
             scroll: 0.0,
             scroll_content_h: 0.0,
             scroll_viewport_h: 0.0,
@@ -443,7 +445,9 @@ impl ThemesApp {
             "new" => self.new_theme(state, path),
             "duplicate" => self.duplicate_theme(&selected, state, path),
             "delete" => self.delete_theme(&selected, state, path),
-            "apply" => self.apply_theme(&selected, state),
+            "apply" => {
+                let _ = self.apply_theme(&selected, state);
+            }
             "reset" => self.reset_theme(&selected, state),
             "export" => {
                 // Presentation: a derived JSON blob shown in a toast, not a
@@ -535,16 +539,22 @@ impl ThemesApp {
     /// that records the active id in the shared document.
     ///
     /// [`SetActiveTheme`](crate::actions::ThemesAction::SetActiveTheme)
-    fn apply_theme(&mut self, id: &str, state: &mut AutoCommit) {
+    fn apply_theme(&mut self, id: &str, state: &mut AutoCommit) -> Result<(), String> {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
             match store::save(&src) {
                 Ok(_) => {
                     self.perform_action(state, &crate::actions::set_active_theme_action(&src.id));
                     self.status = format!("Applied “{}” as the system theme", src.name);
+                    Ok(())
                 }
-                Err(e) => self.status = format!("Couldn't apply theme: {e}"),
+                Err(e) => {
+                    self.status = format!("Couldn't apply theme: {e}");
+                    Err(e.to_string())
+                }
             }
+        } else {
+            Err("Theme is no longer available".into())
         }
     }
 
@@ -1244,6 +1254,10 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["themes.apply"]
+    }
+
     /// Publish the open theme library + its themes so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
@@ -1256,12 +1270,30 @@ impl Widget for ThemesApp {
         &mut self,
         kind: qos_actions::OperationKind,
         type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        _payload: &[u8],
+        _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind != qos_actions::OperationKind::Effect || type_id != "themes.apply" {
             return Ok(false);
+        }
+        Err("theme application requires the lifecycle-capable operation host".into())
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect || type_id != "themes.apply" {
+            return Ok(None);
+        }
+        if self.pending_apply.is_some() {
+            return Err("another theme is still being applied".into());
         }
         let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         let exists = doc::load_catalog(doc, &automerge::ROOT)
@@ -1271,8 +1303,37 @@ impl Widget for ThemesApp {
         if !exists {
             return Err("Theme is no longer available".into());
         }
-        self.pending_apply = Some(id);
-        Ok(true)
+        self.pending_apply = Some((id, invocation));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .pending_apply
+                .as_ref()
+                .is_some_and(|(_, pending)| *pending == invocation)
+        {
+            self.pending_apply = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("cancelled before the theme store was changed".into()),
+            });
+        }
+        if self
+            .completed_apply
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_apply.take();
+        }
+        None
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -1286,8 +1347,22 @@ impl Widget for ThemesApp {
         // 1. Seed the document on first run.
         self.seed_document_if_needed(state, path);
 
-        if let Some(id) = self.pending_apply.take() {
-            self.apply_theme(&id, state);
+        if let Some((id, invocation)) = self.pending_apply.take() {
+            self.completed_apply = Some(match self.apply_theme(&id, state) {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "themes.apply_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            });
         }
 
         // `--shots` scenario: force a specific selection for the capture.
@@ -1885,5 +1960,39 @@ mod tests {
             catalog(&st).iter().any(|s| s.id == "sunset"),
             "sunset is back after undo"
         );
+    }
+
+    #[test]
+    fn exported_apply_uses_cancellable_background_lifecycle() {
+        let (mut app, st) = seeded();
+        let theme_id = catalog(&st)[0].id.clone();
+        let invocation = qos_actions::InvocationId::new();
+        let started = app
+            .start_resource_operation(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                "themes.apply",
+                &serde_json::to_vec(&theme_id).unwrap(),
+                &st.doc,
+                &st.root,
+            )
+            .unwrap();
+        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+        assert!(matches!(
+            app.poll_resource_operation(invocation, true, &st.doc, &st.root),
+            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+        ));
+
+        let apply = Widget::resources(&app, &st.doc)
+            .into_iter()
+            .flat_map(|resource| resource.children)
+            .flat_map(|theme| theme.actions)
+            .find(|action| action.id == "apply")
+            .unwrap();
+        assert!(matches!(
+            apply.contract.execution,
+            qos_actions::ExecutionMode::Background { cancellable: true }
+        ));
+        assert_eq!(apply.contract.result, qos_actions::ResultSpec::Job);
     }
 }

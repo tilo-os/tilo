@@ -56,6 +56,7 @@ use crate::ops::{self, Op};
 /// Result of a background action thread, drained in `update`.
 struct ActionResult {
     text: String,
+    error: Option<String>,
     /// Whether the topology changed and should be re-probed.
     refresh: bool,
 }
@@ -330,6 +331,8 @@ pub struct DisksApp {
     live: bool,
     /// Receiver for the currently-running background action, if any.
     action_rx: Option<mpsc::Receiver<ActionResult>>,
+    action_invocation: Option<qos_actions::InvocationId>,
+    completed_action: Option<qos_actions::InvocationUpdate>,
     /// One-time first-frame setup: the live seed and the initial layout
     /// settle. Grouped so they don't pile up as same-shaped bools next to
     /// `dirty` and `live`.
@@ -403,6 +406,8 @@ impl DisksApp {
             status: String::new(),
             live: std::env::var("DISKS_LIVE").is_ok(),
             action_rx: None,
+            action_invocation: None,
+            completed_action: None,
             init: InitState::default(),
             rect: Rect::ZERO,
             dirty: true,
@@ -2983,12 +2988,18 @@ impl DisksApp {
             let refresh = action.changes_topology();
             let done_label = action.label().trim_end_matches('…').to_string();
             thread::spawn(move || {
-                let res = ops::run(op, &leaf, fstype.as_deref());
-                let text = match res {
-                    Ok(msg) => msg,
-                    Err(e) => format!("{done_label} failed — {e}"),
+                let (text, error) = match ops::run(op, &leaf, fstype.as_deref()) {
+                    Ok(msg) => (msg, None),
+                    Err(e) => {
+                        let text = format!("{done_label} failed — {e}");
+                        (text, Some(e))
+                    }
                 };
-                let _ = tx.send(ActionResult { text, refresh });
+                let _ = tx.send(ActionResult {
+                    text,
+                    error,
+                    refresh,
+                });
             });
             self.action_rx = Some(rx);
             let msg = format!("{} {dev}…", action.gerund());
@@ -3226,8 +3237,8 @@ impl Widget for DisksApp {
                         risk: RiskLevel::Privileged,
                         confirmation: ConfirmationPolicy::Confirm,
                         retry: RetryPolicy::AtMostOnce,
-                        execution: ExecutionMode::Immediate,
-                        result: ResultSpec::None,
+                        execution: ExecutionMode::Background { cancellable: false },
+                        result: ResultSpec::Job,
                         ..ActionContract::default()
                     }));
                 }
@@ -3288,8 +3299,8 @@ impl Widget for DisksApp {
                             } else {
                                 RetryPolicy::AtMostOnce
                             },
-                            execution: ExecutionMode::Immediate,
-                            result: ResultSpec::None,
+                            execution: ExecutionMode::Background { cancellable: false },
+                            result: ResultSpec::Job,
                             ..ActionContract::default()
                         }));
                     }
@@ -3305,12 +3316,30 @@ impl Widget for DisksApp {
         &mut self,
         kind: OperationKind,
         type_id: &str,
-        payload: &[u8],
+        _payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind != OperationKind::Effect || type_id != "disks.operation" {
             return Ok(false);
+        }
+        Err("disk operations require the lifecycle-capable operation host".into())
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect || type_id != "disks.operation" {
+            return Ok(None);
+        }
+        if self.action_rx.is_some() {
+            return Err("another disk operation is still running".into());
         }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let action = ActionKind::from_key(args.first().map(String::as_str).unwrap_or(""))
@@ -3321,23 +3350,42 @@ impl Widget for DisksApp {
             .clone();
         let fstype = args.get(2).filter(|v| !v.is_empty()).cloned();
         if !self.live {
-            self.status = format!(
-                "Would {} /dev/{leaf} (set DISKS_LIVE to execute)",
-                action.label().to_ascii_lowercase()
-            );
-            self.dirty = true;
-            return Ok(true);
+            return Err("live disk access is disabled".into());
         }
         let (tx, rx) = mpsc::channel();
         let refresh = action.changes_topology();
         thread::spawn(move || {
-            let text = ops::run(action.op(), &leaf, fstype.as_deref())
-                .unwrap_or_else(|e| format!("{} failed — {e}", action.label()));
-            let _ = tx.send(ActionResult { text, refresh });
+            let (text, error) = match ops::run(action.op(), &leaf, fstype.as_deref()) {
+                Ok(text) => (text, None),
+                Err(error) => (format!("{} failed — {error}", action.label()), Some(error)),
+            };
+            let _ = tx.send(ActionResult {
+                text,
+                error,
+                refresh,
+            });
         });
         self.action_rx = Some(rx);
+        self.action_invocation = Some(invocation);
         self.dirty = true;
-        Ok(true)
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .completed_action
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_action.take();
+        }
+        None
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -3417,7 +3465,25 @@ impl Widget for DisksApp {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
+        let had_result = result.is_some();
         if let Some(res) = result {
+            if let Some(invocation) = self.action_invocation.take() {
+                self.completed_action = Some(match &res.error {
+                    Some(error) => qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "disks.operation_failed".into(),
+                            message: error.clone(),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                    None => qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput::default(),
+                    },
+                });
+            }
             self.status.clone_from(&res.text);
             DisksDoc::set_status(state, &res.text);
             // A mount/format/unmount/eject changed the on-disk topology.
@@ -3431,6 +3497,17 @@ impl Widget for DisksApp {
         }
         if clear {
             self.action_rx = None;
+            if !had_result && let Some(invocation) = self.action_invocation.take() {
+                self.completed_action = Some(qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "disks.worker_disconnected".into(),
+                        message: "disk operation worker disconnected without a result".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                });
+            }
         }
     }
 
@@ -4116,6 +4193,47 @@ mod tests {
         app.trigger_action(&mut doc, ActionKind::Benchmark);
         assert!(app.pending.is_none());
         assert!(!DisksDoc::status(&doc).is_empty());
+    }
+
+    #[test]
+    fn exported_disk_actions_declare_background_jobs() {
+        let (app, doc) = seeded_app();
+        for action in Widget::resources(&app, &doc)
+            .iter()
+            .flat_map(|root| root.children.iter())
+            .flat_map(|drive| {
+                drive
+                    .actions
+                    .iter()
+                    .chain(drive.children.iter().flat_map(|p| p.actions.iter()))
+            })
+        {
+            assert!(matches!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            ));
+            assert_eq!(action.contract.result, ResultSpec::Job);
+        }
+    }
+
+    #[test]
+    fn worker_result_becomes_terminal_lifecycle_update() {
+        let (mut app, mut doc) = seeded_app();
+        let invocation = qos_actions::InvocationId::new();
+        let (tx, rx) = mpsc::channel();
+        app.action_invocation = Some(invocation);
+        app.action_rx = Some(rx);
+        tx.send(ActionResult {
+            text: "mounted".into(),
+            error: None,
+            refresh: false,
+        })
+        .unwrap();
+        app.sync(&mut doc, &ui::automerge::ROOT);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &ui::automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
     }
 
     #[test]
