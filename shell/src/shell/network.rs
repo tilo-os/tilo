@@ -1282,9 +1282,15 @@ impl ShellNetwork {
             self.peer_identities.remove(origin);
             return;
         }
+        tracing::debug!(
+            peer = %peer,
+            workspace_topic,
+            user = %hex::encode(cert.user_public_key),
+            "accepted collaboration device identity"
+        );
         self.admit_invited_identity(workspace_topic, peer, cert);
-        // The initial SyncReq can race ahead of the periodic identity hello
-        // and is intentionally dropped. Re-kick anti-entropy after trust is
+        // The initial SyncReq can race ahead of the identity hello and is
+        // intentionally dropped. Re-kick anti-entropy after trust is
         // established so joining never waits for another topology event.
         if !was_known {
             self.publish_sync_requests();
@@ -1324,7 +1330,7 @@ impl ShellNetwork {
         };
         let mut tree = replica.tree.write();
         let local = crate::shell::state::local_user_id_for_room(&room);
-        let granted = {
+        let (granted, owner) = {
             let Some(workspace) = tree
                 .workspaces
                 .iter_mut()
@@ -1333,7 +1339,7 @@ impl ShellNetwork {
                 return;
             };
             let room_scope = workspace.room.to_string();
-            workspace
+            let granted = workspace
                 .grant_as(
                     &local,
                     crate::shell::state::CapOverride::membership(
@@ -1342,9 +1348,16 @@ impl ShellNetwork {
                         crate::shell::state::Verb::Write,
                     ),
                 )
-                .is_some()
+                .is_some();
+            (granted, workspace.owner.clone())
         };
         if !granted {
+            tracing::warn!(
+                room = %room,
+                grantor = %local,
+                ?owner,
+                "workspace owner could not grant invited identity membership"
+            );
             return;
         }
         let session = crate::network::behaviour::peer_liveness_handle(peer);
@@ -1353,11 +1366,20 @@ impl ShellNetwork {
             crate::shell::state::Collaborator::new(person, name.clone()).with_session(session),
         );
         let _ = tree.name_peer(room, &local, &peer.to_string(), &name);
+        // The peer may already have been named by its first SyncReq. In
+        // that case `name_peer` is a no-op, so project the membership grant
+        // explicitly instead of relying on the naming path to do it.
+        tree.sync_room_doc(room);
         tree.flush_to_disk();
         drop(tree);
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {
             pending.remove(&room);
         }
+        tracing::info!(
+            room = %room,
+            user = %hex::encode(cert.user_public_key),
+            "admitted invited collaboration identity"
+        );
     }
 
     /// Authenticate a signed document envelope against the transport device,
@@ -1615,6 +1637,34 @@ mod tests {
         );
         drop(tree);
         drop(replica);
+
+        let changes = net
+            .replica
+            .lock()
+            .expect("replica")
+            .tree
+            .write()
+            .export_room_changes_since(room, &[])
+            .expect("room export");
+        let mut guest = WorkspaceTree::default();
+        let guest_workspace = guest.append_empty_workspace("Guest");
+        assert!(guest.set_room(guest_workspace, room));
+        let host_origin = crate::shell::state::PeerOrigin::peer(&net.local_peer_id);
+        assert!(guest.pin_room_authority(room, host_origin.clone()));
+        guest
+            .apply_room_changes(room, &changes, &host_origin)
+            .expect("host room changes apply");
+        assert_eq!(
+            guest
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .expect("guest workspace")
+                .role_of(&person),
+            Some(crate::shell::state::CapRole::Editor),
+            "the membership grant must be present in the replicated room document"
+        );
+
         let route = crate::shell::collab_broker::CrdtRoute::record(
             "dev.qos.notes",
             room.to_string(),
