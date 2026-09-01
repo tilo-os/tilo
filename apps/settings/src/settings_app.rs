@@ -229,6 +229,7 @@ impl SettingsApp {
         match self.selected {
             Category::Network => panes::network::build(),
             Category::Bluetooth => panes::bluetooth::build(),
+            Category::DeviceMesh => panes::device_mesh::build(),
             Category::Sound => panes::sound::build(),
             Category::Displays => panes::display::build(),
             Category::MouseKeyboard => panes::mouse_keyboard::build(),

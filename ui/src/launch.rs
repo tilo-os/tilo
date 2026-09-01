@@ -27,12 +27,15 @@ type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LaunchArgs {
     pub shots: Option<PathBuf>,
+    pub responsive_matrix: Option<PathBuf>,
     pub viewport: Option<(u32, u32)>,
     pub scenario: Option<String>,
     pub headless: Option<headless::Spec>,
+    pub pseudo_locale: bool,
+    pub text_scale: Option<f32>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -291,6 +294,7 @@ pub enum LaunchError {
     MissingValue(String),
     Duplicate(String),
     InvalidViewport(String),
+    InvalidTextScale(String),
     UnknownArgument(String),
     ConflictingModes,
     ShotsOnly(String),
@@ -309,9 +313,16 @@ impl fmt::Display for LaunchError {
                 f,
                 "invalid viewport {value:?}; expected non-zero WIDTHxHEIGHT"
             ),
+            Self::InvalidTextScale(value) => write!(
+                f,
+                "invalid text scale {value:?}; expected a finite value from 0.75 to 2.0"
+            ),
             Self::UnknownArgument(arg) => write!(f, "unknown argument {arg:?}"),
             Self::ConflictingModes => {
-                write!(f, "--shots and --headless-drive cannot be used together")
+                write!(
+                    f,
+                    "choose only one of --shots, --responsive-matrix, or --headless-drive"
+                )
             }
             Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
@@ -383,6 +394,11 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         spec.max_positionals,
     )?;
     validate_spec_args(&args, spec)?;
+    crate::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
+        crate::i18n::PseudoLocale::Expanded
+    } else {
+        crate::i18n::PseudoLocale::Off
+    });
 
     if let Some(handler) = spec.command_handler
         && handler(&args)?
@@ -397,9 +413,43 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         }
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
-        let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme());
+        let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(&args));
         harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
+        return Ok(());
+    }
+
+    if let Some(out_dir) = &args.responsive_matrix {
+        std::fs::create_dir_all(out_dir).map_err(|error| {
+            LaunchError::Operation(format!(
+                "could not create responsive-matrix directory {}: {error}",
+                out_dir.display()
+            ))
+        })?;
+        for (name, viewport) in RESPONSIVE_VIEWPORTS {
+            let out = out_dir.join(format!("{}-{name}.png", spec.app_id));
+            let mut matrix_args = args.clone();
+            matrix_args.responsive_matrix = None;
+            matrix_args.shots = Some(out.clone());
+            matrix_args.viewport = Some(viewport);
+            if let Some(handler) = spec.shot_handler {
+                handler(&matrix_args)?;
+            } else {
+                let root = spec.screenshot_root(&matrix_args)?;
+                let harness = FrameHarness::new_with_theme(
+                    State::new(),
+                    root,
+                    viewport,
+                    shot_theme(&matrix_args),
+                );
+                harness.render_png(&out);
+            }
+            println!(
+                "{}: wrote {name} responsive shot to {}",
+                spec.app_id,
+                out.display()
+            );
+        }
         return Ok(());
     }
 
@@ -416,6 +466,9 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         |open| open(spec.app_id, &args),
     );
     let mut app = App::new(state, spec.live_root(&args)?).with_autosave(autosave);
+    if let Some(text_scale) = args.text_scale {
+        app.set_text_scale(text_scale);
+    }
     if let Some(configure) = spec.configure_app {
         configure(&mut app);
     }
@@ -442,13 +495,27 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     Ok(())
 }
 
-fn shot_theme() -> Theme {
-    match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+fn shot_theme(args: &LaunchArgs) -> Theme {
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
+    };
+    if let Some(scale) = args.text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
     }
 }
+
+/// Product acceptance sizes in logical pixels. They exercise the supported
+/// shape classes rather than pretending every device has one canonical size.
+pub const RESPONSIVE_VIEWPORTS: [(&str, (u32, u32)); 4] = [
+    ("phone", (390, 844)),
+    ("tablet", (768, 1024)),
+    ("laptop", (1366, 768)),
+    ("desktop", (1920, 1080)),
+];
 
 #[cfg(test)]
 fn parse_args(
@@ -469,9 +536,12 @@ fn parse_args_extended(
 ) -> Result<LaunchArgs, LaunchError> {
     let mut parsed = LaunchArgs {
         shots: None,
+        responsive_matrix: None,
         viewport: None,
         scenario: None,
         headless: None,
+        pseudo_locale: false,
+        text_scale: None,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -485,6 +555,21 @@ fn parse_args_extended(
             "--shots" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.shots, PathBuf::from(value), flag)?;
+            }
+            "--responsive-matrix" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                set_once(&mut parsed.responsive_matrix, PathBuf::from(value), flag)?;
+            }
+            "--pseudo-locale" if inline.is_none() => {
+                if parsed.pseudo_locale {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.pseudo_locale = true;
+            }
+            "--text-scale" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let scale = parse_text_scale(value)?;
+                set_once(&mut parsed.text_scale, scale, flag)?;
             }
             "--viewport" => {
                 let value = take_value(args, &mut index, flag, inline)?;
@@ -526,10 +611,13 @@ fn parse_args_extended(
         }
         index = index.saturating_add(1);
     }
-    if parsed.shots.is_some() && parsed.headless.is_some() {
+    let mode_count = usize::from(parsed.shots.is_some())
+        .saturating_add(usize::from(parsed.responsive_matrix.is_some()))
+        .saturating_add(usize::from(parsed.headless.is_some()));
+    if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
-    if parsed.shots.is_none() {
+    if parsed.shots.is_none() && parsed.responsive_matrix.is_none() {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
@@ -592,6 +680,15 @@ fn parse_viewport(value: &str) -> Result<(u32, u32), LaunchError> {
     Ok((width, height))
 }
 
+fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
+    let invalid = || LaunchError::InvalidTextScale(value.to_owned());
+    let scale: f32 = value.trim().parse().map_err(|_| invalid())?;
+    if !scale.is_finite() || !(0.75..=2.0).contains(&scale) {
+        return Err(invalid());
+    }
+    Ok(scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,12 +720,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_responsive_matrix_and_pseudo_locale_as_common_audit_modes() {
+        let parsed = parse_args(
+            &strings(&[
+                "app",
+                "--responsive-matrix=/tmp/matrix",
+                "--pseudo-locale",
+                "--text-scale=2",
+                "--scenario=wide",
+            ]),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(parsed.responsive_matrix, Some(PathBuf::from("/tmp/matrix")));
+        assert!(parsed.pseudo_locale);
+        assert_eq!(parsed.text_scale, Some(2.0));
+        assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+    }
+
+    #[test]
     fn rejects_malformed_and_zero_viewports() {
         for value in ["wide", "800", "0x600", "800x0", "800xnope"] {
             let args = strings(&["app", "--viewport", value]);
             assert!(matches!(
                 parse_args(&args, &[], &[]),
                 Err(LaunchError::InvalidViewport(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_text_scales() {
+        for value in ["nope", "NaN", "0", "0.5", "2.1"] {
+            let args = strings(&["app", "--text-scale", value]);
+            assert!(matches!(
+                parse_args(&args, &[], &[]),
+                Err(LaunchError::InvalidTextScale(_))
             ));
         }
     }
@@ -667,6 +795,17 @@ mod tests {
         let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
         assert_eq!(
             parse_args(&both, &[], &[]).unwrap_err(),
+            LaunchError::ConflictingModes
+        );
+        let matrix_and_shot = strings(&[
+            "app",
+            "--shots",
+            "/tmp/a.png",
+            "--responsive-matrix",
+            "/tmp/matrix",
+        ]);
+        assert_eq!(
+            parse_args(&matrix_and_shot, &[], &[]).unwrap_err(),
             LaunchError::ConflictingModes
         );
 

@@ -376,7 +376,7 @@ impl EventPopovers {
                         CalTarget::Remote(id) => current_calendar == Some(id.as_str()),
                     };
                     if row.contains(pointer) || selected {
-                        fill_round(scene, transform, colors.surface_white_10, row, 6.0);
+                        fill_round(scene, transform, colors.lift(0.72), row, 6.0);
                     }
                     text.draw_text(
                         scene,
