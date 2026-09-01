@@ -505,6 +505,8 @@ enum TemplateArg {
     Document,
     /// IME-capable input driving an accessible generated QR image.
     Qr,
+    /// A resizable master-detail app with durable per-item editing.
+    Workspace,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -1028,6 +1030,7 @@ fn run_new(args: NewArgs) -> Result<()> {
             TemplateArg::Async => qos_dev::Template::Async,
             TemplateArg::Document => qos_dev::Template::Document,
             TemplateArg::Qr => qos_dev::Template::Qr,
+            TemplateArg::Workspace => qos_dev::Template::Workspace,
         }),
         directory: args.directory,
         ui_path: args.ui_path,
@@ -1080,6 +1083,22 @@ mod tests {
             panic!("expected new command");
         };
         assert!(matches!(args.template, Some(TemplateArg::Qr)));
+    }
+
+    #[test]
+    fn new_exposes_the_professional_workspace_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "new",
+            "project-studio",
+            "--template",
+            "workspace",
+        ])
+        .expect("workspace template command");
+        let Command::New(args) = cli.command else {
+            panic!("expected new command");
+        };
+        assert!(matches!(args.template, Some(TemplateArg::Workspace)));
     }
 
     #[test]
