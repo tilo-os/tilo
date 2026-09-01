@@ -19,4 +19,5 @@ EOF
     exit 2
 }
 
+/usr/libexec/qos-windows-vm-control start
 exec virt-viewer --connect qemu:///system --attach qos-windows-appliance

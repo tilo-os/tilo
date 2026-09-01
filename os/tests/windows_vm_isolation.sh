@@ -11,6 +11,7 @@ UNIT="$OS_ROOT/usr/lib/systemd/system/qos-windows-vm-network.service"
 NETWORK_TOOL="$OS_ROOT/usr/libexec/qos-windows-vm-network"
 PROVISION="$OS_ROOT/usr/libexec/qos-windows-provision"
 RECOVERY="$OS_ROOT/usr/libexec/qos-windows-recovery-console"
+VM_CONTROL_SOURCE="$OS_ROOT/../crates/system/windows-vm/src/bin/qos-windows-vm-control.rs"
 INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
 BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
 FOCUSED="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSFocusedApp.ps1"
@@ -23,7 +24,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$INSTALL" "$BRIDGE" "$FOCUSED"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -41,9 +42,13 @@ has "$PROVISION" "an appliance already exists" 'provisioner refuses a second app
 has "$PROVISION" 'qemu-img create' 'provisioner creates qcow2 only once'
 has "$PROVISION" 'xorriso -as mkisofs' 'guest payload is delivered without a host share'
 has "$PROVISION" '"license":"unknown"' 'host state records no licence value'
+has "$PROVISION" '"$VM_CONTROL" start' 'provisioning starts the defined headless singleton'
 has "$RECOVERY" '--owner-authorized' 'desktop console has an explicit recovery gate'
 has "$RECOVERY" 'refuses to run a Wayland GUI as root' 'desktop viewer refuses root execution'
+has "$RECOVERY" '/usr/libexec/qos-windows-vm-control start' 'recovery starts a powered-off singleton idempotently'
 has "$RECOVERY" 'virt-viewer --connect qemu:///system --attach qos-windows-appliance' 'recovery is an explicit libvirt attachment'
+has "$VM_CONTROL_SOURCE" 'LibvirtBackend::new' 'bootstrap reuses the typed libvirt backend'
+has "$VM_CONTROL_SOURCE" 'backend.start(&config)' 'bootstrap defines and starts through one idempotent path'
 
 lacks "$INSTALL" 'ProductType -ne 3' 'client Windows is not rejected outright'
 has "$INSTALL" 'RDS-RD-Server' 'official RDS RemoteApp role is required'
@@ -70,6 +75,7 @@ has "$BRIDGE" 'qOS-Remove-' 'temporary launch accounts are reaped'
 has "$BRIDGE" "LicenseStatus -eq 1" 'guest health reports real Windows activation state'
 has "$CONTAINERFILE" 'qos-windows-vm-network.service' 'image wires network service'
 has "$CONTAINERFILE" 'qos-windows-provision' 'image wires provision tool'
+has "$CONTAINERFILE" '/out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control' 'image ships the singleton VM controller'
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
 has "$PROVISION" 'Start-qOSFocusedApp.ps1' 'guest tools carry the focused-app helper'
 has "$FOCUSED" 'Stop-Process -Id' 'focused fallback suppresses Explorer while running'
@@ -78,13 +84,25 @@ has "$FOCUSED" 'Start-Process -FilePath "$env:WINDIR\explorer.exe"' 'focused fal
 VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
 REMOTE_APP="$VM_ROOT/src/remote_app.rs"
 PRESENTATION="$VM_ROOT/src/presentation.rs"
+LIBVIRT="$VM_ROOT/src/libvirt.rs"
+SESSION_WIRING="$VM_ROOT/../../../shell/src/shell/windows_compat.rs"
 need "$REMOTE_APP"
 need "$PRESENTATION"
+need "$LIBVIRT"
+need "$SESSION_WIRING"
 has "$REMOTE_APP" 'OsString::from("xfreerdp")' 'RAIL uses the upstream FreeRDP client'
 lacks "$REMOTE_APP" 'binary: OsString::from("wlfreerdp")' 'RAIL does not assume a nonexistent Wayland wrapper'
 has "$REMOTE_APP" 'AppFocusedSpiceLauncher' 'SPICE is an explicit app-focused fallback'
 has "$REMOTE_APP" 'qemu:///system' 'SPICE attaches through local libvirt only'
 has "$PRESENTATION" 'ApplicationPresentation::AppFocusedSpice' 'presentation fallback is typed'
 lacks "$PRESENTATION" 'ApplicationPresentation::Recovery' 'recovery is not an application route'
+has "$LIBVIRT" '/var/lib/qos/windows/install-media.iso' 'prepared Windows media is attached read-only'
+has "$LIBVIRT" '/var/lib/qos/windows/qos-guest-tools.iso' 'guest tools are attached read-only'
+has "$LIBVIRT" 'retire_installation_media' 'authenticated enrollment retires setup media'
+has "$LIBVIRT" '"--live",' 'setup media is removed from the running guest'
+has "$LIBVIRT" '"--config",' 'setup media is removed from persistent configuration'
+has "$SESSION_WIRING" 'LiveVmDelegate::new' 'session composes the live singleton VM delegate'
+has "$SESSION_WIRING" 'HttpsGuestBridge::new' 'session uses the authenticated HTTPS guest bridge'
+lacks "$SESSION_WIRING" '        UnavailableVmDelegate,' 'session does not hardcode VM unavailability'
 
 exit "$fails"

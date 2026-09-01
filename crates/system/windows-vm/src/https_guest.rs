@@ -477,7 +477,7 @@ fn read_private_file(path: &Path, maximum: usize) -> Result<Vec<u8>, AgentError>
         .map_err(|error| AgentError::Transport(format!("bridge state: {error}")))?;
     if !metadata.file_type().is_file()
         || metadata.file_type().is_symlink()
-        || metadata.mode() & 0o077 != 0
+        || !private_file_authorized(&metadata)
     {
         return Err(AgentError::Authentication);
     }
@@ -487,6 +487,42 @@ fn read_private_file(path: &Path, maximum: usize) -> Result<Vec<u8>, AgentError>
         return Err(AgentError::Authentication);
     }
     Ok(bytes)
+}
+
+fn private_file_authorized(metadata: &fs::Metadata) -> bool {
+    let mode = metadata.mode() & 0o777;
+    // SAFETY: these credential accessors have no preconditions.
+    let effective_uid = unsafe { libc::geteuid() };
+    if !matches!(metadata.uid(), 0) && metadata.uid() != effective_uid {
+        return false;
+    }
+    if mode & 0o007 != 0 || mode & 0o030 != 0 {
+        return false;
+    }
+    mode & 0o040 == 0 || process_has_group(metadata.gid())
+}
+
+fn process_has_group(group: libc::gid_t) -> bool {
+    // SAFETY: `getegid` has no preconditions.
+    if unsafe { libc::getegid() } == group {
+        return true;
+    }
+    // SAFETY: a zero-sized query with a null pointer asks only for the count.
+    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    let Ok(count) = usize::try_from(count) else {
+        return false;
+    };
+    let mut groups = vec![0 as libc::gid_t; count];
+    // SAFETY: `groups` has exactly `count` writable gid slots.
+    let filled = unsafe {
+        libc::getgroups(
+            i32::try_from(count).unwrap_or(i32::MAX),
+            groups.as_mut_ptr(),
+        )
+    };
+    usize::try_from(filled).is_ok_and(|filled| {
+        filled == count && groups.into_iter().any(|candidate| candidate == group)
+    })
 }
 
 fn read_pin(path: &Path) -> Result<String, AgentError> {
@@ -633,5 +669,17 @@ mod tests {
                 .into_guest_launch("published.app", ApplicationPresentation::NativeRail)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn owner_or_member_group_read_is_private_but_world_access_is_not() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(private_file_authorized(&fs::metadata(file.path()).unwrap()));
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!private_file_authorized(
+            &fs::metadata(file.path()).unwrap()
+        ));
     }
 }

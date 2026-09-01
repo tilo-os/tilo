@@ -28,12 +28,14 @@ private, short-lived PipeWire graph per launch. The graph contains no device
 discovery: its output tunnel is the only playback path, and its input tunnel
 is created only after the compositor has granted `Device("microphone")`.
 Wine/Proton sees the graph's private native/Pulse sockets, never the session
-socket or `/dev/snd`; revocation terminates the graph. The live VM route is
-disabled until a privileged authenticated guest-bridge adapter implements
-`VmDelegate`.
+socket or `/dev/snd`; revocation terminates the graph. The live VM route uses
+`LiveVmDelegate` with the singleton libvirt appliance and HMAC-authenticated,
+certificate-pinned guest bridge; an unprovisioned appliance remains visibly
+unavailable without disabling Wine/Proton.
 
 Also not implemented here: prefix snapshots, runner migration, component
-installation/import, repair/reset, failure-triggered fallback ordering, or
-automatic VM fallback. Existing recipe changes fail with `RecipeChanged`.
+recipes, repair/reset, failure-triggered fallback ordering, or automatic VM
+fallback. Portal-selected EXE/MSI installation is implemented; existing recipe
+changes still fail with `RecipeChanged`.
 These operations need durable transaction and recovery semantics before they
 should appear as live UI actions.
