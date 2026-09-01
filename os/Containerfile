@@ -688,6 +688,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     freerdp \
     virt-viewer \
     xorriso \
+    genisoimage \
+    udftools \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
@@ -698,12 +700,15 @@ COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/cat
 # immutable host/guest contracts deliberately ship no Windows image or key.
 COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
 COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
+COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
 COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
 COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
 COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
+COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
+COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
 COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
 COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
-RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision \
+RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
               /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
     && systemctl enable qos-windows-vm-network.service
 

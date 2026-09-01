@@ -19,5 +19,9 @@ EOF
     exit 2
 }
 
-/usr/libexec/qos-windows-vm-control start
+# The root-only owner helper starts the singleton and holds an expiring proof
+# outside every user's writable namespace. A second polkit-authorised consume
+# operation atomically retires that proof before we contact libvirt, making a
+# copied `--owner-authorized` flag and replayed recovery launch fail closed.
+pkexec /usr/libexec/qos-windows-owner consume-recovery >/dev/null
 exec virt-viewer --connect qemu:///system --attach qos-windows-appliance

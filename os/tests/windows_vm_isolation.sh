@@ -11,6 +11,7 @@ UNIT="$OS_ROOT/usr/lib/systemd/system/qos-windows-vm-network.service"
 NETWORK_TOOL="$OS_ROOT/usr/libexec/qos-windows-vm-network"
 PROVISION="$OS_ROOT/usr/libexec/qos-windows-provision"
 RECOVERY="$OS_ROOT/usr/libexec/qos-windows-recovery-console"
+OWNER="$OS_ROOT/usr/libexec/qos-windows-owner"
 VM_CONTROL_SOURCE="$OS_ROOT/../crates/system/windows-vm/src/bin/qos-windows-vm-control.rs"
 INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
 BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
@@ -26,7 +27,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -47,7 +48,9 @@ has "$PROVISION" '"license":"unknown"' 'host state records no licence value'
 has "$PROVISION" '"$VM_CONTROL" start' 'provisioning starts the defined headless singleton'
 has "$RECOVERY" '--owner-authorized' 'desktop console has an explicit recovery gate'
 has "$RECOVERY" 'refuses to run a Wayland GUI as root' 'desktop viewer refuses root execution'
-has "$RECOVERY" '/usr/libexec/qos-windows-vm-control start' 'recovery starts a powered-off singleton idempotently'
+has "$OWNER" '"$VM_CONTROL" start' 'owner backend starts a powered-off singleton idempotently'
+has "$RECOVERY" 'consume-recovery' 'viewer requires a root-owned one-shot owner authorisation proof'
+lacks "$RECOVERY" 'qos-windows-vm-control start' 'viewer cannot acquire VM management authority'
 has "$RECOVERY" 'virt-viewer --connect qemu:///system --attach qos-windows-appliance' 'recovery is an explicit libvirt attachment'
 has "$VM_CONTROL_SOURCE" 'LibvirtBackend::new' 'bootstrap reuses the typed libvirt backend'
 has "$VM_CONTROL_SOURCE" 'backend.start(&config)' 'bootstrap defines and starts through one idempotent path'
