@@ -81,7 +81,8 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let json = serde_json::to_string_pretty(state)?;
-    std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))
+    atomic_file::write_with_mode(path, json.as_bytes(), 0o600)
+        .with_context(|| format!("atomically writing {}", path.display()))
 }
 
 /// Establish the counter base, cross-checking every source that claims to know. The LUKS2
@@ -311,6 +312,8 @@ mod tests {
 
     #[test]
     fn state_round_trips() {
+        use std::os::unix::fs::PermissionsExt;
+
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s.json");
         let s = State {
@@ -322,6 +325,7 @@ mod tests {
         assert_eq!(load_state(&p).unwrap(), None);
         save_state(&p, &s).unwrap();
         assert_eq!(load_state(&p).unwrap(), Some(s));
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }
 
