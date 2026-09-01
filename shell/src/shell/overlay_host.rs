@@ -7896,7 +7896,11 @@ impl ShellOverlayHost {
         self.room_activity_was_open = flags.room_activity;
         self.room_activity_transition.set_open(
             flags.room_activity,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let ra_now = Instant::now();
