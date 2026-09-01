@@ -6570,6 +6570,8 @@ mod tests {
         assert!(library.contains("LocalState::new"));
         assert!(library.contains("Text::from_state"));
         assert!(library.contains("ui::column!["));
+        assert!(library.contains("labeled_field(\"starter-name-label\", input)"));
+        assert!(!library.contains("with_accessible_name(\"starter-name-label\")"));
         assert!(!library.contains("Column::new()"));
         assert!(library.contains("with_id(\"name-input\")"));
         assert!(library.contains("on_change(name.text_sink())"));
