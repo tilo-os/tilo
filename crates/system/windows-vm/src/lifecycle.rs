@@ -87,10 +87,10 @@ impl<B: VmBackend> WindowsVmService<B> {
     /// after presenting a bounded wait/recovery affordance in the UI.
     pub fn action(&self, action: LifecycleAction) -> Result<(), LifecycleError> {
         let state = self.state.load()?;
-        if matches!(action, LifecycleAction::Start | LifecycleAction::Restart) {
-            if matches!(state.phase, AppliancePhase::NotProvisioned) {
-                return Err(LifecycleError::NotProvisioned);
-            }
+        if matches!(action, LifecycleAction::Start | LifecycleAction::Restart)
+            && matches!(state.phase, AppliancePhase::NotProvisioned)
+        {
+            return Err(LifecycleError::NotProvisioned);
         }
         self.backend.ensure_singleton(&self.config)?;
         match action {

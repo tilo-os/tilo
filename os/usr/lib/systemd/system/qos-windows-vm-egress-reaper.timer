@@ -1,0 +1,11 @@
+[Unit]
+Description=Reap expired qOS Windows egress leases
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -13,6 +13,7 @@ readonly GUEST_SOURCE='/usr/share/qos/windows/guest'
 readonly DISK="$ROOT/system.qcow2"
 readonly INSTALL_MEDIA="$ROOT/install-media.iso"
 readonly TOOLS_MEDIA="$ROOT/qos-guest-tools.iso"
+readonly VIRTIO_DRIVERS_MEDIA='/usr/share/virtio-win/virtio-win.iso'
 readonly STATE="$ROOT/session/state.json"
 readonly UUID_FILE="$ROOT/domain.uuid"
 readonly SECRET="$ROOT/bridge/bootstrap.secret"
@@ -48,6 +49,7 @@ prepare() {
     case "$2" in /*) ;; *) die 'ISO argument must be an absolute path' ;; esac
     source_iso="$(canonical_regular_file "$2")"
     [ -d "$GUEST_SOURCE" ] || die "missing immutable guest setup payload"
+    [ -r "$VIRTIO_DRIVERS_MEDIA" ] || die "the packaged virtio-win driver ISO is missing"
     command -v qemu-img >/dev/null || die 'qemu-img is not installed'
     command -v xorriso >/dev/null || die 'xorriso is not installed'
     [ -x "$VM_CONTROL" ] || die 'the singleton VM controller is not installed'
@@ -117,6 +119,7 @@ EOF
 
 assert_state() {
     require_root
+    [ -r "$VIRTIO_DRIVERS_MEDIA" ] || die 'the packaged virtio-win driver ISO is missing'
     [ -f "$DISK" ] && [ -f "$INSTALL_MEDIA" ] && [ -f "$TOOLS_MEDIA" ] \
         && [ -f "$STATE" ] && [ -f "$UUID_FILE" ] && [ -f "$SECRET" ] \
         || die 'appliance preparation is incomplete'
