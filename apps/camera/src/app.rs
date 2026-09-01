@@ -359,8 +359,12 @@ impl CameraApp {
     /// host records **one** undo boundary bracketing it
     /// ([`ui::widget::Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CameraAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CAMERA_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CAMERA_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Camera", "Camera", action),
+        );
     }
 
     /// The context Ctrl+K needs to build Camera's resource tree: the gallery

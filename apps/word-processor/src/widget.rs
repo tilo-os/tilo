@@ -1819,8 +1819,12 @@ impl WordProcessorWidget {
         state: &mut AutoCommit,
         action: &crate::actions::WordProcessorAction,
     ) {
-        self.actions
-            .dispatch(state, crate::actions::WORD_PROCESSOR_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::WORD_PROCESSOR_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Writer", "Writer", action),
+        );
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret

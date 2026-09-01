@@ -272,8 +272,12 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
-        self.actions
-            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DIFFMERGE_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
+        );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
