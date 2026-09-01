@@ -28,6 +28,8 @@ mod tests {
             "windows-route-proton",
             "windows-route-vm",
             "windows-use-recommendation",
+            "windows-choose-windows-iso",
+            "windows-open-recovery-desktop",
         ] {
             assert_ne!(t(key), key, "missing Fluent key: {key}");
         }
