@@ -101,7 +101,7 @@ Copy-Item -LiteralPath $processJobScript -Destination (Join-Path $installerRoot 
 Copy-Item -LiteralPath $processJobBrokerScript -Destination (Join-Path $installerRoot 'Start-qOSProcessJobBroker.ps1') -Force
 $uninstallRecordsPath = Join-Path $root 'uninstall-records.json'
 if (-not (Test-Path -LiteralPath $uninstallRecordsPath -PathType Leaf)) {
-    [IO.File]::WriteAllText($uninstallRecordsPath, '{"schemaVersion":1,"records":[]}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($uninstallRecordsPath, '{"schemaVersion":2,"records":[]}', [Text.UTF8Encoding]::new($false))
 }
 
 $allowList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList'
