@@ -19,7 +19,7 @@
 //! ```
 
 use automerge::{AutoCommit, ChangeHash};
-use qos_actions::{Action, EncodedAction};
+use qos_actions::{Action, ActionContext, EncodedAction};
 
 /// Framework-owned action dispatch an app embeds as a single field, in
 /// place of hand-rolled `perform_action`/`DiscardTransport`/
@@ -58,6 +58,34 @@ impl ActionHost {
     where
         A: Action + serde::Serialize,
     {
+        self.dispatch_maybe_context(doc, type_id, action, None);
+    }
+
+    /// Dispatch with the activity context the app already has at the direct
+    /// affordance: resource, human label, optional purpose/group, and browse
+    /// facets. This is the preferred path for mutations that should appear in
+    /// workspace history; [`Self::dispatch`] remains the legacy fallback.
+    pub fn dispatch_with_context<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        action: &A,
+        context: ActionContext,
+    ) where
+        A: Action + serde::Serialize,
+    {
+        self.dispatch_maybe_context(doc, type_id, action, Some(context));
+    }
+
+    fn dispatch_maybe_context<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        action: &A,
+        context: Option<ActionContext>,
+    ) where
+        A: Action + serde::Serialize,
+    {
         if self.commit_before.is_none() {
             self.commit_before = Some(doc.get_heads());
         }
@@ -73,7 +101,13 @@ impl ActionHost {
         };
         self.last_dispatched = Some(encoded.clone());
         let mut transport = qos_actions::LocalTransport::new();
-        if let Err(e) = qos_actions::dispatch(doc, action, encoded, &mut transport) {
+        let result = match context {
+            Some(context) => {
+                qos_actions::dispatch_with_context(doc, action, encoded, &mut transport, context)
+            }
+            None => qos_actions::dispatch(doc, action, encoded, &mut transport),
+        };
+        if let Err(e) = result {
             tracing::warn!(error = %e, type_id = %type_id, "action dispatch failed");
         }
     }
@@ -188,5 +222,29 @@ mod tests {
             .last_dispatched()
             .expect("dispatch recorded the action");
         assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
+    }
+
+    #[test]
+    fn contextual_dispatch_embeds_activity_in_the_change() {
+        let mut doc = AutoCommit::new();
+        let mut host = ActionHost::new();
+        host.dispatch_with_context(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "score".into(),
+                value: 9,
+            },
+            ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
+        );
+        let heads = doc.get_heads();
+        let change = doc
+            .get_change_by_hash(&heads[0])
+            .expect("contextual action committed");
+        let context = change
+            .message()
+            .and_then(|message| ActionContext::from_change_message(message))
+            .expect("context embedded in change");
+        assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
     }
 }
