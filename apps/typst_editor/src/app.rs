@@ -1058,7 +1058,7 @@ impl TypstApp {
         let bg = if active {
             theme.accent_primary
         } else {
-            c.surface_white_5
+            c.lift(0.35)
         };
         scene.fill(Fill::NonZero, t, bg, None, &shape);
         if !active {
@@ -1331,7 +1331,7 @@ impl TypstApp {
         scene.fill(
             Fill::NonZero,
             t,
-            c.surface_white_5,
+            c.lift(0.35),
             None,
             &RoundedRect::from_rect(outer, 8.0),
         );
@@ -1514,7 +1514,7 @@ impl TypstApp {
                 scene.fill(
                     Fill::NonZero,
                     t,
-                    c.surface_white_5,
+                    c.lift(0.35),
                     None,
                     &RoundedRect::from_rect(row, 6.0),
                 );

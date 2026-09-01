@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use serde::{Deserialize, Serialize};
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -29,6 +30,7 @@ const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
 const RESOURCE_ACTIONS_TEMPLATE: &str = include_str!("../templates/resource_actions.rs");
+const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
@@ -40,6 +42,7 @@ pub enum Template {
     Async,
     Document,
     Qr,
+    Workspace,
 }
 
 impl Template {
@@ -53,6 +56,7 @@ impl Template {
             Self::Async => "async",
             Self::Document => "document",
             Self::Qr => "qr",
+            Self::Workspace => "workspace",
         }
     }
 
@@ -66,6 +70,7 @@ impl Template {
             Self::Async => "Restartable background task with cancellation",
             Self::Document => "Durable synchronized editor with undo",
             Self::Qr => "IME input to accessible generated QR output",
+            Self::Workspace => "Resizable master-detail workspace with durable item editing",
         }
     }
 }
@@ -94,6 +99,56 @@ pub enum ComponentTemplate {
     Table,
     /// Advanced text with shared style, polygon flow, and replaceable layout.
     Text,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphPropsContract {
+    DisplayV1,
+    FormV1,
+    FormV2,
+}
+
+impl GraphPropsContract {
+    fn for_template(template: ComponentTemplate) -> Option<Self> {
+        match template {
+            ComponentTemplate::Display => Some(Self::DisplayV1),
+            ComponentTemplate::Form => Some(Self::FormV2),
+            ComponentTemplate::Tree
+            | ComponentTemplate::List
+            | ComponentTemplate::Table
+            | ComponentTemplate::Text => None,
+        }
+    }
+
+    fn invalid_props(self, props: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+        match self {
+            Self::DisplayV1 => ["title", "detail"].into_iter().find_map(|field| {
+                (!props.get(field).is_some_and(serde_json::Value::is_string))
+                    .then(|| format!("requires string prop {field:?}"))
+            }),
+            Self::FormV1 => {
+                if !props.get("value").is_some_and(serde_json::Value::is_string) {
+                    Some("requires string prop \"value\"".to_owned())
+                } else if !props
+                    .get("enabled")
+                    .is_some_and(serde_json::Value::is_boolean)
+                {
+                    Some("requires boolean prop \"enabled\"".to_owned())
+                } else {
+                    None
+                }
+            }
+            Self::FormV2 => ["value_path", "enabled_path"]
+                .into_iter()
+                .find_map(|field| {
+                    props
+                        .get(field)
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|path| path.trim().is_empty())
+                        .then(|| format!("requires non-empty string prop {field:?}"))
+                }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -140,6 +195,59 @@ pub enum AddArtifact {
         name: String,
         template: ComponentTemplate,
     },
+    /// A graph-compatible typed component plus its first instance.
+    GraphComponent {
+        name: String,
+        template: ComponentTemplate,
+        mount: ComponentMount,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComponentMount {
+    pub screen: String,
+    pub id: Option<String>,
+    pub parent: String,
+    /// `None` appends to the parent.
+    pub index: Option<usize>,
+    /// One JSON object passed to the generated typed props adapter.
+    pub props: String,
+}
+
+impl ComponentMount {
+    /// Create an append-to-root mount with useful typed-display placeholder
+    /// props derived from the component name.
+    #[must_use]
+    pub fn display(screen: impl Into<String>, component_name: &str) -> Self {
+        Self {
+            screen: screen.into(),
+            id: None,
+            parent: "root".into(),
+            index: None,
+            props: serde_json::json!({
+                "title": title_from_name(component_name),
+                "detail": "Start building here.",
+            })
+            .to_string(),
+        }
+    }
+
+    /// Create an append-to-root form mount bound to component-namespaced root
+    /// document paths.
+    #[must_use]
+    pub fn form(screen: impl Into<String>, component_name: &str) -> Self {
+        Self {
+            screen: screen.into(),
+            id: None,
+            parent: "root".into(),
+            index: None,
+            props: serde_json::json!({
+                "value_path": format!("{component_name}-value"),
+                "enabled_path": format!("{component_name}-enabled"),
+            })
+            .to_string(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -323,7 +431,8 @@ pub struct PackageOutcome {
 }
 
 /// One validated edit to a serialized UI object graph.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum UiGraphEdit {
     Insert {
         parent: String,
@@ -342,13 +451,30 @@ pub enum UiGraphEdit {
         parent: String,
         index: usize,
     },
-    /// Set or remove one serialized node property. A dotted path addresses
-    /// nested objects such as `text.value` or `navigate.route`.
+    /// Set one serialized node property. A dotted path addresses nested
+    /// objects such as `text.value` or `navigate.route`.
     SetProperty {
         id: String,
         property: String,
-        value: Option<serde_json::Value>,
+        value: serde_json::Value,
     },
+    /// Remove one serialized node property so its schema default applies.
+    UnsetProperty {
+        id: String,
+        property: String,
+    },
+}
+
+/// High-level request for an app-owned component in a serialized UI graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiComponentInsert {
+    pub name: String,
+    pub id: Option<String>,
+    pub parent: String,
+    /// `None` appends to the parent.
+    pub index: Option<usize>,
+    /// One JSON object passed unchanged to the component factory.
+    pub props: String,
 }
 
 /// Create a useful, accessible starter graph.
@@ -403,6 +529,9 @@ const SCREEN_REGISTRY_HEADER: &str = "// @generated by qos-dev; screen graph reg
 const SCREEN_ENTRY_PREFIX: &str = "// qos-dev:screen=";
 const COMPONENT_REGISTRY_HEADER: &str = "// @generated by qos-dev; Rust component registry.\n";
 const COMPONENT_ENTRY_PREFIX: &str = "// qos-dev:component=";
+const GRAPH_COMPONENT_ENTRY_PREFIX: &str = "// qos-dev:graph-component=";
+const LEGACY_GRAPH_ROUTER_CALL: &str = "crate::screens::router(\"main\", &Theme::default())";
+const GENERATED_GRAPH_ROUTER_CALL: &str = "crate::screens::router_with(\n        \"main\",\n        &Theme::default(),\n        crate::components::ui_graph_context(),\n    )";
 
 struct PendingWrite {
     path: PathBuf,
@@ -497,16 +626,7 @@ fn add_app_artifact_interactive_with(
         AddWizardArtifact::Locale => AddArtifact::Locale {
             locale: prompt_validated(input, output, "Locale", None, validate_locale)?,
         },
-        AddWizardArtifact::Component => AddArtifact::Component {
-            name: prompt_validated(
-                input,
-                output,
-                "Component name",
-                None,
-                validate_component_name,
-            )?,
-            template: prompt_component_template(input, output)?,
-        },
+        AddWizardArtifact::Component => prompt_component_artifact(&app_dir, input, output)?,
     };
 
     writeln!(
@@ -524,6 +644,84 @@ fn add_app_artifact_interactive_with(
         artifact,
         force: false,
         dry_run: false,
+    })
+}
+
+fn prompt_component_artifact(
+    app_dir: &Path,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<AddArtifact> {
+    let name = prompt_validated(
+        input,
+        output,
+        "Component name",
+        None,
+        validate_component_name,
+    )?;
+    let template = prompt_component_template(input, output)?;
+    let graph_screen = graph_compatible_component_template(template)
+        .then(|| default_graph_screen(app_dir))
+        .flatten();
+    let Some(default_screen) = graph_screen else {
+        return Ok(AddArtifact::Component { name, template });
+    };
+    let Some(screen) = prompt_optional(
+        input,
+        output,
+        "Mount in screen (`-` for none)",
+        Some(&default_screen),
+    )?
+    else {
+        return Ok(AddArtifact::Component { name, template });
+    };
+    let props = match template {
+        ComponentTemplate::Display => {
+            let title = prompt(
+                input,
+                output,
+                "Component title",
+                Some(&title_from_name(&name)),
+            )?;
+            let detail = prompt(
+                input,
+                output,
+                "Component detail",
+                Some("Start building here."),
+            )?;
+            serde_json::json!({ "title": title, "detail": detail }).to_string()
+        }
+        ComponentTemplate::Form => {
+            let value_path = prompt(
+                input,
+                output,
+                "Value document path",
+                Some(&format!("{name}-value")),
+            )?;
+            let enabled_path = prompt(
+                input,
+                output,
+                "Enabled document path",
+                Some(&format!("{name}-enabled")),
+            )?;
+            serde_json::json!({
+                "value_path": value_path,
+                "enabled_path": enabled_path,
+            })
+            .to_string()
+        }
+        _ => bail!("this component template requires an app-supplied model and cannot be mounted"),
+    };
+    Ok(AddArtifact::GraphComponent {
+        name,
+        template,
+        mount: ComponentMount {
+            screen,
+            id: None,
+            parent: "root".into(),
+            index: None,
+            props,
+        },
     })
 }
 
@@ -550,6 +748,17 @@ fn artifact_summary(artifact: &AddArtifact) -> String {
             "component {name:?} ({})",
             component_template_name(*template)
         ),
+        AddArtifact::GraphComponent {
+            name,
+            template,
+            mount,
+        } => {
+            format!(
+                "component {name:?} ({}) mounted in {:?}",
+                component_template_name(*template),
+                mount.screen
+            )
+        }
     }
 }
 
@@ -571,6 +780,10 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
         ComponentTemplate::Table => "table",
         ComponentTemplate::Text => "text",
     }
+}
+
+fn graph_compatible_component_template(template: ComponentTemplate) -> bool {
+    GraphPropsContract::for_template(template).is_some()
 }
 
 /// Add one conventional app artifact and any required generated wiring.
@@ -633,6 +846,27 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
         ),
         AddArtifact::Component { name, template } => {
             component_artifact_writes(&app_dir, &name, template, request.force)?
+        }
+        AddArtifact::GraphComponent {
+            name,
+            template,
+            mount,
+        } => {
+            if !graph_compatible_component_template(template) {
+                bail!(
+                    "--mount supports the display and form templates; generate tree, list, table, and text components without --mount and construct them from Rust"
+                );
+            }
+            if !generated_graph_context_ready(&app_dir)? {
+                bail!(
+                    "--mount requires an intact generated graph app root; add the component without --mount, register it in the app-owned UiBuildContext, then use `qos-dev ui component`"
+                );
+            }
+            validate_component_mount_props(&name, template, &mount.props)?;
+            let (mut writes, _) =
+                component_artifact_writes(&app_dir, &name, template, request.force)?;
+            writes.push(component_mount_write(&app_dir, &name, &mount)?);
+            (writes, Some("qos-dev dev".into()))
         }
     };
     let updated = writes
@@ -1151,9 +1385,11 @@ fn screen_scenario_source(app_dir: &Path, screen: &str) -> Result<String> {
     let app_source_path = app_dir.join("src/lib.rs");
     let app_source = std::fs::read_to_string(&app_source_path)
         .with_context(|| format!("reading app root {}", app_source_path.display()))?;
-    if !app_source.contains("screens::router(\"main\"") {
+    if !app_source.contains("screens::router(\"main\"")
+        && !app_source.contains("screens::router_with(")
+    {
         bail!(
-            "screen-derived scenarios require the app root to use `screens::router(\"main\", ...)`; create the app with `--template graph` or wire the generated router first"
+            "screen-derived scenarios require the app root to use the generated `screens::router` or `screens::router_with`; create the app with `--template graph` or wire the generated router first"
         );
     }
 
@@ -1814,6 +2050,7 @@ fn component_artifact_writes(
         .join("src/components")
         .join(format!("{module_name}.rs"));
     protect_destination(&component_path, force)?;
+    validate_component_graph_references(app_dir, name, template)?;
 
     let registry_path = app_dir.join("src/components/mod.rs");
     let registry = std::fs::read_to_string(&registry_path).unwrap_or_default();
@@ -1832,7 +2069,8 @@ fn component_artifact_writes(
     }
     names.sort();
     names.dedup();
-    let registry_source = component_registry_source(&names)?;
+    let graph_names = graph_component_names(app_dir, &registry, &names, name, template)?;
+    let registry_source = component_registry_source(&names, &graph_names)?;
 
     let library_path = app_dir.join("src/lib.rs");
     let library_source = std::fs::read_to_string(&library_path)
@@ -1847,7 +2085,7 @@ fn component_artifact_writes(
             _ => None,
         })
         .collect();
-    let updated_library = match component_modules.as_slice() {
+    let mut updated_library = match component_modules.as_slice() {
         [] => {
             let separator = if library_source.ends_with('\n') {
                 "\n"
@@ -1872,6 +2110,9 @@ fn component_artifact_writes(
             library_path.display()
         ),
     };
+    if is_generated_graph_app(app_dir)? {
+        updated_library = migrate_generated_graph_context(&updated_library);
+    }
     syn::parse_file(&updated_library)
         .with_context(|| format!("validating component wiring for {}", library_path.display()))?;
 
@@ -1899,6 +2140,102 @@ fn component_artifact_writes(
     }
     writes.extend(artifact_locale_writes(app_dir, &messages, force)?);
     Ok((writes, Some("qos-dev test".into())))
+}
+
+fn validate_component_graph_references(
+    app_dir: &Path,
+    name: &str,
+    template: ComponentTemplate,
+) -> Result<()> {
+    let contract = GraphPropsContract::for_template(template);
+    let files = files_with_extension(&app_dir.join("ui"), "json").map_err(anyhow::Error::msg)?;
+    for path in files {
+        let document = load_ui_graph(&path)?;
+        for node in document.nodes() {
+            let qos_ui_graph::UiNode::Component {
+                id,
+                name: used_name,
+                props,
+            } = node
+            else {
+                continue;
+            };
+            if used_name != name {
+                continue;
+            }
+            let location = format!("{} node {id:?}", relative_artifact(app_dir, &path));
+            let Some(contract) = contract else {
+                bail!(
+                    "{location} already uses component {name:?}; the {} template has no serialized-graph factory, so remove that node or choose display/form",
+                    component_template_name(template)
+                );
+            };
+            if let Some(invalid) = contract.invalid_props(props) {
+                bail!(
+                    "{location} is incompatible with the {} component template: {invalid}; update the node props before replacing the component",
+                    component_template_name(template)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn default_graph_screen(app_dir: &Path) -> Option<String> {
+    if !generated_graph_context_ready(app_dir).ok()? {
+        return None;
+    }
+    if app_dir.join("ui/main.json").is_file() {
+        return Some("main".into());
+    }
+    let source = std::fs::read_to_string(app_dir.join("src/screens.rs")).ok()?;
+    parse_screen_registry(&source).ok()?.into_iter().next()
+}
+
+fn component_mount_write(
+    app_dir: &Path,
+    component: &str,
+    mount: &ComponentMount,
+) -> Result<PendingWrite> {
+    validate_artifact_name(&mount.screen)?;
+    let path = app_dir.join("ui").join(format!("{}.json", mount.screen));
+    let mut document = load_ui_graph(&path)
+        .with_context(|| format!("mounting component in screen {:?}", mount.screen))?;
+    apply_ui_component(
+        &mut document,
+        UiComponentInsert {
+            name: component.to_owned(),
+            id: mount.id.clone(),
+            parent: mount.parent.clone(),
+            index: mount.index,
+            props: mount.props.clone(),
+        },
+    )?;
+    let mut source = document.to_json_pretty()?;
+    source.push('\n');
+    Ok(PendingWrite {
+        path,
+        source,
+        description: "component screen mount",
+    })
+}
+
+fn validate_component_mount_props(
+    name: &str,
+    template: ComponentTemplate,
+    source: &str,
+) -> Result<()> {
+    let value: serde_json::Value =
+        serde_json::from_str(source).context("parsing component props as JSON")?;
+    let props = value
+        .as_object()
+        .context("component props must be a JSON object")?;
+    let contract = GraphPropsContract::for_template(template)
+        .context("mounted component template has no serialized-graph props contract")?;
+    if let Some(invalid) = contract.invalid_props(props) {
+        bail!("component {name:?} {invalid}");
+    }
+    Ok(())
 }
 
 fn component_rust_names(name: &str) -> Result<(String, String)> {
@@ -1929,19 +2266,119 @@ fn parse_component_registry(source: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn component_registry_source(names: &[String]) -> Result<String> {
+fn parse_graph_component_registry(source: &str, components: &[String]) -> Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for line in source.lines() {
+        if let Some(name) = line.strip_prefix(GRAPH_COMPONENT_ENTRY_PREFIX) {
+            validate_component_name(name)?;
+            if !components.iter().any(|component| component == name) {
+                bail!("graph component {name:?} is not in the component registry");
+            }
+            if !names.insert(name.to_owned()) {
+                bail!("graph component {name:?} is registered more than once");
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn graph_component_names(
+    app_dir: &Path,
+    registry: &str,
+    components: &[String],
+    replaced: &str,
+    template: ComponentTemplate,
+) -> Result<BTreeSet<String>> {
+    let mut graph_names = if registry.is_empty() {
+        BTreeSet::new()
+    } else {
+        parse_graph_component_registry(registry, components)?
+    };
+    for name in components {
+        if name == replaced {
+            continue;
+        }
+        let (module, _) = component_rust_names(name)?;
+        let source =
+            std::fs::read_to_string(app_dir.join("src/components").join(format!("{module}.rs")))
+                .unwrap_or_default();
+        if source.contains("pub fn register_ui_graph(") {
+            graph_names.insert(name.clone());
+        } else {
+            graph_names.remove(name);
+        }
+    }
+    graph_names.remove(replaced);
+    if graph_compatible_component_template(template) {
+        graph_names.insert(replaced.to_owned());
+    }
+    Ok(graph_names)
+}
+
+fn component_registry_source(names: &[String], graph_names: &BTreeSet<String>) -> Result<String> {
     let mut source = String::from(COMPONENT_REGISTRY_HEADER);
-    source.push_str("// Edit component implementations beside this file; qos-dev maintains module declarations.\n");
+    source.push_str("// Edit component implementations beside this file; qos-dev maintains declarations and graph registration.\n");
     for name in names {
         let _ = writeln!(source, "{COMPONENT_ENTRY_PREFIX}{name}");
+    }
+    for name in graph_names {
+        if !names.iter().any(|component| component == name) {
+            bail!("graph component {name:?} is not in the component registry");
+        }
+        let _ = writeln!(source, "{GRAPH_COMPONENT_ENTRY_PREFIX}{name}");
     }
     source.push('\n');
     for name in names {
         let (module_name, _) = component_rust_names(name)?;
         let _ = writeln!(source, "pub mod {module_name};");
     }
+    source.push_str(
+        "\nuse ui::UiBuildContext;\n\n/// Build the app-owned component factory registry for serialized screens.\n#[must_use]\npub fn ui_graph_context() -> UiBuildContext {\n    let context = UiBuildContext::default();\n",
+    );
+    for name in graph_names {
+        let (module_name, _) = component_rust_names(name)?;
+        let _ = writeln!(
+            source,
+            "    let context = {module_name}::register_ui_graph(context);"
+        );
+    }
+    source.push_str("    context\n}\n");
     syn::parse_file(&source).context("validating generated component registry")?;
     Ok(source)
+}
+
+fn is_generated_graph_app(app_dir: &Path) -> Result<bool> {
+    let screens = app_dir.join("src/screens.rs");
+    if !screens.is_file() || !app_dir.join("ui/main.json").is_file() {
+        return Ok(false);
+    }
+    let source = std::fs::read_to_string(&screens)
+        .with_context(|| format!("reading {}", screens.display()))?;
+    Ok(source.starts_with(SCREEN_REGISTRY_HEADER))
+}
+
+fn migrate_generated_graph_context(source: &str) -> String {
+    let legacy_template = legacy_graph_app_template();
+    if source.contains(&legacy_template) {
+        source.replacen(&legacy_template, GRAPH_APP_TEMPLATE, 1)
+    } else {
+        source.to_owned()
+    }
+}
+
+fn legacy_graph_app_template() -> String {
+    GRAPH_APP_TEMPLATE.replace(GENERATED_GRAPH_ROUTER_CALL, LEGACY_GRAPH_ROUTER_CALL)
+}
+
+fn generated_graph_context_ready(app_dir: &Path) -> Result<bool> {
+    if !is_generated_graph_app(app_dir)? {
+        return Ok(false);
+    }
+    let path = app_dir.join("src/lib.rs");
+    let source =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(source.contains(GENERATED_GRAPH_ROUTER_CALL)
+        || source.contains(&legacy_graph_app_template()))
 }
 
 fn component_source(
@@ -1963,10 +2400,16 @@ fn component_source(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single format template is the reviewable source of one complete generated component and its tests"
+)]
 fn display_component_source(name: &str, module_name: &str, type_name: &str) -> String {
     format!(
-        r#"use ui::tokens::TextRole;
-use ui::widget::Text;
+        r##"// qos-dev:graph-props=display-v1
+use ui::tokens::TextRole;
+use ui::widget::{{Element, Text}};
+use ui::{{UiBuildContext, UiComponentRequest}};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct {type_name}Props {{
@@ -1992,6 +2435,30 @@ pub fn {module_name}(id: &str, props: &{type_name}Props) -> ui::widget::Column {
             .with_id(format!("{{id}}-detail")),
     ]
     .with_no_padding()
+}}
+
+/// Build this component from a serialized UI graph node.
+///
+/// # Errors
+///
+/// Returns a field-specific error when `title` or `detail` is not a string.
+pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
+    let string = |key| {{
+        request
+            .props
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{{key}} must be a string"))
+    }};
+    let props = {type_name}Props::new(string("title")?, string("detail")?);
+    Ok(Box::new({module_name}(request.id, &props)))
+}}
+
+/// Register this component's stable graph factory name.
+#[must_use]
+pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {{
+    context.with_component("{name}", from_ui_graph)
 }}
 
 #[cfg(test)]
@@ -2021,11 +2488,47 @@ mod tests {{
         )
         .expect("component detail semantics");
     }}
+
+    #[test]
+    fn graph_factory_validates_props_and_builds_the_same_component() {{
+        let document = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"example","name":"{name}","props":{{"title":"Graph title","detail":"Graph detail"}}}}}}"#,
+        )
+        .expect("valid component graph");
+        let context = register_ui_graph(UiBuildContext::default());
+        let widget = ui::UiDocumentExt::build_with(
+            &document,
+            &ui::Theme::default(),
+            &context,
+        )
+        .expect("registered component");
+        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        app.expect(
+            &SemanticExpectation::named("example-title")
+                .role(Role::Heading {{ level: 2 }})
+                .name("Graph title"),
+        )
+        .expect("graph component heading");
+
+        let invalid = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"title":"Missing detail"}}}}}}"#,
+        )
+        .expect("structurally valid component graph");
+        assert!(matches!(
+            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
+                if message == "detail must be a string"
+        ));
+    }}
 }}
-"#
+"##
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single format template is the reviewable source of one complete generated component and its tests"
+)]
 fn form_component_source(
     name: &str,
     module_name: &str,
@@ -2035,8 +2538,9 @@ fn form_component_source(
     let value_placeholder = ScreenMessage::new(name, "value-placeholder", "Enter a value");
     let enabled_label = ScreenMessage::new(name, "enabled-label", "Enabled");
     let source = format!(
-        r#"use ui::LocalState;
-use ui::widget::{{Checkbox, TextInput, labeled_check, labeled_field}};
+        r##"// qos-dev:graph-props=form-v2
+use ui::widget::{{Checkbox, Element, TextInput, labeled_check, labeled_field}};
+use ui::{{LocalState, UiBuildContext, UiComponentRequest}};
 
 #[derive(Clone)]
 pub struct {type_name}State {{
@@ -2069,6 +2573,58 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
     .with_no_padding()
 }}
 
+/// Build one `{name}` form whose controls bind directly to the app document.
+///
+/// Reusing either path in another component or ordinary graph control creates
+/// another synchronized view of the same persistent, undoable value.
+pub fn {module_name}_from_document(
+    id: &str,
+    value_path: &str,
+    enabled_path: &str,
+) -> ui::widget::Column {{
+    let value_id = format!("{{id}}-value");
+    let enabled_id = format!("{{id}}-enabled");
+    let value = TextInput::from_document_string(value_path)
+        .with_id(&value_id)
+        .with_placeholder("{name}-value-placeholder");
+    let enabled = Checkbox::new(&enabled_id, enabled_path).with_id(&enabled_id);
+    ui::column![
+        labeled_field("{name}-value-label", value),
+        labeled_check("{name}-enabled-label", enabled),
+    ]
+    .with_no_padding()
+}}
+
+/// Build this document-bound component from a serialized UI graph node.
+///
+/// Each graph instance receives explicit `value_path` and `enabled_path` props.
+/// Paths may be unique per instance or deliberately shared across views.
+///
+/// # Errors
+///
+/// Returns a field-specific error when either binding path is missing or empty.
+pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
+    let path = |key| {{
+        request
+            .props
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|path| !path.trim().is_empty())
+            .ok_or_else(|| format!("{{key}} must be a non-empty string"))
+    }};
+    Ok(Box::new({module_name}_from_document(
+        request.id,
+        path("value_path")?,
+        path("enabled_path")?,
+    )))
+}}
+
+/// Register this component's stable graph factory name.
+#[must_use]
+pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {{
+    context.with_component("{name}", from_ui_graph)
+}}
+
 #[cfg(test)]
 mod tests {{
     use super::*;
@@ -2096,8 +2652,62 @@ mod tests {{
         assert_eq!(state.value.with(Clone::clone), "Ada");
         assert!(!state.enabled.with(|enabled| *enabled));
     }}
+
+    #[test]
+    fn graph_factory_binds_shared_document_state() {{
+        let document = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}}]}}}}"#,
+        )
+        .expect("valid component graph");
+        let context = register_ui_graph(UiBuildContext::default());
+        let widget = ui::UiDocumentExt::build_with(
+            &document,
+            &ui::Theme::default(),
+            &context,
+        )
+        .expect("registered form component");
+        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        app.perform_named("first-value", &Action::SetValue("Ada".into()))
+            .expect("first graph form edits shared text");
+        app.expect(
+            &SemanticExpectation::named("second-value")
+                .role(Role::TextInput)
+                .value("Ada"),
+        )
+        .expect("second graph form observes shared document text");
+        app.perform_named("first-enabled", &Action::ToggleCheck)
+            .expect("first graph form edits shared boolean");
+        app.expect(
+            &SemanticExpectation::named("second-enabled")
+                .role(Role::Checkbox)
+                .checked(true),
+        )
+        .expect("second graph form observes shared document boolean");
+        assert!(app.perform_undo(), "document-bound toggle is undoable");
+        app.expect(
+            &SemanticExpectation::named("second-enabled")
+                .role(Role::Checkbox)
+                .checked(false),
+        )
+        .expect("undo updates every bound view");
+        assert!(app.perform_redo(), "document-bound toggle is redoable");
+        let state = app.dump_json();
+        assert!(state.contains("shared-value"));
+        assert!(state.contains("Ada"));
+        assert!(state.contains("shared-enabled"));
+
+        let invalid = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"value_path":"","enabled_path":"enabled"}}}}}}"#,
+        )
+        .expect("structurally valid component graph");
+        assert!(matches!(
+            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
+                if message == "value_path must be a non-empty string"
+        ));
+    }}
 }}
-"#
+"##
     );
     (source, vec![value_label, value_placeholder, enabled_label])
 }
@@ -2108,9 +2718,12 @@ fn tree_component_source(
     type_name: &str,
 ) -> (String, Vec<ScreenMessage>) {
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let loading = ScreenMessage::new(name, "loading", "Loading…");
+    let load_error = ScreenMessage::new(name, "load-error", "Could not load. Activate to retry");
     let mut source = format!(
         r#"use ui::selection::KeySelection;
-use ui::widget::tree_view::{{NodeId, TreeModel, TreeView}};
+use ui::widget::Text;
+use ui::widget::tree_view::{{NodeId, TreeModel, TreeSlotState, TreeView}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Config {{
@@ -2151,11 +2764,18 @@ pub fn {module_name}<M: TreeModel>(
         .multi_select(config.multi_select)
         .with_viewport(config.viewport_height, config.estimated_row_height)
         .with_accessible_name(&config.accessible_name)
+        .with_slot_delegate(|_, _, _, state| {{
+            let message = match state {{
+                TreeSlotState::Loading => "{name}-loading",
+                TreeSlotState::Error {{ .. }} => "{name}-load-error",
+            }};
+            Box::new(Text::new(message))
+        }})
 }}
 "#
     );
     source.push_str(&tree_component_test_source(module_name, type_name));
-    (source, vec![accessible_name])
+    (source, vec![accessible_name, loading, load_error])
 }
 
 fn tree_component_test_source(module_name: &str, type_name: &str) -> String {
@@ -2763,7 +3383,7 @@ fn screen_registry_source(names: &[String]) -> String {
         let function = name.replace('-', "_");
         let _ = writeln!(
             source,
-            "\n\n/// Build the `{name}` screen.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build(include_str!(\"../ui/{name}.json\"), theme)\n}}"
+            "\n\n/// Build the `{name}` screen.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    {function}_with(theme, UiBuildContext::default())\n}}\n\n/// Build `{name}` with app-owned component factories and other services.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}_with(\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build_with(include_str!(\"../ui/{name}.json\"), theme, context)\n}}"
         );
     }
     source.push_str(
@@ -2779,7 +3399,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         let _ = writeln!(source, "        {name:?} => Some({function}(theme)),");
     }
     source.push_str(
-        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
+        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n    context: &UiBuildContext,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
     );
     for name in names {
         let _ = writeln!(
@@ -2788,7 +3408,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         );
     }
     source.push_str(
-        "        _ => return None,\n    };\n    Some(build_routed(source, theme, navigation))\n}\n\n/// Build a history-aware host for all registered screens.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, |route, theme, navigation| {\n        get_routed(route, theme, navigation)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build(source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget(theme)?))\n}\n\nfn build_routed(\n    source: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    let context = UiBuildContext::default().with_router(navigation.clone());\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
+        "        _ => return None,\n    };\n    let context = context.clone().with_router(navigation.clone());\n    Some(build_with(source, theme, context))\n}\n\n/// Build a history-aware host for all registered screens.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    router_with(initial, theme, UiBuildContext::default())\n}\n\n/// Build the screen router with app-owned component factories and services.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router_with(\n    initial: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, move |route, theme, navigation| {\n        get_routed(route, theme, navigation, &context)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build_with(\n    source: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
     );
     source
 }
@@ -2871,7 +3491,116 @@ pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
 /// Returns a load, structural-validation, or atomic-write error. The source
 /// file remains unchanged on failure.
 pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
+    edit_ui_graph_batch(path, vec![edit])
+}
+
+/// Insert an app-owned component with a unique default id and append-by-default
+/// placement, then atomically publish the validated graph.
+///
+/// # Errors
+///
+/// Returns an error when props are not a JSON object, the parent cannot accept
+/// children, an explicit id is invalid or duplicated, or publication fails.
+pub fn insert_ui_component(path: &Path, request: UiComponentInsert) -> Result<String> {
     let mut document = load_ui_graph(path)?;
+    let id = apply_ui_component(&mut document, request)?;
+    write_ui_graph(path, &document)?;
+    Ok(id)
+}
+
+fn apply_ui_component(
+    document: &mut qos_ui_graph::UiDocument,
+    request: UiComponentInsert,
+) -> Result<String> {
+    let value: serde_json::Value =
+        serde_json::from_str(&request.props).context("parsing component props as JSON")?;
+    let props = value
+        .as_object()
+        .cloned()
+        .context("component props must be a JSON object")?;
+    let id = match request.id {
+        Some(id) => id,
+        None => unique_ui_node_id(document, &request.name)?,
+    };
+    let index = if let Some(index) = request.index {
+        index
+    } else {
+        match document.node(&request.parent) {
+            Some(
+                qos_ui_graph::UiNode::Column { children, .. }
+                | qos_ui_graph::UiNode::Row { children, .. },
+            ) => children.len(),
+            Some(_) => bail!(
+                "UI graph node {:?} is not a row or column and cannot accept children",
+                request.parent
+            ),
+            None => bail!("UI graph has no node {:?}", request.parent),
+        }
+    };
+    document.insert_child(
+        &request.parent,
+        index,
+        qos_ui_graph::UiNode::Component {
+            id: id.clone(),
+            name: request.name,
+            props,
+        },
+    )?;
+    Ok(id)
+}
+
+fn unique_ui_node_id(document: &qos_ui_graph::UiDocument, base: &str) -> Result<String> {
+    if document.node(base).is_none() {
+        return Ok(base.to_owned());
+    }
+    let mut suffix = 2_u64;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if document.node(&candidate).is_none() {
+            return Ok(candidate);
+        }
+        suffix = suffix
+            .checked_add(1)
+            .context("exhausted component id suffixes")?;
+    }
+}
+
+/// Parse a JSON array of tagged graph edits suitable for
+/// [`edit_ui_graph_batch`].
+///
+/// # Errors
+///
+/// Returns an error when the source is not a non-empty array of supported,
+/// structurally valid edit objects.
+pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>> {
+    let edits: Vec<UiGraphEdit> =
+        serde_json::from_str(source).context("parsing UI graph edit batch")?;
+    if edits.is_empty() {
+        bail!("UI graph edit batch must contain at least one edit");
+    }
+    Ok(edits)
+}
+
+/// Apply a non-empty edit batch and publish the graph exactly once after every
+/// operation and the resulting complete graph validate.
+///
+/// # Errors
+///
+/// Returns a load, edit, validation, or atomic-write error. The source file
+/// remains byte-for-byte unchanged when any operation fails.
+pub fn edit_ui_graph_batch(path: &Path, edits: Vec<UiGraphEdit>) -> Result<()> {
+    if edits.is_empty() {
+        bail!("UI graph edit batch must contain at least one edit");
+    }
+    let mut document = load_ui_graph(path)?;
+    for (index, edit) in edits.into_iter().enumerate() {
+        apply_ui_graph_edit(&mut document, edit)
+            .with_context(|| format!("applying UI graph edit {}", index.saturating_add(1)))?;
+    }
+    write_ui_graph(path, &document)
+}
+
+fn apply_ui_graph_edit(document: &mut qos_ui_graph::UiDocument, edit: UiGraphEdit) -> Result<()> {
     match edit {
         UiGraphEdit::Insert {
             parent,
@@ -2890,10 +3619,13 @@ pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
             property,
             value,
         } => {
-            set_ui_node_property(&mut document, &id, &property, value)?;
+            set_ui_node_property(document, &id, &property, Some(value))?;
+        }
+        UiGraphEdit::UnsetProperty { id, property } => {
+            set_ui_node_property(document, &id, &property, None)?;
         }
     }
-    write_ui_graph(path, &document)
+    Ok(())
 }
 
 fn set_ui_node_property(
@@ -3055,6 +3787,7 @@ fn write_ui_node_tree(node: &qos_ui_graph::UiNode, depth: usize, output: &mut St
         qos_ui_graph::UiNode::TextInput { .. } => "text-input",
         qos_ui_graph::UiNode::Checkbox { .. } => "checkbox",
         qos_ui_graph::UiNode::Toggle { .. } => "toggle",
+        qos_ui_graph::UiNode::Component { .. } => "component",
         qos_ui_graph::UiNode::Spacer { .. } => "spacer",
     };
     let _ = writeln!(output, "{}{} ({kind})", "  ".repeat(depth), node.id());
@@ -4604,6 +5337,22 @@ fn check_source_file(
     });
 }
 
+#[derive(Clone, Debug)]
+struct GraphComponentUse {
+    screen: String,
+    node: String,
+    name: String,
+    props: serde_json::Map<String, serde_json::Value>,
+}
+
+const GRAPH_PROPS_MARKER: &str = "// qos-dev:graph-props=";
+
+#[derive(Debug)]
+struct ComponentRegistryInspection {
+    components: Vec<String>,
+    graph_contracts: BTreeMap<String, GraphPropsContract>,
+}
+
 fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
     let files = match files_with_extension(&app_dir.join("ui"), "json") {
         Ok(files) => files,
@@ -4613,6 +5362,7 @@ fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
                 label: "UI graphs",
                 detail,
             });
+            check_graph_component_contract(app_dir, &[], checks);
             return;
         }
     };
@@ -4622,15 +5372,30 @@ fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             label: "UI graphs",
             detail: "no serialized screens".to_owned(),
         });
+        check_graph_component_contract(app_dir, &[], checks);
         return;
     }
+    let mut component_uses = Vec::new();
     for path in files {
         let detail = relative_artifact(app_dir, &path);
         let result = std::fs::read_to_string(&path)
             .map_err(anyhow::Error::from)
             .and_then(|source| qos_ui_graph::UiDocument::from_json(&source).map_err(Into::into));
         let (status, detail) = match result {
-            Ok(_) => (DoctorStatus::Pass, detail),
+            Ok(document) => {
+                component_uses.extend(document.nodes().into_iter().filter_map(|node| match node {
+                    qos_ui_graph::UiNode::Component {
+                        id, name, props, ..
+                    } => Some(GraphComponentUse {
+                        screen: detail.clone(),
+                        node: id.clone(),
+                        name: name.clone(),
+                        props: props.clone(),
+                    }),
+                    _ => None,
+                }));
+                (DoctorStatus::Pass, detail)
+            }
             Err(error) => (DoctorStatus::Fail, format!("{detail}: {error}")),
         };
         checks.push(DoctorCheck {
@@ -4639,6 +5404,180 @@ fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             detail,
         });
     }
+    check_graph_component_contract(app_dir, &component_uses, checks);
+}
+
+fn check_graph_component_contract(
+    app_dir: &Path,
+    uses: &[GraphComponentUse],
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let source = std::fs::read_to_string(app_dir.join("src/lib.rs")).unwrap_or_default();
+    let legacy_context = source.contains(&legacy_graph_app_template());
+    let generated_context = source.contains("components::ui_graph_context()");
+    let app_owned_context = !legacy_context && !generated_context;
+    let registry = match inspect_component_registry(app_dir) {
+        Ok(Some(inspection)) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Pass,
+                label: "component registry",
+                detail: format!(
+                    "{} component module(s), {} graph factory/factories",
+                    inspection.components.len(),
+                    inspection.graph_contracts.len()
+                ),
+            });
+            Some(inspection)
+        }
+        Ok(None) if uses.is_empty() || app_owned_context => None,
+        Ok(None) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "component registry",
+                detail: "serialized component nodes require generated src/components/mod.rs"
+                    .to_owned(),
+            });
+            None
+        }
+        Err(error) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "component registry",
+                detail: error.to_string(),
+            });
+            return;
+        }
+    };
+    if uses.is_empty() {
+        return;
+    }
+    if legacy_context {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "UI components",
+            detail: "src/lib.rs uses the legacy default router context; run `qos-dev add component <name> --mount <screen>` to migrate it"
+                .to_owned(),
+        });
+        return;
+    }
+    if app_owned_context {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Warning,
+            label: "UI components",
+            detail: format!(
+                "{} serialized component node(s) use an app-owned build context; factory registration cannot be checked structurally",
+                uses.len()
+            ),
+        });
+        return;
+    }
+    let Some(inspection) = registry else {
+        return;
+    };
+    for usage in uses {
+        check_graph_component_use(
+            usage,
+            &inspection.components,
+            &inspection.graph_contracts,
+            checks,
+        );
+    }
+}
+
+fn inspect_component_registry(app_dir: &Path) -> Result<Option<ComponentRegistryInspection>> {
+    let path = app_dir.join("src/components/mod.rs");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
+    let components = parse_component_registry(&source)?;
+    let graph_components = parse_graph_component_registry(&source, &components)?;
+    let mut graph_contracts = BTreeMap::new();
+    for name in &components {
+        let (module, _) = component_rust_names(name)?;
+        let module_path = app_dir.join("src/components").join(format!("{module}.rs"));
+        let module_source = std::fs::read_to_string(&module_path)
+            .with_context(|| format!("reading registered component {name:?}"))?;
+        syn::parse_file(&module_source)
+            .with_context(|| format!("parsing registered component {name:?}"))?;
+        if graph_components.contains(name) {
+            if !module_source.contains("pub fn register_ui_graph(") {
+                bail!("graph component {name:?} has no register_ui_graph factory");
+            }
+            graph_contracts.insert(name.clone(), graph_props_contract(name, &module_source)?);
+        }
+    }
+    Ok(Some(ComponentRegistryInspection {
+        components,
+        graph_contracts,
+    }))
+}
+
+fn graph_props_contract(name: &str, source: &str) -> Result<GraphPropsContract> {
+    let markers: Vec<_> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix(GRAPH_PROPS_MARKER))
+        .collect();
+    match markers.as_slice() {
+        [] | ["display-v1"] => Ok(GraphPropsContract::DisplayV1),
+        ["form-v1"] => Ok(GraphPropsContract::FormV1),
+        ["form-v2"] => Ok(GraphPropsContract::FormV2),
+        [unknown] => bail!("graph component {name:?} has unknown props contract {unknown:?}"),
+        _ => bail!("graph component {name:?} declares more than one props contract"),
+    }
+}
+
+fn check_graph_component_use(
+    usage: &GraphComponentUse,
+    components: &[String],
+    graph_components: &BTreeMap<String, GraphPropsContract>,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let location = format!("{} node {:?}", usage.screen, usage.node);
+    let Some(contract) = graph_components.get(&usage.name) else {
+        let detail = if components.iter().any(|name| name == &usage.name) {
+            format!(
+                "{location} uses component {:?}, but that generated component has no graph factory",
+                usage.name
+            )
+        } else {
+            format!(
+                "{location} uses unregistered component {:?}; generate it with `qos-dev add component {} --mount {}`",
+                usage.name,
+                usage.name,
+                screen_name_from_detail(&usage.screen)
+            )
+        };
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "UI component",
+            detail,
+        });
+        return;
+    };
+    let invalid = contract.invalid_props(&usage.props);
+    if let Some(invalid) = invalid {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "UI component",
+            detail: format!("{location} component {:?} {invalid}", usage.name),
+        });
+        return;
+    }
+    checks.push(DoctorCheck {
+        status: DoctorStatus::Pass,
+        label: "UI component",
+        detail: format!("{location} → {:?}", usage.name),
+    });
+}
+
+fn screen_name_from_detail(detail: &str) -> &str {
+    detail
+        .strip_prefix("ui/")
+        .and_then(|value| value.strip_suffix(".json"))
+        .unwrap_or("main")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -5611,7 +6550,7 @@ fn prompt_component_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter   Accessible form and standard lifecycle\n  2) data      Sparse table with retained cell controls\n  3) list      Sparse variable-height retained list\n  4) tree      Professional hierarchy browser\n  5) graph     Serialized UI graph and router\n  6) async     Restartable background task with cancellation\n  7) document  Durable synchronized editor with undo\n  8) qr        IME input to accessible generated QR output"
+        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Resizable master-detail app with durable item editing"
     )
     .context("showing template choices")?;
     loop {
@@ -5633,8 +6572,9 @@ fn parse_template(value: &str) -> Result<Template> {
         "6" | "async" | "a" | "task" => Ok(Template::Async),
         "7" | "document" | "doc" | "editor" => Ok(Template::Document),
         "8" | "qr" | "qrcode" | "showcase" => Ok(Template::Qr),
+        "9" | "workspace" | "master-detail" | "professional" => Ok(Template::Workspace),
         _ => bail!(
-            "unknown template {value:?}; choose 1-8 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, or `qr`"
+            "unknown template {value:?}; choose 1-9 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, `qr`, or `workspace`"
         ),
     }
 }
@@ -5778,6 +6718,10 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
             PathBuf::from("src/screens.rs"),
             screen_registry_source(&["main".into()]),
         ));
+        files.push((
+            PathBuf::from("src/components/mod.rs"),
+            component_registry_source(&[], &BTreeSet::new())?,
+        ));
     }
     Ok(files)
 }
@@ -5821,10 +6765,13 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Data => DATA_APP_TEMPLATE.to_owned(),
         Template::List => LIST_APP_TEMPLATE.to_owned(),
         Template::Tree => TREE_APP_TEMPLATE.to_owned(),
-        Template::Graph => format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
+        Template::Graph => {
+            format!("pub mod components;\npub mod screens;\n\n{GRAPH_APP_TEMPLATE}")
+        }
         Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
         Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
         Template::Qr => QR_APP_TEMPLATE.to_owned(),
+        Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
         "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\npub mod resource_actions {{\n{RESOURCE_ACTIONS_TEMPLATE}\n}}\n\n{application}",
@@ -5869,7 +6816,22 @@ document-preview-heading = Live preview\n\
 qr-title = QR code generator\n\
 qr-input-label = Content\n\
 qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n",
+qr-output-alt = QR code for { $payload }\n\
+workspace-root = Workspace\n\
+workspace-projects = Projects\n\
+workspace-archive = Archive\n\
+workspace-desktop-app = Desktop app\n\
+workspace-design-system = Design system\n\
+workspace-first-prototype = First prototype\n\
+workspace-unknown-item = Selected item\n\
+workspace-tree-name = Workspace items\n\
+workspace-navigation-heading = Projects\n\
+workspace-title-label = Title\n\
+workspace-title-placeholder = Untitled item\n\
+workspace-notes-label = Notes\n\
+workspace-notes-placeholder = Add project notes…\n\
+workspace-preview-heading = Live preview\n\
+workspace-share = Share\n",
     )
 }
 
@@ -6016,6 +6978,7 @@ fn app_exposes_a_virtualized_table() {{
         Template::Async => async_app_test(crate_name),
         Template::Document => document_app_test(crate_name),
         Template::Qr => qr_app_test(crate_name),
+        Template::Workspace => workspace_app_test(crate_name),
     }
 }
 
@@ -6159,6 +7122,76 @@ fn document_fields_are_synchronized_and_undoable() {{
     app.relayout();
     let undone = app.inspection_json().expect("undone semantic snapshot");
     assert!(!undone.contains("Project Atlas"), "{{undone}}");
+}}
+"#
+    )
+}
+
+fn workspace_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (1000, 640),
+    );
+
+    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("select the design-system project");
+    app.expect(
+        &SemanticExpectation::named("workspace-tree")
+            .semantic_target("node:4")
+            .role(Role::TreeItem)
+            .selected(true),
+    )
+    .expect("master selection semantics match");
+    app.expect(
+        &SemanticExpectation::named("workspace-selected-item")
+            .role(Role::Heading {{ level: 1 }})
+            .name("Design system"),
+    )
+    .expect("detail pane follows the stable selected id");
+    app.perform_named(
+        "workspace-title-input",
+        &Action::SetValue("Design tokens".into()),
+    )
+    .expect("edit the selected project's durable title");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-preview")
+            .role(Role::Heading {{ level: 2 }})
+            .name("Design tokens"),
+    )
+    .expect("the detail preview shares the document binding");
+
+    app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
+        .expect("switch to another project");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-input")
+            .role(Role::TextInput)
+            .value(""),
+    )
+    .expect("each project owns an isolated document path");
+    app.perform_named(
+        "workspace-title-input",
+        &Action::SetValue("Desktop refresh".into()),
+    )
+    .expect("edit the second project");
+    assert!(app.perform_undo(), "detail edits use standard document undo");
+    let snapshot = app.inspection_json().expect("undone workspace snapshot");
+    assert!(!snapshot.contains("Desktop refresh"), "{{snapshot}}");
+
+    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("return to the first project");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-input")
+            .role(Role::TextInput)
+            .value("Design tokens"),
+    )
+    .expect("the first project's persisted view remains synchronized");
+    assert!(app.dump_json().contains("workspace-item-4-title"));
 }}
 "#
     )
@@ -6328,6 +7361,9 @@ fn headless_actions(spec: &AppSpec) -> String {
         Template::Qr => String::from(
             "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",
         ),
+        Template::Workspace => String::from(
+            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"expect\": {\"target\": \"workspace-selected-item\", \"role\": \"heading\", \"name\": \"Design system\"}},\n  {\"perform\": {\"target\": \"workspace-title-input\", \"action\": \"set_value\", \"value\": \"Design tokens\"}},\n  {\"expect\": {\"target\": \"workspace-title-preview\", \"role\": \"heading\", \"name\": \"Design tokens\"}}\n]\n",
+        ),
     }
 }
 
@@ -6435,7 +7471,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. Generate, register, and place an app-owned retained component atomically with `qos-dev add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`, or mount a document-bound form with `qos-dev add component profile-form --template form --mount main --props '{{\"value_path\":\"profile-name\",\"enabled_path\":\"profile-enabled\"}}'`. The generated component registry makes graph-compatible components available to every generated screen automatically."
         );
     }
     if spec.template == Template::Async {
@@ -6454,6 +7490,12 @@ fn app_readme(spec: &AppSpec) -> String {
         let _ = writeln!(
             out,
             "\nThe input writes to one typed `LocalState<String>`. `ModelView::from_state` rebuilds only the generated QR output when that value changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
+        );
+    }
+    if spec.template == Template::Workspace {
+        let _ = writeln!(
+            out,
+            "\nThe workspace starter composes a resizable master-detail shell from ordinary retained widgets. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
         );
     }
     let _ = writeln!(
@@ -6480,6 +7522,21 @@ mod tests {
         }
     }
 
+    fn assert_generated_tree_source(source: &str) {
+        syn::parse_file(source).unwrap();
+        for needle in [
+            "pub struct ProjectTreeConfig",
+            "M: TreeModel",
+            "TreeView::from_model(model)",
+            ".with_slot_delegate(",
+            "TreeSlotState::Error",
+            ".with_row_delegate(",
+            ".reorderable()",
+        ] {
+            assert!(source.contains(needle), "missing {needle:?}");
+        }
+    }
+
     fn minimal_app(root: &Path) {
         std::fs::create_dir_all(root.join("src/nested")).unwrap();
         std::fs::write(
@@ -6493,6 +7550,26 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("src/lib.rs"), "pub fn app_root() {}\n").unwrap();
+    }
+
+    fn minimal_generated_graph_app(root: &Path) {
+        minimal_app(root);
+        std::fs::create_dir(root.join("ui")).unwrap();
+        std::fs::write(
+            root.join("ui/main.json"),
+            starter_ui_document("Graph app").to_json_pretty().unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/screens.rs"),
+            screen_registry_source(&["main".into()]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("pub mod screens;\n\n{}", legacy_graph_app_template()),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -6969,6 +8046,56 @@ mod tests {
     }
 
     #[test]
+    fn add_wizard_can_create_register_and_mount_a_display_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_generated_graph_app(&app);
+        let mut input = std::io::Cursor::new(b"4\nprofile-card\n1\n\n\n\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap();
+
+        assert_eq!(outcome.next_command.as_deref(), Some("qos-dev dev"));
+        assert!(matches!(
+            load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-card"),
+            Some(qos_ui_graph::UiNode::Component { name, props, .. })
+                if name == "profile-card"
+                    && props.get("detail") == Some(&serde_json::json!("Start building here."))
+        ));
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Mount in screen"));
+        assert!(transcript.contains("mounted in \"main\""));
+    }
+
+    #[test]
+    fn add_wizard_can_mount_an_interactive_form_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_generated_graph_app(&app);
+        let mut input = std::io::Cursor::new(
+            b"4\nprofile-form\n2\n\nprofile-name\nprofile-enabled\n\n".to_vec(),
+        );
+        let mut output = Vec::new();
+
+        let outcome =
+            add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap();
+
+        assert_eq!(outcome.next_command.as_deref(), Some("qos-dev dev"));
+        assert!(matches!(
+            load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
+            Some(qos_ui_graph::UiNode::Component { name, props, .. })
+                if name == "profile-form"
+                    && props.get("value_path") == Some(&serde_json::json!("profile-name"))
+                    && props.get("enabled_path") == Some(&serde_json::json!("profile-enabled"))
+        ));
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Value document path"));
+        assert!(transcript.contains("Enabled document path"));
+        assert!(transcript.contains("component \"profile-form\" (form) mounted in \"main\""));
+    }
+
+    #[test]
     fn component_wizard_exposes_the_source_agnostic_tree_template() {
         let mut input = std::io::Cursor::new(b"3\n".to_vec());
         let mut output = Vec::new();
@@ -7038,6 +8165,9 @@ mod tests {
         syn::parse_file(&display_source).unwrap();
         assert!(display_source.contains("pub struct ActivityCardProps"));
         assert!(display_source.contains("pub fn activity_card(id: &str"));
+        assert!(display_source.contains("pub fn from_ui_graph("));
+        assert!(display_source.contains("pub fn register_ui_graph("));
+        assert!(display_source.contains("context.with_component(\"activity-card\""));
         assert!(display_source.contains("with_id(format!(\"{id}-title\"))"));
         assert!(display_source.contains("SemanticExpectation::named(\"example-title\")"));
 
@@ -7072,12 +8202,7 @@ mod tests {
         .unwrap();
         let tree_source =
             std::fs::read_to_string(app.join("src/components/project_tree.rs")).unwrap();
-        syn::parse_file(&tree_source).unwrap();
-        assert!(tree_source.contains("pub struct ProjectTreeConfig"));
-        assert!(tree_source.contains("M: TreeModel"));
-        assert!(tree_source.contains("TreeView::from_model(model)"));
-        assert!(tree_source.contains(".with_row_delegate("));
-        assert!(tree_source.contains(".reorderable()"));
+        assert_generated_tree_source(&tree_source);
 
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
@@ -7121,6 +8246,310 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn graph_component_mount_validation_publishes_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("graph-app");
+        minimal_generated_graph_app(&app);
+        let custom_root =
+            "fn custom() { let _ = crate::screens::router(\"main\", &Theme::default()); }\n";
+        assert_eq!(migrate_generated_graph_context(custom_root), custom_root);
+        std::fs::write(
+            app.join("src/lib.rs"),
+            format!("pub mod screens;\n{custom_root}"),
+        )
+        .unwrap();
+        let custom_error = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(
+            custom_error
+                .to_string()
+                .contains("intact generated graph app root")
+        );
+        assert!(!app.join("src/components/profile_card.rs").exists());
+        std::fs::write(
+            app.join("src/lib.rs"),
+            format!("pub mod screens;\n\n{}", legacy_graph_app_template()),
+        )
+        .unwrap();
+
+        let library_before = std::fs::read(app.join("src/lib.rs")).unwrap();
+        let graph_before = std::fs::read(app.join("ui/main.json")).unwrap();
+        let dry_run = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: true,
+        })
+        .unwrap();
+        assert!(dry_run.dry_run);
+        assert!(
+            dry_run
+                .files
+                .iter()
+                .any(|path| path.ends_with("ui/main.json"))
+        );
+        assert!(!app.join("src/components/profile_card.rs").exists());
+        assert_eq!(
+            std::fs::read(app.join("ui/main.json")).unwrap(),
+            graph_before
+        );
+        let invalid = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount {
+                    props: "[]".into(),
+                    ..ComponentMount::display("main", "profile-card")
+                },
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(invalid.to_string().contains("must be a JSON object"));
+        assert!(!app.join("src/components/profile_card.rs").exists());
+        assert_eq!(
+            std::fs::read(app.join("src/lib.rs")).unwrap(),
+            library_before
+        );
+        assert_eq!(
+            std::fs::read(app.join("ui/main.json")).unwrap(),
+            graph_before
+        );
+    }
+
+    #[test]
+    fn generated_graph_apps_auto_register_compatible_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("graph-app");
+        minimal_generated_graph_app(&app);
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(outcome.next_command.as_deref(), Some("qos-dev dev"));
+        assert!(
+            outcome
+                .files
+                .iter()
+                .any(|path| path.ends_with("ui/main.json"))
+        );
+        assert!(matches!(
+            load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-card"),
+            Some(qos_ui_graph::UiNode::Component { name, props, .. })
+                if name == "profile-card"
+                    && props.get("title") == Some(&serde_json::json!("Profile Card"))
+        ));
+
+        let registry_path = app.join("src/components/mod.rs");
+        let registry = std::fs::read_to_string(&registry_path).unwrap();
+        assert_eq!(
+            parse_component_registry(&registry).unwrap(),
+            ["profile-card"]
+        );
+        assert_eq!(
+            parse_graph_component_registry(&registry, &["profile-card".into()]).unwrap(),
+            BTreeSet::from(["profile-card".to_owned()])
+        );
+        assert!(registry.contains("profile_card::register_ui_graph(context)"));
+        let library = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+        assert!(library.contains("pub mod components;"));
+        assert!(library.contains("crate::screens::router_with("));
+        assert!(library.contains("crate::components::ui_graph_context()"));
+        assert!(!library.contains("crate::screens::router(\"main\""));
+        syn::parse_file(&library).expect("migrated generated root is valid Rust");
+    }
+
+    #[test]
+    fn component_template_replacement_requires_compatible_graph_props() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("graph-app");
+        minimal_generated_graph_app(&app);
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let registry_path = app.join("src/components/mod.rs");
+        let component_path = app.join("src/components/profile_card.rs");
+        let component_before = std::fs::read(&component_path).unwrap();
+        let registry_before = std::fs::read(&registry_path).unwrap();
+        let incompatible = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Form,
+            },
+            force: true,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(
+            incompatible
+                .to_string()
+                .contains("incompatible with the form")
+        );
+        assert_eq!(std::fs::read(&component_path).unwrap(), component_before);
+        assert_eq!(std::fs::read(&registry_path).unwrap(), registry_before);
+
+        edit_ui_graph_batch(
+            &app.join("ui/main.json"),
+            vec![
+                UiGraphEdit::SetProperty {
+                    id: "profile-card".into(),
+                    property: "props.value_path".into(),
+                    value: serde_json::json!("profile-name"),
+                },
+                UiGraphEdit::SetProperty {
+                    id: "profile-card".into(),
+                    property: "props.enabled_path".into(),
+                    value: serde_json::json!("profile-enabled"),
+                },
+                UiGraphEdit::UnsetProperty {
+                    id: "profile-card".into(),
+                    property: "props.title".into(),
+                },
+                UiGraphEdit::UnsetProperty {
+                    id: "profile-card".into(),
+                    property: "props.detail".into(),
+                },
+            ],
+        )
+        .unwrap();
+        add_app_artifact(AddRequest {
+            start: app,
+            artifact: AddArtifact::Component {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Form,
+            },
+            force: true,
+            dry_run: false,
+        })
+        .unwrap();
+        let registry = std::fs::read_to_string(registry_path).unwrap();
+        assert_eq!(
+            parse_graph_component_registry(&registry, &["profile-card".into()]).unwrap(),
+            BTreeSet::from(["profile-card".to_owned()])
+        );
+        assert!(registry.contains("profile_card::register_ui_graph(context)"));
+    }
+
+    #[test]
+    fn generated_graph_apps_mount_stateful_form_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("graph-form-app");
+        let mut new_app = request(app.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+
+        let graph_before = std::fs::read(app.join("ui/main.json")).unwrap();
+        let invalid_mount = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "broken-form".into(),
+                template: ComponentTemplate::Form,
+                mount: ComponentMount {
+                    props: serde_json::json!({"value_path": "profile-name", "enabled_path": ""})
+                        .to_string(),
+                    ..ComponentMount::form("main", "broken-form")
+                },
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(
+            invalid_mount
+                .to_string()
+                .contains("requires non-empty string prop \"enabled_path\"")
+        );
+        assert!(!app.join("src/components/broken_form.rs").exists());
+        assert_eq!(
+            std::fs::read(app.join("ui/main.json")).unwrap(),
+            graph_before
+        );
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-form".into(),
+                template: ComponentTemplate::Form,
+                mount: ComponentMount::form("main", "profile-form"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        assert_eq!(outcome.next_command.as_deref(), Some("qos-dev dev"));
+        assert!(matches!(
+            load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
+            Some(qos_ui_graph::UiNode::Component { name, props, .. })
+                if name == "profile-form"
+                    && props.get("value_path") == Some(&serde_json::json!("profile-form-value"))
+                    && props.get("enabled_path") == Some(&serde_json::json!("profile-form-enabled"))
+        ));
+        let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
+        assert!(source.contains("// qos-dev:graph-props=form-v2"));
+        assert!(source.contains("TextInput::from_document_string(value_path)"));
+        assert!(source.contains("pub fn register_ui_graph("));
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(report.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.status == DoctorStatus::Pass
+                && check.detail.contains("profile-form")
+        }));
+
+        edit_ui_graph(
+            &app.join("ui/main.json"),
+            UiGraphEdit::SetProperty {
+                id: "profile-form".into(),
+                property: "props.enabled_path".into(),
+                value: serde_json::json!(""),
+            },
+        )
+        .unwrap();
+        let invalid = doctor_app(&app).unwrap();
+        assert!(!invalid.is_ready());
+        assert!(invalid.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check
+                    .detail
+                    .contains("requires non-empty string prop \"enabled_path\"")
+        }));
     }
 
     #[test]
@@ -7263,6 +8692,10 @@ mod tests {
         assert!(
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
             "{catalog}"
+        );
+        assert!(catalog.contains("project-tree-loading = { \"Loading…\" }"));
+        assert!(
+            catalog.contains("project-tree-load-error = { \"Could not load. Activate to retry\" }")
         );
 
         add_app_artifact(AddRequest {
@@ -8110,7 +9543,7 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "text.value".into(),
-                value: Some(serde_json::json!("Recent projects")),
+                value: serde_json::json!("Recent projects"),
             },
         )
         .expect("set nested title value");
@@ -8119,7 +9552,7 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "size".into(),
-                value: Some(serde_json::json!(24.0)),
+                value: serde_json::json!(24.0),
             },
         )
         .expect("set typed size");
@@ -8129,10 +9562,9 @@ mod tests {
 
         edit_ui_graph(
             &graph,
-            UiGraphEdit::SetProperty {
+            UiGraphEdit::UnsetProperty {
                 id: "title".into(),
                 property: "size".into(),
-                value: None,
             },
         )
         .expect("restore schema default");
@@ -8147,11 +9579,11 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "size".into(),
-                value: Some(serde_json::json!("large")),
+                value: serde_json::json!("large"),
             },
         )
         .unwrap_err();
-        assert!(error.to_string().contains("not valid"), "{error:#}");
+        assert!(format!("{error:#}").contains("not valid"), "{error:#}");
         assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
 
         let typo = edit_ui_graph(
@@ -8159,11 +9591,154 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "typo".into(),
-                value: Some(serde_json::json!(true)),
+                value: serde_json::json!(true),
             },
         )
         .unwrap_err();
-        assert!(typo.to_string().contains("not valid"), "{typo:#}");
+        assert!(format!("{typo:#}").contains("not valid"), "{typo:#}");
+        assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
+    }
+
+    #[test]
+    fn ui_graph_edit_batches_mix_operations_and_roll_back_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let edits = parse_ui_graph_edits(
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","style":"primary"}},
+              {"op":"move","id":"create","parent":"root","index":1},
+              {"op":"set-property","id":"create","property":"enabled","value":false},
+              {"op":"set-property","id":"title","property":"size","value":24},
+              {"op":"unset-property","id":"title","property":"size"}
+            ]"#,
+        )
+        .expect("parse mixed edit batch");
+        assert_eq!(edits.len(), 6);
+        assert!(
+            serde_json::to_string(&edits)
+                .unwrap()
+                .contains("\"op\":\"set-property\"")
+        );
+        let null_edit = parse_ui_graph_edits(
+            r#"[{"op":"set-property","id":"title","property":"size","value":null}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            null_edit.as_slice(),
+            [UiGraphEdit::SetProperty {
+                value: serde_json::Value::Null,
+                ..
+            }]
+        ));
+        edit_ui_graph_batch(&graph, edits).expect("apply mixed batch");
+
+        let document = load_ui_graph(&graph).unwrap();
+        assert_eq!(
+            document
+                .nodes()
+                .iter()
+                .map(|node| node.id())
+                .collect::<Vec<_>>(),
+            ["root", "title", "create", "body"]
+        );
+        assert!(matches!(
+            document.node("create"),
+            Some(qos_ui_graph::UiNode::Button { enabled: false, .. })
+        ));
+        assert!(matches!(
+            document.node("title"),
+            Some(qos_ui_graph::UiNode::Text { size: None, .. })
+        ));
+        assert!(
+            std::fs::read_to_string(&graph)
+                .unwrap()
+                .contains("Recent projects")
+        );
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let invalid = parse_ui_graph_edits(
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Do not publish"},
+              {"op":"set-property","id":"title","property":"size","value":"large"}
+            ]"#,
+        )
+        .unwrap();
+        let error = edit_ui_graph_batch(&graph, invalid).unwrap_err();
+        assert!(error.to_string().contains("edit 2"), "{error:#}");
+        assert_eq!(
+            std::fs::read(&graph).unwrap(),
+            before_invalid,
+            "a later failure must roll back the complete batch"
+        );
+        assert!(parse_ui_graph_edits("[]").is_err());
+        assert!(edit_ui_graph_batch(&graph, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn ui_graph_tools_insert_inspect_and_edit_app_components() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let profile = insert_ui_component(
+            &graph,
+            UiComponentInsert {
+                name: "profile-card".into(),
+                id: Some("profile".into()),
+                parent: "root".into(),
+                index: None,
+                props: r#"{"title":"Ada","detail":"Owner"}"#.into(),
+            },
+        )
+        .expect("insert component");
+        assert_eq!(profile, "profile");
+        let second = insert_ui_component(
+            &graph,
+            UiComponentInsert {
+                name: "profile".into(),
+                id: None,
+                parent: "root".into(),
+                index: Some(2),
+                props: "{}".into(),
+            },
+        )
+        .expect("insert uniquely named component");
+        assert_eq!(second, "profile-2");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile".into(),
+                property: "props.title".into(),
+                value: serde_json::json!("Grace"),
+            },
+        )
+        .expect("edit component prop");
+
+        assert!(
+            ui_graph_tree(&graph)
+                .unwrap()
+                .contains("profile (component)")
+        );
+        assert!(matches!(
+            load_ui_graph(&graph).unwrap().node("profile"),
+            Some(qos_ui_graph::UiNode::Component { props, .. })
+                if props.get("title") == Some(&serde_json::json!("Grace"))
+        ));
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let error = insert_ui_component(
+            &graph,
+            UiComponentInsert {
+                name: "profile-card".into(),
+                id: None,
+                parent: "root".into(),
+                index: None,
+                props: "[]".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must be a JSON object"));
         assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
     }
 
@@ -8276,7 +9851,7 @@ mod tests {
         req.app_id = None;
         req.template = None;
         let mut input = std::io::Cursor::new(
-            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n9\n4\n\n".to_vec(),
+            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n4\n\n".to_vec(),
         );
         let mut output = Vec::new();
 
@@ -8289,7 +9864,7 @@ mod tests {
         assert!(transcript.contains("invalid app id \"bad-id\""));
         assert!(transcript.contains("1) starter"));
         assert!(transcript.contains("5) graph"));
-        assert!(transcript.contains("unknown template \"9\""));
+        assert!(transcript.contains("unknown template \"10\""));
         assert!(transcript.contains("Review:"));
         assert!(transcript.contains("Template:    tree — Professional hierarchy browser"));
         assert!(transcript.contains(&format!("Destination: {}", destination.display())));
@@ -8596,6 +10171,114 @@ mod tests {
     }
 
     #[test]
+    fn doctor_preflights_graph_component_factories_and_typed_props() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("component-app");
+        let mut new_app = request(destination.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+        add_app_artifact(AddRequest {
+            start: destination.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let healthy = doctor_app(&destination).unwrap();
+        assert!(healthy.is_ready(), "{}", healthy.summary());
+        assert!(healthy.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.status == DoctorStatus::Pass
+                && check.detail.contains("profile-card")
+        }));
+
+        let graph = destination.join("ui/main.json");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile-card".into(),
+                property: "props.detail".into(),
+                value: serde_json::json!(42),
+            },
+        )
+        .unwrap();
+        let invalid_props = doctor_app(&destination).unwrap();
+        assert!(!invalid_props.is_ready());
+        assert!(invalid_props.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.detail.contains("requires string prop \"detail\"")
+        }));
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile-card".into(),
+                property: "props.detail".into(),
+                value: serde_json::json!("Owner"),
+            },
+        )
+        .unwrap();
+
+        let registry_path = destination.join("src/components/mod.rs");
+        let registry = std::fs::read_to_string(&registry_path).unwrap();
+        std::fs::write(
+            &registry_path,
+            registry.replace("// qos-dev:graph-component=profile-card\n", ""),
+        )
+        .unwrap();
+        let missing_factory = doctor_app(&destination).unwrap();
+        assert!(!missing_factory.is_ready());
+        assert!(missing_factory.checks.iter().any(|check| {
+            check.label == "UI component" && check.detail.contains("has no graph factory")
+        }));
+    }
+
+    #[test]
+    fn doctor_marks_app_owned_component_contexts_as_unverifiable() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("custom-context");
+        minimal_app(&app);
+        std::fs::create_dir(app.join("ui")).unwrap();
+        let document = qos_ui_graph::UiDocument::new(qos_ui_graph::UiNode::Component {
+            id: "custom".into(),
+            name: "custom-card".into(),
+            props: serde_json::Map::new(),
+        });
+        std::fs::write(app.join("ui/main.json"), document.to_json_pretty().unwrap()).unwrap();
+        std::fs::write(
+            app.join("src/lib.rs"),
+            "pub fn app_root() { let _context = ui::UiBuildContext::default().with_component(\"custom-card\", |_| unreachable!()); }\n",
+        )
+        .unwrap();
+
+        let report = doctor_app(&app).unwrap();
+        assert!(report.checks.iter().any(|check| {
+            check.label == "UI components"
+                && check.status == DoctorStatus::Warning
+                && check.detail.contains("app-owned build context")
+        }));
+        assert!(!report.checks.iter().any(|check| {
+            check.label == "component registry" && check.status == DoctorStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn doctor_keeps_the_generated_form_v1_props_contract_readable() {
+        let contract = graph_props_contract(
+            "legacy-form",
+            "// qos-dev:graph-props=form-v1\npub fn register_ui_graph() {}\n",
+        )
+        .unwrap();
+        assert_eq!(contract, GraphPropsContract::FormV1);
+        let props = serde_json::json!({"value": "Ada", "enabled": true});
+        assert!(contract.invalid_props(props.as_object().unwrap()).is_none());
+    }
+
+    #[test]
     fn dry_run_writes_nothing() {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("preview");
@@ -8694,6 +10377,11 @@ mod tests {
         assert_eq!(parse_template("qr").unwrap(), Template::Qr);
         assert_eq!(parse_template("8").unwrap(), Template::Qr);
         assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
+        assert_eq!(parse_template("9").unwrap(), Template::Workspace);
+        assert_eq!(
+            parse_template("master-detail").unwrap(),
+            Template::Workspace
+        );
         assert!(parse_template("dashboard").is_err());
     }
 
@@ -8755,6 +10443,29 @@ mod tests {
     }
 
     #[test]
+    fn workspace_template_composes_navigation_and_isolated_durable_detail_views() {
+        let spec = AppSpec {
+            package_name: "project-workspace".into(),
+            crate_name: "project_workspace".into(),
+            title: "Project Workspace".into(),
+            app_id: "dev.qos.project.workspace".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Workspace,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("ResizableSplit::new"));
+        assert!(source.contains("ModelView::from_state(&selected"));
+        assert!(source.contains(".on_select"));
+        assert!(source.contains("TextInput::from_document_string"));
+        assert!(source.contains("workspace-item-{item_id}-title"));
+        let test = app_test(&spec);
+        assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
+        assert!(test.contains("perform_undo"));
+        assert!(app_readme(&spec).contains("resizable master-detail shell"));
+    }
+
+    #[test]
     fn graph_template_generates_a_valid_editable_screen() {
         let spec = AppSpec {
             package_name: "project-maker".into(),
@@ -8782,11 +10493,22 @@ mod tests {
             .expect("graph template emits a compiled screen registry");
         assert!(registry.1.contains("include_str!(\"../ui/main.json\")"));
         assert!(registry.1.contains("pub const NAMES"));
+        let components = files
+            .iter()
+            .find(|(path, _)| path == Path::new("src/components/mod.rs"))
+            .expect("graph template emits an empty component registry");
+        assert!(components.1.contains("pub fn ui_graph_context()"));
+        assert!(!components.1.contains(GRAPH_COMPONENT_ENTRY_PREFIX));
+        assert!(app_lib(&spec).contains("pub mod components;"));
         assert!(app_lib(&spec).contains("pub mod screens;"));
-        assert!(app_lib(&spec).contains("screens::router(\"main\", &Theme::default())"));
+        assert!(app_lib(&spec).contains("screens::router_with("));
+        assert!(app_lib(&spec).contains("components::ui_graph_context()"));
         assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
         assert!(app_readme(&spec).contains("qos-dev ui set"));
+        assert!(app_readme(&spec).contains("qos-dev ui apply"));
+        assert!(app_readme(&spec).contains("--mount main"));
+        assert!(app_readme(&spec).contains("available to every generated screen automatically"));
     }
 
     #[test]
@@ -8948,6 +10670,7 @@ mod tests {
             Template::Async,
             Template::Document,
             Template::Qr,
+            Template::Workspace,
         ] {
             let spec = AppSpec {
                 package_name: "demo".into(),
@@ -8978,8 +10701,11 @@ mod tests {
             syn::parse_file(&locale_registry.1)
                 .expect("generated locale registry is valid Rust syntax");
             if template == Template::Graph {
-                syn::parse_file(&screen_registry_source(&["main".into()]))
-                    .expect("generated screen registry is valid Rust syntax");
+                let registry = screen_registry_source(&["main".into()]);
+                syn::parse_file(&registry).expect("generated screen registry is valid Rust syntax");
+                assert!(registry.contains("pub fn main_with("));
+                assert!(registry.contains("pub fn router_with("));
+                assert!(registry.contains("context.clone().with_router"));
             }
         }
     }

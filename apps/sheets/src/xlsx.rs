@@ -255,9 +255,10 @@ fn cell_from_data(data: &Data) -> Option<ImportedCell> {
 /// the workbook cannot be saved to `path`.
 pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     let mut book = Workbook::new();
+    let mut used_names = std::collections::HashSet::new();
     for table in tables {
         let sheet = book.add_worksheet();
-        sheet.set_name(sanitize_sheet_name(&table.name))?;
+        sheet.set_name(unique_sheet_name(&table.name, &mut used_names))?;
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.iter().enumerate() {
                 let Some(cell) = cell else { continue };
@@ -352,6 +353,28 @@ fn sanitize_sheet_name(name: &str) -> String {
     trimmed.chars().take(31).collect()
 }
 
+/// Return a valid, workbook-unique Excel tab name. Excel treats tab names as
+/// case-insensitive, and two user names can also collapse to the same value
+/// after forbidden characters are replaced or the 31-character limit is
+/// applied. Export must not fail—or drop a tab—because of that collision.
+fn unique_sheet_name(requested: &str, used: &mut std::collections::HashSet<String>) -> String {
+    let base = sanitize_sheet_name(requested);
+    if used.insert(base.to_lowercase()) {
+        return base;
+    }
+    let mut n = 2usize;
+    loop {
+        let suffix = format!(" ({n})");
+        let keep = 31usize.saturating_sub(suffix.chars().count());
+        let stem: String = base.chars().take(keep).collect();
+        let candidate = format!("{stem}{suffix}");
+        if used.insert(candidate.to_lowercase()) {
+            return candidate;
+        }
+        n = n.saturating_add(1);
+    }
+}
+
 /// Render a cell value through a format — used by callers building a
 /// `SheetTable` from already-computed values where they want the display
 /// string rather than the numeric raw (e.g. the CSV path).
@@ -402,6 +425,33 @@ mod tests {
         let pct = back[0].rows[2][1].as_ref().unwrap();
         assert!((pct.raw.parse::<f64>().unwrap() - 0.9).abs() < 1e-9);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn xlsx_export_preserves_tabs_whose_sanitized_names_collide() {
+        let path = std::env::temp_dir().join("sheets-xlsx-colliding-tabs.xlsx");
+        let tables = vec![
+            SheetTable {
+                name: "Roadmap/2026".into(),
+                rows: vec![],
+            },
+            SheetTable {
+                name: "roadmap?2026".into(),
+                rows: vec![],
+            },
+            SheetTable {
+                name: "Roadmap_2026".into(),
+                rows: vec![],
+            },
+        ];
+        write_xlsx(&path, &tables).unwrap();
+        let back = read_xlsx(&path).unwrap();
+        let names: Vec<_> = back.into_iter().map(|table| table.name).collect();
+        assert_eq!(
+            names,
+            ["Roadmap_2026", "roadmap_2026 (2)", "Roadmap_2026 (3)"]
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     /// A sheet built from live cell data — including `=SUM`/`=AVERAGE`/`=IF`

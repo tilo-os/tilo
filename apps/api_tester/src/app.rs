@@ -1055,7 +1055,7 @@ impl ApiTesterApp {
         if self.rail.layout() == SplitLayout::Overlay {
             let ham = l.hamburger;
             let shape = RoundedRect::from_rect(ham, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.surface_white_5, None, &shape);
+            scene.fill(Fill::NonZero, t, c.lift(0.35), None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             draw_hamburger(scene, t, ham, c.text_primary);
         }
@@ -1448,7 +1448,7 @@ impl ApiTesterApp {
             if active {
                 scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
             } else {
-                scene.fill(Fill::NonZero, t, c.surface_white_5, None, &shape);
+                scene.fill(Fill::NonZero, t, c.lift(0.35), None, &shape);
                 scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             }
             tr.draw_text_weighted(

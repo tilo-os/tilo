@@ -178,6 +178,9 @@ toast-toc-updated = Table of contents updated ({ $n } { $n ->
 toast-toc-empty = Add headings first — a table of contents lists them
 toast-style-deleted = Style deleted
 toast-style-duplicated = Style duplicated
+toast-saved = Document saved
+toast-save-failed = Could not save the document
+toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane
 outline-header = OUTLINE

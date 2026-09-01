@@ -1262,7 +1262,7 @@ impl MonitorApp {
 
         // Interval pill, left of the right block.
         let interval_r = Rect::new(pill_x0, cy + 1.0, pill_x1, cy + seg_h - 1.0);
-        charts::fill_rrect(scene, t, interval_r, seg_h / 2.0, c.surface_white_5);
+        charts::fill_rrect(scene, t, interval_r, seg_h / 2.0, c.lift(0.35));
         charts::stroke_rrect(scene, t, interval_r, seg_h / 2.0, c.border_standard, 1.0);
         let (tw, th) = tr.measure_weighted(
             &il,
@@ -1304,7 +1304,7 @@ impl MonitorApp {
         if active {
             charts::fill_rrect(scene, t, r, radius, c.accent[5]);
         } else {
-            charts::fill_rrect(scene, t, r, radius, c.surface_white_5);
+            charts::fill_rrect(scene, t, r, radius, c.lift(0.35));
             charts::stroke_rrect(scene, t, r, radius, c.border_standard, 1.0);
         }
         let text_color = if active { Color::WHITE } else { c.text_dim };
@@ -2432,7 +2432,7 @@ impl MonitorApp {
             if on {
                 with_alpha(c.accent[5], 60)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         charts::stroke_rrect(
@@ -2486,7 +2486,7 @@ impl MonitorApp {
             if on {
                 with_alpha(c.accent[5], 60)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         charts::stroke_rrect(

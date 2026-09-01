@@ -10,8 +10,8 @@
 //! placeholder — a drawn monitor, never a fabricated picture — until then.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::peniko::{BlendMode, Color, Fill};
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -37,6 +37,10 @@ struct Participant {
     muted: bool,
     audio_only: bool,
     sharing: bool,
+}
+
+fn huddle_lower_chrome_for_reveal(reveal: f32) -> f64 {
+    116.0 + 40.0 * f64::from(reveal.clamp(0.0, 1.0))
 }
 
 /// How the expanded call overlay tiles the surface. A plain call packs every
@@ -84,9 +88,28 @@ impl ChatApp {
 
     /// Whether to show the participant list expanded — the user's toggle,
     /// but auto-collapsing very large calls until summoned.
-    fn participants_shown(&self, n: usize) -> bool {
+    fn participants_should_show(&self, n: usize) -> bool {
         self.call.participants_expanded
             && (crate::call::CallState::auto_participants_expanded(n) || n <= 12)
+    }
+
+    /// Sample the participant reveal once per frame. Every geometry consumer
+    /// subsequently reads the cached value, avoiding tiny wall-clock skew
+    /// between the soft body, its controls, hit regions and native bounds.
+    pub(crate) fn reconcile_huddle_motion(&mut self, theme: &Theme) {
+        if !self.call.active {
+            self.call_chrome_motion.reset();
+            return;
+        }
+        let participant_count = self.call_participants().len();
+        let open = self.participants_should_show(participant_count);
+        self.call_chrome_motion.reconcile(open, theme);
+        if !self.call.expanded {
+            let lower_chrome = self.huddle_lower_chrome();
+            self.call
+                .placement
+                .set_attached_chrome([12.0, 40.0, 12.0, lower_chrome]);
+        }
     }
 
     /// The floating overlay's home rect (video) for the current drag offset.
@@ -145,16 +168,20 @@ impl ChatApp {
         );
     }
 
-    fn huddle_panel(&self) -> Rect {
+    pub(crate) fn huddle_panel(&self) -> Rect {
         let v = self.huddle_video();
-        // Panel grows with the participant roster so the chip strip fits.
-        let n = self.call_participants().len();
-        let extra = if self.participants_shown(n) {
-            60.0
-        } else {
-            20.0
-        };
+        // Panel grows continuously with the participant reveal rather than
+        // stepping between two native-window heights.
+        let extra = self.huddle_lower_chrome() - 96.0;
         Rect::new(v.x0 - 12.0, v.y0 - 40.0, v.x1 + 12.0, v.y1 + 96.0 + extra)
+    }
+
+    pub(crate) fn huddle_attached_lower_chrome(&self) -> f64 {
+        self.huddle_lower_chrome()
+    }
+
+    fn huddle_lower_chrome(&self) -> f64 {
+        huddle_lower_chrome_for_reveal(self.call_chrome_motion.sampled)
     }
 
     // --------------------------------------------------------- huddle (PiP)
@@ -168,32 +195,34 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let panel = self.huddle_panel();
-        // drop shadow
-        fill_round(
-            scene,
+        // One shared organic silhouette for the shadow, body and border. The
+        // 8px transparent native-window gutter encloses the 6px shadow shape
+        // exactly, so desktop adoption never clips a corner or widens it into
+        // a second rectangular decoration.
+        let shadow = ui::surface::soft_outline(panel.inflate(6.0, 6.0));
+        scene.fill(
+            Fill::NonZero,
             tf,
-            panel.inflate(6.0, 6.0),
-            20.0,
             Color::from_rgba8(0, 0, 0, 70),
+            None,
+            &shadow,
         );
-        fill_round(scene, tf, panel, 16.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 16.0, c.border_white_10, 1.0);
+        let body = ui::surface::soft_outline(panel);
+        scene.fill(Fill::NonZero, tf, c.neutral[1], None, &body);
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            None,
+            &body,
+        );
 
         // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
         let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
         let name = self
             .channel(&self.call.channel)
             .map_or_else(|| "Call".into(), |c| c.name.clone());
-        label(
-            scene,
-            tr,
-            tf,
-            "⠿",
-            12.0,
-            c.text_dim,
-            panel.x0 + 12.0,
-            panel.y0 + 9.0,
-        );
+        ui::surface::floating_drag_grip(scene, tf, panel, c.text_dim);
         label(
             scene,
             tr,
@@ -201,7 +230,7 @@ impl ChatApp {
             &name,
             13.0,
             c.text_primary,
-            panel.x0 + 28.0,
+            panel.x0 + 16.0,
             panel.y0 + 10.0,
         );
         fill_circle(
@@ -241,7 +270,14 @@ impl ChatApp {
         if host_talking {
             stroke_round(scene, tf, v, 10.0, c.semantic.success, 2.5);
         } else {
-            stroke_round(scene, tf, v, 10.0, c.border_white_20, 1.0);
+            stroke_round(
+                scene,
+                tf,
+                v,
+                10.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+                1.0,
+            );
         }
         Self::name_plate(scene, tf, tr, theme, v, "You", self.call.muted);
 
@@ -252,8 +288,22 @@ impl ChatApp {
 
         // Adaptive participant chips: shown when expanded, wrapping to the
         // panel width so the strip auto-adapts to the headcount.
-        if self.participants_shown(parts.len()) && others > 0 {
+        let reveal = self.call_chrome_motion.sampled.clamp(0.0, 1.0);
+        if reveal > 0.001 && others > 0 {
+            // Fade and progressively reveal the chip strip inside the same
+            // animated panel bounds. Chips never pop out before the surface
+            // has made room for them, and collapse cannot paint through the
+            // rising controls row.
+            let clip = Rect::new(
+                panel.x0 + 8.0,
+                strip_y + 20.0,
+                panel.x1 - 8.0,
+                (panel.y1 - 48.0).max(strip_y + 20.0),
+            );
+            let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
+            scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
             self.draw_huddle_chips(scene, tf, tr, theme, panel, strip_y, &parts);
+            scene.pop_layer();
         }
 
         self.draw_huddle_controls(scene, tf, tr, theme, panel, hits);
@@ -278,7 +328,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let toggle = Rect::new(panel.x1 - 84.0, strip_y, panel.x1 - 14.0, strip_y + 20.0);
-        let caret = if self.call.participants_expanded {
+        let caret = if self.participants_should_show(parts.len()) {
             "▾"
         } else {
             "▸"
@@ -419,6 +469,7 @@ impl ChatApp {
         let mut x = panel.x0 + pad;
         for (txt, icon, on, danger, hit) in ctrls {
             let r = Rect::new(x, cy, x + cw, cy + 28.0);
+            let hovered = self.call_control_is_hovered(&hit);
             Self::ctl(
                 scene,
                 tf,
@@ -428,6 +479,7 @@ impl ChatApp {
                 if use_text { txt } else { icon },
                 on,
                 danger,
+                hovered,
                 true,
             );
             ChatApp::push_hit(hits, r, hit);
@@ -498,7 +550,10 @@ impl ChatApp {
         // The host active-speaker treatment is shared by both layouts: a bright
         // ring while transmitting, a hairline otherwise.
         let (ring_col, ring_w) = if self.call.muted {
-            (c.border_white_20, 1.5)
+            (
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+                1.5,
+            )
         } else {
             (c.semantic.success, 2.5)
         };
@@ -570,8 +625,15 @@ impl ChatApp {
         fill_round(scene, tf, rect, radius, c.neutral[1]);
         let margin = (rect.width().min(rect.height()) * 0.14).min(90.0);
         let inner = rect.inflate(-margin, -margin);
-        fill_round(scene, tf, inner, radius, c.surface_white_5);
-        stroke_round(scene, tf, inner, radius, c.border_white_10, 1.0);
+        fill_round(scene, tf, inner, radius, c.lift(0.35));
+        stroke_round(
+            scene,
+            tf,
+            inner,
+            radius,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         // Drawn monitor icon, centred a touch above the middle.
         let gw = (rect.height() * 0.20).clamp(44.0, 120.0);
@@ -707,9 +769,19 @@ impl ChatApp {
         // never runs off either edge.
         let (bar, buttons) = self.overlay_controls_layout();
         fill_round(scene, tf, bar, 16.0, c.neutral[1]);
-        stroke_round(scene, tf, bar, 16.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            bar,
+            16.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         for (label_txt, on, danger, enabled, hit, r) in buttons {
-            Self::ctl(scene, tf, tr, theme, r, label_txt, on, danger, enabled);
+            let hovered = self.call_control_is_hovered(&hit);
+            Self::ctl(
+                scene, tf, tr, theme, r, label_txt, on, danger, hovered, enabled,
+            );
             if enabled {
                 ChatApp::push_hit(hits, r, hit);
             }
@@ -809,8 +881,7 @@ impl ChatApp {
         reason = "one deterministic layout pass must keep wrapped call controls, their hit targets and the returned bar bounds identical"
     )]
     pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<OverlayButton>) {
-        let sharing = self.sharing_screen();
-        let specs: [(&'static str, bool, bool, bool, Hit); 6] = [
+        let specs: [(&'static str, bool, bool, bool, Hit); 5] = [
             (
                 if self.call.muted { "Unmute" } else { "Mute" },
                 self.call.muted,
@@ -835,19 +906,6 @@ impl ChatApp {
                 false,
                 self.call_allows(crate::call::CallAction::Camera),
                 Hit::CallAudioOnly,
-            ),
-            (
-                if sharing {
-                    "Stop share"
-                } else {
-                    "Share screen"
-                },
-                sharing,
-                false,
-                // Stop remains available after a permission downgrade so the
-                // person can always cease a transmission they already began.
-                sharing || self.call_allows(crate::call::CallAction::ShareScreen),
-                Hit::CallShareScreen,
             ),
             ("Collapse", false, false, true, Hit::CallExpand),
             ("Leave", false, true, true, Hit::CallLeave),
@@ -953,7 +1011,14 @@ impl ChatApp {
             if p.sharing {
                 Self::presenter_badge(scene, tf, theme, rect);
             }
-            stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
+            stroke_round(
+                scene,
+                tf,
+                rect,
+                14.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.0,
+            );
             return;
         }
         if let Some(u) = u {
@@ -998,7 +1063,14 @@ impl ChatApp {
         if p.sharing {
             Self::presenter_badge(scene, tf, theme, rect);
         }
-        stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            rect,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
     }
 
     /// A small monitor badge in a participant tile's top-right marking them as
@@ -1071,22 +1143,41 @@ impl ChatApp {
         label_txt: &str,
         on: bool,
         danger: bool,
+        hovered: bool,
         enabled: bool,
     ) {
         let c = &theme.tokens.colors;
         let (bg, fg) = if !enabled {
             (
-                c.surface_white_10.with_alpha_factor(0.45),
+                c.lift(0.72).with_alpha_factor(0.45),
                 c.text_dim.with_alpha_factor(0.45),
             )
-        } else if danger {
+        } else if danger && hovered {
             (c.semantic.danger, Color::WHITE)
+        } else if danger {
+            (c.semantic.danger.with_alpha_factor(0.16), c.semantic.danger)
         } else if on {
             (c.accent[5], Color::WHITE)
+        } else if hovered {
+            (c.lift(1.0), c.text_primary)
         } else {
-            (c.surface_white_10, c.text_primary)
+            (c.lift(0.72), c.text_primary)
         };
         fill_round(scene, tf, rect, 9.0, bg);
+        if hovered {
+            stroke_round(
+                scene,
+                tf,
+                rect,
+                9.0,
+                if danger {
+                    c.semantic.danger
+                } else {
+                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51)
+                },
+                1.0,
+            );
+        }
         let (lw, _) = tr.measure(label_txt, 13.0, None);
         label(
             scene,
@@ -1098,6 +1189,12 @@ impl ChatApp {
             rect.center().x - f64::from(lw) / 2.0,
             rect.center().y - 8.0,
         );
+    }
+
+    fn call_control_is_hovered(&self, hit: &Hit) -> bool {
+        self.call_hovered
+            .as_ref()
+            .is_some_and(|hovered| std::mem::discriminant(hovered) == std::mem::discriminant(hit))
     }
 
     // -------------------------------------------------------- emoji picker
@@ -1138,7 +1235,14 @@ impl ChatApp {
             Color::from_rgba8(0, 0, 0, 70),
         );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            panel,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let title = if self.emoji_target.is_some() {
             "Add reaction"
@@ -1303,7 +1407,14 @@ impl ChatApp {
             Color::from_rgba8(0, 0, 0, 70),
         );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            panel,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         label(
             scene,
             tr,
@@ -1469,8 +1580,20 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Participant, filmstrip_rects, grid_rects, member_tile_caption};
+    use super::{
+        Participant, filmstrip_rects, grid_rects, huddle_lower_chrome_for_reveal,
+        member_tile_caption,
+    };
     use vello::kurbo::Rect;
+
+    #[test]
+    fn participant_reveal_morphs_the_complete_lower_chrome_monotonically() {
+        let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
+        assert_eq!(samples[0], 116.0);
+        assert_eq!(samples[2], 136.0);
+        assert_eq!(samples[4], 156.0);
+        assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 
     /// The presentation-stage filmstrip must lay every participant in a single
     /// centred row that stays inside its region, at any headcount — the

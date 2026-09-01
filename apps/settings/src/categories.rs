@@ -1,9 +1,11 @@
 //! The settings categories shown in the left sidebar.
 //!
-//! Each [`Category`] carries a glyph, a user-facing label, a stable slug
+//! Each [`Category`] carries a vector icon, a user-facing label, a stable slug
 //! (used for `test_id`s and CRDT paths), and the [`Section`] it groups
 //! under. The sidebar renders sections in [`Section::ALL`] order, and
 //! within each section the categories in [`Category::ALL`] order.
+
+use ui::icons::Icon;
 
 /// A labelled group of categories in the sidebar. Sections give the long
 /// category list a scannable structure rather than one flat run.
@@ -50,6 +52,7 @@ impl Section {
 pub enum Category {
     Network,
     Bluetooth,
+    DeviceMesh,
     Sound,
     Displays,
     MouseKeyboard,
@@ -92,6 +95,16 @@ const BLUETOOTH_KEYWORDS: &[&str] = &[
     "keyboard",
     "mouse",
     "wireless",
+];
+const DEVICE_MESH_KEYWORDS: &[&str] = &[
+    "sync",
+    "devices",
+    "server",
+    "host",
+    "remote control",
+    "relay",
+    "copies",
+    "files",
 ];
 const SOUND_KEYWORDS: &[&str] = &[
     "audio",
@@ -289,6 +302,7 @@ impl Category {
         // Connectivity
         Category::Network,
         Category::Bluetooth,
+        Category::DeviceMesh,
         // Devices
         Category::Sound,
         Category::Displays,
@@ -320,6 +334,7 @@ impl Category {
     pub fn section(self) -> Section {
         match self {
             Category::Network | Category::Bluetooth => Section::Connectivity,
+            Category::DeviceMesh => Section::Devices,
             Category::Sound
             | Category::Displays
             | Category::MouseKeyboard
@@ -353,6 +368,7 @@ impl Category {
         match self {
             Category::Network => "Network",
             Category::Bluetooth => "Bluetooth",
+            Category::DeviceMesh => "Devices & Sync",
             Category::Sound => "Sound",
             Category::Displays => "Displays",
             Category::MouseKeyboard => "Mouse & Keyboard",
@@ -379,6 +395,7 @@ impl Category {
         match self {
             Category::Network => "Wi-Fi, wired connections, and VPN",
             Category::Bluetooth => "Pair and manage Bluetooth devices",
+            Category::DeviceMesh => "Copies, remote access, and server roles",
             Category::Sound => "Output, input, volume, and system sounds",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
             Category::MouseKeyboard => "Typing, spelling, input sources, and pointer behaviour",
@@ -402,29 +419,32 @@ impl Category {
         }
     }
 
-    /// Nerd Font glyph rendered before the label in the sidebar.
-    pub fn glyph(self) -> &'static str {
+    /// Toolkit-owned vector icon rendered before the label in the sidebar.
+    /// Keeping category chrome out of private-use font glyphs makes it render
+    /// reliably on every supported font stack and at high contrast.
+    pub fn icon(self) -> Icon {
         match self {
-            Category::Network => "\u{f0928}", // wifi-strength-4 (clean, full signal arcs)
-            Category::Bluetooth => "\u{f00af}", // bluetooth
-            Category::Sound => "\u{f057e}",   // volume-high
-            Category::Displays => "\u{f0379}", // monitor
-            Category::MouseKeyboard => "\u{f037d}", // mouse
-            Category::KeyboardShortcuts => "\u{f030c}", // keyboard
-            Category::TimeDate => "\u{f0954}", // clock
-            Category::Users => "\u{f0849}",   // account-group
-            Category::Printers => "\u{f042a}", // printer
-            Category::Power => "\u{f0079}",   // md-battery
-            Category::Appearance => "\u{f03d8}", // md-palette
-            Category::Accessibility => "\u{f02e6}", // md-human (universal access)
-            Category::Notifications => "\u{f009a}", // md-bell
-            Category::DefaultApps => "\u{f09a6}", // application-cog
-            Category::Storage => "\u{f01bc}", // harddisk
-            Category::ExternalAccounts => "\u{f015f}", // md-cloud
-            Category::RegionFormats => "\u{f01e7}", // md-earth
-            Category::Permissions => "\u{f088f}", // md-shield-account
-            Category::Updates => "\u{f06b0}", // md-update
-            Category::About => "\u{f02fd}",   // information
+            Category::Network => Icon::Wifi,
+            Category::Bluetooth => Icon::Bluetooth,
+            Category::DeviceMesh => Icon::CloudDownload,
+            Category::Sound => Icon::Volume2,
+            Category::Displays => Icon::Monitor,
+            Category::MouseKeyboard => Icon::Mouse,
+            Category::KeyboardShortcuts => Icon::Keyboard,
+            Category::TimeDate => Icon::Calendar,
+            Category::Users => Icon::Users,
+            Category::Printers => Icon::Printer,
+            Category::Power => Icon::Battery,
+            Category::Appearance => Icon::Sparkles,
+            Category::Accessibility => Icon::Eye,
+            Category::Notifications => Icon::Bell,
+            Category::DefaultApps => Icon::LayoutGrid,
+            Category::Storage => Icon::HardDrive,
+            Category::ExternalAccounts => Icon::CloudDownload,
+            Category::RegionFormats => Icon::Globe,
+            Category::Permissions => Icon::Shield,
+            Category::Updates => Icon::Refresh,
+            Category::About => Icon::Info,
         }
     }
 
@@ -437,6 +457,7 @@ impl Category {
         match self {
             Category::Network => NETWORK_KEYWORDS,
             Category::Bluetooth => BLUETOOTH_KEYWORDS,
+            Category::DeviceMesh => DEVICE_MESH_KEYWORDS,
             Category::Sound => SOUND_KEYWORDS,
             Category::Displays => DISPLAYS_KEYWORDS,
             Category::MouseKeyboard => MOUSE_KEYBOARD_KEYWORDS,
@@ -482,6 +503,7 @@ impl Category {
         match self {
             Category::Network => "network",
             Category::Bluetooth => "bluetooth",
+            Category::DeviceMesh => "devices_sync",
             Category::Sound => "sound",
             Category::Displays => "displays",
             Category::MouseKeyboard => "mouse_keyboard",
@@ -531,12 +553,12 @@ mod tests {
     }
 
     #[test]
-    fn every_category_has_label_subtitle_slug_glyph() {
+    fn every_category_has_label_subtitle_slug_and_icon() {
         for c in Category::ALL {
             assert!(!c.label().is_empty(), "{c:?} missing label");
             assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
             assert!(!c.slug().is_empty(), "{c:?} missing slug");
-            assert!(!c.glyph().is_empty(), "{c:?} missing glyph");
+            let _ = c.icon();
         }
     }
 

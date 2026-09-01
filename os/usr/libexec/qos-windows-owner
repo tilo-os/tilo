@@ -31,6 +31,7 @@ Usage:
   pkexec /usr/libexec/qos-windows-owner lifecycle {status|start|shutdown|force-shutdown|restart|suspend|resume}
   pkexec /usr/libexec/qos-windows-owner egress-open {activation|windows-update} [ttl-seconds]
   pkexec /usr/libexec/qos-windows-owner egress-close <lease-id>
+  pkexec /usr/libexec/qos-windows-owner egress-revoke
   pkexec /usr/libexec/qos-windows-owner graphics-attach {sriov-vf|mdev} <canonical-id>
   pkexec /usr/libexec/qos-windows-owner graphics-detach
 
@@ -49,6 +50,7 @@ require_exact_action() {
         lifecycle) [ "$#" -eq 2 ] || { usage; exit 2; }; case "$2" in status|start|shutdown|force-shutdown|restart|suspend|resume) ;; *) usage; exit 2 ;; esac ;;
         egress-open) [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { usage; exit 2; }; case "$2" in activation|windows-update) ;; *) usage; exit 2; esac; [ "$#" -eq 2 ] || [[ "$3" =~ ^[0-9]+$ ]] || { usage; exit 2; } ;;
         egress-close) [ "$#" -eq 2 ] && [[ "$2" =~ ^egress-[A-Za-z0-9-]+$ ]] || { usage; exit 2; } ;;
+        egress-revoke) [ "$#" -eq 1 ] || { usage; exit 2; } ;;
         graphics-attach)
             [ "$#" -eq 3 ] || { usage; exit 2; }
             case "$2" in
@@ -209,6 +211,13 @@ egress_close() {
     exec "$VM_CONTROL" egress-close "$1"
 }
 
+egress_revoke() {
+    require_root
+    # The controller locates its one active lease.  UI never learns or submits
+    # the opaque lease ID.
+    exec "$VM_CONTROL" egress-revoke
+}
+
 graphics_attach() {
     require_root
     exec "$VM_CONTROL" graphics-attach "$1" "$2"
@@ -237,6 +246,8 @@ result = {
     "catalog_generation": 0,
     "published_applications": 0,
     "recovery_available": False,
+    "power_state": "unknown",
+    "temporary_egress": None,
 }
 try:
     info = os.stat(state_path, follow_symlinks=False)
@@ -281,6 +292,31 @@ try:
         "published_applications": len(applications),
         "recovery_available": phase != "not_provisioned",
     })
+    status_path = "/run/qos/windows-egress/status.json"
+    status_info = os.stat(status_path, follow_symlinks=False)
+    if not stat.S_ISREG(status_info.st_mode) or status_info.st_uid != 0 or status_info.st_mode & 0o007:
+        raise ValueError("Windows runtime status summary is unsafe")
+    status_descriptor = os.open(status_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    with os.fdopen(status_descriptor, "rb") as handle:
+        status_opened = os.fstat(handle.fileno())
+        if status_opened.st_dev != status_info.st_dev or status_opened.st_ino != status_info.st_ino:
+            raise ValueError("Windows runtime status changed while being read")
+        domain = json.load(handle)
+    if (not isinstance(domain, dict) or domain.get("schema_version") != 1
+            or domain.get("power_state") not in {"running", "suspended", "paused", "shut_down", "unknown"}):
+        raise ValueError("invalid authoritative Windows runtime status")
+    result["power_state"] = domain["power_state"]
+    lease = domain.get("temporary_egress")
+    if (isinstance(lease, dict)
+            and lease.get("purpose") in {"activation", "windows_update"}
+            and isinstance(lease.get("expires_at_unix"), int)
+            and lease["expires_at_unix"] >= 0):
+        result["temporary_egress"] = {
+            "purpose": lease["purpose"],
+            "expires_at_unix": lease["expires_at_unix"],
+        }
+    elif lease is not None:
+        raise ValueError("invalid temporary Windows egress status")
 except FileNotFoundError:
     pass
 except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -299,7 +335,7 @@ case "${1:-}" in
         [ "$#" -eq 1 ] || { usage; exit 2; }
         exec "$VM_CONTROL" graphics-capabilities
         ;;
-    import-iso|recovery-start|consume-recovery|lifecycle|egress-open|egress-close|graphics-attach|graphics-detach)
+    import-iso|recovery-start|consume-recovery|lifecycle|egress-open|egress-close|egress-revoke|graphics-attach|graphics-detach)
         require_exact_action "$@"
         case "$1" in
             import-iso) import_iso ;;
@@ -308,6 +344,7 @@ case "${1:-}" in
             lifecycle) shift; lifecycle "$@" ;;
             egress-open) shift; egress_open "$@" ;;
             egress-close) shift; egress_close "$@" ;;
+            egress-revoke) egress_revoke ;;
             graphics-attach) shift; graphics_attach "$@" ;;
             graphics-detach) graphics_detach ;;
         esac

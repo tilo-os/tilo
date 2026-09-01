@@ -315,7 +315,7 @@ impl BottomPanel {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    c.surface_white_5,
+                    c.lift(0.35),
                     None,
                     &RoundedRect::from_rect(rect, 4.0),
                 );
