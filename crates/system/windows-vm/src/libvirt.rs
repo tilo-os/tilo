@@ -12,6 +12,8 @@ const LIBVIRT_URI: &str = "qemu:///system";
 const METADATA_MARKER: &str = "<qos:windows-appliance xmlns:qos='https://qos.dev/vm/1'/>";
 const METADATA_ELEMENT: &str = "<qos:windows-appliance";
 const METADATA_NAMESPACE: &str = "https://qos.dev/vm/1";
+const INSTALL_MEDIA: &str = "/var/lib/qos/windows/install-media.iso";
+const GUEST_TOOLS_MEDIA: &str = "/var/lib/qos/windows/qos-guest-tools.iso";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DomainState {
@@ -27,6 +29,9 @@ pub trait VmBackend: Send + Sync {
     fn ensure_singleton(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
     fn state(&self, config: &ApplianceConfig) -> Result<DomainState, VmBackendError>;
     fn start(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
+    /// Permanently removes setup media after authenticated guest enrollment.
+    /// Repeated calls must be harmless.
+    fn retire_installation_media(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +148,27 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
             DomainState::Paused | DomainState::Other => Err(VmBackendError::UnsafeDomainState),
         }
     }
+
+    fn retire_installation_media(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        config.validate()?;
+        for target in ["sdb", "sdc"] {
+            let xml = self.successful(["dumpxml", APPLIANCE_DOMAIN_NAME])?;
+            let xml = String::from_utf8(xml.stdout)?;
+            let single_quoted = format!("dev='{target}'");
+            let double_quoted = format!("dev=\"{target}\"");
+            if !xml.contains(&single_quoted) && !xml.contains(&double_quoted) {
+                continue;
+            }
+            self.successful([
+                "detach-disk",
+                APPLIANCE_DOMAIN_NAME,
+                target,
+                "--live",
+                "--config",
+            ])?;
+        }
+        Ok(())
+    }
 }
 
 /// Builds a headless, local-only Windows 11 domain. There is intentionally no
@@ -176,12 +202,14 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <timer name='hypervclock' present='yes'/></clock>\
 <os firmware='efi'><type arch='x86_64' machine='q35'>hvm</type>\
 <loader readonly='yes' secure='yes' type='pflash'>{loader}</loader>\
-<nvram template='{nvram_template}'>{nvram}</nvram><boot dev='hd'/></os>\
+<nvram template='{nvram_template}'>{nvram}</nvram><boot dev='hd'/><boot dev='cdrom'/></os>\
 <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
 <devices><emulator>/usr/bin/qemu-system-x86_64</emulator>\
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' detect_zeroes='unmap'/>\
 <source file='{disk}'/><target dev='sda' bus='scsi'/></disk>\
+<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{INSTALL_MEDIA}'/><target dev='sdb' bus='scsi'/><readonly/></disk>\
+<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{GUEST_TOOLS_MEDIA}'/><target dev='sdc' bus='scsi'/><readonly/></disk>\
 <interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
 <vsock model='virtio'><cid auto='no' address='{}'/></vsock>\
@@ -279,6 +307,9 @@ mod tests {
         assert!(xml.contains("<tpm model='tpm-crb'>"));
         assert!(xml.contains("<listen type='none'/>"));
         assert!(xml.contains("a&amp;b.qcow2"));
+        assert!(xml.contains(INSTALL_MEDIA));
+        assert!(xml.contains(GUEST_TOOLS_MEDIA));
+        assert!(xml.contains("<boot dev='hd'/><boot dev='cdrom'/>"));
         assert!(!xml.contains("<filesystem"));
         assert!(!xml.contains("type='bridge'"));
         assert!(!xml.contains("listen='0.0.0.0'"));
@@ -313,5 +344,35 @@ mod tests {
         assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
         assert!(String::from_utf8_lossy(&requests[1].stdin).contains("<domain type='kvm'>"));
         drop(requests);
+    }
+
+    #[test]
+    fn enrollment_media_is_detached_live_and_persistently() {
+        let runner = Runner::new(vec![
+            CommandOutput::successful("<disk><target dev='sdb'/></disk>"),
+            CommandOutput::successful("Disk detached"),
+            CommandOutput::successful("<disk><target dev=\"sdc\"/></disk>"),
+            CommandOutput::successful("Disk detached"),
+        ]);
+        let backend = LibvirtBackend::new(runner);
+        backend.retire_installation_media(&config()).unwrap();
+        let requests = backend.runner.requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        for index in [1, 3] {
+            assert!(requests[index].args.iter().any(|arg| arg == "--live"));
+            assert!(requests[index].args.iter().any(|arg| arg == "--config"));
+        }
+        drop(requests);
+    }
+
+    #[test]
+    fn already_retired_media_is_an_idempotent_success() {
+        let runner = Runner::new(vec![
+            CommandOutput::successful("<domain/>"),
+            CommandOutput::successful("<domain/>"),
+        ]);
+        let backend = LibvirtBackend::new(runner);
+        backend.retire_installation_media(&config()).unwrap();
+        assert_eq!(backend.runner.requests.lock().unwrap().len(), 2);
     }
 }

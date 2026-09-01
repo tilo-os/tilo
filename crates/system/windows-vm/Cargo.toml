@@ -9,6 +9,7 @@ description = "Default-deny single Windows appliance and RemoteApp integration f
 [dependencies]
 base64.workspace = true
 hex.workspace = true
+libc.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 serde.workspace = true
