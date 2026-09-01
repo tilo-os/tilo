@@ -212,9 +212,11 @@ ubuntu-24.04|debian-13)
     stage=build-deb
     dist/debian/build-deb.sh
     stage=inspect-deb
-    dpkg-deb --info dist/debian/build/qos-session_*.deb
+    dpkg-deb --info dist/debian/build/qos-session*.deb
     stage=install-test-deb
-    dist/debian/test-package.sh dist/debian/build/qos-session_*.deb
+    dist/debian/test-package.sh \
+        dist/debian/build/qos-session_[0-9]*.deb \
+        dist/debian/build/qos-session-devel_*.deb
     stage=collect-deb
     cp dist/debian/build/qos-session_[0-9]*_"$arch".deb /artifacts/
     if [[ $arch == amd64 ]]; then
@@ -263,12 +265,7 @@ nix)
     stage=build-nix
     nix build --print-build-logs .#qos-session
     stage=inspect-nix
-    if [[ $arch == amd64 ]]; then
-        file result/bin/qos-shell | grep -Eq 'ELF 64-bit.*x86-64'
-    else
-        file result/bin/qos-shell | grep -Eq 'ELF 64-bit.*ARM aarch64'
-    fi
-    test -f result/share/wayland-sessions/qos.desktop
+    dist/ci/verify-nix-result.sh result "$arch"
     nix flake check --no-build
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
