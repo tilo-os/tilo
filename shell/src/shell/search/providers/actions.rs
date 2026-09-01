@@ -189,15 +189,11 @@ fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
 /// What `peer.invite.named` must be told. Both required — an invite to
 /// nobody in particular is [`peer.invite`].
 const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "peer",
-        ParamType::Text,
-        "The invitee's Iroh `EndpointId` — the device identity the name is attached to.",
-    ),
+    ActionParam::required("peer", ParamType::Text, "The invitee's device identity."),
     ActionParam::required(
         "name",
         ParamType::Text,
-        "What to call them in this room. Shown beside their cursor and caret.",
+        "What to call them in this workspace. Shown beside their cursor and caret.",
     ),
 ];
 
@@ -253,7 +249,7 @@ impl Action {
         ),
         chrome(
             "settings.members.open",
-            "Open workspace members",
+            "Open workspace people",
             "People, roles and invitations in this workspace",
             |st, _| {
                 st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
@@ -416,7 +412,7 @@ impl Action {
         chrome(
             "identity.device.enroll",
             "Enroll another device",
-            "Copy a five-minute enrollment token for a member device",
+            "Copy a device setup code that is valid for five minutes",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
                 let now = now_ns_u64();
@@ -498,7 +494,7 @@ impl Action {
         chrome(
             "collaborators.open",
             "Show collaborators",
-            "Peers currently editing this workspace",
+            "Collaborators currently in this workspace",
             |st, _| {
                 st.overlays.collaborators = true;
                 Ok(())
@@ -506,7 +502,7 @@ impl Action {
         ),
         chrome(
             "room.activity.open",
-            "Show room activity",
+            "Show workspace activity",
             "History of this workspace: changes, permissions, who did what and when",
             |st, _| {
                 st.overlays.room_activity = true;
@@ -519,8 +515,8 @@ impl Action {
         // un-ranked row would lose "invite" to a file with the word in its name.
         chrome(
             "peer.invite",
-            "Invite peer to workspace",
-            "Mint a signed invite token for this room",
+            "Invite a collaborator",
+            "Create an invite to this workspace",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
                 Ok(())
@@ -528,8 +524,8 @@ impl Action {
         ),
         chrome(
             "peer.connect",
-            "Connect to peer workspace",
-            "Join a room from an invite token",
+            "Join a workspace",
+            "Use an invite from a collaborator",
             |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::PromptConnect,
@@ -544,15 +540,15 @@ impl Action {
         // live; the peer id stays the identity, the name is just a label.
         Action {
             id: "peer.invite.named",
-            label: "Invite peer to workspace as",
-            subtitle: "Name the peer you are inviting, then mint their invite token",
+            label: "Invite a named collaborator",
+            subtitle: "Choose the name shown beside their cursor, then create an invite",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
                 let peer = args.text("peer").unwrap_or_default().trim().to_string();
                 let name = args.text("name").unwrap_or_default().trim().to_string();
                 if peer.is_empty() {
                     return Err(ActionError::Refused(
-                        "an invite has to name the peer it is for".into(),
+                        "this invite needs the collaborator's device identity".into(),
                     ));
                 }
                 if name.is_empty() {
@@ -566,15 +562,15 @@ impl Action {
                     let mut tree = st.tree_mut();
                     let Some(room) = tree.active_workspace().map(|w| w.room) else {
                         return Err(ActionError::Refused(
-                            "there is no room here to invite anyone into".into(),
+                            "there is no workspace here to invite anyone into".into(),
                         ));
                     };
                     tree.name_peer(room, &user, &peer, &name)
                 };
                 if !named {
                     return Err(ActionError::Refused(format!(
-                        "{user} cannot name a peer in this room — either it is not \
-                         administered here, or `{peer}` is not a peer id"
+                        "{user} cannot name this collaborator in the current workspace — either \
+                         this device does not administer it, or `{peer}` is not a device identity"
                     )));
                 }
                 // Mint the token too, so naming and inviting are one
@@ -595,7 +591,7 @@ impl Action {
         Action {
             id: "agent.invite",
             label: "Invite agent to workspace",
-            subtitle: "Admit an agent to this room as a member, revocable like any other",
+            subtitle: "Add an agent as a collaborator you can remove later",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use crate::shell::state::{CapOverride, Subject, Verb};
@@ -615,7 +611,7 @@ impl Action {
                         tree.active_workspace().map(|w| (w.id, w.room.to_string()))
                     else {
                         return Err(ActionError::Refused(
-                            "there is no room here to admit an agent to".into(),
+                            "there is no workspace here to add an agent to".into(),
                         ));
                     };
                     // An ordinary grant on the room, through the tree so it
@@ -627,7 +623,7 @@ impl Action {
                 };
                 if granted.is_none() {
                     return Err(ActionError::Refused(format!(
-                        "{user} does not administer this room, so {agent} was not admitted"
+                        "{user} does not administer this workspace, so {agent} was not added"
                     )));
                 }
                 // The roster is where a person reads "they're in the room" —
@@ -693,8 +689,8 @@ impl Action {
         // address for a caller that names a record itself.
         Action {
             id: "record.bring",
-            label: "Bring a record into this room",
-            subtitle: "Add a reference to this room's index. Moves no bytes.",
+            label: "Add an item to this workspace",
+            subtitle: "Make it available here without moving the original",
             params: RECORD_BRING_PARAMS,
             apply: |st, args| {
                 let id = args.text("id").unwrap_or_default();
@@ -962,7 +958,7 @@ mod tests {
     /// Offered only by a session running peer sync, and when offered,
     /// naming one selects it: a label-prefix match outranks other providers.
     #[test]
-    fn peer_sync_rows_appear_only_with_peer_sync_and_lead_when_named() {
+    fn collaboration_rows_appear_only_with_sync_and_lead_when_named() {
         let p = ActionsProvider::new();
         let doc = AutoCommit::new();
         let query = |chrome: &ChromeState, needle: &str| {
@@ -1000,9 +996,9 @@ mod tests {
             "a label-prefix match is the top of this provider's scale, which \
              is what puts the row above hits from other providers",
         );
-        let mut connect = query(&cs, "connect");
-        connect.sort_by_key(|r| -r.score);
-        assert_eq!(connect.first().map(|r| r.id.as_str()), Some("peer.connect"),);
+        let mut join = query(&cs, "join");
+        join.sort_by_key(|r| -r.score);
+        assert_eq!(join.first().map(|r| r.id.as_str()), Some("peer.connect"),);
     }
 
     #[test]
@@ -1070,7 +1066,7 @@ mod tests {
             .iter()
             .find(|r| r.id == "room.activity.open")
             .expect("typing 'activity' must surface the room-activity action");
-        assert_eq!(action.title, "Show room activity");
+        assert_eq!(action.title, "Show workspace activity");
         assert!(!c.borrow().overlays.room_activity, "starts closed");
         (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
             .expect("a nullary chrome action must run");
