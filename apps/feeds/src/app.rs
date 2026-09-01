@@ -34,6 +34,7 @@ use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
 
 use crate::actions::{self, FeedsAction, FeedsResourceCtx};
@@ -1971,7 +1972,15 @@ impl FeedsApp {
         if let Some((msg, since)) = &self.toast
             && since.elapsed().as_secs_f32() < 4.0
         {
-            draw_toast(scene, t, tr, theme, &self.rect, msg);
+            paint_transient(
+                scene,
+                t,
+                tr,
+                theme,
+                self.rect,
+                ToastAnchor::BottomRight,
+                &ToastCard::new(msg, ToastKind::Info),
+            );
         }
 
         // Dialog on top of everything — the shared ModalDialog paints its own
@@ -3551,50 +3560,6 @@ fn draw_chrome_button(
         }
         ChromeGlyph::Back => icons::back_arrow(scene, t, center, 6.0, c.text_primary),
     }
-}
-
-#[allow(
-    clippy::many_single_char_names,
-    reason = "conventional short names for the shared drawing context (t: transform, w/h: \
-              size, x/y: position) used consistently across every draw_* function in this file"
-)]
-fn draw_toast(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: &Rect,
-    msg: &str,
-) {
-    let c = &theme.tokens.colors;
-    let (tw, _) = tr.measure(msg, 13.0, None);
-    let w = f64::from(tw) + 36.0;
-    let h = 38.0;
-    let x = rect.x1 - w - 24.0;
-    let y = rect.y1 - h - 24.0;
-    let r = Rect::new(x, y, x + w, y + h);
-    scene.fill(
-        Fill::NonZero,
-        t,
-        c.neutral[2],
-        None,
-        &RoundedRect::from_rect(r, 10.0),
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        alpha(c.border_focus, 160),
-        None,
-        &RoundedRect::from_rect(r, 10.0),
-    );
-    tr.draw_text(
-        scene,
-        msg,
-        13.0,
-        c.text_primary,
-        t * Affine::translate((x + 18.0, y + 11.0)),
-        None,
-    );
 }
 
 // --- text helpers -----------------------------------------------------
