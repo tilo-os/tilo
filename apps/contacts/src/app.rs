@@ -26,6 +26,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{
@@ -39,7 +40,7 @@ use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
-    Link, ModalDialog, Text, TextInput, Widget,
+    EmptyState, Link, ModalDialog, Text, TextInput, Widget,
 };
 
 use crate::date;
@@ -469,6 +470,11 @@ pub struct ContactsApp {
     detail_rect: Rect,
     list_body: Rect,
     list_rows: Vec<(ContactId, Rect)>,
+    /// The first-run call to action painted inside an empty list. Keeping its
+    /// geometry here gives pointer and assistive activation the same route as
+    /// the toolbar's New button instead of leaving a decorative dead end.
+    empty_action_rect: Rect,
+    empty_action_focused: bool,
     hit: Hit,
     detail_content_h: f64,
     /// View-mode detail field value hit rects, recomputed every `draw_detail`.
@@ -582,6 +588,8 @@ impl ContactsApp {
             detail_rect: Rect::ZERO,
             list_body: Rect::ZERO,
             list_rows: Vec::new(),
+            empty_action_rect: Rect::ZERO,
+            empty_action_focused: false,
             hit: Hit::default(),
             detail_content_h: 0.0,
             detail_field_hits: Vec::new(),
@@ -616,10 +624,7 @@ impl ContactsApp {
     /// docked side by side), and on a narrow viewport it captures the pushed
     /// form rather than the list.
     pub fn shots_new_contact(&mut self) {
-        let mut c = Contact::new();
-        c.phones.push(Labeled::new("mobile", ""));
-        c.emails.push(Labeled::new("home", ""));
-        self.begin_edit(c, true);
+        self.begin_new_contact();
         self.push.snap(Pane::Detail);
     }
 
@@ -750,6 +755,16 @@ impl ContactsApp {
         // focus it explicitly with `focus_form_slot` right after.
         self.relayout = true;
         self.dirty = true;
+    }
+
+    /// Enter the same blank-contact flow from every affordance (toolbar,
+    /// first-run state, keyboard and assistive technology).
+    fn begin_new_contact(&mut self) {
+        let mut contact = Contact::new();
+        contact.phones.push(Labeled::new("mobile", ""));
+        contact.emails.push(Labeled::new("home", ""));
+        self.empty_action_focused = false;
+        self.begin_edit(contact, true);
     }
 
     fn cancel_edit(&mut self) {
@@ -1830,7 +1845,7 @@ impl ContactsApp {
     /// empty-state helpers purely for length; the draw order is unchanged
     /// from one flat function.
     fn draw_list(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1841,10 +1856,8 @@ impl ContactsApp {
         // Pane background + right border.
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &self.list_rect);
 
-        // Search field (draw the TextInput by temporarily taking &mut via ptr).
-        // We can't borrow &mut self here, so the search input is drawn in the
-        // mutable wrapper below — see render(). Placeholder background:
-        // Sort + group chips.
+        // The retained search input is drawn by `render`; this pass paints the
+        // surrounding list chrome and its immediate-mode content.
         let sort_label = format!("Sort: {}", self.sort.label());
         chip(scene, t, tr, theme, self.hit.sort, &sort_label, false);
         let group_label = match &self.group_filter {
@@ -1969,37 +1982,50 @@ impl ContactsApp {
     /// The "no contacts yet" / "no matches" placeholder shown when the
     /// (search + group filtered) list is empty.
     fn draw_list_empty_state(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
         // Distinguish a genuinely empty book (first launch) from a filter
         // that matched nothing, so the message is never misleading.
-        let (line1, line2): (&str, &str) = if self.store.is_empty() {
-            ("No contacts yet", "Add one with + New, or Import a .vcf")
+        let (title, message, action): (&str, &str, Option<&str>) = if self.store.is_empty() {
+            (
+                "No contacts yet",
+                "Add someone here, or import an existing vCard address book.",
+                Some("Create contact"),
+            )
         } else {
-            ("No matches", "Try a different search or group")
+            (
+                "No matching contacts",
+                "Try another name, company, or group.",
+                None,
+            )
         };
-        tr.draw_text_weighted(
+        self.empty_action_rect = EmptyState::paint(
             scene,
-            line1,
-            14.0,
-            c.text_primary,
-            t * Affine::translate((self.list_body.x0 + PAD, self.list_body.y0 + 18.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        tr.draw_text(
-            scene,
-            line2,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((self.list_body.x0 + PAD, self.list_body.y0 + 40.0)),
-            Some((self.list_body.width() - PAD * 2.0) as f32),
-        );
+            t,
+            tr,
+            theme,
+            self.list_body,
+            Some(Icon::FileText),
+            title,
+            Some(message),
+            action,
+            self.last_mouse,
+        )
+        .unwrap_or(Rect::ZERO);
+
+        if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
+            scene.stroke(
+                &Stroke::new(2.0),
+                t,
+                theme.tokens.colors.border_focus,
+                None,
+                &RoundedRect::from_rect(self.empty_action_rect.inflate(3.0, 3.0), 11.0),
+            );
+        }
     }
 
     fn draw_divider(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
@@ -3535,9 +3561,150 @@ impl Widget for ContactsApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.delete_dialog
+        if let Some(dialog) = self
+            .delete_dialog
             .as_ref()
             .and_then(|confirm| confirm.dialog.accessibility())
+        {
+            return Some(dialog);
+        }
+
+        let toolbar = AccessNode::new(Role::Toolbar)
+            .with_name("Contact actions")
+            .with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name("Import contacts")
+                    .with_action_target("contacts.import")
+                    .with_bounds(self.hit.import)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name("Export contacts")
+                    .with_action_target("contacts.export")
+                    .with_bounds(self.hit.export)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name("Create contact")
+                    .with_action_target("contacts.new")
+                    .with_bounds(self.hit.new)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+
+        let visible = self.visible_ids();
+        let list_children = if visible.is_empty() && self.store.is_empty() {
+            vec![
+                AccessNode::new(Role::Button)
+                    .with_name("Create contact")
+                    .with_description("Start an empty contact card")
+                    .with_action_target("contacts.empty.new")
+                    .with_bounds(self.empty_action_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.empty_action_focused),
+                    ),
+            ]
+        } else {
+            visible
+                .iter()
+                .enumerate()
+                .filter_map(|(index, id)| {
+                    let contact = self.store.get(*id)?;
+                    let bounds = self
+                        .list_rows
+                        .iter()
+                        .find_map(|(row_id, rect)| (*row_id == *id).then_some(*rect));
+                    let mut node = AccessNode::new(Role::ListItem)
+                        .with_name(contact.display_name())
+                        .with_optional_value(
+                            (!contact.subtitle().is_empty()).then(|| contact.subtitle()),
+                        )
+                        .with_action_target(format!("contacts.select:{id}"))
+                        .with_position(index + 1, visible.len())
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(self.selected == Some(*id)),
+                        )
+                        .with_children(Vec::new());
+                    if let Some(bounds) = bounds {
+                        node = node.with_bounds(bounds);
+                    }
+                    Some(node)
+                })
+                .collect()
+        };
+
+        let search = AccessNode::new(Role::TextInput)
+            .with_name("Search contacts")
+            .with_value(self.search.value())
+            .with_action_target("contacts.search")
+            .with_bounds(self.hit.search)
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.search.is_focused()),
+            );
+        let list = AccessNode::new(Role::List)
+            .with_name("Contacts")
+            .with_children(list_children);
+
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Contacts")
+                .with_children(vec![toolbar, search, list]),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+        match (target, action) {
+            ("contacts.empty.new", Action::Focus) => {
+                self.empty_action_focused = true;
+                self.search.set_focus(false);
+                self.dirty = true;
+                true
+            }
+            ("contacts.new" | "contacts.empty.new", Action::Activate) => {
+                self.begin_new_contact();
+                true
+            }
+            ("contacts.import", Action::Activate) => {
+                self.request_import();
+                true
+            }
+            ("contacts.export", Action::Activate) => {
+                self.open_export_dialog();
+                self.dirty = true;
+                true
+            }
+            ("contacts.search", Action::Activate | Action::Focus) => {
+                self.set_only_focus_search();
+                self.dirty = true;
+                true
+            }
+            _ if target.starts_with("contacts.select:")
+                && matches!(action, Action::Activate | Action::Focus) =>
+            {
+                let Some(raw) = target.strip_prefix("contacts.select:") else {
+                    return false;
+                };
+                let Ok(id) = raw.parse::<ContactId>() else {
+                    return false;
+                };
+                if self.store.get(id).is_none() {
+                    return false;
+                }
+                self.reveal_contact(id);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The pointing-hand cursor over the view-mode website hyperlink; every
@@ -3859,6 +4026,11 @@ impl ContactsApp {
         if self.hit.search.contains(p) {
             self.set_only_focus_search();
         } else if self.list_body.contains(p) {
+            if self.store.is_empty() && self.empty_action_rect.contains(p) {
+                self.begin_new_contact();
+                *handled = true;
+                return;
+            }
             // List row click. Routed through `request_select` so switching
             // away from an edit form with unsaved changes pops the guard
             // modal instead of silently discarding edits.
@@ -3920,10 +4092,7 @@ impl ContactsApp {
             return true;
         }
         if self.hit.new.contains(p) {
-            let mut c = Contact::new();
-            c.phones.push(Labeled::new("mobile", ""));
-            c.emails.push(Labeled::new("home", ""));
-            self.begin_edit(c, true);
+            self.begin_new_contact();
             return true;
         }
 
@@ -4095,6 +4264,7 @@ impl ContactsApp {
     }
 
     fn set_only_focus_search(&mut self) {
+        self.empty_action_focused = false;
         self.search.set_focus(true);
         if let Some(form) = &mut self.form {
             form.clear_focus();
@@ -4850,6 +5020,7 @@ impl ContactsApp {
             self.relayout = true;
         } else {
             self.search.set_focus(false);
+            self.empty_action_focused = false;
             if let Some(f) = &mut self.form {
                 f.clear_focus();
             }
@@ -4901,6 +5072,18 @@ impl ContactsApp {
     /// popup open (see the call site's guard).
     fn handle_key_list_shortcuts(&mut self, ke: &KeyEvent, handled: &mut bool) {
         match &ke.logical_key {
+            Key::Named(NamedKey::Tab) if self.store.is_empty() => {
+                self.search.set_focus(false);
+                self.empty_action_focused = true;
+                *handled = true;
+                self.dirty = true;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space)
+                if self.store.is_empty() && self.empty_action_focused =>
+            {
+                self.begin_new_contact();
+                *handled = true;
+            }
             Key::Named(NamedKey::ArrowDown) => {
                 self.move_selection(1);
                 *handled = true;
@@ -4920,10 +5103,7 @@ impl ContactsApp {
                 let lc = c.to_lowercase();
                 match lc.as_str() {
                     "n" => {
-                        let mut nc = Contact::new();
-                        nc.phones.push(Labeled::new("mobile", ""));
-                        nc.emails.push(Labeled::new("home", ""));
-                        self.begin_edit(nc, true);
+                        self.begin_new_contact();
                         *handled = true;
                     }
                     "e" => {
@@ -7592,6 +7772,46 @@ mod tests {
             !app.needs_animation_frame(),
             "with the toast gone the loop can settle back to idle",
         );
+    }
+
+    #[test]
+    fn first_run_state_is_actionable_by_pointer_keyboard_and_assistive_tech() {
+        let mut app = ContactsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        drive_frame(&mut app, 760, 620);
+
+        assert!(app.store.is_empty());
+        assert!(app.empty_action_rect.width() >= 44.0);
+        assert!(app.list_body.contains(app.empty_action_rect.center()));
+
+        let root = app
+            .accessibility()
+            .expect("Contacts exposes a semantic window");
+        assert_eq!(root.role, ui::a11y::Role::Window);
+        let action = root
+            .children
+            .iter()
+            .flat_map(|node| node.children.iter())
+            .find(|node| node.action_target.as_deref() == Some("contacts.empty.new"))
+            .expect("the first-run action is exposed");
+        assert_eq!(action.role, ui::a11y::Role::Button);
+
+        assert!(app.perform_semantic_action(
+            "contacts.empty.new",
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &ROOT,
+        ));
+        assert!(app.empty_action_focused);
+        assert!(app.perform_semantic_action(
+            "contacts.empty.new",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(app.mode, Mode::Edit);
+        assert!(app.form.as_ref().is_some_and(|form| form.is_new));
     }
 
     /// Lay a single app instance out at `w`x`h` without rebuilding it, to
