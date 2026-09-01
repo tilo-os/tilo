@@ -35,6 +35,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # re-exports its own stack so there is exactly one copy of each in the binary,
 # and it is the one the widget tree was compiled against.
 ui = { path = "../../ui" }
+qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 # Pinned to match `apps/chat` so a single zbus copy resolves from the lock.

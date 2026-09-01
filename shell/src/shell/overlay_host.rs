@@ -813,6 +813,19 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
+    /// Attach the session's live application action directory after the
+    /// collaboration broker has bound. Kept explicit so bare/headless hosts
+    /// do not fabricate a broker.
+    pub fn attach_app_action_broker(
+        &mut self,
+        broker: crate::shell::collab_broker::AppActionBroker,
+    ) {
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
+        ));
+        self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
