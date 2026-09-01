@@ -1220,6 +1220,19 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
+    /// Attach the session's live application action directory after the
+    /// collaboration broker has bound. Kept explicit so bare/headless hosts
+    /// do not fabricate a broker.
+    pub fn attach_app_action_broker(
+        &mut self,
+        broker: crate::shell::collab_broker::AppActionBroker,
+    ) {
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
+        ));
+        self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -2117,13 +2130,8 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(
-                        &PeerSyncRequest::IssueInviteFor {
-                            name,
-                            role: crate::network::invite::InviteRole::Editor,
-                        },
-                        copy,
-                    );
+                    let _ = copy;
+                    self.peer_sync_overlay.prompt_invite_for(name);
                 }
                 PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
@@ -12252,6 +12260,10 @@ mod palette_dispatch_tests {
             PeerSyncRequest::IssueInvite => {
                 Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
             }
+            PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
+                "qos-identity:{}",
+                "42".repeat(32)
+            ))),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
@@ -12279,6 +12291,9 @@ mod palette_dispatch_tests {
             Some("Xaver"),
             "the field takes the name — the same keys that type a token"
         );
+        let mut snapshot = h.peer_sync_snapshot();
+        snapshot.invite_recipient_key = Some([0x42; 32]);
+        h.set_peer_sync_snapshot_for_tests(snapshot);
 
         assert!(
             h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
@@ -12447,6 +12462,10 @@ mod palette_dispatch_tests {
         assert!(
             names.contains(&"paste"),
             "the receiving side must offer Paste, got {names:?}"
+        );
+        assert!(
+            names.contains(&"copy-identity"),
+            "the recipient must be able to send a bindable identity card, got {names:?}"
         );
         assert!(names.contains(&"join"), "and still Join, got {names:?}");
 

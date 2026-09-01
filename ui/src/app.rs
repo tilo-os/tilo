@@ -331,6 +331,7 @@ pub struct App {
     action_palette: Option<crate::action_palette::ActionPalette>,
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
+    last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
     semantic_tree: crate::a11y_tree::SemanticTree,
 
     profiler: Option<crate::profiling::FrameProfiler>,
@@ -468,6 +469,7 @@ impl App {
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
+            last_published_actions: None,
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
@@ -855,6 +857,144 @@ impl App {
         self.root_widget.resources(&self.state.doc)
     }
 
+    /// Publish the live resource/action tree through the session broker.
+    /// Level-triggered at the wire, diffed here so an unchanged frame emits
+    /// nothing; publishing an empty list explicitly withdraws a closed tree.
+    fn publish_action_surface(&mut self) {
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let descriptors = qos_actions::door::survey(&self.collect_resources());
+        if self.last_published_actions.as_ref() == Some(&descriptors) {
+            return;
+        }
+        let actions = descriptors
+            .iter()
+            .map(|descriptor| crate::collaboration::ExportedAction {
+                resource: descriptor.address.resource.clone(),
+                action: descriptor.address.action.clone(),
+                resource_kind: descriptor.resource_kind.clone(),
+                resource_label: descriptor.resource_label.clone(),
+                action_label: descriptor.action_label.clone(),
+                description: descriptor.description.clone(),
+                operation_kind: descriptor.kind.as_str().to_string(),
+                params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
+                input: match &descriptor.input {
+                    qos_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
+                    qos_actions::InputSpec::Text {
+                        prompt,
+                        placeholder,
+                        collects,
+                    } => crate::collaboration::ExportedInput::Text {
+                        prompt: prompt.clone(),
+                        placeholder: placeholder.clone(),
+                        wants_content: *collects == qos_actions::Collects::Content,
+                    },
+                },
+            })
+            .collect();
+        self.collab_manager.send(CollabRequest::PublishActions {
+            app_id: crate::collaboration::local_app_id(),
+            actions,
+        });
+        self.last_published_actions = Some(descriptors);
+    }
+
+    fn invoke_published_action(
+        &mut self,
+        id: u64,
+        resource: String,
+        action: String,
+        argument: Option<String>,
+        actor: String,
+    ) {
+        let address = qos_actions::ActionAddress::new(resource, action);
+        let result = self.invoke_resource_action(&address, argument.as_deref(), &actor);
+        let (code, message) = match result {
+            Ok(()) => (String::new(), String::new()),
+            Err(error) => (error.code().to_string(), error.to_string()),
+        };
+        self.collab_manager
+            .send(CollabRequest::CompleteInvocation { id, code, message });
+    }
+
+    fn invoke_resource_action(
+        &mut self,
+        address: &qos_actions::ActionAddress,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<(), qos_actions::DoorError> {
+        let resources = self.collect_resources();
+        let typed_arguments = argument
+            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+            .map(|json| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+            })
+            .transpose()?;
+        let kind = qos_actions::door::resolve(&resources, address)
+            .map(|spec| spec.kind)
+            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()));
+        kind.and_then(|kind| {
+            if kind == qos_actions::OperationKind::Document {
+                let before = self.state.doc.get_heads();
+                let dispatched = if let Some(arguments) = &typed_arguments {
+                    qos_actions::door::invoke_json(
+                        &mut self.state.doc,
+                        &resources,
+                        address,
+                        arguments,
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    )?
+                } else {
+                    qos_actions::door::invoke(
+                        &mut self.state.doc,
+                        &resources,
+                        address,
+                        argument,
+                        actor.as_bytes(),
+                        &self.action_registry,
+                        self.action_transport.as_mut(),
+                    )?
+                };
+                if dispatched.mutated_local() {
+                    self.state.record_committed_action_authored(
+                        before,
+                        None,
+                        None,
+                        Some(crate::permissions::UserId(actor.to_string())),
+                    );
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                }
+                Ok(())
+            } else {
+                let encoded = if let Some(arguments) = &typed_arguments {
+                    qos_actions::door::encode_json(&resources, address, arguments)?
+                } else {
+                    qos_actions::door::encode(&resources, address, argument)?
+                };
+                let handled = self
+                    .root_widget
+                    .invoke_resource_operation(
+                        kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                        &self.state.doc,
+                        &self.state.root,
+                    )
+                    .map_err(qos_actions::DoorError::Failed)?;
+                if !handled {
+                    return Err(qos_actions::DoorError::Unknown(address.clone()));
+                }
+                self.layout_dirty = true;
+                Ok(())
+            }
+        })
+    }
+
     pub fn open_action_palette(&mut self) {
         let resources = self.collect_resources();
         let providers = self.root_widget.search_providers();
@@ -880,23 +1020,52 @@ impl App {
         let root = self.state.root.clone();
         let before = self.state.doc.get_heads();
         let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
-        // An action row may have fired: drain + dispatch through qos_actions.
-        let dispatched = self.action_palette.as_mut().and_then(|p| {
-            p.take_dispatch(
-                &mut self.state.doc,
-                &self.action_registry,
-                self.action_transport.as_mut(),
-            )
-        });
-        if let Some(result) = dispatched {
-            match result {
-                Ok(d) if d.mutated_local() => {
-                    self.state.record_committed_action(before, None, None);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
+        // An operation row may have fired. Document mutations go through the
+        // deterministic executor; effects/views route to the owning widget.
+        let pending = self
+            .action_palette
+            .as_mut()
+            .and_then(crate::action_palette::ActionPalette::take_operation);
+        if let Some(pending) = pending {
+            if pending.kind == qos_actions::OperationKind::Document {
+                let result = self
+                    .action_registry
+                    .decode(&pending.encoded)
+                    .and_then(|action| {
+                        let actor = self.state.doc.get_actor().to_bytes().to_vec();
+                        qos_actions::dispatch_by_with_context(
+                            &mut self.state.doc,
+                            action.as_ref(),
+                            pending.encoded,
+                            self.action_transport.as_mut(),
+                            Some(&actor),
+                            pending.context,
+                        )
+                    });
+                match result {
+                    Ok(d) if d.mutated_local() => {
+                        self.state.record_committed_action(before, None, None);
+                        self.needs_sync = true;
+                        self.layout_dirty = true;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
                 }
-                Ok(_) => {} // submitted to host; no local mutation
-                Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
+            } else {
+                match self.root_widget.invoke_resource_operation(
+                    pending.kind,
+                    &pending.encoded.type_id,
+                    &pending.encoded.payload,
+                    &self.state.doc,
+                    &root,
+                ) {
+                    Ok(true) => self.layout_dirty = true,
+                    Ok(false) => tracing::warn!(
+                        type_id = %pending.encoded.type_id,
+                        "no widget handled exported resource operation"
+                    ),
+                    Err(error) => tracing::warn!(%error, "resource operation failed"),
+                }
             }
         }
         // A content row may have fired: hand its id to the app to navigate,
@@ -1780,6 +1949,13 @@ impl App {
                         self.apply_signed_document_envelope(&envelope);
                     }
                 }
+                CollabEvent::Invocation {
+                    id,
+                    resource,
+                    action,
+                    argument,
+                    actor,
+                } => self.invoke_published_action(id, resource, action, argument, actor),
             }
         }
         any
@@ -1863,6 +2039,13 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => self.invoke_published_action(id, resource, action, argument, actor),
             _ => {}
         }
     }
@@ -2331,11 +2514,13 @@ impl App {
     /// `scale` is the window scale factor so bounds land in physical pixels
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
-        crate::accesskit_bridge::build_tree_update(
+        let resources = self.collect_resources();
+        crate::accesskit_bridge::build_tree_update_with_resources(
             self.root_widget.as_ref(),
             &self.node_map,
             self.focused_node,
             scale,
+            &resources,
         )
     }
 
@@ -2351,6 +2536,44 @@ impl App {
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
+
+        let argument = match action {
+            Action::Activate | Action::ToggleCheck => Some(None),
+            Action::SetValue(value) => Some(Some(value.as_str())),
+            _ => None,
+        };
+        if let Some(argument) = argument {
+            let resources = self.collect_resources();
+            fn find_resource_action(
+                resources: &[qos_actions::Resource],
+                target: accesskit::NodeId,
+            ) -> Option<qos_actions::ActionAddress> {
+                resources.iter().find_map(|resource| {
+                    resource
+                        .actions
+                        .iter()
+                        .find(|spec| {
+                            crate::accesskit_bridge::resource_action_node_id(
+                                resource.id.as_str(),
+                                &spec.id,
+                            ) == target
+                        })
+                        .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
+                        .or_else(|| find_resource_action(&resource.children, target))
+                })
+            }
+            if let Some(address) = find_resource_action(&resources, target) {
+                let actor = crate::collaboration::local_user_id().0;
+                if self
+                    .invoke_resource_action(&address, argument, &actor)
+                    .is_ok()
+                {
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                }
+                return None;
+            }
+        }
 
         let resolved = resolve_node_id(self.root_widget.as_ref(), &self.node_map, target)?;
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
@@ -4624,6 +4847,7 @@ impl AppHandler {
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
+        app.publish_action_surface();
 
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
