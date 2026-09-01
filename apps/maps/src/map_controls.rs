@@ -273,7 +273,6 @@ impl MapControls {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn rect(&self, action: MapControlAction) -> Rect {
         Layout::new(self.viewport).rect(action)
     }

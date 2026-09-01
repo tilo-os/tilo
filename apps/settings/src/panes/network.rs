@@ -2542,6 +2542,16 @@ mod tests {
         );
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
+        // Connection dispatch deliberately runs off the UI thread. Wait for
+        // the recorder exactly as the password-bearing async path below does;
+        // asserting immediately races the worker and can falsely report that
+        // the visible Connect button did nothing.
+        for _ in 0..50 {
+            if !rec.calls().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         assert_eq!(rec.calls(), vec!["connect_wifi(Cafe_Guest)"]);
     }
 
