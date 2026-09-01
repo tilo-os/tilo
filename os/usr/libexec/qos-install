@@ -206,6 +206,8 @@ ASSUME_YES=0
 # New, optional options (UI passes these; older UIs omit them → defaults).
 FILESYSTEM="btrfs"   # btrfs | ext4 | xfs
 HOSTNAME_VAL="qos"
+FULL_NAME=""
+LOCALE_VAL="en_US.UTF-8"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
@@ -222,6 +224,8 @@ while [ $# -gt 0 ]; do
     --user) USERNAME="${2:-}"; shift 2 ;;
     --filesystem) FILESYSTEM="${2:-}"; shift 2 ;;
     --hostname) HOSTNAME_VAL="${2:-}"; shift 2 ;;
+    --full-name) FULL_NAME="${2:-}"; shift 2 ;;
+    --locale) LOCALE_VAL="${2:-}"; shift 2 ;;
     --timezone) TIMEZONE_VAL="${2:-}"; shift 2 ;;
     --keymap) KEYMAP_VAL="${2:-}"; shift 2 ;;
     --keyvariant) KEYVARIANT_VAL="${2:-}"; shift 2 ;;
@@ -286,6 +290,22 @@ esac
 case "$HOSTNAME_VAL" in
   -*|*-) die "invalid hostname '$HOSTNAME_VAL'" ;;
   *[!A-Za-z0-9-]*) die "invalid hostname '$HOSTNAME_VAL' (letters, digits, hyphens only)" ;;
+esac
+
+# The human-readable account name is passed only to useradd's GECOS field.
+# Keep the first-boot seed line-oriented and reject delimiters/control bytes.
+[ "${#FULL_NAME}" -le 100 ] || die "full name is longer than 100 characters"
+case "$FULL_NAME" in
+  *:*) die "full name cannot contain ':'" ;;
+esac
+if printf '%s' "$FULL_NAME" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+  die "full name contains control characters"
+fi
+
+[ -n "$LOCALE_VAL" ] || die "missing --locale <locale>"
+[ "${#LOCALE_VAL}" -le 64 ] || die "locale is too long"
+case "$LOCALE_VAL" in
+  *[!A-Za-z0-9_.@-]*) die "invalid --locale '$LOCALE_VAL'" ;;
 esac
 
 # Validate timezone shape if provided (defends the symlink target below).
@@ -429,8 +449,10 @@ fi
 log "qOS installer"
 log "  target disk : $DISK"
 log "  username    : $USERNAME"
+log "  full name   : ${FULL_NAME:-<not set>}"
 log "  filesystem  : $FILESYSTEM"
 log "  hostname    : $HOSTNAME_VAL"
+log "  locale      : $LOCALE_VAL"
 log "  timezone    : ${TIMEZONE_VAL:-<system default>}"
 log "  keymap      : $KEYMAP_VAL${KEYVARIANT_VAL:+ ($KEYVARIANT_VAL)}"
 log "  update ref  : $QOS_TARGET_IMGREF"
@@ -684,6 +706,13 @@ chmod 0600 "$CONF_TMP"
 printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
 mv -f "$CONF_TMP" "$CONF"
 log "  wrote $CONF (consumed by qos-firstboot-user.service on first boot)"
+if [ -n "$FULL_NAME" ]; then
+  FULL_NAME_CONF="$DEPLOY_ETC/qos/install-user-full-name"
+  FULL_NAME_TMP="$(mktemp "$DEPLOY_ETC/qos/.install-user-full-name.XXXXXX")"
+  chmod 0600 "$FULL_NAME_TMP"
+  printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
+  mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
+fi
 
 # --- 4. seed hostname + time zone into the installed deployment's /etc -------
 # Same writable-/etc technique as the user file: write into the per-deployment
@@ -693,6 +722,10 @@ step "Setting hostname '$HOSTNAME_VAL' and time zone '${TIMEZONE_VAL:-<system de
 printf '%s\n' "$HOSTNAME_VAL" > "$DEPLOY_ETC/hostname"
 chmod 0644 "$DEPLOY_ETC/hostname"
 log "  wrote $DEPLOY_ETC/hostname"
+
+printf 'LANG=%s\n' "$LOCALE_VAL" > "$DEPLOY_ETC/locale.conf"
+chmod 0644 "$DEPLOY_ETC/locale.conf"
+log "  set locale to $LOCALE_VAL"
 
 if [ -n "$TIMEZONE_VAL" ]; then
   # /etc/localtime is a relative symlink into zoneinfo; create it pointing at
