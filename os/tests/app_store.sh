@@ -102,6 +102,33 @@ for m in "${manifests[@]}"; do
 done
 [ "$no_bin" = 1 ] || ok "every manifest entrypoint names a binary its crate builds"
 
+# Thin qpkg binaries must all opt into the same shared-runtime edge. Merely
+# building runtime-dylib is not enough: one forgotten app silently returns to a
+# 20–30 MB static archive, and building apps separately creates incompatible
+# Rust crate hashes even when every individual link succeeds.
+thin_bad=0
+for m in "${manifests[@]}"; do
+  dir="$(dirname "$m")"
+  grep -q '^thin = \["dep:runtime-dylib"\]$' "$dir/Cargo.toml" \
+    || { bad "$(basename "$dir") does not define the shared-runtime thin feature"; thin_bad=1; }
+  grep -q '^runtime-dylib = .*optional = true' "$dir/Cargo.toml" \
+    || { bad "$(basename "$dir") does not make runtime-dylib an optional dependency"; thin_bad=1; }
+done
+[ "$thin_bad" = 1 ] || ok "all ${#manifests[@]} apps opt into one ABI-matched shared runtime"
+
+if grep -q 'MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"' "$PACK"; then
+  ok "pack-apps refuses qpkgs at or above 10 MB"
+else
+  bad "pack-apps no longer enforces the strict 10 MB qpkg ceiling"
+fi
+
+if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \
+   && grep -q 'ldd /out/libruntime_dylib.so' "$CONTAINERFILE"; then
+  ok "the signed runtime bundle carries the shared runtime and its ELF dependencies"
+else
+  bad "the image builds thin apps but does not bundle their shared runtime dependencies"
+fi
+
 # --- 4. the store the builder writes is the store the image ships ------------
 # pack-apps.sh writes registry.toml with absolute payload paths, so the path it
 # installs to has to be the path the rootfs stage copies to, byte for byte.
@@ -155,7 +182,7 @@ else
     bad "$INSTALL_MAIN no longer consults system_bundle_path, so baking into
         $sysroot would no longer satisfy the install-time runtime check."
   fi
-  if grep -q "^ *--out \"$sysroot/\${RUNTIME_VERSION}\" \\\\\?\$" "$CONTAINERFILE"; then
+  if grep -q -- "--out \"$sysroot/\${RUNTIME_VERSION}\"" "$CONTAINERFILE"; then
     ok "os/Containerfile bakes the runtime bundle into $sysroot/\${RUNTIME_VERSION}"
   else
     bad "os/Containerfile does not bake the runtime bundle into $sysroot/\${RUNTIME_VERSION}

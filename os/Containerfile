@@ -300,10 +300,9 @@ COPY --from=wpe-builder /wpe/ /
 # network backends are compiled out. The features are named here so the image,
 # and only the image, turns them on.
 #
-# Package-qualified (`<pkg>/<feature>`), which cargo resolves because every one
-# of these packages is already selected through APP_PKGS. Feature unification
-# means `ui` is built once with the union (portal + mpris), which is additive
-# and what the apps that ask for it need anyway.
+# Package-qualified (`<pkg>/<feature>`). The qpkg applications and their
+# versioned shared runtime are built together below: Rust dylib symbol names
+# contain crate hashes, so separate Cargo invocations are not ABI-compatible.
 #
 # `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
 # engine behind it is the browser's, which QOS_WITH_BROWSER=0 does not build.
@@ -329,25 +328,26 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
-    && if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
-    else BROWSER_PKG="-p browser --features browser/wpe"; fi \
-    && APP_PKGS="$(sed -n 's|^ *"apps/\([A-Za-z0-9_-]*\)",.*|\1|p' Cargo.toml \
-                     | grep -vx browser | sed 's/^/-p /' | tr '\n' ' ')" \
-    && [ -n "${APP_PKGS}" ] \
-        || { echo "no apps/* workspace members matched — the members list moved" >&2; exit 1; } \
+    && if [ "${QOS_WITH_BROWSER}" = "0" ]; then \
+         BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
+       else \
+         BROWSER_PKG="-p browser --features browser/wpe"; \
+         THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
+       fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release \
-        --features "${APP_FEATURES}" \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback -p qos-cli -p ush -p qos-projector \
         -p pkg-cli -p install -p cli-shim \
-        ${APP_PKGS} \
         ${BROWSER_PKG} \
-    && mkdir -p /out /out/optional \
+    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+       /build/os/scripts/build-thin-apps.sh \
+    && mkdir -p /out /out/optional /out/thin-apps \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
     && cp target/release/shell \
@@ -370,16 +370,24 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-ush \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
+           p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
            b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
-           [ -z "$b" ] || [ ! -f "target/release/$b" ] || cp "target/release/$b" /out/; \
+           case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
+           [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
        done \
+    && cp target/thin-app/libruntime_dylib.so /out/ \
+    && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+    && [ -n "${LIBSTD}" ] \
+    && cp "${LIBSTD}" /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
 # Read the hardening back off the linked binaries. `.cargo/config.toml` sets
 # the flags; this is what proves they survived to the artifacts this image
 # ships — a dropped linker argument or a target change is otherwise invisible
 # until someone runs readelf on a released image. Fails the build, on purpose.
-RUN /build/os/scripts/verify-elf-hardening.sh /out
+RUN /build/os/scripts/verify-elf-hardening.sh /out \
+    && /build/os/scripts/verify-elf-hardening.sh /out/thin-apps \
+    && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
@@ -409,13 +417,19 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
-    && ARCH="$(uname -m)" \
-    && /out/qos-runtime-bundle build \
-        --version "${RUNTIME_VERSION}" \
-        --arch "${ARCH}" \
-        --from / \
-        --identity /out/runtime-bundle-identity.json \
-        --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
+    && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+    && [ -n "${RUST_LIBSTD}" ] \
+    && /bin/bash -eu -o pipefail -c ' \
+        args=(/out/qos-runtime-bundle build \
+          --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
+          --include /out/libruntime_dylib.so \
+          --identity /out/runtime-bundle-identity.json \
+          --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}"); \
+        while IFS= read -r dependency; do args+=(--include "$dependency"); done \
+          < <(ldd /out/libruntime_dylib.so \
+              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+              | sort -u); \
+        "${args[@]}"' \
     && /out/qos-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
@@ -436,7 +450,13 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 # Packages take the ordinary route — `qos-pkg pack` then `qos-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
+RUN BIN_DIR=/out/thin-apps \
+    PKG_BIN=/out/qos-pkg \
+    INSTALL_BIN=/out/qos-install \
+    BUNDLE_BIN=/out/qos-runtime-bundle \
+    SHIM_BIN=/out/qos-cli-shim \
+    PUBKEY_OUT=/out/app-publisher.hex \
+    /build/os/scripts/pack-apps.sh
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
