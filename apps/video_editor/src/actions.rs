@@ -717,10 +717,18 @@ pub fn load_project_action(p: &Project) -> VideoEditorAction {
 /// of the current project (the doc projection) plus the live playhead — state
 /// that lives in the app, not the document. The playhead makes the split /
 /// trim-to-playhead actions buildable from where the user actually is.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VideoResourceCtx {
     pub project: Project,
     pub playhead: f64,
+    /// What the mixer last measured — see [`crate::audio::MixMeters`].
+    ///
+    /// Also app state rather than document state, and here for the same
+    /// reason the playhead is: without it the only thing that can act on a
+    /// mix that went over is a pointer. A caller with no screen would be left
+    /// to guess how far over it went and which lanes were in it, which is the
+    /// silent clamp again with an extra step.
+    pub mix: crate::audio::MixSnapshot,
 }
 
 fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
@@ -966,6 +974,59 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 encode(&set_project_meta_action(&next))
             },
         ));
+    }
+
+    // Project-level: bring a mix that went over back under full scale.
+    //
+    // Offered only once a mix has actually been measured over, because it is
+    // a report about a measurement — an editor that offered to "fix" levels
+    // nobody has listened to would be guessing, and it would be offering to
+    // quieten a mix that is fine.
+    //
+    // This is the one operation on the clipping warning that a caller with no
+    // screen could not otherwise reach. Seeing the warning is the
+    // accessibility tree's job and it does it (the master strip's node states
+    // how far over and where); *acting* on it meant reading the overshoot off
+    // a red chip, doing the arithmetic and then dragging every fader — none of
+    // which a script, an agent or a keyboard has.
+    if ctx.mix.clipped() {
+        let snap = p.clone();
+        let lanes = ctx.mix.measured_tracks();
+        let over = ctx.mix.worst_over_db();
+        let lane_words = match ctx.mix.clipped_tracks().len() {
+            0 => String::new(),
+            1 => ", 1 lane over on its own".to_string(),
+            n => format!(", {n} lanes over on their own"),
+        };
+        root = root.with_action(
+            ActionSpec::typed(
+                "trim-mix",
+                "Trim the mix to fit",
+                "0",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "headroom",
+                    ParamType::Number,
+                    "decibels to leave below full scale; 0 lands the measured \
+                     peak exactly at full scale",
+                )],
+                move |args: &ActionArgs| {
+                    // Negative headroom would be an instruction to trim it
+                    // back to *over* full scale, which is the state this
+                    // exists to leave. An unbound argument is the plain
+                    // "make it fit".
+                    let headroom = args.number("headroom").unwrap_or(0.0).max(0.0);
+                    let next = snap.lanes_trimmed_by(&lanes, over + headroom);
+                    encode(&upsert_tracks_and_clips_action(&next, &[]))
+                },
+            )
+            .with_description(format!(
+                "the mix was measured {over:+.1} dB over full scale in {} place{}{lane_words}; \
+                 every lane comes down by the same amount, so the balance is unchanged",
+                ctx.mix.overs.len(),
+                if ctx.mix.overs.len() == 1 { "" } else { "s" },
+            )),
+        );
     }
 
     // Project-level: a timeline marker at the playhead, named.
@@ -2318,6 +2379,30 @@ mod tests {
         out
     }
 
+    /// The spec with `id` published **on a named resource**.
+    ///
+    /// [`spec`] takes the first match anywhere in the tree, which is fine for
+    /// an action only one resource carries. Every audio lane publishes its
+    /// own `set-gain`, so a test that used `spec` there would drive one lane
+    /// and assert about another.
+    fn spec_on(ctx: &VideoResourceCtx, resource: &str, id: &str) -> ActionSpec {
+        fn walk(r: &Resource, resource: &str, id: &str, out: &mut Option<ActionSpec>) {
+            if r.id.as_str() == resource {
+                if let Some(a) = r.actions.iter().find(|a| a.id == id) {
+                    *out = Some(a.clone());
+                }
+            }
+            for c in &r.children {
+                walk(c, resource, id, out);
+            }
+        }
+        let mut found = None;
+        for r in provide_resources(ctx) {
+            walk(&r, resource, id, &mut found);
+        }
+        found.unwrap_or_else(|| panic!("`{resource}` publishes no `{id}`"))
+    }
+
     fn spec(ctx: &VideoResourceCtx, id: &str) -> ActionSpec {
         all_specs(ctx)
             .into_iter()
@@ -2377,6 +2462,7 @@ mod tests {
             VideoResourceCtx {
                 project: p,
                 playhead: 4.0,
+                ..Default::default()
             },
             cid,
         )
@@ -3064,6 +3150,7 @@ mod tests {
         let resources = provide_resources(&VideoResourceCtx {
             project: project.clone(),
             playhead: at,
+            ..Default::default()
         });
         let clip_res = resources
             .iter()
@@ -3152,8 +3239,23 @@ mod tests {
             (c.track, c.media)
         };
         with_title.add_clip(track, media, 20.0);
+        // …and a mix that has been measured over, so the action that trims one
+        // back is offered here too. Same reason: an action nobody can reach
+        // from this fixture is an action the declaration table cannot check.
+        let lane = with_title.clips.first().map(|c| c.track);
+        let meters = crate::audio::MixMeters::new();
+        meters.record(
+            3.0,
+            &crate::audio::MixReport {
+                master: crate::audio::BlockMeter { peak: [1.4, 1.2] },
+                tracks: lane
+                    .map(|t| vec![(t, crate::audio::BlockMeter { peak: [1.4, 1.2] })])
+                    .unwrap_or_default(),
+            },
+        );
         VideoResourceCtx {
             project: with_title,
+            mix: meters.snapshot(),
             ..ctx
         }
     }
@@ -3216,7 +3318,7 @@ mod tests {
 
     /// The rest of the table. Split only because a single array literal past
     /// thirty entries stopped being readable; the test walks both.
-    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 17] = [
+    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 18] = [
         // Linking names the partner by id, and the ids that exist are the
         // declared choices — so a clip that is not there is refused rather
         // than silently linking nothing.
@@ -3241,6 +3343,10 @@ mod tests {
         // so, and a linear multiplier would make every caller do the log.
         ("set-gain", &[("db", ParamType::Number)]),
         ("set-pan", &[("pan", ParamType::Number)]),
+        // Bringing a mix that clipped back under full scale. Headroom is
+        // declared rather than assumed: "make it fit" and "leave me a dB" are
+        // different intents and a caller has to be able to say which.
+        ("trim-mix", &[("headroom", ParamType::Number)]),
     ];
 
     /// Both halves of the table, as one list.
@@ -3304,6 +3410,7 @@ mod tests {
         VideoResourceCtx {
             project: p,
             playhead,
+            ..Default::default()
         }
     }
 
@@ -3769,6 +3876,10 @@ mod tests {
         assert_eq!(dipped.clip(cid).unwrap().transition, Transition::DipToBlack);
         let ctx2 = VideoResourceCtx {
             project: dipped,
+            // Named rather than spread: the rest of this test still reads
+            // `ctx`, and the meter is not `Copy`, so a spread would move it out
+            // from under the assertions below.
+            mix: ctx.mix.clone(),
             ..ctx
         };
         let kept = run(&ctx2.project, &spec(&ctx2, "set-transition"), Some("swipe"));
@@ -3942,5 +4053,230 @@ mod tests {
                 < 1e-9,
             "undo reverted the move and nothing else",
         );
+    }
+
+    // ---- trimming a mix that clipped -------------------------------------
+
+    /// Two audio lanes with clips on them, and a meter that has measured the
+    /// pair `over` decibels past full scale on both.
+    fn ctx_with_clipped_mix(over_db: f64) -> (VideoResourceCtx, Vec<Uuid>) {
+        let (ctx, _) = ctx_fixture();
+        let mut p = ctx.project.clone();
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "a.wav".into(),
+            kind: MediaKind::Audio,
+            duration: 30.0,
+            path: "media/a.wav".into(),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let mut lanes = Vec::new();
+        for index in 1..=2u32 {
+            let tid = Uuid::new_v4();
+            p.tracks.push(Track {
+                id: tid,
+                name: format!("A{index}"),
+                kind: TrackKind::Audio,
+                index,
+                ..Default::default()
+            });
+            p.add_clip(tid, mid, 0.0).expect("media exists");
+            lanes.push(tid);
+        }
+        let peak = crate::model::db_to_linear(over_db) as f32;
+        let meters = crate::audio::MixMeters::new();
+        meters.record(
+            2.0,
+            &crate::audio::MixReport {
+                master: crate::audio::BlockMeter { peak: [peak, peak] },
+                tracks: lanes
+                    .iter()
+                    .map(|t| {
+                        (
+                            *t,
+                            crate::audio::BlockMeter {
+                                peak: [peak * 0.6, peak * 0.6],
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        );
+        (
+            VideoResourceCtx {
+                project: p,
+                mix: meters.snapshot(),
+                ..ctx
+            },
+            lanes,
+        )
+    }
+
+    /// The action is a report about a measurement, so it exists only once
+    /// there is one. Offering to "fix" the levels of a mix nobody has listened
+    /// to would be offering to quieten a mix that is fine.
+    #[test]
+    fn trimming_is_offered_only_once_a_mix_has_actually_been_measured_over() {
+        let (quiet, _) = ctx_fixture();
+        assert!(
+            !all_specs(&quiet).iter().any(|(id, _)| id == "trim-mix"),
+            "nothing has clipped, so there is nothing to trim",
+        );
+        let (clipped, _) = ctx_with_clipped_mix(3.0);
+        assert!(
+            all_specs(&clipped).iter().any(|(id, _)| id == "trim-mix"),
+            "a measured overload is what makes the trim meaningful",
+        );
+    }
+
+    /// Running it takes every lane in the mix down by exactly what the meter
+    /// measured, and by the *same* amount, so the balance survives.
+    /// Invoking `set-gain` and `set-pan` actually moves the lane, and out of
+    /// range is clamped rather than stored.
+    ///
+    /// The declared-shape table only proves these actions *say* they take a
+    /// number called `db`. It would pass just as happily if the closure read
+    /// a different parameter name, dropped the value, or clamped the wrong
+    /// way — which is the whole of what a caller with no screen depends on.
+    #[test]
+    fn setting_a_lanes_gain_and_pan_through_the_action_moves_the_lane() {
+        let (ctx, lanes) = ctx_with_clipped_mix(0.0);
+        let a1 = lanes[0];
+
+        let lane = format!("video.track:{a1}");
+        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-gain"), Some("-6"));
+        assert!(
+            (after.track(a1).expect("A1").gain_db + 6.0).abs() < 1e-6,
+            "the lane came down 6 dB: {}",
+            after.track(a1).expect("A1").gain_db,
+        );
+
+        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-pan"), Some("-1"));
+        assert!(
+            (after.track(a1).expect("A1").pan + 1.0).abs() < 1e-6,
+            "the lane went hard left: {}",
+            after.track(a1).expect("A1").pan,
+        );
+
+        // Beyond the ends, the intent is legible even though the number is
+        // not, so it is clamped to the end rather than refused or stored raw.
+        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-gain"), Some("999"));
+        assert!(
+            (after.track(a1).expect("A1").gain_db - MAX_GAIN_DB).abs() < 1e-6,
+            "asking for more than the fader has gives the top of the fader, \
+             not 999: {}",
+            after.track(a1).expect("A1").gain_db,
+        );
+        let after = run(&ctx.project, &spec_on(&ctx, &lane, "set-pan"), Some("-9"));
+        assert!(
+            (after.track(a1).expect("A1").pan + 1.0).abs() < 1e-6,
+            "pan clamps to hard left: {}",
+            after.track(a1).expect("A1").pan,
+        );
+
+        // And `reset-mix` puts both back in one step — the reason it exists
+        // rather than leaving a caller to send `set-gain 0` and forget the pan.
+        let mut moved = ctx.project.clone();
+        {
+            let t = moved.tracks.iter_mut().find(|t| t.id == a1).expect("A1");
+            t.gain_db = 4.5;
+            t.pan = -0.35;
+        }
+        let moved_ctx = VideoResourceCtx {
+            project: moved,
+            mix: ctx.mix.clone(),
+            ..ctx
+        };
+        let after = run(
+            &moved_ctx.project,
+            &spec_on(&moved_ctx, &lane, "reset-mix"),
+            None,
+        );
+        let t = after.track(a1).expect("A1");
+        assert!(
+            t.gain_db.abs() < 1e-6 && t.pan.abs() < 1e-6,
+            "reset puts the lane back to unity and centre in one step: \
+             {} dB, pan {}",
+            t.gain_db,
+            t.pan,
+        );
+    }
+
+    #[test]
+    fn the_trim_action_lowers_every_lane_by_the_measured_overshoot() {
+        let (ctx, lanes) = ctx_with_clipped_mix(4.0);
+        // Two lanes deliberately at different levels, so "the balance is
+        // unchanged" is a claim with something to be wrong about.
+        let mut p = ctx.project.clone();
+        p.tracks
+            .iter_mut()
+            .find(|t| t.id == lanes[0])
+            .expect("A1")
+            .gain_db = 2.0;
+        p.tracks
+            .iter_mut()
+            .find(|t| t.id == lanes[1])
+            .expect("A2")
+            .gain_db = -5.0;
+        let ctx = VideoResourceCtx {
+            project: p,
+            mix: ctx.mix.clone(),
+            ..ctx
+        };
+
+        let after = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("0"));
+        let want = ctx.mix.worst_over_db();
+        assert!(
+            (want - 4.0).abs() < 1e-6,
+            "the fixture measured 4 dB over: {want}",
+        );
+        assert!(
+            (after.track(lanes[0]).expect("A1").gain_db - (2.0 - want)).abs() < 1e-6,
+            "A1 came down by the overshoot: {}",
+            after.track(lanes[0]).expect("A1").gain_db,
+        );
+        assert!(
+            (after.track(lanes[1]).expect("A2").gain_db - (-5.0 - want)).abs() < 1e-6,
+            "and A2 by the same, so they are still 7 dB apart: {}",
+            after.track(lanes[1]).expect("A2").gain_db,
+        );
+    }
+
+    /// The declared argument is honoured rather than decorative.
+    #[test]
+    fn the_trims_headroom_argument_is_read() {
+        let (ctx, lanes) = ctx_with_clipped_mix(4.0);
+        let plain = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("0"));
+        let spare = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("3"));
+        let gain = |p: &Project| p.track(lanes[0]).expect("A1").gain_db;
+        assert!(
+            (gain(&plain) - gain(&spare) - 3.0).abs() < 1e-6,
+            "three decibels of headroom is three decibels lower: {} vs {}",
+            gain(&plain),
+            gain(&spare),
+        );
+        // Negative headroom would be an instruction to leave it clipping,
+        // which is the state this exists to end.
+        let back = run(&ctx.project, &spec(&ctx, "trim-mix"), Some("-6"));
+        assert!(
+            (gain(&back) - gain(&plain)).abs() < 1e-6,
+            "asking for headroom below zero is asking for none: {}",
+            gain(&back),
+        );
+    }
+
+    /// The measurement reaches a caller that has no screen. This is the whole
+    /// point of putting it on the action surface: an agent or a script reads
+    /// the report from the enumeration, exactly as a person reads it off the
+    /// red chip.
+    #[test]
+    fn the_trim_states_the_measurement_it_is_a_report_about() {
+        let (ctx, _) = ctx_with_clipped_mix(4.0);
+        let sp = spec(&ctx, "trim-mix");
+        let words = sp.description.unwrap_or_default();
+        assert!(words.contains("+4.0 dB over"), "how far over: {words}");
+        assert!(words.contains("1 place"), "and in how many places: {words}");
     }
 }

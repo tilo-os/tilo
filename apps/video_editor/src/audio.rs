@@ -167,6 +167,30 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
     out
 }
 
+/// Whether this lane can contribute sound at all.
+///
+/// An audio lane always can — that is what the lane is, empty or not. A
+/// picture lane can only when something on it carries its source's own sound,
+/// which is a fact about the files, not about the track.
+///
+/// What it is for: a meter that can never move is a meter that reads as a
+/// broken output. The master strip already refuses to draw one on a
+/// picture-only timeline; a lane needs the same refusal, or every video track
+/// wears a level that is not merely at zero but *unreachable*.
+pub fn track_carries_sound(project: &Project, track: TrackId) -> bool {
+    let Some(t) = project.track(track) else {
+        return false;
+    };
+    if t.kind == TrackKind::Audio {
+        return true;
+    }
+    project
+        .clips
+        .iter()
+        .filter(|c| c.track == track)
+        .any(|c| carries_sound(project, c, t.kind))
+}
+
 /// Whether this project has anything to mix at all. An export asks first, so
 /// a video-only timeline is muxed without an empty audio track.
 pub fn has_audio(project: &Project) -> bool {
@@ -774,6 +798,16 @@ impl MixSnapshot {
 
     pub fn track(&self, id: TrackId) -> Option<&TrackLevel> {
         self.tracks.iter().find(|t| t.track == id)
+    }
+
+    /// Every lane that contributed to what was measured, clipped or not.
+    ///
+    /// The distinction from [`Self::clipped_tracks`] is the whole of what a
+    /// trim has to know: the lanes to *name* in a warning are the ones caught
+    /// over, and the lanes to *move* are all of them, because the mix is their
+    /// sum. See [`Project::lanes_trimmed_by`](crate::model::Project::lanes_trimmed_by).
+    pub fn measured_tracks(&self) -> Vec<TrackId> {
+        self.tracks.iter().map(|t| t.track).collect()
     }
 
     /// The lanes that have clipped, loudest first — what a warning names.
@@ -1909,6 +1943,222 @@ mod tests {
             "two clips playing at once are heard at once: {}",
             block[0],
         );
+    }
+
+    /// Apply a trim to `p` in place, as the `trim-mix` action's document
+    /// write does.
+    fn apply_lanes(p: &mut Project, lanes: Vec<Track>) {
+        for next in lanes {
+            if let Some(dst) = p.tracks.iter_mut().find(|t| t.id == next.id) {
+                *dst = next;
+            }
+        }
+    }
+
+    /// The whole loop, through the production mixer at both ends: a mix goes
+    /// over, the meter measures how far, the trim comes down by that much and
+    /// the *same* mixer now fits.
+    ///
+    /// Asserted on the peak the mixer really produces rather than on the
+    /// gains that were written, because "the numbers went down" is not the
+    /// claim — the claim is that the sum fits.
+    #[test]
+    fn trimming_by_what_the_meter_measured_brings_the_real_mix_back_under() {
+        let (mut p, a1, _a2, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        // Two lanes that fit on their own and do not fit together, one of them
+        // pushed up on its fader.
+        p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
+        let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
+
+        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+        assert!(
+            before.master.over(),
+            "the fixture has to clip or this proves nothing: {:?}",
+            before.master,
+        );
+        let meters = MixMeters::new();
+        meters.record(1.0, &before);
+        let snap = meters.snapshot();
+        assert!(snap.clipped());
+
+        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+        apply_lanes(&mut p, trimmed);
+
+        let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
+        assert!(
+            !after.master.over(),
+            "the mix the trim was measured from now fits: {:?}",
+            after.master,
+        );
+        // …and it fits by landing *on* full scale, not by being thrown away.
+        // A trim that took twenty decibels off would also pass the line above
+        // and would have ruined the mix to do it.
+        assert!(
+            (after.master.loudest() - 1.0).abs() < 0.02,
+            "and it lands at full scale rather than somewhere quiet: {}",
+            after.master.loudest(),
+        );
+    }
+
+    /// The balance survives. Every lane moves by the same number of decibels,
+    /// so what the person mixing decided about the *relationship* between the
+    /// lanes is exactly where they left it.
+    #[test]
+    fn a_trim_moves_the_whole_mix_and_not_the_balance() {
+        let (mut p, a1, a2, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
+        p.tracks.iter_mut().find(|t| t.id == a2).unwrap().gain_db = -2.0;
+        let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
+
+        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+        let meters = MixMeters::new();
+        meters.record(1.0, &before);
+        let snap = meters.snapshot();
+        let gap = |p: &Project| p.track(a1).unwrap().gain_db - p.track(a2).unwrap().gain_db;
+        let was = gap(&p);
+        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+        apply_lanes(&mut p, trimmed);
+        assert!(
+            (gap(&p) - was).abs() < 1e-9,
+            "the lanes are still {was} dB apart, not {}",
+            gap(&p),
+        );
+        // And both really did move, so the line above is not passing on a
+        // trim that did nothing at all.
+        assert!(p.track(a1).unwrap().gain_db < 6.0 - 1e-9);
+        assert!(p.track(a2).unwrap().gain_db < -2.0 - 1e-9);
+    }
+
+    /// Headroom is a real request, not a rounding: asking for three decibels
+    /// under lands three decibels under.
+    #[test]
+    fn asking_for_headroom_leaves_headroom() {
+        let (mut p, a1, _, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        p.tracks.iter_mut().find(|t| t.id == a1).unwrap().gain_db = 6.0;
+        let mut src = constant(&[(m1, 0.5), (m2, 0.4)]);
+        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+        let meters = MixMeters::new();
+        meters.record(1.0, &before);
+        let snap = meters.snapshot();
+
+        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db() + 3.0);
+        apply_lanes(&mut p, trimmed);
+        let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
+        let want = crate::model::db_to_linear(-3.0) as f32;
+        assert!(
+            (after.master.loudest() - want).abs() < 0.02,
+            "asked for 3 dB of headroom and got {} rather than {want}",
+            after.master.loudest(),
+        );
+    }
+
+    /// The case that decides *which* lanes a trim moves.
+    ///
+    /// Two lanes each comfortably under full scale on their own add up to a
+    /// mix that is over. Nothing is in `clipped_tracks` — there is no lane to
+    /// blame — so a trim that moved only the lanes caught over would have had
+    /// nothing to move and would have left the mix clipping.
+    #[test]
+    fn a_mix_can_clip_with_no_single_lane_over_and_the_trim_still_fixes_it() {
+        let (mut p, _, _, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        let mut src = constant(&[(m1, 0.7), (m2, 0.6)]);
+
+        let (_, before) = mix_block_metered(&p, 1.0, 64, &mut src);
+        assert!(before.master.over(), "1.3 is over: {:?}", before.master);
+        let meters = MixMeters::new();
+        meters.record(1.0, &before);
+        let snap = meters.snapshot();
+        assert!(
+            snap.clipped_tracks().is_empty(),
+            "neither lane is over on its own, so neither is to blame",
+        );
+        assert_eq!(
+            snap.measured_tracks().len(),
+            2,
+            "but both were in the sum, so both are what a trim moves",
+        );
+
+        let trimmed = p.lanes_trimmed_by(&snap.measured_tracks(), snap.worst_over_db());
+        apply_lanes(&mut p, trimmed);
+        let (_, after) = mix_block_metered(&p, 1.0, 64, &mut src);
+        assert!(
+            !after.master.over(),
+            "and it fits afterwards: {:?}",
+            after.master,
+        );
+    }
+
+    /// Nothing to trim writes nothing. A mix that is already under full scale
+    /// must not be quietened by an action that reports success.
+    #[test]
+    fn a_trim_of_nothing_writes_nothing() {
+        let (p, _, _, _) = project_with_audio();
+        let lanes: Vec<TrackId> = p.tracks.iter().map(|t| t.id).collect();
+        assert!(p.lanes_trimmed_by(&lanes, 0.0).is_empty());
+        assert!(p.lanes_trimmed_by(&lanes, -3.0).is_empty());
+        assert!(p.lanes_trimmed_by(&lanes, f64::NAN).is_empty());
+    }
+
+    /// Which lanes have a level to show. A meter that can never move is not
+    /// a quiet meter, it is a broken one.
+    #[test]
+    fn only_a_lane_that_can_carry_sound_has_a_level() {
+        let (mut p, a1, _, _) = project_with_audio();
+        assert!(
+            track_carries_sound(&p, a1),
+            "an audio lane is an audio lane whatever is on it",
+        );
+        // An empty one too: the lane is what it is before anything is dropped
+        // on it, and a meter that appeared on the first drop would read as the
+        // output coming back to life.
+        let empty = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: empty,
+            name: "A3".into(),
+            kind: TrackKind::Audio,
+            index: 3,
+            ..Default::default()
+        });
+        assert!(track_carries_sound(&p, empty));
+
+        // A picture lane with silent footage on it has nothing to meter…
+        let vid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: vid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let mid = Uuid::new_v4();
+        p.media.push(crate::model::MediaItem {
+            id: mid,
+            name: "shot.mp4".into(),
+            kind: crate::model::MediaKind::Video,
+            duration: 10.0,
+            has_audio: false,
+            ..Default::default()
+        });
+        p.add_clip(vid, mid, 0.0).expect("media exists");
+        assert!(
+            !track_carries_sound(&p, vid),
+            "silent footage gives its lane no level to show",
+        );
+
+        // …and the same lane does the moment the footage carries sound, which
+        // is a fact about the file rather than about the track.
+        p.media.iter_mut().find(|m| m.id == mid).unwrap().has_audio = true;
+        assert!(
+            track_carries_sound(&p, vid),
+            "a talking head on a video lane is heard, so it is metered",
+        );
+
+        // A lane that is not in the project at all has no level either.
+        assert!(!track_carries_sound(&p, Uuid::new_v4()));
     }
 
     #[test]

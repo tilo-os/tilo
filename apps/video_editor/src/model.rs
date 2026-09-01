@@ -2004,6 +2004,44 @@ impl Project {
         self.clips.iter_mut().find(|c| c.id == id)
     }
 
+    /// Every lane in `lanes` with its fader brought **down** by `db`, as the
+    /// whole-track writes that change is.
+    ///
+    /// Every lane moves by the same number, and that is what makes this a trim
+    /// rather than a re-mix: a mix is a sum, scaling every layer of a sum by
+    /// one factor scales the sum by exactly that factor, so the balance
+    /// between the lanes is left precisely where the person mixing put it and
+    /// only the total comes down.
+    ///
+    /// Moving only the lanes that were *caught* over would do neither. It
+    /// changes the balance, and it does not even guarantee the sum fits —
+    /// a mix goes over whenever the lanes add up past full scale, which two
+    /// lanes at two-thirds each manage without either one being over on its
+    /// own.
+    ///
+    /// `db` at or below zero is nothing to do and writes nothing. A lane that
+    /// lands on [`MIN_GAIN_DB`] has hit the bottom of its travel and is off,
+    /// which can only make the sum quieter than asked for — so the result is
+    /// "at or under the target", never over it.
+    pub fn lanes_trimmed_by(&self, lanes: &[TrackId], db: f64) -> Vec<Track> {
+        if !db.is_finite() || db <= 0.0 {
+            return Vec::new();
+        }
+        let mut seen: Vec<TrackId> = Vec::new();
+        let mut out = Vec::new();
+        for id in lanes {
+            if seen.contains(id) {
+                continue;
+            }
+            seen.push(*id);
+            let Some(t) = self.track(*id) else { continue };
+            let mut next = t.clone();
+            next.gain_db = (t.gain_db - db).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+            out.push(next);
+        }
+        out
+    }
+
     /// Tracks in vertical display order, top → bottom: video lanes
     /// (highest index first), then audio lanes (lowest index first).
     /// This matches every NLE's "video above, audio below" convention.

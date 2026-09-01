@@ -1124,7 +1124,9 @@ pub enum ShotScenario {
     /// The mixer, on a mix that has been played and went over: lane faders
     /// off unity and off centre, the meters showing it, the master strip's
     /// standing CLIP warning, the marks on the ruler saying where, and the
-    /// inspector's MIX section open on the lane the selection sits on.
+    /// inspector's MIX section open on the lane the selection sits on — with
+    /// the keyboard cursor resting on the button that puts that lane back, so
+    /// the walk through the section can be seen as well as read about.
     Mix,
 }
 
@@ -2661,7 +2663,20 @@ impl VideoEditorApp {
             self.mix_meters.clear();
         }
         self.mix_sig = Some(sig);
-        self.mix_meters.decay(dt);
+        // The fall is a function of elapsed *wall* time, which a still
+        // capture does not have. Left running under `--shots` it made the
+        // mixer scenario irreproducible: three captures of one staged mix came
+        // out as three different images, because the bars landed wherever
+        // process startup and the frame loop happened to leave them — green in
+        // one and red in the next, off the same numbers. A visual baseline
+        // cannot be taken from that, and neither can a judgement.
+        //
+        // Same gate the monitor uses (`pump_monitor`) and for the same reason:
+        // a capture is hermetic, so it neither makes a sound nor watches a
+        // clock.
+        if !self.seed_demo {
+            self.mix_meters.decay(dt);
+        }
         self.mix = self.mix_meters.snapshot();
     }
 
@@ -4207,14 +4222,27 @@ impl VideoEditorApp {
         }
     }
 
+    /// Park the playhead on an instant: stop whatever it was doing, clamp the
+    /// position into the timeline, and pull the view along after it.
+    ///
+    /// The one door for "go to this moment". Clicking a marker row, the
+    /// accessibility route onto that row and a chosen global-search hit all
+    /// arrive here, so none of them can drift into a slightly different move
+    /// — an earlier copy that only assigned `playhead` left a running
+    /// transport running, so the moment you had just asked for slid away
+    /// under you.
+    fn seek_to(&mut self, at: f64) {
+        self.playhead = at.clamp(0.0, self.project.duration());
+        self.playing = false;
+        self.shuttle = 0.0;
+        self.chase_playhead = true;
+    }
+
     /// Park the playhead on a marker -- what clicking a marker row's body
     /// does. Extracted so the accessibility route runs the identical move
     /// rather than a second copy of it that could drift.
     fn seek_to_marker(&mut self, m: MarkerRef) {
-        self.playhead = m.at.clamp(0.0, self.project.duration());
-        self.playing = false;
-        self.shuttle = 0.0;
-        self.chase_playhead = true;
+        self.seek_to(m.at);
     }
 
     fn delete_marker(&mut self, doc: &mut AutoCommit, m: MarkerRef) {
@@ -6569,7 +6597,34 @@ impl VideoEditorApp {
                     self.selection.select_only(cid);
                     self.selected_media = self.project.clip(cid).map(|c| c.media);
                 }
-                self.inspector_scroll = 150.0_f64.min(self.inspector_max_scroll(r));
+                // Anchored on the MIX header rather than a guessed offset:
+                // measured from the layout the panel really draws, the whole
+                // section fits — the fader, the pan and the button under them.
+                // A fixed 150px put the button half off the bottom edge, and a
+                // capture of a control nobody can see is a capture of nothing.
+                self.inspector_scroll = 0.0;
+                let head = self
+                    .inspector_layout(r)
+                    .sections
+                    .iter()
+                    .find(|(s, _)| *s == Section::Mix)
+                    .map(|(_, rect)| rect.y0);
+                if let Some(y) = head {
+                    let want = y - r.inspector.y0 - 22.0;
+                    self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
+                }
+                // …with the keyboard cursor on the button that puts the lane
+                // back. It is the newest stop on the walk and the one that
+                // spent longest as a pointer-only control, so a capture of the
+                // mixer that could not show a ring on it would be a capture of
+                // the half of the feature that already worked.
+                self.has_focus = true;
+                self.focus.pane = Pane::Inspector;
+                self.focus.inspector = self
+                    .a11y_inspector_rows()
+                    .iter()
+                    .position(|row| *row == InspectorRow::Pick(PickField::MixReset))
+                    .unwrap_or(0);
             }
             ShotScenario::LinkedAudio => {
                 // Bring the link control into view. It is laid out under the
@@ -7000,6 +7055,9 @@ impl VideoEditorApp {
         Some(VideoResourceCtx {
             project: self.project.clone(),
             playhead: self.playhead,
+            // The copy `draw` reads, so the palette cannot report a level the
+            // meter on screen disagrees with.
+            mix: self.mix.clone(),
         })
     }
 }
@@ -8209,6 +8267,7 @@ impl Widget for VideoEditorApp {
                         l.link,
                         l.reset_transform,
                         l.reverse,
+                        l.mix_reset,
                         l.title_text,
                         l.title_bold,
                         l.title_italic,
@@ -8271,6 +8330,35 @@ impl Widget for VideoEditorApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Fold the open project into qOS global search: every marker, title and
+    /// bin source becomes a findable *place*, and choosing one seeks there.
+    ///
+    /// A snapshot rather than a borrow, because the host queries the provider
+    /// off the paint path — see
+    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::ProjectSearchProvider::new(&self.project),
+        )]
+    }
+
+    /// Open the moment a chosen search row names.
+    ///
+    /// Every row this editor publishes resolves to an instant, so activating
+    /// one is the same move as clicking a marker — through
+    /// [`Self::seek_to`], not a raw write, so a running transport is stopped
+    /// and the view follows exactly as it does everywhere else.
+    ///
+    /// A row from another provider parses as `None` and is *declined*. A
+    /// silent fall-through would have been a seek to zero: choosing somebody
+    /// else's search hit would have thrown the playhead to the head of the
+    /// timeline, which is a worse answer than doing nothing.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(at) = crate::search_provider::parse_action_id(action_id) {
+            self.seek_to(at);
+        }
     }
 
     /// Hand the host the document heads captured before an on-screen affordance
@@ -8649,6 +8737,17 @@ impl VideoEditorApp {
             }
             for f in Self::a11y_section_fields(section, clip.as_ref()) {
                 out.push(InspectorRow::Field(f));
+            }
+            // The buttons a section draws *below* its knobs. Emitted after
+            // them, which is where they are painted, and on the same condition
+            // the layout uses — a stop on a control the panel is not drawing
+            // would put a reader on a different panel from the one on screen.
+            if section == Section::Mix
+                && self
+                    .selected_track()
+                    .is_some_and(crate::model::Track::mix_is_set)
+            {
+                out.push(InspectorRow::Pick(PickField::MixReset));
             }
         }
         out
@@ -9297,6 +9396,16 @@ impl VideoEditorApp {
                 Role::Button,
                 false,
             ),
+            // Named for the lane it puts back, because a reader standing on it
+            // has no fader in view to tell them which one that is.
+            PickField::MixReset => (
+                self.selected_track().map_or_else(
+                    || "Reset gain and pan".to_string(),
+                    |t| format!("Reset {} to 0.0 dB, centre", t.name),
+                ),
+                Role::Button,
+                false,
+            ),
         };
         // `checked` is what accesskit turns into a radio's or a checkbox's
         // "toggled": `selected` alone reads as a highlighted list row, which
@@ -9373,6 +9482,19 @@ impl VideoEditorApp {
                     return false;
                 }
                 self.toggle_link_selected(doc);
+                true
+            }
+            // Refused when the lane is already at unity and centre, which is
+            // exactly when the panel draws no button: activating a control
+            // that is not on screen would be a route only a reader has.
+            PickField::MixReset => {
+                if !self
+                    .selected_track()
+                    .is_some_and(crate::model::Track::mix_is_set)
+                {
+                    return false;
+                }
+                self.reset_selected_track_mix(doc);
                 true
             }
         }
@@ -9751,6 +9873,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("J / K / L", "Shuttle back / stop / fwd"),
             ("Home / End", "Jump to start / end"),
             (", / .", "Previous / next marker"),
+            ("C", "Go to where the mix clipped"),
             ("G", "Go to timecode"),
         ],
     ),
@@ -10016,6 +10139,7 @@ impl VideoEditorApp {
                 l.colors.iter().find(|(x, _)| *x == slot).map(|(_, r)| *r)
             }
             InspectorRow::Pick(PickField::LinkToggle) => l.link,
+            InspectorRow::Pick(PickField::MixReset) => l.mix_reset,
         }
     }
 
@@ -10643,6 +10767,16 @@ enum PickField {
     /// selection — see [`LinkAffordance`] — so the row is one stop whichever
     /// way round it reads.
     LinkToggle,
+    /// Put the selected clip's lane back to unity and centre. Laid out under
+    /// the fader and the pan, and offered only when one of them has been
+    /// moved — the same condition the panel draws it on.
+    ///
+    /// It is a stop for the reason the key switch and the mask shapes are: the
+    /// two knobs above it were on the walk from the day they were added and
+    /// the button that undoes both of them was not, so a keyboard could set a
+    /// lane and then had no way back to unity that did not go through two
+    /// sliders.
+    MixReset,
 }
 
 impl PickField {
@@ -10667,6 +10801,7 @@ impl PickField {
             PickField::Transition(t) => format!("clip.transition.{}", t.as_str()),
             PickField::Label(slot) => format!("clip.label.{slot}"),
             PickField::LinkToggle => "clip.link".to_string(),
+            PickField::MixReset => "track.mix.reset".to_string(),
         }
     }
 
@@ -10999,6 +11134,14 @@ impl VideoEditorApp {
                 self.jump_to_marker(true);
                 true
             }
+            // C walks the places the mix went over, the same walk the red CLIP
+            // chip does under the pointer. Without it the *only* route to the
+            // answer was clicking a 60-pixel chip: the warning told a keyboard
+            // user their mix was ruined and then gave them a whole timeline to
+            // scrub. Returns false when nothing has clipped, so the key falls
+            // through as unhandled rather than reporting a jump it did not
+            // make.
+            Key::Character(c) if c.eq_ignore_ascii_case("c") && !ctrl => self.go_to_next_clipping(),
             // Shift+Z fits the whole project to the window, the NLE standard.
             Key::Character(c) if c.eq_ignore_ascii_case("z") && !ctrl => {
                 self.zoom_to_fit(r);
@@ -15917,16 +16060,24 @@ impl VideoEditorApp {
             // The lane's level. Fed from the mix that made the sound, so a
             // bar moving here is the same measurement the master meter and
             // the clip warning are reading — never a second opinion.
-            let level = self.mix.track(*tid);
-            draw_level_meter(
-                scene,
-                tf,
-                theme,
-                self.track_meter_rect(header),
-                level.map(|l| l.level).unwrap_or_default(),
-                level.map(|l| l.hold).unwrap_or(0.0),
-                level.is_some_and(|l| l.clipped),
-            );
+            //
+            // Drawn only on a lane that can carry sound. A picture lane whose
+            // footage is silent has no level and never will, and a bar that
+            // can never move does not read as "quiet" — it reads as an output
+            // that is broken, which is the same lie the master strip already
+            // refuses to tell on a timeline with no audio in it.
+            if crate::audio::track_carries_sound(&self.project, *tid) {
+                let level = self.mix.track(*tid);
+                draw_level_meter(
+                    scene,
+                    tf,
+                    theme,
+                    self.track_meter_rect(header),
+                    level.map(|l| l.level).unwrap_or_default(),
+                    level.map(|l| l.hold).unwrap_or(0.0),
+                    level.is_some_and(|l| l.clipped),
+                );
+            }
             // mute + lock pills (clickable toggles)
             let muted = track.map(|t| t.muted).unwrap_or(false);
             let locked = track.map(|t| t.locked).unwrap_or(false);
@@ -27225,6 +27376,438 @@ mod tests {
             "the other half of a selected shot is drawn exactly like a clip \
              that has nothing to do with it",
         );
+    }
+
+    // ---- the mix meter and the clipping warning --------------------------
+
+    /// The sample timeline with a mix that has been *measured* over, staged
+    /// through [`VideoEditorApp::stage_mix_block`] — the same door the live
+    /// monitor's blocks come in by, so these tests exercise the production
+    /// latch and merge rather than a hand-set flag.
+    fn app_with_clipped_mix() -> (VideoEditorApp, AutoCommit) {
+        let (mut app, doc) = app_and_doc();
+        let lanes: Vec<TrackId> = app
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .map(|t| t.id)
+            .collect();
+        assert!(!lanes.is_empty(), "the sample timeline has audio lanes");
+        let block = |l: f32| crate::audio::MixReport {
+            master: crate::audio::BlockMeter { peak: [l, l * 0.9] },
+            tracks: lanes
+                .iter()
+                .map(|id| (*id, crate::audio::BlockMeter { peak: [l, l * 0.9] }))
+                .collect(),
+        };
+        // An ordinary block, then two that went over, at instants far enough
+        // apart that the meter keeps them as two places rather than merging
+        // them into one.
+        app.stage_mix_block(1.0, &block(0.6));
+        app.stage_mix_block(4.0, &block(1.3));
+        app.stage_mix_block(18.0, &block(1.1));
+        (app, doc)
+    }
+
+    /// C walks the places the mix went over, and wraps.
+    ///
+    /// The half of the warning that makes it worth having: knowing a
+    /// ninety-second timeline clipped somewhere is knowing you have ninety
+    /// seconds to scrub. Until this key the only route to the answer was
+    /// clicking a chip sixty pixels wide.
+    #[test]
+    fn c_walks_the_places_the_mix_clipped_and_wraps_round() {
+        let (mut app, mut doc) = app_with_clipped_mix();
+        app.playhead = 0.0;
+        assert!(nav_key(&mut app, &mut doc, ch("c"), false), "C is bound");
+        assert!(
+            (app.playhead - 4.0).abs() < 1e-6,
+            "the first overload, not the loudest or the last: {}",
+            app.playhead,
+        );
+        assert!(nav_key(&mut app, &mut doc, ch("c"), false));
+        assert!(
+            (app.playhead - 18.0).abs() < 1e-6,
+            "then the next one: {}",
+            app.playhead,
+        );
+        // Pressing it again starts the list over rather than parking on the
+        // last one, so the key never stops answering.
+        assert!(nav_key(&mut app, &mut doc, ch("c"), false));
+        assert!(
+            (app.playhead - 4.0).abs() < 1e-6,
+            "and wraps to the first: {}",
+            app.playhead,
+        );
+    }
+
+    /// …and says nothing when there is nothing to say. A key that jumped the
+    /// playhead somewhere on a mix that never clipped would be reporting a
+    /// fault that does not exist.
+    #[test]
+    fn c_does_nothing_on_a_mix_that_never_went_over() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 7.0;
+        assert!(
+            !nav_key(&mut app, &mut doc, ch("c"), false),
+            "unhandled, so the key can fall through rather than pretending",
+        );
+        assert!((app.playhead - 7.0).abs() < 1e-9, "and nothing moved");
+    }
+
+    #[test]
+    fn the_shortcut_sheet_names_the_clipping_walk() {
+        // A binding missing from the sheet is a binding nobody finds, and this
+        // one is the only keyboard route to the warning at all.
+        let rows: Vec<(&str, &str)> = SHORTCUTS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .collect();
+        let row = rows
+            .iter()
+            .find(|(k, _)| *k == "C")
+            .expect("the sheet lists C");
+        assert!(
+            row.1.to_lowercase().contains("clip"),
+            "and says what it does: {}",
+            row.1,
+        );
+    }
+
+    /// The master strip's accessibility node is a *button* once the mix has
+    /// clipped, and pressing it is the same walk the chip and the key do.
+    #[test]
+    fn a_reader_is_told_the_mix_clipped_and_can_walk_to_it() {
+        let (mut app, mut doc) = app_with_clipped_mix();
+        let words = app.mix_words().expect("the timeline has audio");
+        assert!(
+            words.contains("clipped") && words.contains("dB"),
+            "the words say it happened and how far over: {words}",
+        );
+        assert!(
+            words.contains(&crate::timecode::timecode(4.0, app.project.fps)),
+            "and where the first one was: {words}",
+        );
+        // The route a reader takes, through the production handler rather than
+        // a copy of it.
+        app.playhead = 0.0;
+        let key = ui::a11y::hash_key(&MIX_METER_KEY);
+        assert!(app.a11y_timeline_action(&ui::a11y::Action::Activate, &[key], &mut doc));
+        assert!(
+            (app.playhead - 4.0).abs() < 1e-6,
+            "activating the node walks the playhead: {}",
+            app.playhead,
+        );
+    }
+
+    /// A mix nobody has listened to reports that, rather than reporting that
+    /// the levels are fine.
+    #[test]
+    fn an_unmeasured_mix_says_so_rather_than_claiming_it_is_fine() {
+        let (app, _doc) = app_and_doc();
+        let words = app.mix_words().expect("the timeline has audio");
+        assert!(!words.contains("clipped"), "nothing has clipped: {words}");
+        assert!(
+            words.to_lowercase().contains("not measured"),
+            "and silence is not the same claim as 'never played': {words}",
+        );
+    }
+
+    /// The lane's reset button is on the keyboard walk, is drawn where the
+    /// walk says it is, and does the same thing the pointer does.
+    ///
+    /// The two knobs above it reached the walk the day they were added and
+    /// this did not, so a keyboard could push a fader off unity and then had
+    /// no way back to it that was not two sliders and a guess.
+    #[test]
+    fn the_keyboard_walk_reaches_the_lane_reset_and_it_puts_the_lane_back() {
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| {
+                app.project
+                    .track(c.track)
+                    .is_some_and(|t| t.kind == TrackKind::Audio)
+            })
+            .map(|c| c.id)
+            .expect("the sample timeline has an audio clip");
+        app.selection.select_only(cid);
+
+        // At unity there is no button, so there must be no stop either.
+        assert!(
+            !app.a11y_inspector_rows()
+                .contains(&InspectorRow::Pick(PickField::MixReset)),
+            "a stop on a control the panel is not drawing is a stop onto nothing",
+        );
+        assert!(
+            !app.a11y_activate_pick(PickField::MixReset, &mut doc),
+            "and it refuses to act through the back door either",
+        );
+
+        let tid = app.project.clip(cid).expect("the clip").track;
+        // Through the same preview-then-commit path a fader drag takes.
+        app.preview_track_edit(|t| {
+            t.gain_db = 5.5;
+            t.pan = -0.4;
+        });
+        app.dispatch_selected_track(&mut doc);
+        assert!(app.project.track(tid).expect("the lane").mix_is_set());
+
+        let rows = app.a11y_inspector_rows();
+        let at = rows
+            .iter()
+            .position(|r| *r == InspectorRow::Pick(PickField::MixReset))
+            .expect("the walk stops on the reset button");
+        // Drawn where the walk says it is — a stop with no rect is a cursor
+        // the eye cannot follow.
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert!(
+            VideoEditorApp::inspector_row_rect(&l, rows[at]).is_some(),
+            "the reset stop has a rect in the very layout the panel draws from",
+        );
+        // Named for the lane it puts back, because a reader standing on it has
+        // no fader in view.
+        let node = app.a11y_pick_node(PickField::MixReset, false);
+        let name = node.name.unwrap_or_default();
+        assert!(
+            name.contains(&app.project.track(tid).expect("the lane").name),
+            "the node names the lane: {name}",
+        );
+
+        // And it reads as a button under the pointer. It was drawn as one and
+        // acted as one, and the cursor over it stayed an arrow — the one cue
+        // that says "this is pressable" before you press it.
+        let on_screen = reveal(&mut app, |l| l.mix_reset);
+        assert_eq!(
+            app.cursor_shape(on_screen.center()),
+            Some(winit::window::CursorIcon::Pointer),
+        );
+
+        assert!(app.a11y_activate_pick(PickField::MixReset, &mut doc));
+        let back = app.project.track(tid).expect("the lane");
+        assert!(
+            !back.mix_is_set(),
+            "unity and centre: {}",
+            back.gain_words()
+        );
+        // …and it reached the document, not only the in-memory model.
+        assert!(
+            !VideoDoc::load_project(&doc)
+                .track(tid)
+                .expect("the lane")
+                .mix_is_set(),
+        );
+    }
+
+    /// A capture of the mixer is the same capture every time it is taken.
+    ///
+    /// It was not. The meter falls at a rate per *second* off the wall clock,
+    /// and `--shots` runs that clock like any other build, so three captures
+    /// of one staged mix came out as three different files — the bars landed
+    /// wherever process startup and the frame loop had left them, green in one
+    /// and red in the next off identical numbers. A still that changes between
+    /// takes cannot be a visual baseline and cannot be evidence of anything.
+    #[test]
+    fn a_capture_of_the_mixer_is_the_same_capture_twice() {
+        use std::time::Duration;
+        let theme = Theme::dark();
+        let (w, h) = (960u32, 640u32);
+        let mut doc = AutoCommit::new();
+        let mut app = VideoEditorApp::new_for_shot(ShotScenario::Mix);
+        app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        // Two syncs to settle the scenario, so the comparison below is of a
+        // staged state rather than of one still arriving.
+        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&mut doc, &automerge::ROOT);
+        let _ = render_pixels(&mut app, w, h, &theme);
+        let staged = app.mix.clone();
+        assert!(
+            staged.clipped() && staged.master[0] > 0.0,
+            "the scenario has to have staged a live meter or this proves \
+             nothing: {staged:?}",
+        );
+
+        // First the control: the same state drawn twice with nothing between,
+        // to establish what "identical" costs on this renderer. Without it a
+        // handful of antialiasing pixels would be read as the thing under
+        // test — and there are a handful.
+        let a = render_pixels(&mut app, w, h, &theme);
+        let b = render_pixels(&mut app, w, h, &theme);
+        let noise = frame_diff(&a, &b, w);
+        assert!(
+            noise.0 < 64,
+            "something in this frame animates on its own, so nothing below is \
+             attributable: {}",
+            noise.1,
+        );
+
+        // Now the claim: time passes, the app is pumped exactly as the capture
+        // loop pumps it, and nothing about the mix has moved.
+        std::thread::sleep(Duration::from_millis(150));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            app.mix, staged,
+            "150ms of wall clock moved the meter the capture is of; at \
+             24 dB/s that is nearly three decibels, which is the difference \
+             between a green bar and a red one",
+        );
+        let later = render_pixels(&mut app, w, h, &theme);
+        let moved = frame_diff(&a, &later, w);
+        assert!(
+            moved.0 <= noise.0.max(64),
+            "and the picture is the same picture: {}",
+            moved.1,
+        );
+    }
+
+    /// The silent lane wears no meter, and the same lane wears one the moment
+    /// its footage carries sound.
+    ///
+    /// Asserted on the pixels of the lane's own header, because the claim is
+    /// about what is drawn — a predicate that returned the right answer into a
+    /// draw that ignored it would pass every other kind of test.
+    #[test]
+    fn a_picture_lane_is_metered_only_when_its_footage_carries_sound() {
+        let theme = Theme::dark();
+        let (w, h) = (1100u32, 760u32);
+        let (mut app, mut doc) = app_and_doc();
+        app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+
+        let r = app.regions();
+        let (tid, _, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(_, kind, _)| *kind == TrackKind::Video)
+            .expect("the sample timeline has a picture lane");
+        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let strip = app.track_meter_rect(header);
+        // The head only, never the lane: turning the sound on also asks for a
+        // waveform, and a waveform lands on the *clip*. Comparing the whole
+        // row would be reading one change as the other.
+        let mid: Vec<crate::model::MediaId> =
+            app.project.clips_on(tid).iter().map(|c| c.media).collect();
+        assert!(!mid.is_empty(), "the lane has footage on it");
+
+        let silent = render_pixels(&mut app, w, h, &theme);
+        let again = render_pixels(&mut app, w, h, &theme);
+        let noise = frame_diff(&crop(&silent, w, strip), &crop(&again, w, strip), w);
+        assert!(
+            noise.0 == 0,
+            "the meter strip has to be still before a change to it can be \
+             read: {}",
+            noise.1,
+        );
+
+        for m in &mut app.project.media {
+            if mid.contains(&m.id) {
+                m.has_audio = true;
+            }
+        }
+        for m in mid {
+            app.dispatch_media(&mut doc, m);
+        }
+        app.sync(&mut doc, &automerge::ROOT);
+        let heard = render_pixels(&mut app, w, h, &theme);
+        let lit = frame_diff(&crop(&silent, w, strip), &crop(&heard, w, strip), w);
+        assert!(
+            lit.0 > 0,
+            "footage that is heard has to be metered, and the lane's head is \
+             where its meter is drawn: {}",
+            lit.1,
+        );
+    }
+
+    /// How many pixels differ between two frames, and whereabouts.
+    ///
+    /// Reported as a count and a bounding box rather than as the pixels: a
+    /// failure that prints two million bytes is a failure nobody reads.
+    fn frame_diff(before: &[u8], after: &[u8], width: u32) -> (usize, String) {
+        if before.len() != after.len() {
+            return (
+                usize::MAX,
+                format!("different sizes: {} vs {}", before.len(), after.len()),
+            );
+        }
+        let mut count = 0usize;
+        let (mut left, mut top) = (u32::MAX, u32::MAX);
+        let (mut right, mut bottom) = (0u32, 0u32);
+        let pairs = before.chunks_exact(4).zip(after.chunks_exact(4));
+        for (index, (was, now)) in pairs.enumerate() {
+            if was == now {
+                continue;
+            }
+            count += 1;
+            let index = index as u32;
+            left = left.min(index % width);
+            top = top.min(index / width);
+            right = right.max(index % width);
+            bottom = bottom.max(index / width);
+        }
+        if count == 0 {
+            return (0, "identical".to_string());
+        }
+        (
+            count,
+            format!("{count} pixels differ, within ({left},{top})..({right},{bottom})"),
+        )
+    }
+
+    // ---- the project as a search source ----------------------------------
+
+    /// A chosen search row opens the editor *at that position* — which is what
+    /// CLAUDE.md means by a provider plus a renderer, and what makes a hit a
+    /// place rather than a list entry.
+    #[test]
+    fn a_chosen_search_hit_seeks_the_timeline_to_it() {
+        let (mut app, mut doc) = app_and_doc();
+        let mut next = app.project.clone();
+        next.add_marker(12.5, "Coastline hold", 1);
+        app.dispatch_project_meta(&mut doc, next);
+
+        let providers = app.search_providers();
+        let provider = providers.first().expect("the editor publishes a provider");
+        let hit = provider
+            .search("Coastline hold")
+            .into_iter()
+            .find(|h| h.title == "Coastline hold")
+            .expect("the marker is findable by name");
+
+        // Running, so the assertion below can tell the shared seek from a raw
+        // write to the playhead: a transport left running slides the moment
+        // that was just asked for straight back out from under the user.
+        app.playing = true;
+        app.playhead = 0.0;
+        app.activate_search_result(&hit.action_id, &mut doc, &automerge::ROOT);
+        assert!(
+            (app.playhead - 12.5).abs() < 1e-3,
+            "the hit put the playhead on the marker: {}",
+            app.playhead,
+        );
+        assert!(
+            !app.playing,
+            "and stopped the transport, as a marker click does"
+        );
+    }
+
+    /// Somebody else's row is declined, not treated as a seek to zero.
+    #[test]
+    fn a_search_row_from_another_app_is_declined_rather_than_seeking_to_zero() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 9.0;
+        app.playing = true;
+        for foreign in ["chat.channel:general", "", "video-editor.seek:not-a-number"] {
+            app.activate_search_result(foreign, &mut doc, &automerge::ROOT);
+            assert!(
+                (app.playhead - 9.0).abs() < 1e-9,
+                "{foreign} is not ours, so it moved nothing: {}",
+                app.playhead,
+            );
+            assert!(app.playing, "and did not stop the transport either");
+        }
     }
 
     /// The raw bytes of a rectangle of the frame.

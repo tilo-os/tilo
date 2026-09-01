@@ -157,7 +157,18 @@ impl TitleRaster {
         let lines: Vec<String> = text
             .content
             .lines()
-            .flat_map(|line| wrap_to(tr, line, size, weight, text.italic, &family, safe))
+            .flat_map(|line| {
+                wrap_to(
+                    tr,
+                    line,
+                    size,
+                    weight,
+                    text.italic,
+                    &family,
+                    safe,
+                    f64::from(width),
+                )
+            })
             .collect();
         let leading = size as f64 * 1.25;
         let block = leading * lines.len().max(1) as f64;
@@ -219,6 +230,51 @@ mod tests {
         assert_eq!(
             rr, 255,
             "straight alpha: a half-transparent white keeps its full colour",
+        );
+    }
+
+    /// A single word wider than the title-safe box is left whole.
+    ///
+    /// Wrapping was added so a long title stops running off the frame, but it
+    /// took the safe box as a hard bound, so one big word got chopped
+    /// mid-letter — "HELLO" at 55% of frame height came out "HELL" / "O".
+    /// Safe-area is a placement margin, not a limit: a word that merely runs
+    /// into the margin should use the margin. Only a word too wide for the
+    /// picture itself is broken.
+    #[test]
+    fn one_big_word_uses_the_safe_margin_rather_than_being_chopped() {
+        let mut tr = ui::text_render::TextRenderer::new();
+        let family = ui::text_render::FontChoice::default();
+        let weight = ui::text_render::TextWeight::Bold;
+        // 1280x720 at size 0.55 — the export fixture's title, which measures
+        // wider than 0.84 of the frame but narrower than the frame.
+        let size = 0.55 * 720.0;
+        let safe = 1280.0 * 0.84;
+        let frame = 1280.0;
+        let w = f64::from(
+            tr.measure_font("HELLO", size, None, weight, false, &family)
+                .0,
+        );
+        assert!(
+            w > safe && w < frame,
+            "this test is only meaningful for a word between the safe box and \
+             the frame; measured {w:.0} against safe {safe:.0}, frame {frame:.0}",
+        );
+
+        let lines = wrap_to(&mut tr, "HELLO", size, weight, false, &family, safe, frame);
+        assert_eq!(
+            lines,
+            vec!["HELLO".to_string()],
+            "a word that fits the picture stays one word",
+        );
+
+        // ...and a word that genuinely cannot fit the picture still breaks,
+        // rather than running off both edges.
+        let huge = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let broken = wrap_to(&mut tr, huge, size, weight, false, &family, safe, frame);
+        assert!(
+            broken.len() > 1,
+            "a word too wide for the frame is still broken up: {broken:?}",
         );
     }
 
@@ -359,9 +415,19 @@ fn wrap_to(
     italic: bool,
     family: &ui::text_render::FontChoice,
     max_w: f64,
+    frame_w: f64,
 ) -> Vec<String> {
     let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
         f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
+    };
+    // Breaking mid-letter is measured against the **frame**, not the
+    // title-safe box. Safe-area is a placement margin, not a hard bound: a
+    // single word that merely runs into the margin should use the margin,
+    // because "HELLO" chopped to "HELL" / "O" is worse than a title sitting
+    // slightly wider than broadcast-safe. Only a word that cannot fit the
+    // picture at all is broken.
+    let fits_frame = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= frame_w
     };
 
     // An empty line is a deliberate blank line, and must survive as one.
@@ -384,8 +450,9 @@ fn wrap_to(
         if !current.is_empty() {
             out.push(std::mem::take(&mut current));
         }
-        // The word alone: fits on its own line, or has to be broken.
-        if fits(tr, word) {
+        // The word alone: on its own line if it fits the picture at all,
+        // and only broken up when even that is impossible.
+        if fits_frame(tr, word) {
             current = word.to_string();
             continue;
         }
@@ -393,7 +460,7 @@ fn wrap_to(
         for ch in word.chars() {
             let mut next = piece.clone();
             next.push(ch);
-            if piece.is_empty() || fits(tr, &next) {
+            if piece.is_empty() || fits_frame(tr, &next) {
                 piece = next;
             } else {
                 out.push(std::mem::take(&mut piece));
