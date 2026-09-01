@@ -125,7 +125,7 @@ impl CollaboratorsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            "Collaborators",
+            "People",
             tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
@@ -145,7 +145,7 @@ impl CollaboratorsOverlay {
         if model.rows.is_empty() && model.unavailable.is_none() {
             text_renderer.draw_text(
                 scene,
-                "No peers connected",
+                "Only you are here",
                 tokens.typography.scale.sm,
                 colors.text_dim,
                 transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
@@ -537,10 +537,10 @@ impl CollaboratorsOverlay {
             &RoundedRect::from_rect(self.activity, f64::from(tokens.radii.sm)),
         );
         let size = tokens.typography.scale.sm;
-        let (_, height) = text_renderer.measure("Room activity", size, None);
+        let (_, height) = text_renderer.measure("Workspace activity", size, None);
         text_renderer.draw_text(
             scene,
-            "Room activity",
+            "Workspace activity",
             size,
             colors.text_primary,
             transform.pre_translate(

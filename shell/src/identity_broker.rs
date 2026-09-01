@@ -631,17 +631,16 @@ mod tests {
             Response::Denied(_)
         ));
 
-        {
-            let mut tree = tree.write();
-            let workspace = &mut tree.workspaces[0];
-            workspace.owner = None;
-            workspace.capabilities.clear();
-            workspace.capabilities.push(CapOverride::membership(
-                Subject::person(profile.principal_id()),
-                workspace_id.clone(),
-                Verb::Comment,
-            ));
-        }
+        let mut tree_guard = tree.write();
+        let workspace = &mut tree_guard.workspaces[0];
+        workspace.owner = None;
+        workspace.capabilities.clear();
+        workspace.capabilities.push(CapOverride::membership(
+            Subject::person(profile.principal_id()),
+            workspace_id.clone(),
+            Verb::Comment,
+        ));
+        drop(tree_guard);
         op.payload = DocumentMutation::Incremental(b"comment".to_vec())
             .encode()
             .expect("typed comment mutation");
@@ -671,16 +670,15 @@ mod tests {
             ),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
-        {
-            let mut tree = tree.write();
-            let workspace = &mut tree.workspaces[0];
-            workspace.capabilities.clear();
-            workspace.capabilities.push(CapOverride::membership(
-                Subject::person(profile.principal_id()),
-                workspace_id.clone(),
-                Verb::Read,
-            ));
-        }
+        let mut tree_guard = tree.write();
+        let workspace = &mut tree_guard.workspaces[0];
+        workspace.capabilities.clear();
+        workspace.capabilities.push(CapOverride::membership(
+            Subject::person(profile.principal_id()),
+            workspace_id.clone(),
+            Verb::Read,
+        ));
+        drop(tree_guard);
         assert!(matches!(
             sign_collaboration_op(
                 &tree,

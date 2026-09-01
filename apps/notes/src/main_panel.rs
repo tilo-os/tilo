@@ -35,10 +35,12 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
@@ -108,6 +110,16 @@ pub struct MainPanel {
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
     local_author: Option<String>,
+    /// The immediately-drawn first-note action. Keeping its rect here makes
+    /// the otherwise empty document state a real, discoverable path into the
+    /// editor rather than an instruction that asks people to find the sidebar.
+    empty_action_rect: Rect,
+    /// Rising edge set when the first-note action is pressed; the app drains
+    /// it onto the same create action path as every other new-page affordance.
+    empty_action_requested: bool,
+    /// Focus belongs to the actionable empty state while there is no page to
+    /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
+    empty_action_focused: bool,
 }
 
 impl MainPanel {
@@ -129,6 +141,9 @@ impl MainPanel {
             dirty: true,
             scroll_y: 0.0,
             local_author: None,
+            empty_action_rect: Rect::ZERO,
+            empty_action_requested: false,
+            empty_action_focused: false,
         }
     }
 
@@ -159,6 +174,7 @@ impl MainPanel {
     /// `BlockEditor::from_markdown` doesn't see inline marks).
     pub fn load_page(&mut self, id: PageId, title: &str, body: String) {
         self.page_id = Some(id);
+        self.empty_action_focused = false;
         self.set_title_value(title);
         let specs = crate::markdown::parse(&body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
@@ -169,6 +185,12 @@ impl MainPanel {
         // its focused-node machinery, but the editor's internal
         // focused_block needs to be primed.
         self.editor.set_focus(true);
+        // Open a note at its beginning. A focused single-line block keeps its
+        // caret in view; leaving it at the parser's end would horizontally
+        // scroll the first long paragraph on a narrow window and hide its
+        // opening words before the person has interacted with it.
+        self.editor
+            .focus_block(0, ui::widget::CursorPlacement::Start);
         self.body = body;
         // Brand-new page → reset scroll to top (the previous page's
         // scroll position is meaningless for the new content).
@@ -197,6 +219,8 @@ impl MainPanel {
         self.editor = BlockEditor::new();
         self.editor.set_blocks(blocks);
         self.editor.set_focus(true);
+        self.editor
+            .focus_block(0, ui::widget::CursorPlacement::Start);
         self.body = body;
         self.scroll_y = 0.0;
         self.dirty = true;
@@ -226,6 +250,8 @@ impl MainPanel {
         // Seeds the doc if empty, otherwise adopts the doc's blocks.
         self.editor.bind_blocks(state, blocks_list);
         self.editor.set_focus(true);
+        self.editor
+            .focus_block(0, ui::widget::CursorPlacement::Start);
         self.body = body.to_string();
         self.scroll_y = 0.0;
         self.dirty = true;
@@ -245,7 +271,15 @@ impl MainPanel {
         self.editor = BlockEditor::new();
         self.body = String::new();
         self.scroll_y = 0.0;
+        self.empty_action_rect = Rect::ZERO;
+        self.empty_action_requested = false;
+        self.empty_action_focused = false;
         self.dirty = true;
+    }
+
+    /// Drain a press of the first-note action in the empty state.
+    pub fn take_empty_action(&mut self) -> bool {
+        std::mem::take(&mut self.empty_action_requested)
     }
 
     /// Update only the title (used by the sidebar's inline rename). Ignored
@@ -328,6 +362,12 @@ impl MainPanel {
     #[doc(hidden)]
     pub fn title_is_editing_for_test(&self) -> bool {
         self.title_label.is_editing()
+    }
+
+    /// Test hook: centre of the first-note call to action after a draw pass.
+    #[doc(hidden)]
+    pub fn empty_action_center_for_test(&self) -> Option<Point> {
+        (self.empty_action_rect.width() > 0.0).then(|| self.empty_action_rect.center())
     }
 }
 
@@ -553,21 +593,39 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            EmptyState::paint(
+            self.empty_action_rect = EmptyState::paint(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 self.rect,
-                None,
-                "No note open",
-                Some("Pick a page from the list, or press + to start a new one."),
-                None,
+                Some(Icon::FileText),
+                "Start your first note",
+                Some("Capture an idea, a plan, or a decision. You can organise it later."),
+                Some("Create note"),
                 self.last_pointer,
-            );
+            )
+            .unwrap_or(Rect::ZERO);
+            if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
+                let focus = RoundedRect::from_rect(
+                    self.empty_action_rect.inflate(3.0, 3.0),
+                    f64::from(tokens.radii.md) + 2.0,
+                );
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    tokens.colors.border_focus,
+                    None,
+                    &focus,
+                );
+            }
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the widget event boundary keeps pointer, keyboard, empty-state and editor routing ordered around one handled flag"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -586,6 +644,48 @@ impl Widget for MainPanel {
             self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
         if self.page_id.is_none() {
+            let pressed = matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            );
+            let keyboard_activation = self.empty_action_focused
+                && (matches!(
+                    event,
+                    WindowEvent::KeyboardInput {
+                        event: winit::event::KeyEvent {
+                            logical_key: Key::Named(NamedKey::Enter),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                        ..
+                    }
+                ) || matches!(
+                    event,
+                    WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: Key::Character(c),
+                                state: ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } if c.as_str() == " "
+                ));
+            if pressed && self.empty_action_rect.contains(self.last_pointer) {
+                self.empty_action_requested = true;
+                self.empty_action_focused = true;
+                self.dirty = true;
+                *focus_target = Some(node_id);
+                *handled = true;
+            } else if keyboard_activation {
+                self.empty_action_requested = true;
+                self.dirty = true;
+                *handled = true;
+            }
             return;
         }
 
@@ -677,8 +777,66 @@ impl Widget for MainPanel {
         "MainPanel"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.page_id.is_none().then_some("notes.first_note")
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.page_id.is_none() && self.empty_action_rect.contains(point) {
+            Some(winit::window::CursorIcon::Pointer)
+        } else {
+            None
+        }
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.page_id.is_none()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        let next = focused && self.page_id.is_none();
+        if self.empty_action_focused != next {
+            self.empty_action_focused = next;
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.page_id.is_none() && self.empty_action_focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        self.page_id.is_none().then(|| {
+            AccessNode::new(Role::Button)
+                .with_name("Create note")
+                .with_description("Create the first note in this workspace")
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.empty_action_focused,
+                    ..Default::default()
+                })
+        })
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
+            self.empty_action_requested = true;
+            self.empty_action_focused = true;
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
     }
 
     fn needs_redraw(&self) -> bool {
@@ -726,6 +884,21 @@ mod tests {
         p.mark_drawn();
         p.set_title(Some("Hello".into()));
         assert!(!p.needs_redraw());
+    }
+
+    #[test]
+    fn empty_state_primary_action_is_a_focused_accessible_button() {
+        let mut p = MainPanel::new();
+        p.set_focus(true);
+        let node = p.accessibility().expect("empty state is exposed");
+        assert_eq!(node.role, ui::a11y::Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Create note"));
+        assert!(node.state.focusable);
+        assert!(node.state.focused);
+
+        let mut doc = AutoCommit::new();
+        assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+        assert!(p.take_empty_action());
     }
 
     #[test]

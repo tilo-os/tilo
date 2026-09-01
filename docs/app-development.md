@@ -76,6 +76,8 @@ Grow an existing app from any directory inside it with `add`:
 ```bash
 qos-dev add
 qos-dev add component profile-card --template form
+qos-dev add component project-tree --template tree
+qos-dev add component activity-list --template list
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -89,10 +91,10 @@ With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
 containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
-typed-props display or a typed-state form. The wizard reviews the resolved
-artifact before entering the same atomic publication path as the explicit
-commands. Scripts and CI should continue to use the fully specified
-subcommands.
+typed-props display, a typed-state form, a source-agnostic virtualized tree, or
+a sparse variable-height list. The wizard reviews the resolved artifact before
+entering the same atomic publication path as the explicit commands. Scripts
+and CI should continue to use the fully specified subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -114,6 +116,66 @@ generates a typed props struct plus a heading/detail view. Component source,
 registry, library wiring, and locale updates publish as one rollback-safe batch;
 an app-owned registry or existing component is protected unless replacement is
 explicit.
+
+`add component project-tree --template tree` starts at the professional tree
+boundary without choosing the app's data source. Its function accepts any
+`TreeModel`—including a database, CRDT, remote-page cache, or `TreeNode`
+adapter—and returns the concrete `TreeView<(), M>`. App code can therefore
+attach its own retained row widgets and reorder policy instead of editing a
+generated wrapper or giving up toolkit behavior:
+
+```rust
+let config = ProjectTreeConfig {
+    expanded: vec![workspace_id],
+    selection: restored_selection,
+    ..ProjectTreeConfig::default()
+};
+let tree = project_tree("project-browser", database_model, &config)
+    .with_row_delegate(project_row)
+    .with_reorder(can_move_project, move_project);
+```
+
+The generated configuration also controls the localized accessible name,
+stable-key multi-selection, viewport height, and the initial variable-row
+estimate. `TreeView` continues to own sparse
+virtualization, loading/error slots, keyboard navigation, selection across
+collapsed branches, drag edge-scrolling and insertion previews, stable scroll
+anchoring, model notifications, accessibility, and reduced-motion-aware
+structural transitions. The embedded headless test proves that expansion,
+stable-key selection, and an interactive button inside a custom row delegate
+remain independent. The tree's accessible name is added to every Fluent
+catalog in the same atomic generation batch.
+
+`add component activity-list --template list` provides the equivalent reusable
+boundary for flat collections. It accepts any `ListModel`, including models
+that report hundreds of millions of logical rows while retaining only a page
+cache. The required delegate receives `Ready`, `Loading`, and `Error` states,
+and the required key encoder gives accessibility and headless tests a stable
+row identity:
+
+```rust
+let list = activity_list(
+    "activity-feed",
+    paged_model,
+    &ActivityListConfig::default(),
+    activity_row,
+    ActivityId::to_string,
+)
+.on_activate(open_activity)
+.with_reorder(can_reorder_activity, reorder_activity);
+```
+
+The typed configuration restores `KeySelection`, including constant-space
+select-all state, discarding keys no longer present in the model. It also
+controls the localized accessible name, multi-selection, viewport height, and
+initial row-height estimate. The returned `VirtualList`
+keeps targeted insert/remove/move/data notifications, retained interactive row
+widgets, measured variable heights, pixel and drag-to-scroll input, accelerated
+momentum, edge auto-scroll during reorder, insertion previews, and stable
+anchoring when rows change above the viewport. Its generated stress test uses a
+100-million-row model without allocating its rows, verifies that fewer than 30
+delegates are mounted, checks variable geometry and restored selection, and
+activates a button inside a row independently of row selection.
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,

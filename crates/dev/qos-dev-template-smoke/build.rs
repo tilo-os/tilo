@@ -14,6 +14,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             qos_dev::ComponentTemplate::Display,
             "activity_card.rs",
         ),
+        (
+            "project-tree",
+            qos_dev::ComponentTemplate::Tree,
+            "project_tree.rs",
+        ),
+        (
+            "activity-list",
+            qos_dev::ComponentTemplate::List,
+            "activity_list.rs",
+        ),
     ] {
         let source = qos_dev::render_component_source(name, template)?;
         std::fs::write(output.join(file), source)?;

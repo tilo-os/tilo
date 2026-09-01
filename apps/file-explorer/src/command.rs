@@ -135,6 +135,14 @@ pub enum FileCommand {
     RestoreFromTrash,
     /// Permanently empty the Trash.
     EmptyTrash,
+    /// Permanently delete these already-trashed paths after the person has
+    /// explicitly accepted the irreversible warning. Never exposed in menus.
+    ConfirmPermanentDelete {
+        paths: Vec<PathBuf>,
+    },
+    /// Permanently empty the Trash after the person has explicitly accepted
+    /// the irreversible warning. Never exposed in menus.
+    ConfirmEmptyTrash,
     /// Persist selected collaborative records on this device, or return them
     /// to automatic cache management.
     KeepOffline,
