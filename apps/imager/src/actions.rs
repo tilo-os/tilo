@@ -100,7 +100,12 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOp
 }
 
 /// Build the live operational surface for the selected write plan.
-pub fn operation_resource(device: Option<&str>, plan_complete: bool, job_active: bool) -> Resource {
+pub fn operation_resource(
+    device: Option<&str>,
+    plan_complete: bool,
+    job_active: bool,
+    write_allowed: bool,
+) -> Resource {
     let device = device.unwrap_or("").to_string();
     let expected = device.clone();
     let write = ActionSpec::typed_operation(
@@ -136,7 +141,12 @@ pub fn operation_resource(device: Option<&str>, plan_complete: bool, job_active:
         ..ActionContract::default()
     });
 
-    let write = if job_active {
+    let write = if !write_allowed {
+        write.unavailable(
+            "write_backend_disabled",
+            "Raw-device writing is disabled; enable the privileged Imager backend first",
+        )
+    } else if job_active {
         write.unavailable("write_in_progress", "An image write is already in progress")
     } else if !plan_complete {
         write.unavailable(
@@ -686,7 +696,7 @@ mod tests {
 
     #[test]
     fn write_operation_requires_typed_device_admin_and_destructive_confirmation() {
-        let resource = operation_resource(Some("/dev/sdz"), true, false);
+        let resource = operation_resource(Some("/dev/sdz"), true, false, true);
         let write = resource
             .actions
             .iter()
@@ -719,8 +729,24 @@ mod tests {
     }
 
     #[test]
+    fn write_operation_is_unavailable_when_the_real_backend_is_disabled() {
+        let resource = operation_resource(Some("/dev/sdz"), true, false, false);
+        let write = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert!(!write.contract.availability.is_available());
+        assert!(matches!(
+            &write.contract.availability,
+            qos_actions::Availability::Unavailable { code, .. }
+                if code == "write_backend_disabled"
+        ));
+    }
+
+    #[test]
     fn unsupported_verify_and_cancel_are_explicitly_unavailable() {
-        let resource = operation_resource(Some("/dev/sdz"), true, true);
+        let resource = operation_resource(Some("/dev/sdz"), true, true, true);
         for id in ["verify", "cancel"] {
             let action = resource
                 .actions
