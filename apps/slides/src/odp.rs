@@ -16,7 +16,9 @@
 //! is identity — see the test at the bottom). A foreign `.odp` that lacks the
 //! `qslides:` attributes still imports structurally via the native geometry.
 
+use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
 
 use crate::model::{
     Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
@@ -42,7 +44,12 @@ const MIME: &str = "application/vnd.oasis.opendocument.presentation";
 /// Returns an error if the ZIP writer fails (an I/O error on the underlying
 /// cursor, which does not happen in practice since it writes to memory).
 pub fn write_odp(deck: &Deck) -> std::io::Result<Vec<u8>> {
-    let content = content_xml(deck);
+    let pictures = collect_pictures(deck);
+    let picture_hrefs: HashMap<&str, &str> = pictures
+        .iter()
+        .map(|picture| (picture.source.as_str(), picture.href.as_str()))
+        .collect();
+    let content = content_xml(deck, &picture_hrefs);
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     // The `mimetype` entry must be first and stored uncompressed per the ODF
     // packaging spec, so a reader can sniff the type from the archive header.
@@ -58,8 +65,12 @@ pub fn write_odp(deck: &Deck) -> std::io::Result<Vec<u8>> {
     zip.write_all(styles_xml().as_bytes())?;
     zip.start_file("meta.xml", deflated)?;
     zip.write_all(meta_xml(deck).as_bytes())?;
+    for picture in &pictures {
+        zip.start_file(&picture.href, deflated)?;
+        zip.write_all(&picture.bytes)?;
+    }
     zip.start_file("META-INF/manifest.xml", deflated)?;
-    zip.write_all(manifest_xml().as_bytes())?;
+    zip.write_all(manifest_xml(&pictures).as_bytes())?;
     let cursor = zip.finish()?;
     Ok(cursor.into_inner())
 }
@@ -68,7 +79,7 @@ fn cm(units: f64, per_unit: f64) -> String {
     format!("{:.4}cm", units * per_unit)
 }
 
-fn content_xml(deck: &Deck) -> String {
+fn content_xml(deck: &Deck, picture_hrefs: &HashMap<&str, &str>) -> String {
     let sx = PAGE_W_CM / SLIDE_W;
     let sy = PAGE_H_CM / SLIDE_H;
     let mut s = String::new();
@@ -90,7 +101,7 @@ fn content_xml(deck: &Deck) -> String {
         push_attr(&mut s, "qslides:notes", &slide.notes);
         s.push('>');
         for el in slide.z_sorted() {
-            push_element(&mut s, el, sx, sy);
+            push_element(&mut s, el, sx, sy, picture_hrefs);
         }
         s.push_str("</draw:page>");
     }
@@ -100,7 +111,7 @@ fn content_xml(deck: &Deck) -> String {
 
 /// The `qslides:*` attributes that carry the exact model fields on every draw
 /// object — the source of truth the importer reads back.
-fn push_model_attrs(s: &mut String, el: &Element) {
+fn push_model_attrs(s: &mut String, el: &Element, exported_src: Option<&str>) {
     push_attr(s, "qslides:id", &el.id);
     push_attr(s, "qslides:kind", el.kind.as_str());
     push_attr(s, "qslides:x", &fmt_f64(el.x));
@@ -120,10 +131,16 @@ fn push_model_attrs(s: &mut String, el: &Element) {
     );
     push_attr(s, "qslides:radius", &fmt_f64(el.radius));
     push_attr(s, "qslides:z", &el.z.to_string());
-    push_attr(s, "qslides:src", &el.src);
+    push_attr(s, "qslides:src", exported_src.unwrap_or(&el.src));
 }
 
-fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
+fn push_element(
+    s: &mut String,
+    el: &Element,
+    sx: f64,
+    sy: f64,
+    picture_hrefs: &HashMap<&str, &str>,
+) {
     let gx = cm(el.x, sx);
     let gy = cm(el.y, sy);
     let gw = cm(el.w, sx);
@@ -132,11 +149,16 @@ fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
         ElementKind::Text | ElementKind::Image => {
             s.push_str("<draw:frame");
             push_geo(s, &gx, &gy, &gw, &gh);
-            push_model_attrs(s, el);
+            let exported_src = if el.kind == ElementKind::Image {
+                picture_hrefs.get(el.src.as_str()).copied()
+            } else {
+                None
+            };
+            push_model_attrs(s, el, exported_src);
             s.push('>');
             if el.kind == ElementKind::Image {
                 s.push_str("<draw:image xlink:href=\"");
-                s.push_str(&xml_attr(&el.src));
+                s.push_str(&xml_attr(exported_src.unwrap_or(&el.src)));
                 s.push_str("\" xlink:type=\"simple\"/>");
             } else {
                 s.push_str("<draw:text-box>");
@@ -155,13 +177,13 @@ fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
         ElementKind::Rect => {
             s.push_str("<draw:rect");
             push_geo(s, &gx, &gy, &gw, &gh);
-            push_model_attrs(s, el);
+            push_model_attrs(s, el, None);
             s.push_str("/>");
         }
         ElementKind::Ellipse => {
             s.push_str("<draw:ellipse");
             push_geo(s, &gx, &gy, &gw, &gh);
-            push_model_attrs(s, el);
+            push_model_attrs(s, el, None);
             s.push_str("/>");
         }
         ElementKind::Line => {
@@ -174,7 +196,7 @@ fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
             s.push_str("\" svg:y2=\"");
             s.push_str(&cm(el.y + el.h, sy));
             s.push('"');
-            push_model_attrs(s, el);
+            push_model_attrs(s, el, None);
             s.push_str("/>");
         }
     }
@@ -221,10 +243,71 @@ fn meta_xml(deck: &Deck) -> String {
     )
 }
 
-fn manifest_xml() -> String {
+fn manifest_xml(pictures: &[BundledPicture]) -> String {
+    let mut entries = String::new();
+    for picture in pictures {
+        entries.push_str("<manifest:file-entry manifest:full-path=\"");
+        entries.push_str(&xml_attr(&picture.href));
+        entries.push_str("\" manifest:media-type=\"");
+        entries.push_str(picture.mime);
+        entries.push_str("\"/>");
+    }
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3"><manifest:file-entry manifest:full-path="/" manifest:media-type="{MIME}"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="meta.xml" manifest:media-type="text/xml"/></manifest:manifest>"#
+        r#"<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3"><manifest:file-entry manifest:full-path="/" manifest:media-type="{MIME}"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="meta.xml" manifest:media-type="text/xml"/>{entries}</manifest:manifest>"#
     )
+}
+
+struct BundledPicture {
+    source: String,
+    href: String,
+    mime: &'static str,
+    bytes: Vec<u8>,
+}
+
+/// Collect readable local pictures exactly once. Missing files remain external
+/// references instead of making the whole deck unsavable; readable pictures
+/// become real ODF package members, making the saved presentation portable.
+fn collect_pictures(deck: &Deck) -> Vec<BundledPicture> {
+    let mut pictures = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for element in deck.slides.iter().flat_map(|slide| &slide.elements) {
+        if element.kind != ElementKind::Image || !seen.insert(element.src.clone()) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&element.src) else {
+            continue;
+        };
+        let Some((ext, mime)) = picture_format(&bytes) else {
+            continue;
+        };
+        let href = format!("Pictures/picture-{}.{}", pictures.len() + 1, ext);
+        pictures.push(BundledPicture {
+            source: element.src.clone(),
+            href,
+            mime,
+            bytes,
+        });
+    }
+    pictures
+}
+
+fn picture_format(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(("png", "image/png"))
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some(("jpg", "image/jpeg"))
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(("gif", "image/gif"))
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some(("webp", "image/webp"))
+    } else if std::str::from_utf8(bytes)
+        .ok()
+        .is_some_and(|text| text.trim_start().starts_with("<svg"))
+    {
+        Some(("svg", "image/svg+xml"))
+    } else {
+        None
+    }
 }
 
 fn xml_text(s: &str) -> String {
@@ -270,11 +353,71 @@ pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut content = String::new();
-    zip.by_name("content.xml")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-        .read_to_string(&mut content)?;
-    parse_content(&content).ok_or_else(|| {
+    {
+        zip.by_name("content.xml")
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+            .read_to_string(&mut content)?;
+    }
+    let mut deck = parse_content(&content).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "no slides in content.xml")
+    })?;
+    let mut extracted = HashMap::new();
+    for element in deck
+        .slides
+        .iter_mut()
+        .flat_map(|slide| &mut slide.elements)
+        .filter(|element| element.kind == ElementKind::Image)
+    {
+        if let Some(path) = extracted.get(&element.src) {
+            element.src.clone_from(path);
+            continue;
+        }
+        if let Some(path) = extract_picture(&mut zip, &element.src) {
+            extracted.insert(element.src.clone(), path.clone());
+            element.src = path;
+        }
+    }
+    Ok(deck)
+}
+
+fn extract_picture<R: Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    href: &str,
+) -> Option<String> {
+    if !href.starts_with("Pictures/")
+        || Path::new(href).file_name()?.to_str()? != href.get("Pictures/".len()..)?
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    zip.by_name(href).ok()?.read_to_end(&mut bytes).ok()?;
+    let (ext, _) = picture_format(&bytes)?;
+    let hash = fnv1a(&bytes);
+    let dir = picture_cache_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{hash:016x}.{ext}"));
+    if !path.exists() {
+        std::fs::write(&path, bytes).ok()?;
+    }
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn picture_cache_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(|home| PathBuf::from(home).join(".cache"))
+        })
+        .unwrap_or_else(std::env::temp_dir)
+        .join("qos/slides/imported-pictures")
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
     })
 }
 
@@ -382,6 +525,29 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     } else if let Some(slide) = slides.last_mut() {
                         slide.elements.push(el);
                     }
+                } else {
+                    match e.name().as_ref() {
+                        // Foreign ODPs do not have qslides:* fidelity attrs.
+                        // Recover their native frame geometry and nested text or
+                        // image reference instead of opening an empty deck.
+                        b"draw:frame" if is_container => {
+                            cur_text_el = Some(native_frame(&e));
+                            cur_lines.clear();
+                        }
+                        b"draw:image" => {
+                            if let Some(frame) = cur_text_el.as_mut() {
+                                frame.kind = ElementKind::Image;
+                                frame.src = attr(&e, b"xlink:href").unwrap_or_default();
+                                frame.fill = "surface".into();
+                            }
+                        }
+                        b"draw:rect" | b"draw:ellipse" | b"draw:line" => {
+                            if let Some(slide) = slides.last_mut() {
+                                slide.elements.push(native_shape(&e));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -395,6 +561,63 @@ fn parse_content(xml: &str) -> Option<Deck> {
         palette,
         slides,
     })
+}
+
+fn native_frame(e: &quick_xml::events::BytesStart) -> Element {
+    let (x, y, w, h) = native_geometry(e);
+    let mut element = Element::text("", x, y, w, h, 32.0);
+    element.id = attr(e, b"draw:name").unwrap_or_else(crate::model::new_id);
+    element
+}
+
+fn native_shape(e: &quick_xml::events::BytesStart) -> Element {
+    let kind = match e.name().as_ref() {
+        b"draw:ellipse" => ElementKind::Ellipse,
+        b"draw:line" => ElementKind::Line,
+        _ => ElementKind::Rect,
+    };
+    let (x, y, w, h) = if kind == ElementKind::Line {
+        let x1 = native_length(attr(e, b"svg:x1").as_deref(), true);
+        let y1 = native_length(attr(e, b"svg:y1").as_deref(), false);
+        let x2 = native_length(attr(e, b"svg:x2").as_deref(), true);
+        let y2 = native_length(attr(e, b"svg:y2").as_deref(), false);
+        (x1, y1, x2 - x1, y2 - y1)
+    } else {
+        native_geometry(e)
+    };
+    let mut element = Element::shape(kind, x, y, w, h);
+    element.id = attr(e, b"draw:name").unwrap_or_else(crate::model::new_id);
+    element
+}
+
+fn native_geometry(e: &quick_xml::events::BytesStart) -> (f64, f64, f64, f64) {
+    (
+        native_length(attr(e, b"svg:x").as_deref(), true),
+        native_length(attr(e, b"svg:y").as_deref(), false),
+        native_length(attr(e, b"svg:width").as_deref(), true),
+        native_length(attr(e, b"svg:height").as_deref(), false),
+    )
+}
+
+fn native_length(value: Option<&str>, horizontal: bool) -> f64 {
+    let Some(value) = value else { return 0.0 };
+    let (number, centimetres_per_unit) = if let Some(number) = value.strip_suffix("cm") {
+        (number, 1.0)
+    } else if let Some(number) = value.strip_suffix("mm") {
+        (number, 0.1)
+    } else if let Some(number) = value.strip_suffix("in") {
+        (number, 2.54)
+    } else if let Some(number) = value.strip_suffix("pt") {
+        (number, 2.54 / 72.0)
+    } else {
+        (value, 1.0)
+    };
+    let cm = number.trim().parse::<f64>().unwrap_or(0.0) * centimetres_per_unit;
+    if horizontal {
+        cm * SLIDE_W / PAGE_W_CM
+    } else {
+        cm * SLIDE_H / PAGE_H_CM
+    }
 }
 
 fn element_from_attrs(e: &quick_xml::events::BytesStart, kind: &str) -> Element {
@@ -487,6 +710,21 @@ mod tests {
     }
 
     #[test]
+    fn foreign_odp_native_text_and_shapes_do_not_open_as_an_empty_slide() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:presentation><draw:page draw:name="slide-1"><draw:frame draw:name="title" svg:x="2.54cm" svg:y="1.4288cm" svg:width="20.32cm" svg:height="2.8575cm"><draw:text-box><text:p>Hello from LibreOffice</text:p><text:p>Second line</text:p></draw:text-box></draw:frame><draw:rect draw:name="box" svg:x="5.08cm" svg:y="7.1438cm" svg:width="10.16cm" svg:height="4.2863cm"/></draw:page></office:presentation></office:body></office:document-content>"#;
+        let deck = parse_content(xml).expect("foreign ODP content parses");
+        assert_eq!(deck.slides.len(), 1);
+        assert_eq!(deck.slides[0].elements.len(), 2);
+        let text = &deck.slides[0].elements[0];
+        assert_eq!(text.kind, ElementKind::Text);
+        assert_eq!(text.text, "Hello from LibreOffice\nSecond line");
+        assert!((text.x - 128.0).abs() < 0.1);
+        assert!((text.w - 1024.0).abs() < 0.1);
+        assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
+    }
+
+    #[test]
     fn odp_preserves_every_element_kind() {
         let deck = seed_deck();
         let bytes = write_odp(&deck).unwrap();
@@ -496,5 +734,55 @@ mod tests {
             let kb: Vec<ElementKind> = b.elements.iter().map(|e| e.kind).collect();
             assert_eq!(ka, kb, "each slide keeps its element kinds + order");
         }
+    }
+
+    #[test]
+    fn odp_bundles_local_pictures_and_reopens_them_from_the_package() {
+        let source =
+            std::env::temp_dir().join(format!("qos-slides-picture-{}.png", std::process::id()));
+        // Packaging only needs the real image signature; rendering/decode is
+        // separately covered by ImageStore tests.
+        let picture = b"\x89PNG\r\n\x1a\nportable-picture";
+        std::fs::write(&source, picture).unwrap();
+        let mut deck = seed_deck();
+        deck.slides[0].elements.push(Element::image(
+            &source.to_string_lossy(),
+            40.0,
+            60.0,
+            320.0,
+            180.0,
+        ));
+
+        let bytes = write_odp(&deck).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let mut bundled = Vec::new();
+        zip.by_name("Pictures/picture-1.png")
+            .unwrap()
+            .read_to_end(&mut bundled)
+            .unwrap();
+        assert_eq!(bundled, picture);
+        let mut manifest = String::new();
+        zip.by_name("META-INF/manifest.xml")
+            .unwrap()
+            .read_to_string(&mut manifest)
+            .unwrap();
+        assert!(manifest.contains("Pictures/picture-1.png"));
+        drop(zip);
+
+        let reopened = read_odp(&bytes).unwrap();
+        let image = reopened.slides[0]
+            .elements
+            .iter()
+            .find(|element| element.kind == ElementKind::Image)
+            .unwrap();
+        assert_ne!(
+            image.src,
+            source.to_string_lossy(),
+            "reopened decks use the bundled copy, not the author's local path"
+        );
+        assert_eq!(std::fs::read(&image.src).unwrap(), picture);
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(&image.src);
     }
 }

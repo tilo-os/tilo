@@ -52,6 +52,7 @@ impl Section {
 pub enum Category {
     Network,
     Bluetooth,
+    DeviceMesh,
     Sound,
     Displays,
     MouseKeyboard,
@@ -94,6 +95,16 @@ const BLUETOOTH_KEYWORDS: &[&str] = &[
     "keyboard",
     "mouse",
     "wireless",
+];
+const DEVICE_MESH_KEYWORDS: &[&str] = &[
+    "sync",
+    "devices",
+    "server",
+    "host",
+    "remote control",
+    "relay",
+    "copies",
+    "files",
 ];
 const SOUND_KEYWORDS: &[&str] = &[
     "audio",
@@ -291,6 +302,7 @@ impl Category {
         // Connectivity
         Category::Network,
         Category::Bluetooth,
+        Category::DeviceMesh,
         // Devices
         Category::Sound,
         Category::Displays,
@@ -322,6 +334,7 @@ impl Category {
     pub fn section(self) -> Section {
         match self {
             Category::Network | Category::Bluetooth => Section::Connectivity,
+            Category::DeviceMesh => Section::Devices,
             Category::Sound
             | Category::Displays
             | Category::MouseKeyboard
@@ -355,6 +368,7 @@ impl Category {
         match self {
             Category::Network => "Network",
             Category::Bluetooth => "Bluetooth",
+            Category::DeviceMesh => "Devices & Sync",
             Category::Sound => "Sound",
             Category::Displays => "Displays",
             Category::MouseKeyboard => "Mouse & Keyboard",
@@ -381,6 +395,7 @@ impl Category {
         match self {
             Category::Network => "Wi-Fi, wired connections, and VPN",
             Category::Bluetooth => "Pair and manage Bluetooth devices",
+            Category::DeviceMesh => "Copies, remote access, and server roles",
             Category::Sound => "Output, input, volume, and system sounds",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
             Category::MouseKeyboard => "Typing, spelling, input sources, and pointer behaviour",
@@ -411,6 +426,7 @@ impl Category {
         match self {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
+            Category::DeviceMesh => Icon::CloudDownload,
             Category::Sound => Icon::Volume2,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
@@ -441,6 +457,7 @@ impl Category {
         match self {
             Category::Network => NETWORK_KEYWORDS,
             Category::Bluetooth => BLUETOOTH_KEYWORDS,
+            Category::DeviceMesh => DEVICE_MESH_KEYWORDS,
             Category::Sound => SOUND_KEYWORDS,
             Category::Displays => DISPLAYS_KEYWORDS,
             Category::MouseKeyboard => MOUSE_KEYBOARD_KEYWORDS,
@@ -486,6 +503,7 @@ impl Category {
         match self {
             Category::Network => "network",
             Category::Bluetooth => "bluetooth",
+            Category::DeviceMesh => "devices_sync",
             Category::Sound => "sound",
             Category::Displays => "displays",
             Category::MouseKeyboard => "mouse_keyboard",
