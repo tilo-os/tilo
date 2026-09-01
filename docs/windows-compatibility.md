@@ -2,10 +2,11 @@
 
 > **Status (2026-09): partial live implementation.** The catalogue,
 > deterministic route resolver, capsule broker, authenticated compositor
-> session service, and Windows Apps list/launch client are wired. Registered
-> Wine/UMU programs can be listed and launched. The privileged guest adapter,
-> playback-only audio proxy, installer/import portal, route-policy handoff,
-> snapshots, repair/reset, and failure-triggered fallback ordering remain
+> session service, per-launch audio proxy, portal installer intake, and Windows
+> Apps lifecycle client are wired. Wine/UMU programs can be installed, listed,
+> launched, retried, unregistered, vendor-uninstalled, and deleted. The
+> privileged guest adapter, route-policy handoff, snapshots, migration/reset,
+> and failure-triggered fallback ordering remain
 > unavailable and are shown as such rather than simulated.
 
 qOS is intended to present Windows programs as applications, not as prefixes,
@@ -58,13 +59,45 @@ directory. It is launched through the existing per-workspace confinement:
 Wine file pickers do not constitute authority to browse the host. qOS grants
 the containing sandbox access; a Windows path alone never does.
 
-The current live protocol does not accept an `.exe`, `.msi`, host path,
-application identity, runner, or capability record from Windows Apps. It can
-launch only an opaque program ID already present in compositor-owned capsule
-state. The app package intentionally advertises no `.exe`/`.msi` association.
-Opening or installing arbitrary Windows files needs a future trusted import
-portal that turns a user-selected document handle into server-owned capsule
-state; accepting a client path would bypass the qOS grant boundary.
+### Audio (implemented)
+
+Each Wine/UMU launch receives its own short-lived PipeWire daemon and Pulse
+server. It is not a bind of the session's `pipewire-0`, `pulse/native`, or
+`/dev/snd`: the broker creates a virtual output sink which tunnels only
+playback to the qOS session audio server. This makes ordinary Wine PulseAudio
+and native PipeWire clients work without making microphones visible.
+
+When the ordinary qOS `Device("microphone")` grant is present, the broker adds
+one virtual source tunnel to that same private graph. It otherwise creates no
+source and runs no WirePlumber/device-discovery process. The capsule still
+cannot see the host Pulse/PipeWire socket or the raw sound device. Revoking a
+launch kills both proxy processes, disconnecting any audio handles the Windows
+program still holds. The Windows Apps manager reports playback as available
+and microphone state through the standard qOS grants list.
+
+### Installing and opening user software (implemented for Wine/UMU)
+
+Windows Apps uses the shared qOS/XDG file chooser for **Add Windows app…** and
+registers `.exe` and `.msi` open associations. A selected path is opened only
+inside the portal-granted manager sandbox. The already-open descriptor then
+crosses the authenticated compatibility socket with `SCM_RIGHTS`; no host path,
+runner, prefix, command string, or capability record enters the request.
+
+The service bounds the file at 16 GiB, verifies the PE or MSI signature, hashes
+the exact descriptor bytes, then copies them into a descriptor-anchored capsule
+while hashing again. A changed source is rejected. Only that managed copy can
+run. EXE setup is a typed direct invocation; MSI setup is the fixed
+`msiexec.exe /i C:\qos-installers\<digest>.msi` argv shape. The catalogue resolves
+the installer digest before setup, unknown software receives a fresh Wine
+capsule, and a client cannot request Proton or the VM itself.
+
+Setup remains interactive as an ordinary qOS window while Windows Apps stays
+responsive and reports installing/failed/ready state. Discovery is bounded and
+keeps only application executables under Program Files or per-user Local
+AppData, excluding system, helper, updater, setup, and uninstall executables.
+An EXE with no installed launcher and no setup-like name is retained as a
+portable application. Failed or launcher-less setup remains visible with a
+retry action bound to the retained digest.
 
 ## Current session boundary
 
@@ -73,7 +106,10 @@ catalogues and owns the compatibility service. The launcher writes an
 authenticated app/workspace preamble to a connected inherited descriptor. The
 service corroborates the launcher PID and kernel start time with a
 compositor-owned, single-use, short-lived registry record. Requests contain
-only `List`, preview-only `Resolve`, or `Launch { opaque_entry_id }`.
+only bounded typed methods. Launch and remove-launcher use opaque server entry
+IDs. Install is the sole method allowed one descriptor; retry, vendor
+uninstall, and data deletion use an authorized capsule ID already present in
+the session snapshot.
 
 Workspace grants are re-read from the canonical compositor tree for every
 operation. Application query, executable, capsule path, environment, VM
@@ -82,11 +118,12 @@ runs on the Windows Apps worker thread; the render thread paints a bounded
 cache and clears it after an invalid or disconnected response.
 
 The managed-entry registry has a monotonic compositor generation and is
-re-read from capsule state. A running manager retains the exact entry snapshot
-authenticated at its launch. After a trusted installer or importer eventually
-registers another entry, Windows Apps must be closed and reopened to receive a
-new inherited descriptor and generation. This deliberate reconnect boundary
-prevents an already connected process from widening its own authority.
+re-read from capsule state. A running manager starts with the exact entry
+snapshot authenticated at its launch. The service may add only entries created
+from a descriptor imported by that same authenticated connection, and removes
+authority immediately when a launcher or capsule is deleted. Entries created
+by another manager still require a new authenticated launch snapshot, so an
+existing client cannot widen itself by guessing identifiers.
 
 ## Explainable catalogue resolution (implemented core; fallback ordering is roadmap)
 
@@ -155,25 +192,39 @@ security domain: programs inside it can potentially influence each other. The
 UI says this plainly. Programs requiring mutually hostile isolation are not a
 fit for the singleton appliance.
 
-## Management experience (partial live implementation; remaining items are targets)
+## Management experience
 
-Windows Apps currently lists registered programs, explains the selected route,
-shows capsule identity without exposing host paths, displays resolved access
-and disabled reasons, and can launch an available opaque entry. Its fixture
-catalogue exists only in the headless screenshot path; a missing live service
-shows an unavailable/repair state. The broader target also exposes:
+Windows Apps lists programs and retained setup transactions, explains the
+selected route, shows capsule identity without exposing host paths, displays
+resolved access and disabled reasons, and launches opaque entries. **Add
+Windows app…** uses the standard portal and shows immediate progress while the
+service performs blocking setup. Failed discovery is not hidden: it appears as
+a retained installation with Retry setup and Delete app & data.
+
+Lifecycle actions deliberately say what they remove:
+
+- **Remove launcher** unregisters one qOS entry and keeps the Windows install
+  and all private data.
+- **Run uninstaller** executes only the discovered vendor uninstaller inside
+  the capsule, then retains leftovers for inspection or deletion.
+- **Delete app & data** atomically retires and recursively deletes the whole
+  private capsule. It requires a second explicit click.
+
+The fixture catalogue exists only in the headless screenshot path; a missing
+live service shows an unavailable/repair state. Further management targets are:
 
 - current layer, capsule/appliance identity, and catalogue explanation;
 - runner and Windows compatibility settings;
 - file, network, clipboard, and device grants using standard qOS controls;
 - active processes and other programs sharing the same state boundary;
-- snapshot, repair, duplicate, export, reset, and delete actions;
+- snapshot, duplicate, export, reset, and runner-migration actions;
 - an explicit route override and a reset-to-catalogue action.
 
-Those mutation controls remain disabled in the live session until they have a
-trusted action handoff. VM launch is disabled until a privileged authenticated
-guest adapter exists, and audio output is disabled until qOS has a
-playback-only proxy that cannot implicitly grant capture.
+Route-policy and remaining mutation controls stay disabled until they have a
+trusted action handoff. VM launch depends on the privileged authenticated
+guest adapter. Wine/Proton audio is available through the brokered,
+playback-only PipeWire/Pulse graph described above; microphone capture remains
+subject to the existing qOS microphone grant.
 
 The eventual operations should exist as qOS actions/resources. Accessibility tools,
 automation, collaborators, and tests therefore use the same semantic surface
