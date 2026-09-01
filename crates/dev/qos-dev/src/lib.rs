@@ -29,6 +29,7 @@ const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
 const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
+const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
@@ -40,6 +41,7 @@ pub enum Template {
     Async,
     Document,
     Qr,
+    Workspace,
 }
 
 impl Template {
@@ -53,6 +55,7 @@ impl Template {
             Self::Async => "async",
             Self::Document => "document",
             Self::Qr => "qr",
+            Self::Workspace => "workspace",
         }
     }
 
@@ -66,6 +69,7 @@ impl Template {
             Self::Async => "Restartable background task with cancellation",
             Self::Document => "Durable synchronized editor with undo",
             Self::Qr => "IME input to accessible generated QR output",
+            Self::Workspace => "Resizable master-detail workspace with durable item editing",
         }
     }
 }
@@ -6493,7 +6497,7 @@ fn prompt_component_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter   Accessible form and standard lifecycle\n  2) data      Sparse table with retained cell controls\n  3) list      Sparse variable-height retained list\n  4) tree      Professional hierarchy browser\n  5) graph     Serialized UI graph and router\n  6) async     Restartable background task with cancellation\n  7) document  Durable synchronized editor with undo\n  8) qr        IME input to accessible generated QR output"
+        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Resizable master-detail app with durable item editing"
     )
     .context("showing template choices")?;
     loop {
@@ -6515,8 +6519,9 @@ fn parse_template(value: &str) -> Result<Template> {
         "6" | "async" | "a" | "task" => Ok(Template::Async),
         "7" | "document" | "doc" | "editor" => Ok(Template::Document),
         "8" | "qr" | "qrcode" | "showcase" => Ok(Template::Qr),
+        "9" | "workspace" | "master-detail" | "professional" => Ok(Template::Workspace),
         _ => bail!(
-            "unknown template {value:?}; choose 1-8 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, or `qr`"
+            "unknown template {value:?}; choose 1-9 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, `qr`, or `workspace`"
         ),
     }
 }
@@ -6707,6 +6712,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
         Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
         Template::Qr => QR_APP_TEMPLATE.to_owned(),
+        Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
         "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
@@ -6751,7 +6757,22 @@ document-preview-heading = Live preview\n\
 qr-title = QR code generator\n\
 qr-input-label = Content\n\
 qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n",
+qr-output-alt = QR code for { $payload }\n\
+workspace-root = Workspace\n\
+workspace-projects = Projects\n\
+workspace-archive = Archive\n\
+workspace-desktop-app = Desktop app\n\
+workspace-design-system = Design system\n\
+workspace-first-prototype = First prototype\n\
+workspace-unknown-item = Selected item\n\
+workspace-tree-name = Workspace items\n\
+workspace-navigation-heading = Projects\n\
+workspace-title-label = Title\n\
+workspace-title-placeholder = Untitled item\n\
+workspace-notes-label = Notes\n\
+workspace-notes-placeholder = Add project notes…\n\
+workspace-preview-heading = Live preview\n\
+workspace-share = Share\n",
     )
 }
 
@@ -6889,6 +6910,7 @@ fn app_exposes_a_virtualized_table() {{
         Template::Async => async_app_test(crate_name),
         Template::Document => document_app_test(crate_name),
         Template::Qr => qr_app_test(crate_name),
+        Template::Workspace => workspace_app_test(crate_name),
     }
 }
 
@@ -7032,6 +7054,76 @@ fn document_fields_are_synchronized_and_undoable() {{
     app.relayout();
     let undone = app.inspection_json().expect("undone semantic snapshot");
     assert!(!undone.contains("Project Atlas"), "{{undone}}");
+}}
+"#
+    )
+}
+
+fn workspace_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (1000, 640),
+    );
+
+    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("select the design-system project");
+    app.expect(
+        &SemanticExpectation::named("workspace-tree")
+            .semantic_target("node:4")
+            .role(Role::TreeItem)
+            .selected(true),
+    )
+    .expect("master selection semantics match");
+    app.expect(
+        &SemanticExpectation::named("workspace-selected-item")
+            .role(Role::Heading {{ level: 1 }})
+            .name("Design system"),
+    )
+    .expect("detail pane follows the stable selected id");
+    app.perform_named(
+        "workspace-title-input",
+        &Action::SetValue("Design tokens".into()),
+    )
+    .expect("edit the selected project's durable title");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-preview")
+            .role(Role::Heading {{ level: 2 }})
+            .name("Design tokens"),
+    )
+    .expect("the detail preview shares the document binding");
+
+    app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
+        .expect("switch to another project");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-input")
+            .role(Role::TextInput)
+            .value(""),
+    )
+    .expect("each project owns an isolated document path");
+    app.perform_named(
+        "workspace-title-input",
+        &Action::SetValue("Desktop refresh".into()),
+    )
+    .expect("edit the second project");
+    assert!(app.perform_undo(), "detail edits use standard document undo");
+    let snapshot = app.inspection_json().expect("undone workspace snapshot");
+    assert!(!snapshot.contains("Desktop refresh"), "{{snapshot}}");
+
+    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("return to the first project");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-input")
+            .role(Role::TextInput)
+            .value("Design tokens"),
+    )
+    .expect("the first project's persisted view remains synchronized");
+    assert!(app.dump_json().contains("workspace-item-4-title"));
 }}
 "#
     )
@@ -7201,6 +7293,9 @@ fn headless_actions(spec: &AppSpec) -> String {
         Template::Qr => String::from(
             "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",
         ),
+        Template::Workspace => String::from(
+            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"expect\": {\"target\": \"workspace-selected-item\", \"role\": \"heading\", \"name\": \"Design system\"}},\n  {\"perform\": {\"target\": \"workspace-title-input\", \"action\": \"set_value\", \"value\": \"Design tokens\"}},\n  {\"expect\": {\"target\": \"workspace-title-preview\", \"role\": \"heading\", \"name\": \"Design tokens\"}}\n]\n",
+        ),
     }
 }
 
@@ -7323,6 +7418,12 @@ fn app_readme(spec: &AppSpec) -> String {
         let _ = writeln!(
             out,
             "\nThe input writes to one typed `LocalState<String>`. `ModelView::from_state` rebuilds only the generated QR output when that value changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
+        );
+    }
+    if spec.template == Template::Workspace {
+        let _ = writeln!(
+            out,
+            "\nThe workspace starter composes a resizable master-detail shell from ordinary retained widgets. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
         );
     }
     let _ = writeln!(
@@ -9678,7 +9779,7 @@ mod tests {
         req.app_id = None;
         req.template = None;
         let mut input = std::io::Cursor::new(
-            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n9\n4\n\n".to_vec(),
+            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n4\n\n".to_vec(),
         );
         let mut output = Vec::new();
 
@@ -9691,7 +9792,7 @@ mod tests {
         assert!(transcript.contains("invalid app id \"bad-id\""));
         assert!(transcript.contains("1) starter"));
         assert!(transcript.contains("5) graph"));
-        assert!(transcript.contains("unknown template \"9\""));
+        assert!(transcript.contains("unknown template \"10\""));
         assert!(transcript.contains("Review:"));
         assert!(transcript.contains("Template:    tree — Professional hierarchy browser"));
         assert!(transcript.contains(&format!("Destination: {}", destination.display())));
@@ -10204,6 +10305,11 @@ mod tests {
         assert_eq!(parse_template("qr").unwrap(), Template::Qr);
         assert_eq!(parse_template("8").unwrap(), Template::Qr);
         assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
+        assert_eq!(parse_template("9").unwrap(), Template::Workspace);
+        assert_eq!(
+            parse_template("master-detail").unwrap(),
+            Template::Workspace
+        );
         assert!(parse_template("dashboard").is_err());
     }
 
@@ -10231,6 +10337,29 @@ mod tests {
         assert!(test.contains("Role::Image"));
         assert!(test.contains("name_contains"));
         assert!(app_readme(&spec).contains("payload-specific alternative text"));
+    }
+
+    #[test]
+    fn workspace_template_composes_navigation_and_isolated_durable_detail_views() {
+        let spec = AppSpec {
+            package_name: "project-workspace".into(),
+            crate_name: "project_workspace".into(),
+            title: "Project Workspace".into(),
+            app_id: "dev.qos.project.workspace".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Workspace,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("ResizableSplit::new"));
+        assert!(source.contains("ModelView::from_state(&selected"));
+        assert!(source.contains(".on_select"));
+        assert!(source.contains("TextInput::from_document_string"));
+        assert!(source.contains("workspace-item-{item_id}-title"));
+        let test = app_test(&spec);
+        assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
+        assert!(test.contains("perform_undo"));
+        assert!(app_readme(&spec).contains("resizable master-detail shell"));
     }
 
     #[test]
@@ -10438,6 +10567,7 @@ mod tests {
             Template::Async,
             Template::Document,
             Template::Qr,
+            Template::Workspace,
         ] {
             let spec = AppSpec {
                 package_name: "demo".into(),
