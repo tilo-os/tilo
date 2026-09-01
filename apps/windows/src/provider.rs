@@ -1846,6 +1846,7 @@ mod tests {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            operation_result: None,
             pending_vm_install: None,
             pending_vm_install_confirmation: Some(VmInstallConfirmation {
                 display_name: "Example setup".into(),
