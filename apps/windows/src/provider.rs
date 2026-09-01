@@ -61,6 +61,14 @@ pub trait CompatibilityProvider: Send {
     ///
     /// Returns an error when the capsule is unavailable or unauthorized.
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String>;
+    /// Explicitly replays a retained, digest-pinned portal installer in the
+    /// one Windows appliance. This does not accept a new file or a guest path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained setup is in a state that cannot be
+    /// escalated, or the appliance is unavailable.
+    fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Remove one launcher while retaining its installation.
     ///
     /// # Errors
@@ -125,6 +133,9 @@ impl CompatibilityProvider for EmptyProvider {
                 ready: false,
                 detail: self.detail.clone(),
                 running_apps: 0,
+                shared_session_active: false,
+                shared_session_grants: Vec::new(),
+                shared_session_contributors: Vec::new(),
             },
             vm_install_confirmation: None,
         }
@@ -159,6 +170,10 @@ impl CompatibilityProvider for EmptyProvider {
     }
 
     fn retry_install(&mut self, _capsule_id: &str) -> Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn escalate_install_to_vm(&mut self, _capsule_id: &str) -> Result<(), String> {
         Err(self.detail.clone())
     }
 
@@ -202,10 +217,10 @@ impl SampleProvider {
         };
         Self { catalogue: Catalogue {
             apps: vec![
-                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Repair this private capsule or use its own supported route.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
-                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "Use the catalogue-selected Proton repair route.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
-                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Managed Windows appliance · app-focused SPICE".into(), capsule: "Shared Windows appliance".into(), prefix: "Guest storage · host path hidden".into(), catalogue_source: "Authenticated guest catalogue".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens in the single managed fallback appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Available through an isolated output", true), ("Host files", "Unavailable in focused SPICE", false), ("Clipboard", "Unavailable in focused SPICE", false), ("Microphone and network", "Unavailable in focused SPICE", false)]), fallback_detail: "Normal launch focuses this application and suppresses Explorer. The full desktop is only for owner-authorised setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: false, route_override_unavailable_reason: Some("Route changes need a trusted qOS policy action and are disabled in this session API.".into()), can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Published by the managed Windows appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
-            ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0 }, vm_install_confirmation: None } }
+                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Repair this private capsule or use its own supported route.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
+                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "Use the catalogue-selected Proton repair route.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
+                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Managed Windows appliance · app-focused SPICE".into(), capsule: "Shared Windows appliance".into(), prefix: "Guest storage · host path hidden".into(), catalogue_source: "Authenticated guest catalogue".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens in the single managed fallback appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Available through an isolated output", true), ("Host files", "Unavailable in focused SPICE", false), ("Clipboard", "Unavailable in focused SPICE", false), ("Microphone and network", "Unavailable in focused SPICE", false)]), fallback_detail: "Normal launch focuses this application and suppresses Explorer. The full desktop is only for owner-authorised setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: false, route_override_unavailable_reason: Some("Route changes need a trusted qOS policy action and are disabled in this session API.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Published by the managed Windows appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+            ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
     }
 }
 impl Default for SampleProvider {
@@ -253,6 +268,7 @@ impl CompatibilityProvider for SampleProvider {
             route_override_available: false,
             route_override_unavailable_reason: None,
             can_retry_install: false,
+            can_escalate_install_to_vm: false,
             can_remove_launcher: false,
             can_vendor_uninstall: false,
             can_delete_data: false,
@@ -284,6 +300,19 @@ impl CompatibilityProvider for SampleProvider {
             .find(|app| app.capsule == capsule_id)
             .ok_or_else(|| "Unknown Windows app".to_string())?;
         app.status = AppStatus::Installing;
+        Ok(())
+    }
+    fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String> {
+        let app = self
+            .catalogue
+            .apps
+            .iter_mut()
+            .find(|app| app.capsule == capsule_id)
+            .ok_or_else(|| "Unknown Windows app".to_string())?;
+        app.status = AppStatus::Installing;
+        app.fallback_detail =
+            "The retained installer is opening in the shared Windows appliance.".into();
+        app.can_escalate_install_to_vm = false;
         Ok(())
     }
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
@@ -338,6 +367,7 @@ enum WorkerCommand {
     InstallInVm { source: File, source_name: String },
     PublishVmCandidate(String),
     RetryInstall(String),
+    EscalateInstallToVm(String),
     RemoveLauncher(String),
     VendorUninstall(String),
     VendorUninstallVm(String),
@@ -525,6 +555,7 @@ impl CompatibilityProvider for LiveProvider {
             route_override_available: false,
             route_override_unavailable_reason: None,
             can_retry_install: false,
+            can_escalate_install_to_vm: false,
             can_remove_launcher: false,
             can_vendor_uninstall: false,
             can_delete_data: false,
@@ -584,6 +615,24 @@ impl CompatibilityProvider for LiveProvider {
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String> {
         self.commands
             .send(WorkerCommand::RetryInstall(capsule_id.to_string()))
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String> {
+        self.drain();
+        let installation = self
+            .cached
+            .apps
+            .iter()
+            .find(|application| application.capsule == capsule_id)
+            .ok_or_else(|| "That retained Windows setup is not in this session.".to_string())?;
+        if !installation.can_escalate_install_to_vm {
+            return Err(
+                "This retained setup cannot be continued in the Windows appliance now.".into(),
+            );
+        }
+        self.commands
+            .send(WorkerCommand::EscalateInstallToVm(capsule_id.to_string()))
             .map_err(|_| "The compatibility service worker has stopped.".to_string())
     }
 
@@ -867,6 +916,33 @@ fn worker(
                     "Retry finished",
                 );
             }
+            WorkerCommand::EscalateInstallToVm(capsule_id) => {
+                let event = match client.request(&ProtocolRequest::EscalateInstallToVm {
+                    version: PROTOCOL_VERSION,
+                    capsule_id,
+                }) {
+                    Ok(ProtocolResponse::VmInstallStarted { installation }) => {
+                        WorkerEvent::Notice(installation.detail)
+                    }
+                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
+                    Ok(_) => WorkerEvent::Unavailable(
+                        "The compatibility service returned an invalid Windows escalation response."
+                            .into(),
+                    ),
+                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                };
+                if events.send(event).is_err() {
+                    return;
+                }
+                lifecycle_request(
+                    &mut client,
+                    events,
+                    &ProtocolRequest::List {
+                        version: PROTOCOL_VERSION,
+                    },
+                    "The retained installer is running in the shared Windows appliance.",
+                );
+            }
             WorkerCommand::RemoveLauncher(entry_id) => {
                 lifecycle_request(
                     &mut client,
@@ -1016,6 +1092,9 @@ fn unavailable_catalogue(detail: &str) -> Catalogue {
             ready: false,
             detail: detail.to_string(),
             running_apps: 0,
+            shared_session_active: false,
+            shared_session_grants: Vec::new(),
+            shared_session_contributors: Vec::new(),
         },
         vm_install_confirmation: None,
     }
@@ -1048,12 +1127,29 @@ fn catalogue_from_managed(
     if let Some(installation) = vm_installation {
         apps.extend(installation.candidates.iter().map(app_from_vm_candidate));
     }
+    let shared_session_active = vm_availability.shared_session.active;
+    let shared_session_grants = vm_availability
+        .shared_session
+        .effective_grants
+        .iter()
+        .map(shared_session_grant_label)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let shared_session_contributors = vm_availability
+        .shared_session
+        .contributors
+        .iter()
+        .map(|contributor| contributor.display_name.clone())
+        .collect::<Vec<_>>();
     Catalogue {
         apps,
         vm: ApplianceState {
             ready: vm_availability.available,
             detail: vm_availability.detail,
-            running_apps: 0,
+            running_apps: shared_session_contributors.len(),
+            shared_session_active,
+            shared_session_grants,
+            shared_session_contributors,
         },
         vm_install_confirmation: None,
     }
@@ -1089,6 +1185,7 @@ fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> Wind
         route_override_available: false,
         route_override_unavailable_reason: None,
         can_retry_install: false,
+        can_escalate_install_to_vm: false,
         can_remove_launcher: false,
         can_vendor_uninstall: false,
         can_delete_data: false,
@@ -1239,7 +1336,12 @@ fn app_from_managed(
         grants,
         fallback_detail: active_vm_uninstall
             .or(failed_vm_uninstall)
-            .map_or_else(|| disabled.join(" "), |status| status.detail.clone()),
+            .map_or_else(|| disabled.join(" "), |status| status.detail.clone())
+            + if route == Route::Vm {
+                " Windows applications in this appliance share one Windows user session; redirects cannot isolate concurrently running guest apps from each other."
+            } else {
+                ""
+            },
         launch_available,
         launch_unavailable_reason,
         route_override_available: false,
@@ -1248,6 +1350,7 @@ fn app_from_managed(
                 .into(),
         ),
         can_retry_install: installation.is_some_and(|item| item.can_retry),
+        can_escalate_install_to_vm: installation.is_some_and(can_escalate_install_to_vm),
         can_remove_launcher: application.remove_launcher_available,
         can_vendor_uninstall: active_vm_uninstall.is_none()
             && (application.vendor_uninstall_available
@@ -1285,6 +1388,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         route_override_available: false,
         route_override_unavailable_reason: None,
         can_retry_install: installation.can_retry,
+        can_escalate_install_to_vm: can_escalate_install_to_vm(installation),
         can_remove_launcher: false,
         can_vendor_uninstall: installation.can_vendor_uninstall,
         can_delete_data: installation.can_delete_data,
@@ -1294,6 +1398,30 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         vm_fallback_unavailable_reason: Some(
             "No published guest application matches this retained setup.".into(),
         ),
+    }
+}
+
+/// Mirror the server's coarse lifecycle gate in the view model. The server is
+/// authoritative and re-checks this before it reopens its digest-pinned copy;
+/// the UI does not infer a guest path or preserve a portal descriptor.
+fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
+    matches!(installation.route, RouteKind::Wine | RouteKind::Proton)
+        && !matches!(
+            installation.status,
+            InstallationStatus::Installing
+                | InstallationStatus::Uninstalling
+                | InstallationStatus::Uninstalled
+        )
+}
+
+fn shared_session_grant_label(grant: &compat_service::VmSharedSessionGrantKind) -> &'static str {
+    match grant {
+        compat_service::VmSharedSessionGrantKind::AudioPlayback => "Audio playback",
+        compat_service::VmSharedSessionGrantKind::Clipboard => "Clipboard",
+        compat_service::VmSharedSessionGrantKind::Microphone => "Microphone",
+        compat_service::VmSharedSessionGrantKind::NetworkEgress => "Network",
+        compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => "Read-only files",
+        compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => "Writable files",
     }
 }
 
@@ -1319,6 +1447,40 @@ mod tests {
     use compat_service::{AccessSummary, ExplainStatus};
 
     use super::*;
+
+    fn retained_installation(status: InstallationStatus) -> ManagedInstallation {
+        ManagedInstallation {
+            capsule_id: "retained-setup".into(),
+            display_name: "Retained setup".into(),
+            route: RouteKind::Wine,
+            runner: "Wine".into(),
+            status,
+            program_count: 0,
+            can_retry: true,
+            can_vendor_uninstall: false,
+            can_delete_data: true,
+            detail: "The local setup needs attention.".into(),
+        }
+    }
+
+    #[test]
+    fn retained_failed_setup_can_continue_in_the_one_windows_appliance() {
+        assert!(can_escalate_install_to_vm(&retained_installation(
+            InstallationStatus::Failed
+        )));
+        assert!(can_escalate_install_to_vm(&retained_installation(
+            InstallationStatus::NeedsAttention
+        )));
+        assert!(!can_escalate_install_to_vm(&retained_installation(
+            InstallationStatus::Installing
+        )));
+        assert!(!can_escalate_install_to_vm(&retained_installation(
+            InstallationStatus::Uninstalling
+        )));
+        assert!(!can_escalate_install_to_vm(&retained_installation(
+            InstallationStatus::Uninstalled
+        )));
+    }
 
     fn managed_vm() -> ManagedApplication {
         ManagedApplication {
@@ -1396,6 +1558,30 @@ mod tests {
             catalogue.vm.detail,
             "The managed Windows appliance is ready."
         );
+    }
+
+    #[test]
+    fn shared_windows_session_access_names_the_effective_grants_and_apps() {
+        let mut availability = VmAvailability::ready("Ready");
+        availability.shared_session = compat_service::VmSharedSessionLeaseSummary {
+            active: true,
+            effective_grants: vec![
+                compat_service::VmSharedSessionGrantKind::Clipboard,
+                compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly,
+            ],
+            contributors: vec![compat_service::VmSharedSessionContributor {
+                published_application_id: "editor".into(),
+                display_name: "Editor".into(),
+            }],
+        };
+        let catalogue = catalogue_from_managed(Vec::new(), &[], availability, None, None);
+        assert!(catalogue.vm.shared_session_active);
+        assert_eq!(
+            catalogue.vm.shared_session_grants,
+            ["Clipboard", "Read-only files"]
+        );
+        assert_eq!(catalogue.vm.shared_session_contributors, ["Editor"]);
+        assert_eq!(catalogue.vm.running_apps, 1);
     }
 
     #[test]

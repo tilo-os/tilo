@@ -14,6 +14,34 @@ const OWNER: &str = "/usr/libexec/qos-windows-owner";
 const RECOVERY_CONSOLE: &str = "/usr/libexec/qos-windows-recovery-console";
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleAction {
+    Restart,
+    Suspend,
+    Resume,
+    Shutdown,
+}
+
+impl LifecycleAction {
+    const fn argument(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Suspend => "suspend",
+            Self::Resume => "resume",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    const fn complete_notice(self) -> &'static str {
+        match self {
+            Self::Restart => "Windows is restarting.",
+            Self::Suspend => "Windows has been suspended.",
+            Self::Resume => "Windows is resuming.",
+            Self::Shutdown => "Windows is shutting down.",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppliancePhase {
@@ -85,12 +113,66 @@ impl ApplianceStatus {
             AppliancePhase::Unavailable => "Status unavailable",
         }
     }
+
+    /// A short, factual step for the appliance-management card. This is not
+    /// shown in a published application's normal launch path: activation and
+    /// setup are attributes of the appliance, not of an app window.
+    #[must_use]
+    pub const fn next_step_label(&self) -> &'static str {
+        match self.phase {
+            AppliancePhase::NotProvisioned => "Choose Windows installation media",
+            AppliancePhase::Installing => "Complete Windows Setup in the authorised setup desktop",
+            AppliancePhase::AwaitingGuestBridge => {
+                "Finish qOS guest integration in the authorised recovery desktop"
+            }
+            AppliancePhase::Ready => "Windows is ready for published applications",
+            AppliancePhase::RepairRequired => {
+                "Open the authorised recovery desktop to repair Windows"
+            }
+            AppliancePhase::Unavailable => "Check the appliance status before making changes",
+        }
+    }
+
+    /// qOS reports only what the authenticated guest said. It deliberately
+    /// does not turn activation into a licensing determination.
+    #[must_use]
+    pub const fn license_label(&self) -> &'static str {
+        match self.license {
+            LicenseState::Unknown => "Activation status unavailable",
+            LicenseState::DigitallyActivated => "Windows reports digitally activated",
+            LicenseState::ProductKeyActivated => "Windows reports product-key activation",
+            LicenseState::OrganisationManaged => "Activation is managed by your organisation",
+            LicenseState::Evaluation => "Windows reports an evaluation licence",
+            LicenseState::Unlicensed => "Windows reports that it is not activated",
+        }
+    }
+
+    /// Additional context for unusual activation states. This stays in
+    /// management UI and is intentionally absent for normal app launches.
+    #[must_use]
+    pub const fn license_detail(&self) -> Option<&'static str> {
+        match self.license {
+            LicenseState::Unknown => {
+                Some("Finish Windows Setup, then return here to check its activation status.")
+            }
+            LicenseState::Unlicensed => Some(
+                "Use the authorised setup or recovery desktop to activate Windows. qOS does not keep product keys or decide whether a licence is valid.",
+            ),
+            LicenseState::Evaluation => Some(
+                "Evaluation editions have their own terms and expiry. qOS does not keep product keys or decide whether a licence is valid.",
+            ),
+            LicenseState::DigitallyActivated
+            | LicenseState::ProductKeyActivated
+            | LicenseState::OrganisationManaged => None,
+        }
+    }
 }
 
 enum OwnerEvent {
     Status(Result<ApplianceStatus, String>),
     Imported(Result<(), String>),
     Recovery(Result<(), String>),
+    Lifecycle(LifecycleAction, Result<(), String>),
 }
 
 /// One narrow nonblocking owner-command queue. It never exposes a generic
@@ -182,6 +264,32 @@ impl ApplianceOwnerClient {
         self.start_recovery()
     }
 
+    /// Execute one fixed appliance lifecycle action through the existing
+    /// polkit boundary. There is intentionally no generic command facility.
+    pub fn lifecycle(&mut self, action: LifecycleAction) -> Result<(), String> {
+        if self.action_pending {
+            return Err("A Windows appliance action is already in progress.".into());
+        }
+        if !self.status.is_provisioned() {
+            return Err("Set up the Windows appliance before managing its power state.".into());
+        }
+        self.action_pending = true;
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let result = Command::new("pkexec")
+                .arg(OWNER)
+                .arg("lifecycle")
+                .arg(action.argument())
+                .output()
+                .map_err(|error| {
+                    format!("Could not start the standard authorisation prompt: {error}")
+                })
+                .and_then(|output| success_output(&output));
+            let _ = sender.send(OwnerEvent::Lifecycle(action, result));
+        });
+        Ok(())
+    }
+
     /// This deliberately bypasses the read-only status precheck only after a
     /// successful `import-iso`: the helper has just prepared the appliance,
     /// while the status cache has not yet had an opportunity to refresh.
@@ -257,6 +365,14 @@ impl ApplianceOwnerClient {
                     self.action_pending = false;
                     notice = Some(error);
                 }
+                OwnerEvent::Lifecycle(action, Ok(())) => {
+                    self.action_pending = false;
+                    notice = Some(action.complete_notice().into());
+                }
+                OwnerEvent::Lifecycle(_, Err(error)) => {
+                    self.action_pending = false;
+                    notice = Some(error);
+                }
             }
         }
         if !self.action_pending {
@@ -321,6 +437,38 @@ mod tests {
         .unwrap();
         assert!(status.is_provisioned());
         assert_eq!(status.phase_label(), "Ready");
+        assert_eq!(
+            status.next_step_label(),
+            "Windows is ready for published applications"
+        );
+        assert_eq!(
+            status.license_label(),
+            "Windows reports digitally activated"
+        );
+        assert_eq!(status.license_detail(), None);
+    }
+
+    #[test]
+    fn unactivated_status_is_management_guidance_not_a_licensing_claim() {
+        let status = ApplianceStatus {
+            schema_version: 1,
+            configured: true,
+            phase: AppliancePhase::Ready,
+            license: LicenseState::Unlicensed,
+            catalog_generation: 0,
+            published_applications: 0,
+            recovery_available: true,
+            detail: None,
+        };
+        assert_eq!(
+            status.license_label(),
+            "Windows reports that it is not activated"
+        );
+        assert!(
+            status
+                .license_detail()
+                .is_some_and(|detail| detail.contains("does not keep product keys"))
+        );
     }
 
     #[test]
