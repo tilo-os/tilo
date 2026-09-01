@@ -800,6 +800,30 @@ impl ShellDriver {
         let _ = self.fb.paint();
     }
 
+    pub fn select_room_activity_entry(&mut self, index: usize) {
+        let len = self.fb.host().room_activity().timeline().entries().len();
+        for candidate in index..len {
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .timeline_mut()
+                .set_selection(Some((candidate, candidate)));
+            let handle = self.chrome_handle();
+            let state = handle.borrow();
+            let mut tree = state.tree_mut();
+            if self
+                .fb
+                .host()
+                .room_activity()
+                .compare_selection(&mut tree, None)
+                .is_some()
+            {
+                break;
+            }
+        }
+        let _ = self.fb.paint();
+    }
+
     /// Two runs named, one by the peer under its own actor, so the band
     /// reads "named by" someone other than the viewer. Both go in through
     /// the pane's own write path (the [Name] chip's call).
