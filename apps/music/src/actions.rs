@@ -307,7 +307,9 @@ pub struct MusicResourceCtx {
     reason = "action is always a MusicAction, which encodes losslessly (see encode()'s own allow)"
 )]
 fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, MUSIC_ACTION_TYPE, action).expect("encode music action")
+    ActionSpec::immediate(id, label, MUSIC_ACTION_TYPE, action)
+        .expect("encode music action")
+        .reversible()
 }
 
 fn playlist_label(p: &PlaylistResource) -> String {
@@ -329,21 +331,24 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     // Library-level: create a playlist. The id is minted once when the name
     // argument is committed, then baked into the envelope, so replay stays
     // deterministic.
-    root = root.with_action(ActionSpec::prompted(
-        "new-playlist",
-        "New playlist",
-        "Name",
-        "playlist name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let name = if name.trim().is_empty() {
-                "New Playlist"
-            } else {
-                name.trim()
-            };
-            encode(&create_playlist_action(&new_playlist_id(), name))
-        },
-    ));
+    root = root.with_action(
+        ActionSpec::prompted(
+            "new-playlist",
+            "New playlist",
+            "Name",
+            "playlist name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let name = if name.trim().is_empty() {
+                    "New Playlist"
+                } else {
+                    name.trim()
+                };
+                encode(&create_playlist_action(&new_playlist_id(), name))
+            },
+        )
+        .reversible(),
+    );
 
     for pl in &ctx.playlists {
         let mut child = Resource::new(
@@ -354,20 +359,22 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 
         // Rename — a prompted action.
         let pid = pl.id.clone();
-        child = child.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename playlist",
-            "Name",
-            "playlist name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&rename_playlist_action(&pid, name.trim())),
-        ));
+        child = child.with_action(
+            ActionSpec::prompted(
+                "rename",
+                "Rename playlist",
+                "Name",
+                "playlist name…",
+                ExecutionLocus::ClientLocal,
+                move |name: &str| encode(&rename_playlist_action(&pid, name.trim())),
+            )
+            .reversible(),
+        );
         // Delete the whole playlist.
-        child = child.with_action(immediate_spec(
-            "delete",
-            "Delete playlist",
-            &delete_playlist_action(&pl.id),
-        ));
+        child = child.with_action(
+            immediate_spec("delete", "Delete playlist", &delete_playlist_action(&pl.id))
+                .destructive(),
+        );
 
         // Each track in the playlist → its own resource (remove + toggle-like).
         for tk in &pl.tracks {
@@ -459,6 +466,16 @@ mod tests {
         let pl_actions: Vec<&str> = playlist.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(pl_actions.contains(&"rename"), "{pl_actions:?}");
         assert!(pl_actions.contains(&"delete"), "{pl_actions:?}");
+        assert_eq!(
+            playlist
+                .actions
+                .iter()
+                .find(|a| a.id == "delete")
+                .unwrap()
+                .contract
+                .risk,
+            qos_actions::RiskLevel::Destructive
+        );
 
         // A playlist with tracks nests a track resource with remove + toggle-like.
         let with_tracks = lib

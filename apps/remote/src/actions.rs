@@ -35,8 +35,9 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::doc::RemoteDoc;
@@ -46,16 +47,30 @@ use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presenc
 pub const REMOTE_ACTION_TYPE: &str = "remote.action";
 pub const REMOTE_CONNECT_OPERATION_TYPE: &str = "remote.operation.connect";
 
-fn connect_spec(id: ConnectionId) -> ActionSpec {
-    ActionSpec::operation(
+fn connect_spec(connection: &Connection) -> ActionSpec {
+    let spec = ActionSpec::operation(
         "connect",
         "Connect",
         OperationKind::Effect,
         REMOTE_CONNECT_OPERATION_TYPE,
-        &id,
+        &connection.id,
     )
     .expect("RemoteOperation is always serializable")
     .with_description("Open a live session to this saved connection")
+    .with_contract(ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Resource {
+            resource_kind: "remote.session".into(),
+        },
+        tags: vec!["network".into(), "session".into()],
+        ..ActionContract::default()
+    });
+    if connection.presence == Presence::Offline {
+        spec.unavailable("host_offline", "The saved host is currently offline")
+    } else {
+        spec
+    }
 }
 
 /// Every collaborative operation Remote exports on the shared document. Each
@@ -243,29 +258,35 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 "remote.connection",
                 label,
             )
-            .with_action(connect_spec(id))
-            .with_action(ActionSpec::prompted(
-                "rename",
-                "Rename connection",
-                "New name",
-                "connection name",
-                ExecutionLocus::ClientLocal,
-                move |text| encode(&rename_action(id, text)),
-            ))
-            .with_action(immediate_spec(
-                "favorite",
-                if c.favorite {
-                    "Remove from favourites"
-                } else {
-                    "Add to favourites"
-                },
-                &set_favorite_action(id, !c.favorite),
-            ))
-            .with_action(immediate_spec(
-                "delete",
-                "Delete connection",
-                &delete_action(id),
-            ))
+            .with_action(connect_spec(&c))
+            .with_action(
+                ActionSpec::prompted(
+                    "rename",
+                    "Rename connection",
+                    "New name",
+                    "connection name",
+                    ExecutionLocus::ClientLocal,
+                    move |text| encode(&rename_action(id, text)),
+                )
+                .reversible(),
+            )
+            .with_action(
+                immediate_spec(
+                    "favorite",
+                    if c.favorite {
+                        "Remove from favourites"
+                    } else {
+                        "Add to favourites"
+                    },
+                    &set_favorite_action(id, !c.favorite),
+                )
+                .reversible(),
+            )
+            .with_action(
+                immediate_spec("delete", "Delete connection", &delete_action(id))
+                    .destructive()
+                    .reversible(),
+            )
         })
         .collect()
 }
@@ -452,6 +473,19 @@ mod tests {
             .find(|action| action.id == "connect")
             .unwrap();
         assert_eq!(connect.kind, OperationKind::Effect);
+        assert!(matches!(
+            connect.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        ));
+        assert!(
+            r.actions
+                .iter()
+                .find(|a| a.id == "delete")
+                .unwrap()
+                .contract
+                .confirmation
+                != qos_actions::ConfirmationPolicy::None
+        );
         let encoded = immediate_encode(connect);
         assert_eq!(encoded.type_id, REMOTE_CONNECT_OPERATION_TYPE);
         assert_eq!(encoded.payload, format!("\"{id}\"").into_bytes());

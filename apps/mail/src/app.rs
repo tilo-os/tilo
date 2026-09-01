@@ -1512,12 +1512,14 @@ impl MailApp {
         let custom_folders = MailDoc::list_folders(doc);
         let draft = MailDoc::load_draft(doc);
         let has_draft = !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty();
+        let can_sync = self.engine.is_some() && mailbox_label != "Mailbox";
         crate::actions::MailResourceCtx {
             mailbox_label,
             current_folder,
             messages,
             custom_folders,
             has_draft,
+            can_sync,
         }
     }
 
@@ -2566,6 +2568,31 @@ impl Widget for MailApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            crate::actions::MailOperation::RefreshCurrentFolder => {
+                if self.engine.is_none() {
+                    return Err("no connected mail account is available".into());
+                }
+                self.refresh_active_folder();
+            }
+        }
+        Ok(true)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
