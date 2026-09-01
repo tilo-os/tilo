@@ -70,14 +70,21 @@ jobs:
       - name: Fetch comparison base
         shell: bash
         run: |
-          base='${{ github.event.pull_request.base.sha }}'
-          if [ -z "$base" ] || [ "$base" = "null" ]; then
-            base='${{ github.event.before }}'
-          fi
-          if [ -n "$base" ] &&
-             [ "$base" != "0000000000000000000000000000000000000000" ] &&
-             ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            git fetch --no-tags --depth=1 origin "$base"
+          if [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
+            # Keep the release gate scoped to the complete branch diff without
+            # bringing every repository ref into this shallow checkout.
+            git fetch --no-tags --depth=1 origin \
+              +refs/heads/main:refs/remotes/origin/main
+          else
+            base='${{ github.event.pull_request.base.sha }}'
+            if [ -z "$base" ] || [ "$base" = "null" ]; then
+              base='${{ github.event.before }}'
+            fi
+            if [ -n "$base" ] &&
+               [ "$base" != "0000000000000000000000000000000000000000" ] &&
+               ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$base"
+            fi
           fi
 
       - name: Workspace membership guard
