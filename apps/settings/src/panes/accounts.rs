@@ -33,8 +33,7 @@ use crate::accounts::{
     AccountConfig, AccountDirectory, AccountKind, AccountView, DavStore, NextcloudStore,
 };
 use crate::widgets::{
-    El, caption, card, card_with_action, hgap, icon_button, rows, setting_row, status_pill,
-    value_row,
+    El, caption, card, card_with_action, hgap, rows, setting_row, status_pill, value_row,
 };
 
 /// Key the "Add" button on the Email card writes to open the form.
@@ -223,11 +222,7 @@ impl AccountsPane {
     }
 
     fn mail_card(&self) -> El {
-        let title = format!(
-            "{}  {}",
-            AccountKind::Mail.glyph(),
-            AccountKind::Mail.label()
-        );
+        let title = AccountKind::Mail.label();
         let add_btn: El = Box::new(Button::new(
             "settings.accounts.add.mail",
             "Add email account",
@@ -235,13 +230,12 @@ impl AccountsPane {
         ));
         let views = self.dir.views_of(AccountKind::Mail);
         let body = self.kind_body(AccountKind::Mail, &views);
-        card_with_action(&title, add_btn, body)
+        card_with_action(title, add_btn, body)
     }
 
     fn kind_card(&self, kind: AccountKind) -> El {
-        let title = format!("{}  {}", kind.glyph(), kind.label());
         let views = self.dir.views_of(kind);
-        card(&title, self.kind_body(kind, &views))
+        card(kind.label(), self.kind_body(kind, &views))
     }
 
     fn kind_body(&self, kind: AccountKind, views: &[AccountView]) -> El {
@@ -309,10 +303,13 @@ impl AccountsPane {
                 .get(&accounts::AccountId::from(view.id.clone()))
                 .is_some_and(|secret| !secret.password.is_empty())
             {
-                top = top.push(hgap(8.0)).push(icon_button(
-                    &format!("settings.accounts.reauth.{}", view.id),
-                    "\u{f0425}",
-                    &reauth_key(&view.id),
+                top = top.push(hgap(8.0)).push(Box::new(
+                    Button::new(
+                        &format!("settings.accounts.reauth.{}", view.id),
+                        "Reconnect",
+                        Some(&reauth_key(&view.id)),
+                    )
+                    .fit_content(34.0),
                 ));
             }
             // Removing an account is consequential even though it has a
@@ -935,9 +932,9 @@ mod tests {
 
     fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
         if w.name() == "Button"
-            && let Some(label) = w.test_id()
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
         {
-            labels.push(label.to_string());
+            labels.push(label);
         }
         for c in w.children() {
             button_labels(c, labels);
