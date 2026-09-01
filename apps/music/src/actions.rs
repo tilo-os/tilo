@@ -40,8 +40,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ParamType, Resource, ResourceProvider,
 };
 
 use crate::doc as mdoc;
@@ -55,18 +55,33 @@ pub const MUSIC_ACTION_TYPE: &str = "music.action";
 /// deterministically from a shared base state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicAction {
+    SetPlayback(crate::model::Playback),
     /// Create a new empty playlist. `id` is minted at authoring time and carried
     /// here so replay reproduces the byte-identical row; `apply` never mints one.
-    CreatePlaylist { id: String, name: String },
+    CreatePlaylist {
+        id: String,
+        name: String,
+    },
     /// Rename a playlist.
-    RenamePlaylist { id: String, name: String },
+    RenamePlaylist {
+        id: String,
+        name: String,
+    },
     /// Delete a playlist by id.
-    DeletePlaylist { id: String },
+    DeletePlaylist {
+        id: String,
+    },
     /// Append a track to a playlist (idempotent — a track already present is a
     /// no-op, matching the on-screen affordance).
-    AddTrackToPlaylist { playlist: String, track: String },
+    AddTrackToPlaylist {
+        playlist: String,
+        track: String,
+    },
     /// Remove the first occurrence of a track from a playlist.
-    RemoveTrackFromPlaylist { playlist: String, track: String },
+    RemoveTrackFromPlaylist {
+        playlist: String,
+        track: String,
+    },
     /// Reorder a track within a playlist from `from` to `to` (clamped).
     MoveTrackInPlaylist {
         playlist: String,
@@ -76,20 +91,30 @@ pub enum MusicAction {
     /// Set (or clear, with an empty string) a playlist's cover image URL. The
     /// *pick* (the native file portal) is app-side, non-deterministic work; the
     /// resulting write of the chosen URL is this deterministic, replayable action.
-    SetPlaylistCover { playlist: String, cover: String },
+    SetPlaylistCover {
+        playlist: String,
+        cover: String,
+    },
     /// Toggle a track's membership in "Liked Songs". Deterministic against the
     /// replay base: the current membership is read from the document and flipped.
-    ToggleLiked { track: String },
+    ToggleLiked {
+        track: String,
+    },
     /// Toggle an album's membership in the saved-to-library set.
-    ToggleSavedAlbum { album: String },
+    ToggleSavedAlbum {
+        album: String,
+    },
     /// Toggle whether the user follows an artist.
-    ToggleFollowedArtist { artist: String },
+    ToggleFollowedArtist {
+        artist: String,
+    },
 }
 
 /// Durable, browseable history metadata for a library mutation.
 pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
     let mut context = qos_actions::ActionContext::for_action("org.qos.Music", "Music", action);
-    let (label, id, kind, resource_label) = match action {
+    let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
+        MusicAction::SetPlayback(_) => ("Change playback", "player", "music.player", "Player"),
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
@@ -126,7 +151,7 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
     context.resource = Some(qos_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
-        label: resource_label.clone(),
+        label: resource_label.to_string(),
     });
     context
 }
@@ -134,6 +159,7 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
 impl Action for MusicAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            MusicAction::SetPlayback(playback) => mdoc::write_playback(doc, playback),
             MusicAction::CreatePlaylist { id, name } => {
                 // An empty id is never produced by our own builder; no-op rather
                 // than fabricate one (which would break replay determinism).
@@ -300,6 +326,7 @@ pub struct PlaylistResource {
 #[derive(Debug, Clone, Default)]
 pub struct MusicResourceCtx {
     pub playlists: Vec<PlaylistResource>,
+    pub playback: crate::model::Playback,
 }
 
 #[allow(
@@ -327,6 +354,116 @@ fn playlist_label(p: &PlaylistResource) -> String {
 /// exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("music.library", "music.library", "Library");
+
+    if ctx.playback.current.is_some() {
+        let mut toggled = ctx.playback.clone();
+        toggled.playing = !toggled.playing;
+        root = root.with_action(immediate_spec(
+            "play-pause",
+            if ctx.playback.playing {
+                "Pause"
+            } else {
+                "Play"
+            },
+            &MusicAction::SetPlayback(toggled),
+        ));
+        let seek = ctx.playback.clone();
+        root = root.with_action(
+            ActionSpec::typed(
+                "seek",
+                "Seek playback",
+                "milliseconds",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "position_ms",
+                    ParamType::Integer,
+                    "absolute playback position in milliseconds",
+                )],
+                move |args: &ActionArgs| {
+                    let mut next = seek.clone();
+                    next.position_ms = args.integer("position_ms").unwrap_or(0).max(0) as u64;
+                    encode(&MusicAction::SetPlayback(next))
+                },
+            )
+            .reversible(),
+        );
+    }
+    let volume = ctx.playback.clone();
+    root = root.with_action(
+        ActionSpec::typed(
+            "set-volume",
+            "Set volume",
+            "0–100",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("volume", ParamType::Integer, "volume from 0 to 100")
+                    .with_schema(serde_json::json!({"minimum": 0, "maximum": 100})),
+            ],
+            move |args: &ActionArgs| {
+                let mut next = volume.clone();
+                next.volume = args
+                    .integer("volume")
+                    .unwrap_or(i64::from(next.volume))
+                    .clamp(0, 100) as u8;
+                encode(&MusicAction::SetPlayback(next))
+            },
+        )
+        .reversible(),
+    );
+    let mut muted = ctx.playback.clone();
+    muted.volume = if muted.volume == 0 { 80 } else { 0 };
+    root = root.with_action(immediate_spec(
+        "toggle-mute",
+        "Toggle mute",
+        &MusicAction::SetPlayback(muted),
+    ));
+    let add_queue = ctx.playback.clone();
+    root = root.with_action(ActionSpec::typed(
+        "queue-add",
+        "Add track to queue",
+        "track id…",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "track",
+            ParamType::Text,
+            "library track id",
+        )],
+        move |args: &ActionArgs| {
+            let mut next = add_queue.clone();
+            if let Some(track) = args.text("track").filter(|track| !track.is_empty()) {
+                next.queue.push(track.to_string());
+            }
+            encode(&MusicAction::SetPlayback(next))
+        },
+    ));
+    let remove_queue = ctx.playback.clone();
+    let remove = ActionSpec::typed(
+        "queue-remove",
+        "Remove track from queue",
+        "track id…",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "track",
+            ParamType::Text,
+            "queued track id",
+        )],
+        move |args: &ActionArgs| {
+            let mut next = remove_queue.clone();
+            if let Some(track) = args.text("track")
+                && let Some(index) = next.queue.iter().position(|queued| queued == track)
+            {
+                next.queue.remove(index);
+            }
+            encode(&MusicAction::SetPlayback(next))
+        },
+    )
+    .destructive()
+    .reversible();
+    root = root.with_action(if ctx.playback.queue.is_empty() {
+        remove.unavailable("empty_queue", "There are no queued tracks to remove")
+    } else {
+        remove
+    });
 
     // Library-level: create a playlist. The id is minted once when the name
     // argument is committed, then baked into the envelope, so replay stays
@@ -725,6 +862,34 @@ mod tests {
         assert!(
             lib.playlists.iter().any(|p| p.name == "Late Night"),
             "the created playlist carries the committed name"
+        );
+    }
+
+    #[test]
+    fn playback_and_queue_are_document_actions_with_typed_arguments() {
+        let mut ctx = MusicResourceCtx::default();
+        ctx.playback.current = Some("track-1".into());
+        ctx.playback.queue.push("track-1".into());
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        let root = &resources[0];
+        for id in [
+            "play-pause",
+            "seek",
+            "set-volume",
+            "queue-add",
+            "queue-remove",
+        ] {
+            let action = root.actions.iter().find(|action| action.id == id).unwrap();
+            assert_eq!(action.kind, qos_actions::OperationKind::Document, "{id}");
+        }
+        assert_eq!(
+            root.actions
+                .iter()
+                .find(|a| a.id == "seek")
+                .unwrap()
+                .params()[0]
+                .ty,
+            ParamType::Integer
         );
     }
 }

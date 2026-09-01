@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ParamType, Resource, ResourceProvider,
+    ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
 };
 
 use crate::doc::VideoDoc;
@@ -53,6 +53,29 @@ use crate::param::{Interp, Param};
 
 /// Registry `type_id` for every video-editor action.
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
+pub const VIDEO_EDITOR_OPERATION_TYPE: &str = "video_editor.operation";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoEditorOperation {
+    ImportMedia,
+    OpenProject,
+    SaveProject,
+    SaveProjectAs,
+    Export,
+    CancelExport,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<VideoEditorOperation>, String> {
+    if type_id != VIDEO_EDITOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 /// A serializable snapshot of a clip's scalar fields, in exactly the
 /// representation [`crate::doc`] stores (ids as strings, transition as its
@@ -743,8 +766,12 @@ fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
 /// therefore requires confirmation when invoked headlessly.
 fn annotate_contracts(resource: &mut Resource) {
     for action in &mut resource.actions {
-        action.contract.reversible = true;
-        if action.id.starts_with("delete-") || action.id.starts_with("remove-") {
+        if action.kind == OperationKind::Document {
+            action.contract.reversible = true;
+        }
+        if action.kind == OperationKind::Document
+            && (action.id.starts_with("delete-") || action.id.starts_with("remove-"))
+        {
             let old = action.clone();
             *action = old.destructive();
         }
@@ -836,6 +863,54 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             p.name.clone()
         },
     );
+    for (id, label, operation) in [
+        ("import", "Import media", VideoEditorOperation::ImportMedia),
+        ("open", "Open project", VideoEditorOperation::OpenProject),
+        ("save", "Save project", VideoEditorOperation::SaveProject),
+        (
+            "save-as",
+            "Save project as",
+            VideoEditorOperation::SaveProjectAs,
+        ),
+    ] {
+        if let Ok(spec) = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::Effect,
+            VIDEO_EDITOR_OPERATION_TYPE,
+            &operation,
+        ) {
+            root = root.with_action(spec);
+        }
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "export",
+        "Export video",
+        OperationKind::Effect,
+        VIDEO_EDITOR_OPERATION_TYPE,
+        &VideoEditorOperation::Export,
+    ) {
+        root = root.with_action(if crate::export::unavailable_reason().is_some() {
+            spec.unavailable(
+                "export_unavailable",
+                "Video export is unavailable on this system",
+            )
+        } else {
+            spec
+        });
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "cancel-export",
+        "Cancel export",
+        OperationKind::Effect,
+        VIDEO_EDITOR_OPERATION_TYPE,
+        &VideoEditorOperation::CancelExport,
+    ) {
+        root = root.with_action(spec.destructive().unavailable(
+            "runtime_state_required",
+            "Cancel is offered in the Export panel while a render is running",
+        ));
+    }
 
     // Project-level: rename (settings live in the doc).
     {
@@ -4303,7 +4378,18 @@ mod tests {
     fn exported_edits_declare_undo_and_destructive_removals() {
         let (ctx, _) = ctx_fixture();
         let specs = all_specs(&ctx);
-        assert!(specs.iter().all(|(_, action)| action.contract.reversible));
+        assert!(
+            specs
+                .iter()
+                .filter(|(_, action)| action.kind == OperationKind::Document)
+                .all(|(_, action)| action.contract.reversible)
+        );
+        assert!(
+            specs
+                .iter()
+                .filter(|(_, action)| action.kind != OperationKind::Document)
+                .all(|(_, action)| !action.contract.reversible)
+        );
         let (_, delete) = specs
             .iter()
             .find(|(_, action)| action.id == "delete-clip")
@@ -4313,5 +4399,29 @@ mod tests {
             delete.contract.confirmation,
             qos_actions::ConfirmationPolicy::Confirm
         );
+    }
+
+    #[test]
+    fn file_and_render_effects_are_canonical_and_not_falsely_reversible() {
+        let resources = provide_resources(&VideoResourceCtx::default());
+        let root = &resources[0];
+        for id in [
+            "import",
+            "open",
+            "save",
+            "save-as",
+            "export",
+            "cancel-export",
+        ] {
+            let action = root.actions.iter().find(|action| action.id == id).unwrap();
+            assert_eq!(action.kind, OperationKind::Effect, "{id}");
+            assert!(!action.contract.reversible, "{id}");
+        }
+        let cancel = root
+            .actions
+            .iter()
+            .find(|a| a.id == "cancel-export")
+            .unwrap();
+        assert!(!cancel.contract.availability.is_available());
     }
 }
