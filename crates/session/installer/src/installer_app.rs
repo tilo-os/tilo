@@ -258,7 +258,9 @@ pub fn valid_username(username: &str) -> bool {
     let bytes = username.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 32
-        && matches!(bytes[0], b'a'..=b'z' | b'_')
+        && bytes
+            .first()
+            .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
         && bytes
             .iter()
             .skip(1)
@@ -339,6 +341,11 @@ pub fn validate_step(
 /// Validate the two account password fields. Keeping this separate from
 /// [`validate_step`] avoids ever passing either secret through generic wizard
 /// summaries or status formatting.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the password is blank or the confirmation
+/// does not match it.
 pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), String> {
     if password.trim().is_empty() {
         Err("Enter an account password".to_string())
@@ -710,8 +717,9 @@ impl InstallerApp {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
         app.username = "ada".to_string();
-        *app.password.lock().unwrap() = "correct horse battery staple".to_string();
-        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
+        app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
+        app.password_confirmation =
+            Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.hostname = DEFAULT_HOSTNAME.to_string();
         app.timezone = DEFAULT_TIMEZONE.to_string();
         app.keymap = DEFAULT_KEYMAP_NAME.to_string();
@@ -995,7 +1003,7 @@ impl InstallerApp {
     /// Enter the Install step and kick off the backend. Prefers a worker
     /// thread (live streaming via the event-loop proxy); falls back to a
     /// blocking run when no proxy is wired (tests / no event loop).
-    fn begin_install(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn begin_install(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.install_launched {
             return;
         }
@@ -1169,35 +1177,7 @@ impl InstallerApp {
             )));
         }
 
-        if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
-            children.push(Box::new(
-                Text::new(&format!("Wi-Fi controls unavailable: {error}"))
-                    .with_size(sm)
-                    .with_color(dim),
-            ));
-        } else {
-            for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
-                let marker = if network.connected {
-                    "Connected"
-                } else if network.secure {
-                    "Secured"
-                } else {
-                    "Open"
-                };
-                let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
-                let label = format!(
-                    "{}{} · {marker} · signal {}/4",
-                    if selected { "✓ " } else { "" },
-                    network.ssid,
-                    network.signal
-                );
-                children.push(Box::new(
-                    ActionButton::new(&label, &network_path(i))
-                        .with_test_id(&format!("wifi_network_{i}"))
-                        .disabled(self.network.is_busy()),
-                ));
-            }
-        }
+        self.compose_network_choices(theme, children);
 
         if let Some(selected) = self.network.selected_network()
             && !selected.connected
@@ -1255,6 +1235,42 @@ impl InstallerApp {
                 "Continue offline"
             };
         children.push(nav_row(Step::Network, NEXT_PATH, continue_label, false));
+    }
+
+    /// Add the Wi-Fi error or the currently visible network choices.
+    fn compose_network_choices(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let sm = theme.tokens.typography.scale.sm;
+
+        if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
+            children.push(Box::new(
+                Text::new(&format!("Wi-Fi controls unavailable: {error}"))
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        } else {
+            for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
+                let marker = if network.connected {
+                    "Connected"
+                } else if network.secure {
+                    "Secured"
+                } else {
+                    "Open"
+                };
+                let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
+                let label = format!(
+                    "{}{} · {marker} · signal {}/4",
+                    if selected { "✓ " } else { "" },
+                    network.ssid,
+                    network.signal
+                );
+                children.push(Box::new(
+                    ActionButton::new(&label, &network_path(i))
+                        .with_test_id(&format!("wifi_network_{i}"))
+                        .disabled(self.network.is_busy()),
+                ));
+            }
+        }
     }
 
     fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
@@ -1765,7 +1781,15 @@ impl InstallerApp {
             let path = network_path(i);
             if Self::read_flag(state, root, path.as_str()) {
                 let _ = state.put(root, path.as_str(), false);
-                let ssid = self.network.snapshot.networks[i].ssid.clone();
+                let Some(ssid) = self
+                    .network
+                    .snapshot
+                    .networks
+                    .get(i)
+                    .map(|network| network.ssid.clone())
+                else {
+                    continue;
+                };
                 if self.network.selected_ssid.as_deref() != Some(ssid.as_str()) {
                     self.network.selected_ssid = Some(ssid);
                     clear_secret_buffer(&self.wifi_password);
