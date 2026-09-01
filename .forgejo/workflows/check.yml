@@ -89,6 +89,17 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      # These boundaries are mostly shell, image configuration, and workflow
+      # policy, so Cargo's affected-package graph cannot select them. Keep the
+      # cheap executable invariants on every PR instead of waiting for a release.
+      - name: Security boundary invariants
+        run: |
+          bash os/tests/kernel_hardening_invariants.sh
+          bash os/tests/release_security_invariants.sh
+          bash os/tests/release_freshness_security.sh
+          bash os/tests/installer_target_invariants.sh
+          bash os/tests/generation_series_security.sh
+
       - name: Select and balance affected packages
         id: plan
         shell: bash

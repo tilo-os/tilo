@@ -1,0 +1,14 @@
+<!--
+  Capability-broker egress network. It is never attached by the persistent
+  appliance XML. qos-windows-vm-control attaches one live-only NIC for an
+  activation or Windows Update lease and removes it on completion/expiry.
+-->
+<network>
+  <name>qos-windows-egress</name>
+  <metadata><qos:windows-egress xmlns:qos="https://qos.dev/vm/1"/></metadata>
+  <forward mode="nat"/>
+  <bridge name="virbr-qoswin-egress" stp="on" delay="0"/>
+  <ip address="192.168.252.1" netmask="255.255.255.0">
+    <dhcp><range start="192.168.252.2" end="192.168.252.254"/></dhcp>
+  </ip>
+</network>

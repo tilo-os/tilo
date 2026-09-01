@@ -24,7 +24,7 @@ use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController
 use crate::selection::KeySelection;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::{ACCENT_PRIMARY_IDX, Colors};
+use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
@@ -394,6 +394,14 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn multi_select(mut self, enabled: bool) -> Self {
         self.multi_select = enabled;
+        self
+    }
+
+    /// Restore stable-key selection and discard keys absent from this model.
+    #[must_use]
+    pub fn with_selection(mut self, mut selection: KeySelection<M::Key>) -> Self {
+        selection.reconcile(|key| self.model.index_of(key).is_some());
+        self.selection = selection;
         self
     }
 
@@ -1253,12 +1261,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
         if let Some(track) = self.scrollbar_track() {
             let radius = BAR_THICKNESS / 2.0;
-            let colors = &theme.tokens.colors;
-            let track_color = Colors::hairline_on(colors.surfaces.base, colors.overlay_subtle.a());
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                track_color,
+                crate::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.base, 13),
                 None,
                 &RoundedRect::from_rect(track, radius),
             );
@@ -1925,6 +1931,21 @@ mod tests {
     fn vec_model_rejects_duplicate_keys() {
         let result = VecListModel::new(vec![1, 1], |value| *value);
         assert!(matches!(result, Err(DuplicateListKey)));
+    }
+
+    #[test]
+    fn restored_selection_discards_keys_absent_from_the_model() {
+        let mut selection = KeySelection::new();
+        selection.toggle(1_u64);
+        selection.toggle(99_u64);
+        let list = VirtualList::new(HugeList { count: 10 }, 24.0, |_, index, _| {
+            Box::new(crate::widget::Text::new(&format!("Item {index}")))
+        })
+        .with_selection(selection);
+
+        assert!(list.selection().is_selected(&1));
+        assert!(!list.selection().is_selected(&99));
+        assert_eq!(list.selection().len(10), 1);
     }
 
     #[test]

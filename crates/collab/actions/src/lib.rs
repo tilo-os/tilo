@@ -85,7 +85,9 @@ pub mod params;
 pub mod registry;
 pub mod resource;
 
-pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+pub use action::{
+    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
+};
 pub use context::{
     ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
 };
@@ -97,7 +99,7 @@ pub use executor::{
     dispatch_with_context, replay,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
-pub use params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
+pub use params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 pub use registry::ActionRegistry;
 pub use resource::{
     ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,

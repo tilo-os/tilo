@@ -184,7 +184,7 @@ impl ChangesColumn {
                 t,
                 "— nothing here —",
                 12.0,
-                c.neutral[5],
+                c.text_dim,
                 area.x0 + 20.0,
                 y + 2.0,
                 None,
@@ -326,7 +326,10 @@ impl ChangesColumn {
         let rrect = Rect::new(area.x0, y, area.x1, y + ROW_H);
         let is_sel = selected == Some((change_area, i));
         if is_sel {
-            draw::fill_rect(scene, t, rrect, c.accent[2]);
+            // A quiet surface wash keeps selection discoverable without
+            // turning a whole row into a saturated accent block. The accent
+            // rail below remains the strong, stable selection cue.
+            draw::fill_rect(scene, t, rrect, c.surface_white_10);
             draw::fill_rect(
                 scene,
                 t,
@@ -363,7 +366,7 @@ impl ChangesColumn {
                 t,
                 dir,
                 11.0,
-                c.neutral[5],
+                c.text_dim,
                 area.x0 + 36.0 + nw,
                 y + 8.0,
                 Some((area.width() - 130.0 - nw) as f32),
@@ -378,7 +381,7 @@ impl ChangesColumn {
                 tr,
                 t,
                 &counts,
-                10.5,
+                11.0,
                 c.text_dim,
                 area.x0 + 36.0 + nw,
                 y + 18.0,

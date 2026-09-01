@@ -1,0 +1,46 @@
+[package]
+id       = "dev.qos.windows"
+name     = "Windows Apps"
+category = "System"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "qos-default"
+landlock = "strict"
+
+# The manager is a policy/control plane. Runner and VM services own process
+# spawning, filesystem grants, device brokering, and network access.
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+compat = "optional@1"
+collab = "optional@1"
+
+[entrypoint]
+bin = "bin/windows"
+type = "gui"
+splash-segments = ["bin/windows[0x0:0x400000]"]
+splash-budget = 250
+
+[providers]
+mime = ["application/vnd.microsoft.portable-executable", "application/x-msi"]
+ext = ["exe", "msi"]

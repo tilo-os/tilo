@@ -75,6 +75,11 @@ Grow an existing app from any directory inside it with `add`:
 
 ```bash
 qos-dev add
+qos-dev add component profile-card --template form
+qos-dev add component project-tree --template tree
+qos-dev add component activity-list --template list
+qos-dev add component results-table --template table
+qos-dev add component article-body --template text
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -85,11 +90,149 @@ qos-dev locale sync
 ```
 
 With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
-containing app and offers a screen, semantic scenario, or locale. Screen setup
-includes its title, starter shape, and an optional source route (defaulting to
-`main` when present). The wizard reviews the resolved artifact before entering
-the same atomic publication path as the explicit commands. Scripts and CI
-should continue to use the fully specified subcommands.
+containing app and offers a screen, reusable Rust component, semantic scenario,
+or locale. Screen setup includes its title, starter shape, and an optional
+source route (defaulting to `main` when present). Component setup offers a
+typed-props display, a typed-state form, a source-agnostic virtualized tree, a
+sparse variable-height list, a model-backed table, or advanced text. The wizard
+reviews the resolved artifact before entering the same atomic publication path
+as the explicit commands. Scripts and CI should continue to use the fully
+specified subcommands.
+
+`add component profile-card --template form` creates
+`src/components/profile_card.rs`, maintains the generated
+`src/components/mod.rs` registry, and adds one plain `pub mod components;` to
+the app library. The generated state is explicit and cloneable, so app actions
+or workers can retain it without reaching into the widget tree:
+
+```rust
+let profile = components::profile_card::ProfileCardState::default();
+let view = components::profile_card::profile_card("settings-profile", &profile);
+let value_for_save = profile.value.clone();
+```
+
+The instance ID prefixes every semantic control ID, allowing the same component
+to appear more than once. Its text and checkbox use two-way `LocalState`
+bindings, visible/accessibility labels share generated Fluent messages, and a
+headless component test exercises both controls. The `display` template instead
+generates a typed props struct plus a heading/detail view. Component source,
+registry, library wiring, and locale updates publish as one rollback-safe batch;
+an app-owned registry or existing component is protected unless replacement is
+explicit.
+
+`add component project-tree --template tree` starts at the professional tree
+boundary without choosing the app's data source. Its function accepts any
+`TreeModel`—including a database, CRDT, remote-page cache, or `TreeNode`
+adapter—and returns the concrete `TreeView<(), M>`. App code can therefore
+attach its own retained row widgets and reorder policy instead of editing a
+generated wrapper or giving up toolkit behavior:
+
+```rust
+let config = ProjectTreeConfig {
+    expanded: vec![workspace_id],
+    selection: restored_selection,
+    ..ProjectTreeConfig::default()
+};
+let tree = project_tree("project-browser", database_model, &config)
+    .with_row_delegate(project_row)
+    .with_reorder(can_move_project, move_project);
+```
+
+The generated configuration also controls the localized accessible name,
+stable-key multi-selection, viewport height, and the initial variable-row
+estimate. `TreeView` continues to own sparse
+virtualization, loading/error slots, keyboard navigation, selection across
+collapsed branches, drag edge-scrolling and insertion previews, stable scroll
+anchoring, model notifications, accessibility, and reduced-motion-aware
+structural transitions. The embedded headless test proves that expansion,
+stable-key selection, and an interactive button inside a custom row delegate
+remain independent. The tree's accessible name is added to every Fluent
+catalog in the same atomic generation batch.
+
+`add component activity-list --template list` provides the equivalent reusable
+boundary for flat collections. It accepts any `ListModel`, including models
+that report hundreds of millions of logical rows while retaining only a page
+cache. The required delegate receives `Ready`, `Loading`, and `Error` states,
+and the required key encoder gives accessibility and headless tests a stable
+row identity:
+
+```rust
+let list = activity_list(
+    "activity-feed",
+    paged_model,
+    &ActivityListConfig::default(),
+    activity_row,
+    ActivityId::to_string,
+)
+.on_activate(open_activity)
+.with_reorder(can_reorder_activity, reorder_activity);
+```
+
+The typed configuration restores `KeySelection`, including constant-space
+select-all state, discarding keys no longer present in the model. It also
+controls the localized accessible name, multi-selection, viewport height, and
+initial row-height estimate. The returned `VirtualList`
+keeps targeted insert/remove/move/data notifications, retained interactive row
+widgets, measured variable heights, pixel and drag-to-scroll input, accelerated
+momentum, edge auto-scroll during reorder, insertion previews, and stable
+anchoring when rows change above the viewport. Its generated stress test uses a
+100-million-row model without allocating its rows, verifies that fewer than 30
+delegates are mounted, checks variable geometry and restored selection, and
+activates a button inside a row independently of row selection.
+
+`add component results-table --template table` completes the reusable
+collection set. It accepts app-defined `ColumnDef<Row>` values and any
+`TableModel<Row = Row>`, so ordinary text, custom-painted cells, and real
+interactive child widgets can be mixed without coupling the table to a data
+source:
+
+```rust
+let table = results_table(
+    "search-results",
+    columns,
+    remote_results,
+    &ResultsTableConfig::default(),
+)
+.on_activate(open_result);
+```
+
+The generated configuration restores and validates stable-key selection and
+controls the localized accessible name, selectable behavior, viewport height,
+and initial row-height estimate. The returned `DataTable` retains column
+sorting and resizing, loading/error row semantics, targeted asynchronous model
+notifications, interactive cell widgets, variable row measurements, keyboard
+and pointer selection, momentum and drag scrolling, and stable anchoring across
+inserts, removals, moves, and remote sorts. Its generated test exposes 100
+million logical rows from constant model storage, keeps the mounted semantic
+window below 40 rows, restores selection, measures a non-default row height,
+and independently activates a retained cell button.
+
+`add component article-body --template text` generates a small reusable
+boundary around the complete text-layout contract. `ArticleBodyProps` keeps
+the Fluent message and `TextStyle` together, with a readable default that
+enables kerning, tracking, line height, and automatic hyphenation. The ordinary
+`article_body` function returns a concrete `Text`, so app code can continue to
+use its normal state, accessibility, inspection, presence, and permission
+APIs.
+
+Two sibling constructors expose the less common paths without making ordinary
+text complicated:
+
+```rust
+let article = article_body_in_region("article", &props, polygon);
+let diagram_label = article_body_with_engine("label", &props, diagram_layout);
+```
+
+The first accepts any validated `TextFlowRegion` and uses the built-in
+`PolygonTextLayout` for concave or convex flow and exact clipping. The second
+accepts any `TextLayoutEngine`, replacing measurement and painting while
+retaining the standard `Text` widget lifecycle. Replace the generated
+`en-US` automatic hyphenation setting with the active content language, or use
+`TextStyle::with_hyphenator` for an application dictionary. The generated
+headless tests verify that both polygon and custom-engine layouts preserve
+static-text accessibility and that the custom engine participates in layout.
+The full style, hyphenation, flow-region, and engine contracts are documented
+under [Text layout and typography](#text-layout-and-typography).
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
@@ -571,14 +714,66 @@ qos-dev ui insert ui/settings.json --parent root --index 1 \
 qos-dev ui move ui/settings.json --id save --parent actions --index 0
 qos-dev ui replace ui/settings.json --id save --node-file nodes/publish.json
 qos-dev ui remove ui/settings.json --id obsolete-help
+qos-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
+qos-dev ui set ui/settings.json --id panel --property fill_height --value true
+qos-dev ui set ui/settings.json --id title --property size --unset
+qos-dev ui apply ui/settings.json ui/settings.edits.json
 qos-dev ui format ui/settings.json
 ```
 
+`ui set` changes one serialized property without copying and replacing the
+complete node. Property names follow the JSON schema and dotted paths reach
+nested objects such as `text.value` and `navigate.route`. Values are parsed as
+JSON first, so numbers, booleans, `null`, arrays, and objects retain their
+types; ordinary unquoted text remains a string. `--unset` restores the schema
+default. Every edit rebuilds and validates the affected node, then validates
+the complete graph before the original file is atomically replaced. A bad
+property name, type, duplicate ID, invalid binding, or accessibility regression
+therefore leaves the file byte-for-byte unchanged.
+
+Use `ui apply` when a generator, migration, or coding agent needs several
+coordinated edits. The edit file is a reviewable JSON array using the same
+operations as the individual commands:
+
+```json
+[
+  {
+    "op": "set-property",
+    "id": "title",
+    "property": "text.value",
+    "value": "Account settings"
+  },
+  {
+    "op": "insert",
+    "parent": "actions",
+    "index": 0,
+    "node": {
+      "type": "button",
+      "id": "save",
+      "label": "settings-save",
+      "style": "primary"
+    }
+  },
+  {
+    "op": "move",
+    "id": "cancel",
+    "parent": "actions",
+    "index": 1
+  }
+]
+```
+
+Supported operation tags are `insert`, `remove`, `replace`, `move`,
+`set-property`, and `unset-property`. All operations run against one in-memory
+candidate and the source file is published once, after the last edit succeeds.
+If edit 8 of 10 fails, none of the first seven edits reach disk and the error
+identifies edit 8.
+
 Every command parses through the same lightweight `qos-ui-graph` schema used
-by the renderer. Insert, remove, replace, move, and formatting operations write
-through a same-directory temporary file only after the complete candidate
-validates; an invalid id, duplicate subtree, inaccessible control, illegal
-reparent, or bad binding leaves the source file byte-for-byte unchanged.
+by the renderer. Property, batch, insert, remove, replace, move, and formatting
+edits write through a same-directory temporary file only after the complete
+candidate validates; an invalid id, duplicate subtree, inaccessible control,
+illegal reparent, or bad binding leaves the source file byte-for-byte unchanged.
 
 Load it once and keep the handle when an inspector or builder should edit the
 running tree:
@@ -656,6 +851,33 @@ path, while process-local fields bind an explicit typed handle. Reusable
 actions go through `ActionHost`, so a button, command palette entry, agent
 action, and undo history can invoke the same operation.
 
+### One driveability surface
+
+Every operation must be reachable through the resource/action catalogue. Use
+`Widget::resources` and `ActionSpec` for domain operations: name the current
+resource, publish document mutations as document actions, and publish I/O or
+presentation work as effect/view operations. The host sends this same live
+catalogue to Ctrl+K search, the `actions_enumerate` / `actions_invoke`
+automation socket, and agents; none of those consumers has an app-specific
+command path.
+
+Ordinary retained controls are projected into that catalogue automatically
+from the semantic tree. Buttons, tabs, links, toggles, tree rows, sliders, and
+editable fields therefore remain driveable while an app is being developed,
+including legacy controls that still activate through hit testing. Give every
+operable control a stable ID and a localized accessible name: the ID is its
+fresh invocation address and the name is what humans and agents search for.
+This projection is a completeness floor, not a substitute for domain actions:
+a domain action has durable resource identity, typed parameters, collaboration
+semantics, and a useful verb such as “Archive conversation” instead of the
+generic “Activate”.
+
+To verify the real external path, enumerate the running app through the test
+control socket, invoke the returned `(provider, id)` with `actions_invoke`, and
+assert the resulting document or effect. A successful invocation is never
+inferred from a stale snapshot: the shell re-resolves the address and checks
+its capability immediately before dispatch.
+
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
 the value. `TextInput::from_state` is a true two-way binding: every input edit
 updates the handle, and a mutation through any clone updates every bound input
@@ -665,20 +887,48 @@ form needs no snapshots, callbacks, or custom widget:
 
 ```rust
 let query = LocalState::new(String::from("status:open"));
+let live_updates = LocalState::new(true);
+let opacity = LocalState::new(0.8);
+let region = LocalState::new(String::from("Europe/Berlin"));
+let due_date = LocalState::new(chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+let reminder = LocalState::new(TimeValue::new(9, 30));
+let accent = LocalState::new(ui::peniko::Color::from_rgba8(54, 162, 235, 255));
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
 let input = TextInput::from_state(&query)
     .with_id("filter-input")
     .with_accessible_name("Filter");
+let updates = labeled_check(
+    "live-updates-label",
+    Checkbox::from_state(&live_updates).with_id("live-updates"),
+);
+let opacity_field = NumberInput::from_state(&opacity)
+    .with_range(0.0, 1.0)
+    .with_step(0.05);
+let opacity_slider = Slider::from_state(&opacity);
+let region_field = Dropdown::from_state(
+    vec![String::from("Europe/Berlin"), String::from("Asia/Tokyo")],
+    &region,
+);
+let due_date_field = DatePicker::from_state(&due_date);
+let reminder_field = TimePicker::from_state(&reminder);
+let accent_field = ColorPicker::from_state(&accent);
 ```
 
-`set` replaces a local value and `update` mutates it in place. A bound text
-change invalidates rendering, multiline intrinsic measurement, and
-accessibility in the same synchronization pass without being misreported as a
-user edit. Bind several inputs to the same handle for synchronized
-master/detail or inspector views. An optional `on_change` callback can still
-observe committed user edits without owning synchronization. Use
-`Text::dynamic` when the value comes from an existing local owner instead of
-`LocalState`.
+`TextInput`, `Checkbox`, `Toggle`, `NumberInput`, `Slider`, `Dropdown`,
+`DatePicker`, `TimePicker`, and `ColorPicker` all offer `from_state` with the
+same explicit typed contract. Time fields use `TimeValue`, including an
+optional seconds component, rather than an unlabelled tuple. `set` replaces a
+local value and `update` mutates it in place. A bound text change invalidates
+rendering, multiline intrinsic measurement, and accessibility in the same
+synchronization pass without being misreported as a user edit. Bind several
+controls to the same handle for synchronized master/detail or inspector views;
+the `opacity_field` and `opacity_slider` above stay synchronized without
+app-owned fan-out. An optional `on_change` callback observes committed user
+edits without owning synchronization; programmatic setters and model
+synchronization do not invoke it. Semantic automation can set dates as
+`YYYY-MM-DD`, times as `HH:MM` or `HH:MM:SS`, and colours as `#RRGGBB`, through
+the same user-change path as pointer and keyboard input. Use `Text::dynamic`
+when the value comes from an existing local owner instead of `LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app
