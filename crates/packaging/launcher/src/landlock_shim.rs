@@ -15,9 +15,11 @@
 //! Landlock ruleset against the *sandbox-side* paths, calls
 //! `restrict_self()`, then `execvp`s the real app.
 //!
-//! Landlock is strictly additive: on any error (kernel too old, ruleset
-//! construction failed) it logs and still execs the app — bwrap +
-//! seccomp + netns remain in force. Never fail a launch on Landlock alone.
+//! qpkg applications require this layer.  An unsupported kernel, a partial
+//! ABI, or ruleset construction failure refuses the launch instead of quietly
+//! running an untrusted package with a weaker boundary than the UI promises.
+//! Bubblewrap, seccomp and the network namespace remain independent layers;
+//! they are not a reason to make this one optional by accident.
 
 use std::ffi::CString;
 use std::path::PathBuf;
@@ -312,6 +314,13 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         parsed.net_gate_port,
     );
 
+    if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
+        eprintln!(
+            "qos-sandbox-exec: refusing qpkg launch because the complete Landlock v4 policy is not enforced"
+        );
+        std::process::exit(126);
+    }
+
     exec_real_command(&parsed.command)
 }
 
@@ -426,5 +435,18 @@ mod tests {
         assert_eq!(plan[0].path, PathBuf::from("/usr"));
         assert_eq!(plan[1].path, PathBuf::from("/tmp/data"));
         assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
+    }
+
+    #[test]
+    fn ordinary_shim_invocations_require_landlock() {
+        let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).expect("parse");
+        assert!(!parsed.no_landlock);
+    }
+
+    #[test]
+    fn only_the_explicit_internal_relay_mode_skips_landlock() {
+        let parsed =
+            ShimArgs::parse(&["--no-landlock".into(), "--".into(), "/app".into()]).expect("parse");
+        assert!(parsed.no_landlock);
     }
 }
