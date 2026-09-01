@@ -437,7 +437,7 @@ fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::Auto
             tracing::error!(
                 room = %room,
                 error = %e,
-                "room index store unavailable; this room's references are not persisted"
+                "workspace index unavailable; this workspace's items are not persisted"
             );
             return None;
         }
