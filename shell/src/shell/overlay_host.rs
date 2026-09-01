@@ -209,8 +209,6 @@ pub struct ShellOverlayHost {
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
-    /// When the workspace invite link was last copied, to confirm it.
-    ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
@@ -927,7 +925,6 @@ impl ShellOverlayHost {
             qs_was_open: false,
             qs_slider_drag: None,
             power_menu: PowerMenu::default(),
-            ws_invite_copied_at: None,
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
@@ -3872,24 +3869,19 @@ impl ShellOverlayHost {
         Some((sid, group))
     }
 
-    /// The workspace-settings "Copy" button next to the invite link.
+    /// The workspace-settings button that opens the signed invite composer.
     ///
     /// Shared by the draw pass and the click router, so the rect that
     /// paints the button is the rect that can be clicked.
-    fn ws_settings_copy_rect(&self) -> Rect {
+    fn ws_settings_invite_rect(&self) -> Rect {
         let body = self.ws_settings_body_rect(self.ws_settings_rect());
         let link_y = body.y0 + 202.0;
         Rect::new(body.x1 - 16.0 - 72.0, link_y, body.x1 - 16.0, link_y + 34.0)
     }
 
-    /// Copy-button geometry for integration tests.
-    pub fn ws_settings_copy_rect_for_tests(&self) -> Rect {
-        self.ws_settings_copy_rect()
-    }
-
-    /// When the invite link was last copied, for integration tests.
-    pub fn ws_invite_copied_at_for_tests(&self) -> Option<Instant> {
-        self.ws_invite_copied_at
+    /// Signed-invite button geometry for integration tests.
+    pub fn ws_settings_invite_rect_for_tests(&self) -> Rect {
+        self.ws_settings_invite_rect()
     }
 
     /// Public alias for [`Self::quick_settings_rect`] so integration
@@ -6302,27 +6294,25 @@ impl ShellOverlayHost {
                 return;
             }
         }
-        // Copy the workspace invite link.
+        // Open the signed invite composer. A stable workspace id is not an
+        // invitation: it carries no address, expiry, role or signature.
         let on_general = self
             .chrome
             .as_ref()
             .is_some_and(|c| matches!(c.borrow().ws_settings_tab, WsTab::General));
-        if on_general && self.ws_settings_copy_rect().contains(p) {
-            let link = self
+        if on_general && self.ws_settings_invite_rect().contains(p) {
+            let can_invite = self
                 .chrome
                 .as_ref()
-                .and_then(|c| {
-                    c.borrow()
-                        .tree()
-                        .active_workspace()
-                        .map(crate::shell::workspace_settings::invite_link)
-                })
-                .unwrap_or_default();
-            if !link.is_empty() {
-                ui::text_selection::clipboard_copy(&link);
-                self.ws_invite_copied_at = Some(Instant::now());
+                .is_some_and(|chrome| is_active_workspace_owner(&chrome.borrow()));
+            if can_invite {
                 if let Some(chrome) = self.chrome.clone() {
-                    chrome.borrow_mut().bump();
+                    {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.ws_settings = false;
+                        state.bump();
+                    }
+                    self.peer_sync_overlay.prompt_invite();
                 }
             }
             *handled = true;
@@ -7376,10 +7366,9 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         return forced;
     }
     let user = state.active_local_user();
-    state
-        .tree()
-        .active_workspace()
-        .is_some_and(|ws| ws.may_administer(&user))
+    let tree = state.tree();
+    tree.active_workspace()
+        .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
 /// Records an app's capability grant on the active workspace: written
@@ -7432,6 +7421,12 @@ where
         let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
             return false;
         };
+        let Some(room) = tree.active_workspace().map(|w| w.room) else {
+            return false;
+        };
+        if !tree.governs_room(room) {
+            return false;
+        }
         let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
             return false;
         };
@@ -9197,13 +9192,16 @@ impl ShellOverlayHost {
             active_name.as_str(),
             body_y,
         );
+        let can_invite = tree.active_workspace().is_some_and(|workspace| {
+            tree.governs_room(workspace.room) && workspace.may_administer(&state.local_user_id)
+        });
         let invite_y = self.draw_ws_settings_invite_link(
             scene,
             transform,
             text_renderer,
             theme,
             rect,
-            &tree,
+            can_invite,
             body_y,
         );
         let collab_y = invite_y + 72.0;
@@ -9820,11 +9818,11 @@ impl ShellOverlayHost {
         editing
     }
 
-    /// Sharing card with the workspace's stable invitation URI.
+    /// Sharing card that opens the signed invite composer.
     #[allow(
         clippy::too_many_arguments,
         reason = "one positional argument per painted value, plus the tree the invite \
-                  URL is derived from; matching every other draw_ws_settings_* helper \
+                  permission state is derived from; matching every other draw_ws_settings_* helper \
                   in this impl"
     )]
     fn draw_ws_settings_invite_link(
@@ -9834,7 +9832,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        tree: &WorkspaceTree,
+        can_invite: bool,
         _body_y: f64,
     ) -> f64 {
         let tokens = &theme.tokens;
@@ -9863,51 +9861,49 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
-        // Mirrors WorkspaceSettings::invite_link's format so the URL is
-        // stable per workspace id.
-        let invite_url = tree.active_workspace().map_or_else(
-            || "quickdesktop://invite/0".to_string(),
-            |w| format!("quickdesktop://invite/{}", u64::from(w.id)),
-        );
+        let invite_url = if can_invite {
+            "Choose a person and role; qOS signs a one-hour invite."
+        } else {
+            "Only the governing owner can create workspace invites."
+        };
         text_renderer.draw_text(
             scene,
-            &invite_url,
+            invite_url,
             tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
             None,
         );
-        let copy_btn = self.ws_settings_copy_rect();
+        let invite_btn = self.ws_settings_invite_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5],
+            if can_invite {
+                colors.accent[5]
+            } else {
+                colors.surfaces.base
+            },
             None,
             &RoundedRect::from_rect(
-                copy_btn,
-                ui::chrome::ChromeRole::Control.radius(theme, copy_btn.height()),
+                invite_btn,
+                ui::chrome::ChromeRole::Control.radius(theme, invite_btn.height()),
             ),
         );
-        // "Copied" replaces the label briefly, or the button looks
-        // indistinguishable from one that did nothing.
-        let copy_label = if self
-            .ws_invite_copied_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
-        {
-            "Copied"
-        } else {
-            "Copy"
-        };
-        let (cw, _ch) = text_renderer.measure(copy_label, tokens.typography.scale.sm, None);
+        let invite_label = "Create";
+        let (cw, _ch) = text_renderer.measure(invite_label, tokens.typography.scale.sm, None);
         text_renderer.draw_text(
             scene,
-            copy_label,
+            invite_label,
             tokens.typography.scale.sm,
-            colors.text_primary,
+            if can_invite {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
             transform.pre_translate(
                 (
-                    copy_btn.x0 + (copy_btn.width() - f64::from(cw)) / 2.0,
-                    copy_btn.y0 + 9.0,
+                    invite_btn.x0 + (invite_btn.width() - f64::from(cw)) / 2.0,
+                    invite_btn.y0 + 9.0,
                 )
                     .into(),
             ),
@@ -9976,7 +9972,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Anyone with this link must still pass the workspace's secure join flow.",
+            "Invites bind the workspace, recipient role, expiry and this device's identity.",
             tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
