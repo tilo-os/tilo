@@ -407,6 +407,24 @@ pub struct BrokerHandle {
     channels: Arc<Mutex<BrokerChannels>>,
 }
 
+/// Cloneable, thread-safe slice of the broker used by shell chrome. Keeping
+/// the join handles out of the closure avoids extending broker lifetime or
+/// creating an ownership cycle with the root widget.
+#[derive(Clone)]
+pub struct SessionFollowDispatcher {
+    fanout: Arc<FanoutState>,
+}
+
+impl SessionFollowDispatcher {
+    pub fn set(&self, room: &str, peer_id: Option<String>) {
+        self.fanout.fanout_to_route(
+            &CollabEvent::FollowChanged { peer_id },
+            u64::MAX,
+            &CrdtRoute::cluster(room.to_string()),
+        );
+    }
+}
+
 /// Cloneable, transport-owning facade used by shell search providers. It
 /// keeps only the shared action directory alive, never the broker threads or
 /// socket owner.
@@ -463,6 +481,25 @@ impl BrokerHandle {
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
         self.fanout
             .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
+    }
+
+    /// Bind every local app in `room` to one participant's published view,
+    /// or release the binding. This is session-local and never enters the
+    /// peer publisher; each app already receives that participant's normal
+    /// view-presence frames and applies them through `ui::App::follow`.
+    pub fn set_follow_target(&self, room: &str, peer_id: Option<String>) {
+        self.fanout_event(
+            &CollabEvent::FollowChanged { peer_id },
+            None,
+            &CrdtRoute::cluster(room.to_string()),
+        );
+    }
+
+    #[must_use]
+    pub fn follow_dispatcher(&self) -> SessionFollowDispatcher {
+        SessionFollowDispatcher {
+            fanout: Arc::clone(&self.fanout),
+        }
     }
 
     /// Subscribe this process to the rooms it hosts. The sink runs on
@@ -1188,6 +1225,33 @@ mod tests {
             vec![(format!("peer@{HANDLE}"), "Xaver".to_string())],
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
+        );
+    }
+
+    #[test]
+    fn follow_dispatcher_is_local_and_room_scoped() {
+        let table = Arc::new(super::FanoutState::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::FollowChanged { peer_id } = event
+                    && let Ok(mut rows) = sink_seen.lock()
+                {
+                    rows.push(peer_id.clone());
+                }
+            }),
+        );
+        let dispatcher = super::SessionFollowDispatcher {
+            fanout: Arc::clone(&table),
+        };
+        dispatcher.set("room-2", Some("peer@wrong".into()));
+        dispatcher.set("room-1", Some("peer@7".into()));
+        dispatcher.set("room-1", None);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("peer@7".to_string()), None]
         );
     }
 

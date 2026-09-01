@@ -145,9 +145,10 @@ impl AccountsPane {
         let mut intro: Vec<El> = Vec::new();
         intro.push(Box::new(
             Text::new(
-                "Accounts are listed once and consumed by compatible installed apps. \
-                 Email accounts can be added here today; calendar and file accounts \
-                 appear here when provisioned by their owning app.",
+                "Accounts are saved on this device and used by compatible installed apps. \
+                 They are not shared with collaborators or a workspace. Email accounts \
+                 can be added here today; calendar and file accounts appear when their \
+                 owning app provisions them.",
             )
             .with_size(12.0),
         ));
@@ -170,7 +171,7 @@ impl AccountsPane {
                  your first account.",
             ));
         }
-        panel.push(card("External accounts", rows(intro)));
+        panel.push(card("Accounts on this device", rows(intro)));
 
         if self.form_open {
             panel.push(Self::mail_form());
@@ -229,7 +230,7 @@ impl AccountsPane {
         );
         let add_btn: El = Box::new(Button::new(
             "settings.accounts.add.mail",
-            "\u{f0415}  Add",
+            "Add email account",
             Some(ADD_MAIL_KEY),
         ));
         let views = self.dir.views_of(AccountKind::Mail);
@@ -292,7 +293,7 @@ impl AccountsPane {
         };
 
         // Top line: the account label with the status chip and (for real
-        // accounts) a compact trash button inline at the right. A single
+        // accounts) an explicit destructive action inline at the right. A single
         // leading `Text` keeps the trailing controls on the same line — a
         // multi-line block on the left would seize the row and wrap them
         // below. The connection summary goes on its own line beneath.
@@ -314,9 +315,15 @@ impl AccountsPane {
                     &reauth_key(&view.id),
                 ));
             }
-            top = top
-                .push(hgap(10.0))
-                .push(icon_button(&remove_id, "\u{f01b4}", &rk));
+            // Removing an account is consequential even though it has a
+            // confirmation step. Keep its intent visible and use the shared
+            // danger treatment rather than hiding it behind an unlabeled
+            // trash icon next to ordinary account maintenance.
+            top = top.push(hgap(10.0)).push(Box::new(
+                Button::new(&remove_id, "Remove", Some(&rk))
+                    .danger()
+                    .fit_content(34.0),
+            ));
         }
 
         let mut column = Column::new()
@@ -926,6 +933,17 @@ mod tests {
         n
     }
 
+    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Button"
+            && let Some(label) = w.test_id()
+        {
+            labels.push(label.to_string());
+        }
+        for c in w.children() {
+            button_labels(c, labels);
+        }
+    }
+
     fn lay_out(pane: &mut dyn Widget) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -955,6 +973,29 @@ mod tests {
         lay_out(&mut pane);
         // 1 Add + 4 Remove.
         assert_eq!(count_named(&pane, "Button"), 5);
+    }
+
+    #[test]
+    fn account_removal_is_labeled_and_visibly_destructive() {
+        // Real accounts get an explicit Remove action rather than a lone
+        // trash glyph. The confirmation flow still owns the mutation; this
+        // assertion guards the decision point users see before it.
+        let mut pane = AccountsPane::from_dir(sample_directory(), false);
+        lay_out(&mut pane);
+        let mut labels = Vec::new();
+        button_labels(&pane, &mut labels);
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| label.as_str() == "Remove")
+                .count(),
+            4,
+            "one explicit Remove action per real account"
+        );
+        assert!(
+            labels.contains(&"Add email account".to_string()),
+            "the account-type action names what it adds"
+        );
     }
 
     #[test]

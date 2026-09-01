@@ -9,13 +9,13 @@
 //! | ------------- | -------------------- | ------------------------------------- |
 //! | yes           | unset                | Compare; panic on mismatch            |
 //! | yes           | set                  | Overwrite golden with rendered        |
-//! | no            | unset                | Update-on-first-run: copy rendered    |
-//! |               |                      | over -> golden, print a notice, pass  |
-//! | no            | set                  | Same as above                         |
+//! | no            | unset, local run     | Seed the golden, print a notice, pass |
+//! | no            | unset, CI            | Fail: a checked-in golden is required |
+//! | no            | set                  | Seed / refresh the golden             |
 //!
-//! Update-on-first-run is deliberate: the first pass in a new CI
-//! environment produces goldens the maintainer reviews, so a missing
-//! golden isn't a hard failure that blocks seeding.
+//! Seeding remains frictionless on a developer machine. CI never creates an
+//! unreviewed baseline: it asks for `UPDATE_SNAPSHOTS=1`, followed by a normal
+//! run that compares the checked-in file.
 
 #![allow(dead_code)]
 #![allow(
@@ -56,7 +56,8 @@ impl SnapshotAssertion {
     /// See the module doc for the full behaviour matrix.
     pub fn assert(self) {
         let update = std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1");
-        self.assert_with(update);
+        let require_existing_golden = std::env::var_os("CI").is_some();
+        self.assert_with_policy(update, require_existing_golden);
     }
 
     /// [`Self::assert`] with the refresh decision handed in rather than read
@@ -64,6 +65,13 @@ impl SnapshotAssertion {
     /// it, and the environment is process-global, so reading it here would
     /// race other tests over `UPDATE_SNAPSHOTS`.
     pub fn assert_with(self, update: bool) {
+        self.assert_with_policy(update, false);
+    }
+
+    /// Variant used by tests and CI policy checks. `require_existing_golden`
+    /// is deliberately explicit so module tests do not mutate process-global
+    /// environment variables while running in parallel.
+    pub fn assert_with_policy(self, update: bool, require_existing_golden: bool) {
         assert!(
             self.rendered_png.exists(),
             "snapshot: rendered PNG missing at {}",
@@ -77,7 +85,11 @@ impl SnapshotAssertion {
         }
 
         if !self.golden_png.exists() {
-            // Update-on-first-run.
+            assert!(
+                !require_existing_golden,
+                "snapshot golden missing at {}\n  run locally with UPDATE_SNAPSHOTS=1, review the image, and commit it",
+                self.golden_png.display(),
+            );
             copy_over(&self.rendered_png, &self.golden_png);
             eprintln!("wrote new golden: {}", self.golden_png.display());
             return;
@@ -347,5 +359,16 @@ mod tests {
             golden.exists(),
             "golden should have been seeded on first run"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "snapshot golden missing")]
+    fn ci_policy_rejects_a_missing_golden() {
+        let dir = scratch_dir();
+        let rendered = dir.join("rendered.png");
+        let golden = dir.join("subdir/golden.png");
+        write_png(&rendered, 4, 4, [100, 120, 140, 255]);
+
+        SnapshotAssertion::new(&rendered, &golden).assert_with_policy(false, true);
     }
 }

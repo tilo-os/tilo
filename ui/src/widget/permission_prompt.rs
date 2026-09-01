@@ -16,7 +16,8 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
@@ -33,6 +34,20 @@ const BUTTON_GAP: f64 = 8.0;
 const BUTTON_WIDTH: f64 = 110.0;
 const BUTTON_HEIGHT: f64 = 36.0;
 const ICON_SIZE: f64 = 36.0;
+
+/// Stable synthetic-node keys for the four choices. They deliberately do not
+/// depend on the translated label or visual order, so assistive technology can
+/// keep pointing at the same decision when the prompt redraws.
+const ALLOW_KEY: u64 = 1;
+const SESSION_KEY: u64 = 2;
+const ALWAYS_KEY: u64 = 3;
+const DENY_KEY: u64 = 4;
+const CHOICES: [PromptChoice; 4] = [
+    PromptChoice::Allow,
+    PromptChoice::Session,
+    PromptChoice::Always,
+    PromptChoice::Deny,
+];
 
 /// Mirrors the variants of the shell's consumer-facing
 /// `quick_shell::shell::state::GrantScope` plus an explicit
@@ -77,6 +92,11 @@ pub struct PermissionPrompt {
     last_cursor: Point,
     /// `None` outside every button rect. Drives the per-button hover background.
     hover_idx: Option<u8>,
+    /// The explicit decision receiving keyboard/assistive-technology focus.
+    /// A permission request starts on Deny when it receives keyboard focus so
+    /// an accidental Enter cannot grant a capability.
+    focused_choice: Option<PromptChoice>,
+    has_keyboard_focus: bool,
 }
 
 impl PermissionPrompt {
@@ -94,6 +114,8 @@ impl PermissionPrompt {
             deny_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             hover_idx: None,
+            focused_choice: None,
+            has_keyboard_focus: false,
         }
     }
 
@@ -144,6 +166,68 @@ impl PermissionPrompt {
     pub fn deny_rect(&self) -> Rect {
         self.deny_rect
     }
+
+    fn choice_enabled(&self, choice: PromptChoice) -> bool {
+        !matches!(choice, PromptChoice::Always) || self.is_owner
+    }
+
+    fn choose(&mut self, choice: PromptChoice) -> bool {
+        if self.choice_enabled(choice) {
+            self.pending_choice = Some(choice);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn choice_from_index(index: usize) -> Option<PromptChoice> {
+        CHOICES.get(index).copied()
+    }
+
+    fn choice_from_key(key: u64) -> Option<PromptChoice> {
+        match key {
+            ALLOW_KEY => Some(PromptChoice::Allow),
+            SESSION_KEY => Some(PromptChoice::Session),
+            ALWAYS_KEY => Some(PromptChoice::Always),
+            DENY_KEY => Some(PromptChoice::Deny),
+            _ => None,
+        }
+    }
+
+    fn key_for_choice(choice: PromptChoice) -> u64 {
+        match choice {
+            PromptChoice::Allow => ALLOW_KEY,
+            PromptChoice::Session => SESSION_KEY,
+            PromptChoice::Always => ALWAYS_KEY,
+            PromptChoice::Deny => DENY_KEY,
+        }
+    }
+
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the fixed four-choice array bounds current/offset to 0..=4, so these index-cycle operations cannot overflow or underflow"
+    )]
+    fn move_focus(&mut self, forward: bool) {
+        let current = self
+            .focused_choice
+            .and_then(|c| CHOICES.iter().position(|candidate| *candidate == c))
+            // Deny is the conservative default when no choice is focused.
+            .unwrap_or(CHOICES.len().saturating_sub(1));
+        for offset in 1..=CHOICES.len() {
+            let idx = if forward {
+                (current + offset) % CHOICES.len()
+            } else {
+                (current + CHOICES.len() - (offset % CHOICES.len())) % CHOICES.len()
+            };
+            let Some(&choice) = CHOICES.get(idx) else {
+                continue;
+            };
+            if self.choice_enabled(choice) {
+                self.focused_choice = Some(choice);
+                return;
+            }
+        }
+    }
 }
 
 fn button_label(choice: PromptChoice) -> &'static str {
@@ -153,6 +237,18 @@ fn button_label(choice: PromptChoice) -> &'static str {
         PromptChoice::Always => "Always allow",
         PromptChoice::Deny => "Deny",
     }
+}
+
+#[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the four flags are independent paint inputs (interaction, availability, emphasis and focus), not one state machine"
+)]
+struct ButtonVisualState {
+    hover: bool,
+    disabled: bool,
+    primary: bool,
+    focused: bool,
 }
 
 // Standard immediate-mode paint-helper signature for this vello renderer
@@ -166,35 +262,43 @@ fn draw_button(
     theme: &Theme,
     rect: Rect,
     label: &str,
-    is_hover: bool,
-    is_disabled: bool,
-    is_primary: bool,
+    state: ButtonVisualState,
 ) {
     let radius = f64::from(theme.tokens.radii.md);
     let shape = RoundedRect::from_rect(rect, radius);
 
-    let mut bg = if is_primary {
+    let mut bg = if state.primary {
         theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-    } else if is_hover {
+    } else if state.hover {
         theme.bg_hover
     } else {
         theme.tokens.colors.surfaces.raised
     };
-    if is_disabled {
+    if state.disabled {
         bg = bg.with_alpha_factor(0.4);
     }
     scene.fill(Fill::NonZero, transform, bg, None, &shape);
 
-    let border = if is_disabled {
+    let border = if state.disabled {
         theme.tokens.colors.border_standard.with_alpha_factor(0.4)
     } else {
         theme.tokens.colors.border_standard
     };
-    scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
+    scene.stroke(
+        &Stroke::new(if state.focused { 2.0 } else { 1.0 }),
+        transform,
+        if state.focused {
+            theme.border_focus
+        } else {
+            border
+        },
+        None,
+        &shape,
+    );
 
-    let text_color = if is_disabled {
+    let text_color = if state.disabled {
         theme.tokens.colors.text_primary.with_alpha_factor(0.4)
-    } else if is_primary {
+    } else if state.primary {
         // White is the intent; steps off white only when the accent is too
         // light to carry it, rather than shipping a ratio that makes a
         // consent decision hard to read.
@@ -335,6 +439,7 @@ impl Widget for PermissionPrompt {
         for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
             let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
             let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
+            let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
             draw_button(
                 scene,
                 transform,
@@ -342,9 +447,12 @@ impl Widget for PermissionPrompt {
                 theme,
                 *rect,
                 button_label(*choice),
-                is_hover,
-                is_disabled,
-                *is_primary,
+                ButtonVisualState {
+                    hover: is_hover,
+                    disabled: is_disabled,
+                    primary: *is_primary,
+                    focused: is_focused,
+                },
             );
         }
     }
@@ -357,8 +465,8 @@ impl Widget for PermissionPrompt {
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
@@ -389,22 +497,58 @@ impl Widget for PermissionPrompt {
             } => {
                 let p = self.last_cursor;
                 if self.allow_rect.contains(p) {
-                    self.pending_choice = Some(PromptChoice::Allow);
+                    self.focused_choice = Some(PromptChoice::Allow);
+                    self.choose(PromptChoice::Allow);
+                    *focus_target = Some(node_id);
                     *handled = true;
                 } else if self.session_rect.contains(p) {
-                    self.pending_choice = Some(PromptChoice::Session);
+                    self.focused_choice = Some(PromptChoice::Session);
+                    self.choose(PromptChoice::Session);
+                    *focus_target = Some(node_id);
                     *handled = true;
                 } else if self.always_rect.contains(p) {
                     if self.is_owner {
-                        self.pending_choice = Some(PromptChoice::Always);
+                        self.focused_choice = Some(PromptChoice::Always);
+                        self.choose(PromptChoice::Always);
+                        *focus_target = Some(node_id);
                         *handled = true;
                     }
                     // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
-                    self.pending_choice = Some(PromptChoice::Deny);
+                    self.focused_choice = Some(PromptChoice::Deny);
+                    self.choose(PromptChoice::Deny);
+                    *focus_target = Some(node_id);
                     *handled = true;
                 }
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        ..
+                    },
+                ..
+            } if self.has_keyboard_focus => match logical_key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                    self.move_focus(false);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                    self.move_focus(true);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                    if let Some(choice) = self.focused_choice {
+                        *handled = self.choose(choice);
+                    }
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.focused_choice = Some(PromptChoice::Deny);
+                    *handled = self.choose(PromptChoice::Deny);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -415,6 +559,20 @@ impl Widget for PermissionPrompt {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let children = CHOICES
+            .iter()
+            .map(|choice| {
+                AccessNode::new(Role::Button)
+                    .with_name(button_label(*choice))
+                    .with_key(Self::key_for_choice(*choice))
+                    .with_state(AccessState {
+                        focusable: self.choice_enabled(*choice),
+                        focused: self.has_keyboard_focus && self.focused_choice == Some(*choice),
+                        disabled: !self.choice_enabled(*choice),
+                        ..Default::default()
+                    })
+            })
+            .collect();
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(format!(
@@ -423,13 +581,106 @@ impl Widget for PermissionPrompt {
                 ))
                 .with_state(AccessState {
                     modal: true,
+                    focusable: true,
+                    focused: self.has_keyboard_focus,
                     ..Default::default()
-                }),
+                })
+                .with_children(children),
         )
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.has_keyboard_focus = focused;
+        if focused && self.focused_choice.is_none() {
+            self.focused_choice = Some(PromptChoice::Deny);
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.has_keyboard_focus
+    }
+
+    /// The host maps Enter/Space on a focused retained control to `Activate`.
+    /// Keep that route identical to the raw-key handler and the synthetic AT
+    /// child, rather than falling back to a coordinate click in the middle of
+    /// the dialog.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if matches!(action, crate::a11y::Action::Activate)
+            && let Some(choice) = self.focused_choice
+        {
+            self.choose(choice)
+        } else {
+            false
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        true
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [0] => Some(self.allow_rect),
+            [1] => Some(self.session_rect),
+            [2] => Some(self.always_rect),
+            [3] => Some(self.deny_rect),
+            _ => None,
+        }
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let Some(choice) = path
+            .first()
+            .and_then(|index| Self::choice_from_index(*index))
+        else {
+            return false;
+        };
+        if !self.choice_enabled(choice) {
+            return false;
+        }
+        self.has_keyboard_focus = true;
+        self.focused_choice = Some(choice);
+        true
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let [key] = key_path else {
+            return false;
+        };
+        let Some(choice) = Self::choice_from_key(*key) else {
+            return false;
+        };
+        match action {
+            crate::a11y::Action::Focus => {
+                self.has_keyboard_focus = true;
+                self.focused_choice = Some(choice);
+                self.choice_enabled(choice)
+            }
+            crate::a11y::Action::Activate => {
+                self.focused_choice = Some(choice);
+                self.choose(choice)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -454,10 +705,67 @@ mod tests {
         let node = Widget::accessibility(&p).expect("prompt is not presentational");
         assert_eq!(node.role, Role::Dialog);
         assert!(node.state.modal, "a permission prompt traps focus");
+        assert!(node.state.focusable);
         assert_eq!(
             node.name.as_deref(),
             Some("Camera access requested by org.gnome.gedit")
         );
+        assert_eq!(node.children.len(), 4, "every decision is exposed");
+        assert_eq!(node.children[0].role, Role::Button);
+        assert_eq!(node.children[0].name.as_deref(), Some("Allow"));
+        assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
+    }
+
+    #[test]
+    fn non_owner_prompt_exposes_always_as_disabled_and_traps_focus() {
+        let p = prompt_at(false);
+        let node = Widget::accessibility(&p).expect("prompt is semantic");
+        assert!(Widget::traps_focus(&p));
+        assert!(node.children[2].state.disabled);
+        assert!(!node.children[2].state.focusable);
+        assert_eq!(p.synthetic_accessibility_rect(&[0]), Some(p.allow_rect()));
+        assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
+    }
+
+    #[test]
+    fn keyboard_focus_defaults_to_deny_and_at_can_activate_an_exact_choice() {
+        let mut p = prompt_at(false);
+        Widget::set_focus(&mut p, true);
+        let node = Widget::accessibility(&p).expect("prompt is semantic");
+        assert!(node.state.focused);
+        assert!(node.children[3].state.focused, "Deny is the safe default");
+
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut p,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
+
+        p.pending_choice = None;
+        assert!(Widget::perform_action_at(
+            &mut p,
+            &crate::a11y::Action::Activate,
+            &[SESSION_KEY],
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+
+        p.pending_choice = None;
+        assert!(
+            !Widget::perform_action_at(
+                &mut p,
+                &crate::a11y::Action::Activate,
+                &[ALWAYS_KEY],
+                &mut doc,
+                &automerge::ROOT,
+            ),
+            "a disabled persistent grant cannot be activated through AT"
+        );
+        assert_eq!(p.pending_choice, None);
     }
 
     fn cursor_at(p: Point) -> WindowEvent {

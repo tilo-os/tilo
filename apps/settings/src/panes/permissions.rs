@@ -385,27 +385,42 @@ fn device_security_card() -> El {
     )
 }
 
+/// Establish the boundary before mixing the two related, but independently
+/// owned, kinds of access below. System Settings reports this device's state;
+/// collaborators, roles, and app access belong to the workspace that owns
+/// them. Keeping the distinction in the first visible card prevents this
+/// cross-workspace overview from looking like an editor for every workspace.
+fn scope_card() -> El {
+    card(
+        "This device",
+        rows(vec![Box::new(
+            Text::new(
+                "Privacy hardware and security status apply to this device and your sign-in. \
+                 They do not change who can access a shared workspace or what an app may do there.",
+            )
+            .with_size(12.0),
+        )]),
+    )
+}
+
 /// Intro card: what these grants are and where they come from.
 fn workspace_grants_intro_card() -> El {
     card(
-        "Workspace privacy grants",
+        "Workspace access · read-only overview",
         rows(vec![
             Box::new(
                 Text::new(
-                    "Apps run sandboxed to the workspace they launch in. When an app \
-                 reaches beyond it — a file, the camera or microphone, screen \
-                 sharing, or the network — the compositor asks you, and an \
-                 approval is recorded as a capability the sandbox enforces. This
-                 personal overview is intentionally read-only: change a grant in
-                 the named workspace's Settings, where its owner and your role are
-                 visible.",
+                    "App access is scoped to the workspace where the app runs. This page \
+                 only summarizes it across workspaces; it cannot grant, revoke, or \
+                 change workspace roles. Change access in that workspace's Settings, \
+                 where its people and roles are visible.",
                 )
                 .with_size(12.0),
             ),
             Box::new(
                 Button::new(
                     "open-workspace-privacy",
-                    "Open current workspace controls",
+                    "Open current workspace access",
                     None,
                 )
                 .with_size(248.0, 40.0)
@@ -423,7 +438,7 @@ fn workspace_grants_intro_card() -> El {
 /// has not written its state file yet).
 fn no_workspace_grants_card() -> El {
     card(
-        "No workspace privacy grants",
+        "No workspace access grants",
         rows(vec![
             Box::new(
                 Text::new(
@@ -503,6 +518,7 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     let mut panel: Vec<El> = Vec::new();
 
     let privacy = os_actions::get_privacy_status();
+    panel.push(scope_card());
     panel.push(privacy_hardware_card(&privacy));
     panel.push(active_privacy_use_card(&privacy));
     panel.push(device_security_card());
@@ -533,6 +549,17 @@ mod tests {
             n += count_named(c, name);
         }
         n
+    }
+
+    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Button"
+            && let Some(label) = w.test_id()
+        {
+            labels.push(label.to_string());
+        }
+        for c in w.children() {
+            button_labels(c, labels);
+        }
     }
 
     /// A real state.json fragment: one workspace, one app holding a camera
@@ -570,6 +597,18 @@ mod tests {
             build_layout_of(&mut pane);
             assert_eq!(count_named(pane.as_ref(), "Button"), 1);
         }
+    }
+
+    #[test]
+    fn workspace_access_is_explicitly_routed_to_its_owner() {
+        // System Settings never pretends it can edit a workspace. The one
+        // live control is an explicit route to the current workspace's
+        // authoritative access surface.
+        let mut pane = build_view(Some(&sample_state()));
+        build_layout_of(&mut pane);
+        let mut labels = Vec::new();
+        button_labels(pane.as_ref(), &mut labels);
+        assert_eq!(labels, vec!["Open current workspace access"]);
     }
 
     #[test]
