@@ -132,6 +132,9 @@ pub struct HexView {
     open_rx: Option<PortalChannel>,
     /// An in-flight XDG-portal save-destination request.
     save_rx: Option<PortalChannel>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    pending_resource_io: Option<(qos_actions::InvocationId, crate::actions::HexOperation)>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
     /// A transient status message (e.g. "Saved 4.2 kB") with its birth time.
     flash: Option<(String, bool, Instant)>,
     /// Hit rect of the empty-state "Open file…" button, recorded during draw.
@@ -189,6 +192,9 @@ impl HexView {
             path: None,
             open_rx: None,
             save_rx: None,
+            resource_invocation: None,
+            pending_resource_io: None,
+            resource_result: None,
             flash: None,
             open_button: Rect::ZERO,
             actions: ui::ActionHost::new(),
@@ -344,7 +350,7 @@ impl HexView {
     /// one (a never-saved buffer) it opens the host Save chooser.
     fn begin_save(&mut self) {
         if let Some(path) = self.path.clone() {
-            self.write_to(&path);
+            let _ = self.write_to(&path);
         } else if self.save_rx.is_none() {
             self.save_rx = Some(file_save_request(&self.suggested_name()).send());
         }
@@ -362,7 +368,7 @@ impl HexView {
 
     /// Write the current bytes to `path`, clearing the dirty markers on
     /// success and flashing the outcome either way.
-    fn write_to(&mut self, path: &std::path::Path) {
+    fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
         match std::fs::write(path, self.model.bytes()) {
             Ok(()) => {
                 self.model.clear_dirty();
@@ -374,15 +380,19 @@ impl HexView {
                     ),
                     false,
                 );
+                self.dirty = true;
+                Ok(())
             }
-            Err(e) => self.flash(format!("Save failed: {e}"), true),
+            Err(e) => {
+                self.flash(format!("Save failed: {e}"), true);
+                Err(e.to_string())
+            }
         }
-        self.dirty = true;
     }
 
     /// Load `path` into the editor, replacing the buffer and persisting it to
     /// the shared document so collaborators converge on the opened file.
-    fn open_path(&mut self, path: PathBuf, doc: &mut AutoCommit) {
+    fn open_path(&mut self, path: PathBuf, doc: &mut AutoCommit) -> Result<(), String> {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let name = path.file_name().map_or_else(
@@ -405,8 +415,12 @@ impl HexView {
                     ),
                     false,
                 );
+                Ok(())
             }
-            Err(e) => self.flash(format!("Open failed: {e}"), true),
+            Err(e) => {
+                self.flash(format!("Open failed: {e}"), true);
+                Err(e.to_string())
+            }
         }
     }
 
@@ -417,11 +431,15 @@ impl HexView {
             match rx.try_recv() {
                 Ok(outcome) => {
                     self.open_rx = None;
-                    match outcome {
+                    let result = match outcome {
                         PortalOutcome::Opened(path) => self.open_path(path, doc),
-                        PortalOutcome::Cancelled => {}
-                        PortalOutcome::Failed(reason) => self.flash(reason, true),
-                    }
+                        PortalOutcome::Cancelled => Err("cancelled".into()),
+                        PortalOutcome::Failed(reason) => {
+                            self.flash(&reason, true);
+                            Err(reason)
+                        }
+                    };
+                    self.finish_resource_io(result);
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => self.open_rx = None,
@@ -431,16 +449,45 @@ impl HexView {
             match rx.try_recv() {
                 Ok(outcome) => {
                     self.save_rx = None;
-                    match outcome {
+                    let result = match outcome {
                         PortalOutcome::Opened(dest) => self.write_to(&dest),
-                        PortalOutcome::Cancelled => {}
-                        PortalOutcome::Failed(reason) => self.flash(reason, true),
-                    }
+                        PortalOutcome::Cancelled => Err("cancelled".into()),
+                        PortalOutcome::Failed(reason) => {
+                            self.flash(&reason, true);
+                            Err(reason)
+                        }
+                    };
+                    self.finish_resource_io(result);
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => self.save_rx = None,
             }
         }
+    }
+
+    fn finish_resource_io(&mut self, result: Result<(), String>) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.resource_result = Some(match result {
+            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+            Err(message) if message == "cancelled" => qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(message),
+            },
+            Err(message) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "hex.io_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        });
     }
 
     /// Post a transient status message.
@@ -1611,8 +1658,8 @@ impl Widget for HexView {
         };
         use crate::actions::HexOperation;
         match operation {
-            HexOperation::Open => self.begin_open(),
-            HexOperation::Save if self.has_file => self.begin_save(),
+            HexOperation::Open { .. } => self.begin_open(),
+            HexOperation::Save { .. } if self.has_file => self.begin_save(),
             HexOperation::Search if self.has_file => {
                 self.overlay = Overlay::Search;
                 self.search_input.set_focus(true);
@@ -1629,7 +1676,106 @@ impl Widget for HexView {
         Ok(true)
     }
 
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match &operation {
+            crate::actions::HexOperation::Open { .. }
+            | crate::actions::HexOperation::Save { .. } => {}
+            _ => {
+                return self
+                    .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        }
+        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        match &operation {
+            crate::actions::HexOperation::Open { path: None } => {
+                self.begin_open();
+                self.resource_invocation = Some(invocation);
+            }
+            crate::actions::HexOperation::Save { path: None } => {
+                self.begin_save();
+                self.resource_invocation = Some(invocation);
+            }
+            _ => self.pending_resource_io = Some((invocation, operation)),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .pending_resource_io
+                .as_ref()
+                .is_some_and(|(id, _)| *id == invocation)
+        {
+            self.pending_resource_io = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("cancelled before file I/O".into()),
+            });
+        }
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.open_rx = None;
+            self.save_rx = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            });
+        }
+        self.resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+            .then(|| self.resource_result.take())
+            .flatten()
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some((invocation, operation)) = self.pending_resource_io.take() {
+            let result = match operation {
+                crate::actions::HexOperation::Open { path: Some(path) } => {
+                    self.open_path(path.into(), doc)
+                }
+                crate::actions::HexOperation::Save { path: Some(path) } => {
+                    self.write_to(std::path::Path::new(&path))
+                }
+                _ => Err("missing direct path".into()),
+            };
+            self.resource_result = Some(match result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "hex.io_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
         // Drain any completed file open/save picks first, so a freshly opened
         // buffer is in place before this frame lays out.
         self.drain_portal(doc);
@@ -2265,6 +2411,47 @@ fn ascii_glyph(b: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_open_is_accepted_then_succeeds() {
+        let dir = std::env::temp_dir().join(format!(
+            "hex-direct-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("bytes.bin");
+        std::fs::write(&source, [1_u8, 2, 3]).unwrap();
+        let mut view = HexView::empty();
+        let mut doc = AutoCommit::new();
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::HexOperation::Open {
+            path: Some(source.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_resource_operation(
+            &mut view,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::HEX_EDITOR_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(matches!(
+            view.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert_eq!(view.model.bytes(), &[1, 2, 3]);
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn shared_search_field_still_drives_byte_match_policy() {

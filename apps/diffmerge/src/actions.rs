@@ -15,8 +15,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec, RetryPolicy,
 };
 
 use crate::doc::MergeDoc;
@@ -26,13 +27,16 @@ use crate::model::{MergeHunk, MergeModel, Resolution};
 pub const DIFFMERGE_ACTION_TYPE: &str = "diffmerge.action";
 pub const DIFFMERGE_OPERATION_TYPE: &str = "diffmerge.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffmergeOperation {
     ShowDiff,
     ShowMerge,
     PreviousChange,
     NextChange,
-    OpenFiles,
+    OpenFiles {
+        left: Option<String>,
+        right: Option<String>,
+    },
     LoadSample,
 }
 
@@ -56,13 +60,44 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: DiffmergeOperati
             spec.retry_policy(RetryPolicy::Idempotent)
         }
         DiffmergeOperation::PreviousChange | DiffmergeOperation::NextChange => spec,
-        DiffmergeOperation::OpenFiles => spec,
+        DiffmergeOperation::OpenFiles { .. } => spec,
         DiffmergeOperation::LoadSample => spec.destructive(),
     }
 }
 
 fn workspace_operations() -> Resource {
     let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
+    root = root.with_action(
+        ActionSpec::typed_operation(
+            "open-files",
+            "Open files",
+            "left and right paths (omit both to use system file pickers)",
+            OperationKind::Effect,
+            DIFFMERGE_OPERATION_TYPE,
+            vec![
+                ActionParam::optional("left", ParamType::Text, "left file path"),
+                ActionParam::optional("right", ParamType::Text, "right file path"),
+            ],
+            |args: &ActionArgs| {
+                EncodedAction::encode_operation(
+                    DIFFMERGE_OPERATION_TYPE,
+                    &DiffmergeOperation::OpenFiles {
+                        left: args
+                            .text("left")
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_owned),
+                        right: args
+                            .text("right")
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_owned),
+                    },
+                )
+                .expect("DiffmergeOperation is always serializable")
+            },
+        )
+        .execution(ExecutionMode::Background { cancellable: true })
+        .returns(ResultSpec::Job),
+    );
     for (id, label, kind, value) in [
         (
             "show-diff",
@@ -87,12 +122,6 @@ fn workspace_operations() -> Resource {
             "Next change",
             OperationKind::View,
             DiffmergeOperation::NextChange,
-        ),
-        (
-            "open-files",
-            "Open files",
-            OperationKind::Effect,
-            DiffmergeOperation::OpenFiles,
         ),
         (
             "load-sample",
@@ -404,12 +433,6 @@ pub fn provide_resources(ctx: &MergeResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             DiffmergeOperation::NextChange,
         ),
         (
-            "open-files",
-            "Open files",
-            OperationKind::Effect,
-            DiffmergeOperation::OpenFiles,
-        ),
-        (
             "load-sample",
             "Load sample",
             OperationKind::Effect,
@@ -523,6 +546,35 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn open_files_strictly_binds_both_direct_paths_as_a_job() {
+        let root = workspace_operations();
+        let spec = root.actions.iter().find(|a| a.id == "open-files").unwrap();
+        assert_eq!(
+            spec.params().iter().map(|p| &*p.name).collect::<Vec<_>>(),
+            vec!["left", "right"]
+        );
+        assert!(matches!(
+            spec.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        ));
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+        let args = serde_json::json!({"left":"/tmp/a", "right":"/tmp/b"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let encoded = spec.build_json(&args).unwrap();
+        assert_eq!(
+            decode_operation(DIFFMERGE_OPERATION_TYPE, &encoded.payload)
+                .unwrap()
+                .unwrap(),
+            DiffmergeOperation::OpenFiles {
+                left: Some("/tmp/a".into()),
+                right: Some("/tmp/b".into())
+            }
+        );
     }
 
     /// A merge model with exactly one real conflict (ours vs theirs on the same
