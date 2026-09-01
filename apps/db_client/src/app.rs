@@ -258,8 +258,12 @@ impl DbClientApp {
         let id = profile.id;
         self.session.remember_password(id, profile.password.clone());
         let action = crate::actions::add_connection_action(&profile);
-        self.actions
-            .dispatch(doc, crate::actions::DB_ACTION_TYPE, &action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DB_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Database", "Database", &action),
+        );
         self.pending_connect_id = Some(id);
     }
 
@@ -276,8 +280,12 @@ impl DbClientApp {
             return;
         }
         let action = crate::actions::remove_connection_action(profile.id);
-        self.actions
-            .dispatch(doc, crate::actions::DB_ACTION_TYPE, &action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DB_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Database", "Database", &action),
+        );
     }
 
     /// Resolve the sidebar layout (docked vs overlay) from the *allocated*

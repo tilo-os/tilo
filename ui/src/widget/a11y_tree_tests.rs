@@ -66,8 +66,8 @@ fn tri_state_control_exposes_a_radio_group() {
         "group value is the active label"
     );
     assert!(
-        group.supports_action(AkAction::Click),
-        "the control is activatable"
+        !group.supports_action(AkAction::Click),
+        "the container is descriptive; each radio owns its activation"
     );
 
     // Three radio buttons, one per segment, in order, each positioned N of 3.

@@ -601,8 +601,12 @@ impl ChatApp {
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
     pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: &ChatAction) {
-        self.actions
-            .dispatch(doc, actions::CHAT_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::CHAT_ACTION_TYPE,
+            action,
+            actions::history_context(action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen

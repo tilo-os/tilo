@@ -2551,8 +2551,12 @@ impl BooksApp {
     /// single mutation path shared with the Ctrl+K palette, via the
     /// framework's [`ActionHost`](ui::ActionHost).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
-        self.actions
-            .dispatch(doc, crate::actions::EBOOK_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::EBOOK_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Ebook", "Ebook", action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page

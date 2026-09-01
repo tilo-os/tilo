@@ -526,12 +526,14 @@ impl Widget for TileHost {
         // commit pass no longer touches the document the tab is editing,
         // and would otherwise leave it open forever.
         if w.needs_commit() {
+            let context = w.take_commit_context();
             b.store.with_history(&id, |doc, history| {
-                history.commit_action_authored(
+                history.commit_action_authored_with_message(
                     doc,
                     None,
                     w.get_state(),
                     Some(crate::collaboration::local_user_id()),
+                    context.and_then(|context| context.change_message()),
                 );
             });
             w.on_commit();

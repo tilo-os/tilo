@@ -781,6 +781,49 @@ impl ShellDriver {
         self.fb.host_mut().force_room_activity_settled();
     }
 
+    /// Deterministic scenario entry point for the two history zoom levels.
+    /// It seeds the same collaborative changes as the legacy visual scene,
+    /// then switches through the pane's public API rather than reaching into
+    /// drawing state.
+    pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
+        self.scene_room_activity();
+        self.fb.host_mut().room_activity_mut().set_view(if explore {
+            shell::shell::room_activity::ActivityView::Explore
+        } else {
+            shell::shell::room_activity::ActivityView::CatchUp
+        });
+        self.fb.host_mut().force_room_activity_settled();
+        // Headless snapshots do not render, while this immediate-mode sheet
+        // derives its keyboard order from the controls it actually paints.
+        // Build one CPU-side scene (no adapter/GPU involved) so keyboard
+        // actions exercise the same rendered control set in every mode.
+        let _ = self.fb.paint();
+    }
+
+    pub fn select_room_activity_entry(&mut self, index: usize) {
+        let len = self.fb.host().room_activity().timeline().entries().len();
+        for candidate in index..len {
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .timeline_mut()
+                .set_selection(Some((candidate, candidate)));
+            let handle = self.chrome_handle();
+            let state = handle.borrow();
+            let mut tree = state.tree_mut();
+            if self
+                .fb
+                .host()
+                .room_activity()
+                .compare_selection(&mut tree, None)
+                .is_some()
+            {
+                break;
+            }
+        }
+        let _ = self.fb.paint();
+    }
+
     /// Two runs named, one by the peer under its own actor, so the band
     /// reads "named by" someone other than the viewer. Both go in through
     /// the pane's own write path (the [Name] chip's call).

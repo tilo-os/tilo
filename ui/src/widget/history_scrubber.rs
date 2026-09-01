@@ -1551,6 +1551,7 @@ mod tests {
             text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
@@ -1771,6 +1772,7 @@ mod version_tests {
             text_delta: Some((len, 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
