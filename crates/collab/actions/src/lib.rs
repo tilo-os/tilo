@@ -42,22 +42,6 @@
 //! against an [`ActionTransport`](executor::ActionTransport), falling
 //! back to local execution when no host answers.
 //!
-//! ## Driving an app that has no window
-//!
-//! A [`Resource`]/[`ActionSpec`] is presentation and stays local, but a
-//! faithful *description* of it crosses: [`project_flat`] turns the forest into
-//! [`FlatSpec`]s — a stable address, human labels, and a typed
-//! [`ActionParam`] list — carrying nothing fireable, so surveying what an app
-//! offers can never trip a side-effect. A caller reads that, sends back an
-//! address and arguments, and [`build_from_json`] resolves it, binds strictly,
-//! and runs the app's own builder. The result is byte-identical to what the
-//! on-screen affordance produces, because it *is* the affordance's closure —
-//! see [`resource`] for how one closure serves both.
-//!
-//! [`IoTransport`] is the other missing half: an [`ActionTransport`] over any
-//! `Write` + `BufRead`, framing newline-delimited JSON, so an envelope can
-//! actually reach a peer or host instead of being dropped into a `Vec`.
-//!
 //! ## Sharing this vocabulary with the compositor
 //!
 //! [`params`] is deliberately the *same* vocabulary the compositor's headless
@@ -100,7 +84,6 @@ pub mod optimistic;
 pub mod params;
 pub mod registry;
 pub mod resource;
-pub mod wire;
 
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 pub use context::{
@@ -119,10 +102,6 @@ pub use registry::ActionRegistry;
 pub use resource::{
     ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,
     ResourceId, ResourceProvider, flatten,
-};
-pub use wire::{
-    FlatSpec, InvokeError, IoTransport, SerializableResource, SerializableSpec, WireMessage,
-    build_from_flat, build_from_json, project, project_flat, read_message, resolve,
 };
 
 #[cfg(test)]
