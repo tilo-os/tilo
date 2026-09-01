@@ -25,6 +25,7 @@ No display.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -153,25 +154,38 @@ class Session:
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
             XDG_DATA_HOME=os.path.join(self.dir, "data"),
             XDG_CACHE_HOME=os.path.join(self.dir, "cache"),
+            QOS_IDENTITY_ROOT=os.path.join(self.dir, "system-identity"),
         )
         return env
 
     def start(self) -> None:
-        for sub in ("config", "data", "cache", "keys"):
+        for sub in ("config", "data", "cache"):
             os.makedirs(os.path.join(self.dir, sub), exist_ok=True)
         os.makedirs(self.runtime_dir, mode=0o700, exist_ok=True)
         env = self.base_env()
         env.update(
             QOS_USER_ID=self.user,
-            # Without a writable key path the compositor refuses to run
-            # peer sync at all, and the two sessions never become one
-            # room however the invite goes.
-            QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
+            # The network and signing brokers must use the same certified
+            # device key. Distinct roots still make these two local sessions
+            # independent peers.
+            QOS_PEER_KEY_PATH=os.path.join(
+                self.dir, "system-identity", "device", "keypair.bin"),
             QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
             QOS_TEST_CONTROL=self.sock,
             NIRIOS_HEADLESS_SIZE="1280x800",
             RUST_LOG=env.get("RUST_LOG", "info"),
         )
+        provisioned = subprocess.run(
+            [self.binary, "--firstboot", "--provision-identity"],
+            cwd=REPO,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if provisioned.returncode != 0:
+            raise RuntimeError(
+                f"{self.name}: identity provisioning failed:\n{provisioned.stdout}")
         self._log = open(self.log_path, "w")
         self.proc = subprocess.Popen(
             [self.binary, "--backend", "headless", "--enable-peer-sync"],
@@ -233,6 +247,17 @@ class Session:
                 return ws
         raise RuntimeError(f"{self.name}: no active workspace")
 
+    def has_local_write_membership(self) -> bool:
+        person = self.chrome()["local_user_id"]
+        for capability in self.active_workspace().get("capabilities", []):
+            subject = capability.get("subject", {})
+            principal = subject.get("Principal", {})
+            if (principal.get("Person") == person
+                    and capability.get("effect") == "Grant"
+                    and capability.get("verb") in ("Write", "Admin")):
+                return True
+        return False
+
     def settle(self, seconds: float = 0.6) -> None:
         time.sleep(seconds)
 
@@ -243,25 +268,25 @@ class Session:
         for i in range(0, len(text), 200):
             ok(call(self.sock, {"op": "type", "text": text[i:i + 200]}))
 
-    def modifiers(self, ctrl=False, shift=False, alt=False, logo=False) -> None:
-        ok(call(self.sock, {"op": "modifiers", "ctrl": ctrl, "shift": shift,
-                            "alt": alt, "logo": logo}))
+    def invoke(self, ident: str, args: dict | None = None) -> dict:
+        payload = {
+            "op": "actions_invoke",
+            "provider": "actions",
+            "id": ident,
+        }
+        if args is not None:
+            payload["args"] = args
+        return call(self.sock, payload)
 
-    def run_palette_command(self, query: str, expect_id: str | None = None) -> None:
-        self.modifiers(logo=True)
-        self.key("k")
-        self.modifiers()
-        self.settle(0.4)
-        self.type_text(query)
-        self.settle(0.7)
-        selected = self.chrome()["palette"]["selected_id"]
-        if expect_id is not None and selected != expect_id:
-            rows = [r["id"] for r in self.chrome()["palette"]["rows"]][:6]
-            raise RuntimeError(
-                f"{self.name}: palette query {query!r} selected {selected!r}, "
-                f"expected {expect_id!r} (rows: {rows})")
-        self.key("Enter")
-        self.settle()
+    def wait_for_action(self, ident: str, timeout: float = 30.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            response = call(self.sock, {"op": "actions_enumerate", "query": ""})
+            actions = response.get("answer", {}).get("actions", [])
+            if any(action.get("id") == ident for action in actions):
+                return True
+            time.sleep(0.25)
+        return False
 
     # -- sandboxes ---------------------------------------------------
 
@@ -305,6 +330,16 @@ def read_log(path: str) -> str:
             return f.read()
     except OSError:
         return ""
+
+
+def peer_id_of(token: str) -> str | None:
+    """Read the device id from this session's freshly minted invitation."""
+    try:
+        padding = "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(token + padding).decode())
+        return payload.get("owner_peer_id") or None
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 def main() -> int:
@@ -355,9 +390,36 @@ def main() -> int:
             claim(f"{s.name}'s broker is available", c["available"], True)
             claim(f"{s.name}'s broker is the one the launcher dials",
                   c["socket"], s.collab_sock)
+            claim(f"{s.name}'s peer-sync actions are ready",
+                  s.wait_for_action("peer.invite"), True)
 
         step("2", "join the peer to the host's workspace")
-        host.run_palette_command("invite peer", expect_id="result:0")
+        # Certified collaboration admits an identity, not merely a network
+        # endpoint. The peer's own signed invite states its endpoint id; the
+        # host then creates a named invitation bound to that exact device.
+        response = peer.invoke("peer.invite")
+        if "err" in response:
+            raise RuntimeError(f"peer identity announcement was refused: {response['err']}")
+        peer_token = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            peer_token = peer.chrome().get("peer_sync", {}).get("invite_token")
+            if peer_token:
+                break
+            time.sleep(0.5)
+        peer_id = peer_id_of(peer_token or "")
+        claim("the peer announced its certified endpoint", bool(peer_id), True)
+        if not peer_id:
+            status = peer.chrome().get("peer_sync", {}).get("status")
+            raise RuntimeError(
+                "the peer's own invite carried no endpoint id "
+                f"({status or 'no status'})")
+        peer.key("Escape")
+
+        response = host.invoke(
+            "peer.invite.named", {"peer": peer_id, "name": peer.user})
+        if "err" in response:
+            raise RuntimeError(f"named invite was refused: {response['err']}")
         token = None
         deadline = time.time() + 30
         while time.time() < deadline:
@@ -367,8 +429,17 @@ def main() -> int:
             time.sleep(0.5)
         claim("the host minted an invite", bool(token), True)
         if not token:
-            raise RuntimeError(f"no invite token; see {host.log_path}")
-        peer.run_palette_command("connect to peer", expect_id="result:0")
+            status = host.chrome().get("peer_sync", {}).get("status")
+            raise RuntimeError(
+                f"no invite token ({status or 'no status'}); see {host.log_path}")
+        response = peer.invoke("peer.connect")
+        if "err" in response:
+            raise RuntimeError(f"connect prompt was refused: {response['err']}")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if peer.chrome().get("peer_sync", {}).get("connect_input") is not None:
+                break
+            time.sleep(0.25)
         peer.type_text(token)
         peer.key("Enter")
         deadline = time.time() + 60
@@ -384,6 +455,16 @@ def main() -> int:
         note(f"room = {room}")
         for s in sessions:
             s.key("Escape")
+
+        # The peers exchange device certificates when their link comes up.
+        # The host then admits the certified person and room sync carries that
+        # grant back to the peer. Joining the transport room alone is not
+        # permission to author document operations.
+        deadline = time.time() + 30
+        while time.time() < deadline and not peer.has_local_write_membership():
+            time.sleep(0.25)
+        claim("the peer's signed identity received room write membership",
+              peer.has_local_write_membership(), True)
 
         step("3", "stage the probe as a package in each session")
         staged = {}
@@ -457,6 +538,10 @@ def main() -> int:
         else:
             for s in sessions:
                 s.stop()
+            if not FAILURES:
+                shutil.rmtree(out, ignore_errors=True)
+            else:
+                print(f"\nfailed-run artefacts retained in {out}")
 
     print()
     if FAILURES:

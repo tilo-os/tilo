@@ -560,7 +560,7 @@ impl Action {
                         "an invite has to say what to call them".into(),
                     ));
                 }
-                let user = st.local_user_id.clone();
+                let user = st.active_local_user();
                 // Scoped so the write lock releases before anything else is touched.
                 let named = {
                     let mut tree = st.tree_mut();
@@ -608,7 +608,7 @@ impl Action {
                 // Case-folded: `Scribe` and `scribe` are otherwise two
                 // different subjects, half-admitting the agent.
                 let agent = name.to_lowercase();
-                let user = st.local_user_id.clone();
+                let user = st.active_local_user();
                 let granted = {
                     let mut tree = st.tree_mut();
                     let Some((ws_id, room)) =
