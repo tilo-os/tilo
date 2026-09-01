@@ -115,12 +115,7 @@ impl ContainersApp {
         let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
         if expanded {
             if self.hovered(tgl) {
-                draw::fill_round(
-                    scene,
-                    tgl,
-                    f64::from(theme.tokens.radii.sm),
-                    c.surface_white_10,
-                );
+                draw::fill_round(scene, tgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
             // "«" collapse glyph
             draw::text(
@@ -137,12 +132,7 @@ impl ContainersApp {
             // Collapsed: the toggle is a wide hit over the header area.
             let ctgl = Rect::new(rail.x0 + 4.0, rail.y0 + 28.0, rail.x1 - 4.0, rail.y0 + 46.0);
             if self.hovered(ctgl) {
-                draw::fill_round(
-                    scene,
-                    ctgl,
-                    f64::from(theme.tokens.radii.sm),
-                    c.surface_white_10,
-                );
+                draw::fill_round(scene, ctgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
             draw::text(
                 scene,
@@ -190,12 +180,7 @@ impl ContainersApp {
                     draw::with_alpha(c.accent[5], 46),
                 );
             } else if self.hovered(item) {
-                draw::fill_round(
-                    scene,
-                    item,
-                    f64::from(theme.tokens.radii.md),
-                    c.surface_white_5,
-                );
+                draw::fill_round(scene, item, f64::from(theme.tokens.radii.md), c.lift(0.35));
             }
             let fg = if active { c.accent[6] } else { c.text_dim };
             draw::icon(
@@ -233,7 +218,7 @@ impl ContainersApp {
                     item.x1 - 6.0,
                     item.center().y + 8.0,
                 );
-                draw::fill_round(scene, chip, 8.0, c.surface_white_10);
+                draw::fill_round(scene, chip, 8.0, c.lift(0.72));
                 draw::text(
                     scene,
                     tr,
@@ -697,12 +682,7 @@ impl ContainersApp {
                 draw::with_alpha(c.accent[5], 110),
             );
         } else if self.hovered(row) {
-            draw::fill_round(
-                scene,
-                inner,
-                f64::from(theme.tokens.radii.md),
-                c.surface_white_5,
-            );
+            draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), c.lift(0.35));
         }
 
         // status accent bar
@@ -1037,12 +1017,7 @@ impl ContainersApp {
             head.y0 + 36.0,
         );
         if self.hovered(close) {
-            draw::fill_round(
-                scene,
-                close,
-                f64::from(theme.tokens.radii.md),
-                c.surface_white_10,
-            );
+            draw::fill_round(scene, close, f64::from(theme.tokens.radii.md), c.lift(0.72));
         }
         draw::text(
             scene,
@@ -1108,7 +1083,7 @@ impl ContainersApp {
                 draw::fill_round(scene, underline, 1.0, c.accent[5]);
             } else if self.hovered(trect) {
                 let underline = Rect::new(trect.x0 + 8.0, trect.y1 - 2.0, trect.x1 - 8.0, trect.y1);
-                draw::fill_round(scene, underline, 1.0, c.surface_white_10);
+                draw::fill_round(scene, underline, 1.0, c.lift(0.72));
             }
             self.push_hit(trect, Hit::DetailTab(*tab));
         }
@@ -1166,7 +1141,7 @@ impl ContainersApp {
                 if hov {
                     draw::with_alpha(color, 60)
                 } else {
-                    c.surface_white_5
+                    c.lift(0.35)
                 },
             );
             draw::stroke_round(
@@ -1777,12 +1752,7 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
         if self.hovered(row) {
-            draw::fill_round(
-                scene,
-                inner,
-                f64::from(theme.tokens.radii.md),
-                c.surface_white_5,
-            );
+            draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), c.lift(0.35));
         }
         draw::icon(
             scene,
@@ -2080,12 +2050,7 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let inner = Rect::new(row.x0 + PAD, row.y0 + 4.0, row.x1 - PAD, row.y1 - 4.0);
         if self.hovered(row) {
-            draw::fill_round(
-                scene,
-                inner,
-                f64::from(theme.tokens.radii.md),
-                c.surface_white_5,
-            );
+            draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), c.lift(0.35));
         }
         draw::icon(
             scene,
@@ -2843,7 +2808,7 @@ impl ContainersApp {
             if self.hovered(close) {
                 c.accent[4]
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let label = if done_or_failed { "Close" } else { "Hide" };
@@ -2931,7 +2896,7 @@ impl ContainersApp {
         };
         let thumb_y = area.y0 + t * (track_h - thumb_h);
         let thumb = Rect::new(area.x1 - 7.0, thumb_y, area.x1 - 3.0, thumb_y + thumb_h);
-        draw::fill_round(scene, thumb, 2.0, c.surface_white_20);
+        draw::fill_round(scene, thumb, 2.0, c.lift(1.0));
     }
 
     fn clamp_list_scroll(&mut self, max: f64) {

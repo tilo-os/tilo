@@ -264,7 +264,7 @@ fn draw_event_row(
     let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
-            fill_round(scene, transform, colors.surface_white_5, row, 6.0);
+            fill_round(scene, transform, colors.lift(0.35), row, 6.0);
         }
         fill_round(
             scene,
@@ -335,7 +335,7 @@ fn draw_task_row(
     let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
-            fill_round(scene, transform, colors.surface_white_5, row, 6.0);
+            fill_round(scene, transform, colors.lift(0.35), row, 6.0);
         }
         if let Some(hit) = clamp_hit(row, area) {
             hits.push((hit, AgendaAction::OpenTask(task.id)));
