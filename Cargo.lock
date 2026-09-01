@@ -11338,6 +11338,7 @@ dependencies = [
  "pkg",
  "qos-headless-schema",
  "qos-ui-graph",
+ "serde",
  "serde_json",
  "syn 2.0.117",
  "tempfile",

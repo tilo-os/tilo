@@ -717,6 +717,7 @@ qos-dev ui remove ui/settings.json --id obsolete-help
 qos-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
 qos-dev ui set ui/settings.json --id panel --property fill_height --value true
 qos-dev ui set ui/settings.json --id title --property size --unset
+qos-dev ui apply ui/settings.json ui/settings.edits.json
 qos-dev ui format ui/settings.json
 ```
 
@@ -730,11 +731,49 @@ the complete graph before the original file is atomically replaced. A bad
 property name, type, duplicate ID, invalid binding, or accessibility regression
 therefore leaves the file byte-for-byte unchanged.
 
+Use `ui apply` when a generator, migration, or coding agent needs several
+coordinated edits. The edit file is a reviewable JSON array using the same
+operations as the individual commands:
+
+```json
+[
+  {
+    "op": "set-property",
+    "id": "title",
+    "property": "text.value",
+    "value": "Account settings"
+  },
+  {
+    "op": "insert",
+    "parent": "actions",
+    "index": 0,
+    "node": {
+      "type": "button",
+      "id": "save",
+      "label": "settings-save",
+      "style": "primary"
+    }
+  },
+  {
+    "op": "move",
+    "id": "cancel",
+    "parent": "actions",
+    "index": 1
+  }
+]
+```
+
+Supported operation tags are `insert`, `remove`, `replace`, `move`,
+`set-property`, and `unset-property`. All operations run against one in-memory
+candidate and the source file is published once, after the last edit succeeds.
+If edit 8 of 10 fails, none of the first seven edits reach disk and the error
+identifies edit 8.
+
 Every command parses through the same lightweight `qos-ui-graph` schema used
-by the renderer. Property, insert, remove, replace, move, and formatting edits
-write through a same-directory temporary file only after the complete candidate
-validates; an invalid id, duplicate subtree, inaccessible control, illegal
-reparent, or bad binding leaves the source file byte-for-byte unchanged.
+by the renderer. Property, batch, insert, remove, replace, move, and formatting
+edits write through a same-directory temporary file only after the complete
+candidate validates; an invalid id, duplicate subtree, inaccessible control,
+illegal reparent, or bad binding leaves the source file byte-for-byte unchanged.
 
 Load it once and keep the handle when an inspector or builder should edit the
 running tree:
