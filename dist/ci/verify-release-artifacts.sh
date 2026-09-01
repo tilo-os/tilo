@@ -26,8 +26,8 @@ for distro_revision in 1+ubuntu24.04 1+deb13; do
     expect_one "qos-session-devel_${version}-${distro_revision}_all.deb"
 done
 for rpm_arch in x86_64 aarch64; do
-    expect_one "qos-session-${version}-1.fc42.${rpm_arch}.rpm"
-    expect_one "qos-session-devel-${version}-1.fc42.${rpm_arch}.rpm"
+    expect_one "qos-session-${version}-1.fc44.${rpm_arch}.rpm"
+    expect_one "qos-session-devel-${version}-1.fc44.${rpm_arch}.rpm"
 done
 for arch_arch in x86_64 aarch64; do
     expect_one "qos-session-${version}-1-${arch_arch}.pkg.tar.zst"

@@ -63,7 +63,7 @@ for file in "$release_dir"/*+deb13*.deb; do
     upload "$file" "$server/api/packages/$owner/debian/pool/trixie/main/upload"
 done
 for file in "$release_dir"/*.rpm; do
-    upload "$file" "$server/api/packages/$owner/rpm/fedora/42/upload"
+    upload "$file" "$server/api/packages/$owner/rpm/fedora/44/upload"
 done
 for file in "$release_dir"/*.pkg.tar.zst; do
     upload "$file" "$server/api/packages/$owner/arch/stable" data
