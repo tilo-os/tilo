@@ -290,9 +290,19 @@ fn attach_peer_sync_bridge(
             let active = tree_for_bridge.read().active;
             net.issue_invite(active, INVITE_EXPIRY_SECONDS)
         }
-        crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor { name, role } => {
+        crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor {
+            name,
+            role,
+            recipient_user_public_key,
+        } => {
             let active = tree_for_bridge.read().active;
-            net.issue_invite_named_with_role(active, INVITE_EXPIRY_SECONDS, &name, role)
+            net.issue_invite_bound_with_role(
+                active,
+                INVITE_EXPIRY_SECONDS,
+                &name,
+                recipient_user_public_key,
+                role,
+            )
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().active;
