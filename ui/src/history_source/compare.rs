@@ -30,6 +30,12 @@ pub enum CompareError {
 /// Compare the dependency frontier immediately before the selected changes to
 /// the frontier after every selected change. Concurrent changes outside the
 /// selection are excluded.
+///
+/// # Errors
+///
+/// Returns [`CompareError::EmptySelection`] for an empty selection,
+/// [`CompareError::UnknownEntry`] for an unknown entry, or
+/// [`CompareError::Materialize`] when Automerge cannot build either snapshot.
 pub fn compare_entries(
     doc: &mut AutoCommit,
     entries: &[HistoryEntryId],
@@ -49,7 +55,7 @@ pub fn compare_entries(
         selected.push((*change).clone());
     }
     let selected_hashes: HashSet<ChangeHash> =
-        selected.iter().map(|change| change.hash()).collect();
+        selected.iter().map(automerge::Change::hash).collect();
     let depended_on_inside: HashSet<ChangeHash> = selected
         .iter()
         .flat_map(|change| change.deps().iter().copied())
@@ -57,7 +63,7 @@ pub fn compare_entries(
         .collect();
     let after_heads: Vec<ChangeHash> = selected
         .iter()
-        .map(|change| change.hash())
+        .map(automerge::Change::hash)
         .filter(|hash| !depended_on_inside.contains(hash))
         .collect();
     let before_heads: Vec<ChangeHash> = selected
