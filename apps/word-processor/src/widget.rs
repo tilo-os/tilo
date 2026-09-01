@@ -30,6 +30,7 @@ use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
@@ -4146,19 +4147,20 @@ impl WordProcessorWidget {
         let Some(msg) = self.toast.as_deref() else {
             return;
         };
-        let approx = num::f64_of_usize(msg.chars().count()) * 7.4 + 32.0;
-        let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
-        let h = 40.0;
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let y1 = self.rect.y1 - LAYOUT_BAR_H - 14.0;
-        let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        ui::widget::toast::paint_card(
+        let area = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1 - LAYOUT_BAR_H,
+        );
+        paint_transient(
             scene,
             transform,
             tr,
             theme,
-            r,
-            &ui::widget::toast::ToastCard::new(msg, ui::widget::toast::ToastKind::Success),
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Success),
         );
     }
 }
@@ -4229,7 +4231,7 @@ fn draw_btn(
 /// via [`WordProcessorWidget::accessibility_tree`], with this struct as the carrier;
 /// `accessibility` returns this tree's root so the host still sees a focusable
 /// `Document`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct A11yTreeNode {
     /// The local semantics of this element.
     pub node: ui::a11y::AccessNode,
