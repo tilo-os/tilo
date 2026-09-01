@@ -26,7 +26,7 @@ struct Cli {
 enum Command {
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
-    /// Add a screen, headless scenario, or translation catalog to an app.
+    /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
     Locale(LocaleArgs),
@@ -466,6 +466,8 @@ enum ComponentTemplateArg {
     Display,
     /// Typed local state bound to labeled text and boolean controls.
     Form,
+    /// Source-agnostic virtualized tree with typed configuration.
+    Tree,
 }
 
 fn main() -> ExitCode {
@@ -631,6 +633,7 @@ fn run_add(args: AddArgs) -> Result<()> {
                 template: match template {
                     ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
                     ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
+                    ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
                 },
             },
             options,
@@ -991,6 +994,25 @@ mod tests {
         assert!(matches!(template, ComponentTemplateArg::Form));
         assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
         assert!(options.dry_run);
+
+        let tree_component = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "project-tree",
+            "--template",
+            "tree",
+        ])
+        .expect("tree component command");
+        assert!(matches!(
+            tree_component.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::Tree,
+                    ..
+                })
+            })
+        ));
 
         let locale = Cli::try_parse_from(["qos-dev", "add", "locale", "de-DE", "--force"])
             .expect("locale command");

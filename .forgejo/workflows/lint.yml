@@ -59,6 +59,11 @@ jobs:
           python3 tools/check_app_text_contract.py
           python3 -m unittest tools/tests/test_app_text_contract.py
 
+      - name: Application resource/action contract
+        run: |
+          python3 tools/check_app_resource_action_contract.py
+          python3 -m unittest tools/tests/test_app_resource_action_contract.py
+
       - name: cargo deny
         run: cargo deny --workspace check
 

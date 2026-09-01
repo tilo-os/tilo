@@ -85,6 +85,8 @@ pub enum ComponentTemplate {
     Display,
     /// A reusable form with explicit cloneable local state.
     Form,
+    /// A source-agnostic virtualized tree with typed configuration.
+    Tree,
 }
 
 #[derive(Debug)]
@@ -550,6 +552,7 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
     match template {
         ComponentTemplate::Display => "display",
         ComponentTemplate::Form => "form",
+        ComponentTemplate::Tree => "tree",
     }
 }
 
@@ -1936,6 +1939,7 @@ fn component_source(
             Vec::new(),
         ),
         ComponentTemplate::Form => form_component_source(name, module_name, type_name),
+        ComponentTemplate::Tree => tree_component_source(name, module_name, type_name),
     }
 }
 
@@ -2076,6 +2080,131 @@ mod tests {{
 "#
     );
     (source, vec![value_label, value_placeholder, enabled_label])
+}
+
+fn tree_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let mut source = format!(
+        r#"use ui::selection::KeySelection;
+use ui::widget::tree_view::{{NodeId, TreeModel, TreeView}};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Config {{
+    pub accessible_name: String,
+    pub expanded: Vec<NodeId>,
+    pub selection: KeySelection<NodeId>,
+    pub multi_select: bool,
+    pub viewport_height: f32,
+    pub estimated_row_height: f32,
+}}
+
+impl Default for {type_name}Config {{
+    fn default() -> Self {{
+        Self {{
+            accessible_name: "{name}-accessible-name".into(),
+            expanded: Vec::new(),
+            selection: KeySelection::new(),
+            multi_select: true,
+            viewport_height: 360.0,
+            estimated_row_height: 36.0,
+        }}
+    }}
+}}
+
+/// Build one reusable `{name}` over any app, database, CRDT, or paged tree model.
+///
+/// The concrete return type deliberately preserves `TreeView`'s row-delegate,
+/// model-notification, loading, selection, and reorder configuration methods.
+pub fn {module_name}<M: TreeModel>(
+    id: &str,
+    model: M,
+    config: &{type_name}Config,
+) -> TreeView<(), M> {{
+    TreeView::from_model(model)
+        .with_id(id)
+        .with_expanded(config.expanded.iter().copied())
+        .with_selection(config.selection.clone())
+        .multi_select(config.multi_select)
+        .with_viewport(config.viewport_height, config.estimated_row_height)
+        .with_accessible_name(&config.accessible_name)
+}}
+"#
+    );
+    source.push_str(&tree_component_test_source(module_name, type_name));
+    (source, vec![accessible_name])
+}
+
+fn tree_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use ui::a11y::{{Action, Role}};
+    use ui::headless::SemanticExpectation;
+    use ui::widget::{{Button, Text, TreeNode}};
+
+    #[test]
+    fn component_keeps_tree_behavior_and_delegated_controls() {{
+        let model = TreeNode::branch(
+            1,
+            "Workspace",
+            (),
+            vec![TreeNode::branch(
+                2,
+                "Projects",
+                (),
+                vec![TreeNode::leaf(3, "Desktop app", ())],
+            )],
+        );
+        let config = {type_name}Config {{
+            expanded: vec![1, 2],
+            ..{type_name}Config::default()
+        }};
+        let tree = {module_name}("example-tree", model, &config)
+            .with_row_delegate(|model, id, _depth| {{
+                let label = model.label(id).unwrap_or_default();
+                Box::new(ui::row![
+                    Text::new(label),
+                    Button::new(
+                        &format!("more-{{id}}"),
+                        "More",
+                        Some("row-action-requested"),
+                    )
+                    .with_click_value(id.to_string()),
+                ])
+            }})
+            .reorderable();
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(tree),
+            (560, 360),
+        );
+
+        app.perform_semantic_named("example-tree", Some("node:2"), &Action::Collapse)
+            .expect("branch remains collapsible");
+        app.perform_semantic_named("example-tree", Some("node:2"), &Action::Expand)
+            .expect("branch remains expandable");
+        app.perform_semantic_named("example-tree", Some("node:3"), &Action::Activate)
+            .expect("stable model node remains selectable");
+        app.expect(
+            &SemanticExpectation::named("example-tree")
+                .semantic_target("node:3")
+                .role(Role::TreeItem)
+                .selected(true),
+        )
+        .expect("selected row semantics");
+        app.perform_named("more-3", &Action::Activate)
+            .expect("delegated control remains independently interactive");
+        assert!(app.dump_json().contains("row-action-requested"));
+    }}
+}}
+"#
+    )
 }
 
 /// Render one reusable Rust component without writing it.
@@ -4852,7 +4981,7 @@ fn prompt_component_template(
 ) -> Result<ComponentTemplate> {
     writeln!(
         output,
-        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls"
+        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior"
     )
     .context("showing component template choices")?;
     loop {
@@ -4860,9 +4989,10 @@ fn prompt_component_template(
         match value.trim().to_ascii_lowercase().as_str() {
             "1" | "display" | "d" => return Ok(ComponentTemplate::Display),
             "2" | "form" | "f" => return Ok(ComponentTemplate::Form),
+            "3" | "tree" | "t" => return Ok(ComponentTemplate::Tree),
             _ => writeln!(
                 output,
-                "  ! unknown component template {value:?}; choose 1-2 or `display` or `form`"
+                "  ! unknown component template {value:?}; choose 1-3 or `display`, `form`, or `tree`"
             )
             .context("showing component template error")?,
         }
@@ -5641,6 +5771,7 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "qos-dev dev");
     let _ = writeln!(out, "qos-dev run");
     let _ = writeln!(out, "qos-dev add component profile-card --template form");
+    let _ = writeln!(out, "qos-dev add component project-tree --template tree");
     let _ = writeln!(out, "qos-dev add screen settings --template settings");
     let _ = writeln!(out, "qos-dev add scenario empty-state");
     let _ = writeln!(out, "qos-dev scenario run");
@@ -6207,6 +6338,18 @@ mod tests {
     }
 
     #[test]
+    fn component_wizard_exposes_the_source_agnostic_tree_template() {
+        let mut input = std::io::Cursor::new(b"3\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::Tree);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Any TreeModel"));
+    }
+
+    #[test]
     fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -6250,13 +6393,33 @@ mod tests {
         assert!(form_source.contains("labeled_field(\"profile-card-value-label\""));
         assert!(form_source.contains("perform_named(\"example-value\""));
 
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "project-tree".into(),
+                template: ComponentTemplate::Tree,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let tree_source =
+            std::fs::read_to_string(app.join("src/components/project_tree.rs")).unwrap();
+        syn::parse_file(&tree_source).unwrap();
+        assert!(tree_source.contains("pub struct ProjectTreeConfig"));
+        assert!(tree_source.contains("M: TreeModel"));
+        assert!(tree_source.contains("TreeView::from_model(model)"));
+        assert!(tree_source.contains(".with_row_delegate("));
+        assert!(tree_source.contains(".reorderable()"));
+
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
             parse_component_registry(&registry).unwrap(),
-            ["activity-card", "profile-card"]
+            ["activity-card", "profile-card", "project-tree"]
         );
         assert!(registry.contains("pub mod activity_card;"));
         assert!(registry.contains("pub mod profile_card;"));
+        assert!(registry.contains("pub mod project_tree;"));
         let library = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
         assert_eq!(library.matches("pub mod components;").count(), 1);
 
@@ -6294,7 +6457,7 @@ mod tests {
     }
 
     #[test]
-    fn component_generation_is_dry_run_safe_and_localizes_form_copy() {
+    fn component_generation_is_dry_run_safe_and_localizes_template_copy() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
         create_app(request(app.clone())).unwrap();
@@ -6327,6 +6490,22 @@ mod tests {
         assert!(catalog.contains("profile-card-value-label ="));
         assert!(catalog.contains("profile-card-value-placeholder ="));
         assert!(catalog.contains("profile-card-enabled-label ="));
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "project-tree".into(),
+                template: ComponentTemplate::Tree,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
+            "{catalog}"
+        );
     }
 
     #[test]
@@ -7830,6 +8009,7 @@ mod tests {
             assert!(readme.contains("qos-dev dev\n"));
             assert!(readme.contains("qos-dev run\n"));
             assert!(readme.contains("qos-dev add component profile-card --template form"));
+            assert!(readme.contains("qos-dev add component project-tree --template tree"));
             assert!(readme.contains("qos-dev scenario run\n"));
             assert!(readme.contains("qos-dev scenario run --artifacts target/scenario-artifacts"));
             assert!(

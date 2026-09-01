@@ -31,6 +31,7 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
                 "type": p.ty.label(),
                 "required": p.required,
                 "description": p.description,
+                "choices": p.choices,
             })
         })
         .collect()
@@ -2256,14 +2257,23 @@ pub fn run() -> ! {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                                     .map(crate::shell::overlay_host::PeerSyncResponse::Message)
                             }
-                            PeerSyncRequest::IssueInviteFor { name, role } => bridge_net
-                                .issue_invite_named_with_role(
-                                    active,
-                                    INVITE_EXPIRY_SECONDS,
-                                    &name,
-                                    role,
-                                )
-                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::ExportIdentity => {
+                                bridge_net
+                                    .person_identity_card(active)
+                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+                            }
+                            PeerSyncRequest::IssueInviteFor {
+                                name,
+                                role,
+                                recipient_user_public_key,
+                            } => bridge_net.issue_invite_bound_with_role(
+                                active,
+                                INVITE_EXPIRY_SECONDS,
+                                &name,
+                                recipient_user_public_key,
+                                role,
+                            )
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
                                 .map(|room| room.to_string())
@@ -2327,6 +2337,11 @@ pub fn run() -> ! {
             .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
                 dispatcher.set(&room.to_string(), peer_id);
             }));
+        if let Some(action_broker) = broker.app_action_broker() {
+            frame_builder
+                .host_mut()
+                .attach_app_action_broker(action_broker);
+        }
     }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a

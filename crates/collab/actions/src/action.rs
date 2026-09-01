@@ -35,6 +35,29 @@ pub enum ExecutionLocus {
     ServerPreferred,
 }
 
+/// What an exported operation changes. Keeping this explicit prevents
+/// applications from disguising local effects or navigation as CRDT edits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OperationKind {
+    /// Deterministic shared-document mutation, decoded by `ActionRegistry`.
+    #[default]
+    Document,
+    /// Local or host-owned side effect (launch, filesystem, network, media).
+    Effect,
+    /// Local presentation/navigation change (selection, route, focused view).
+    View,
+}
+
+impl OperationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Effect => "effect",
+            Self::View => "view",
+        }
+    }
+}
+
 /// A globally-unique id minted per dispatched action. Its 16 bytes
 /// double as the deterministic Automerge actor id, making replay
 /// content-addressed identical across replicas.
@@ -135,6 +158,19 @@ impl EncodedAction {
         Ok(Self {
             type_id: type_id.into(),
             payload: serde_json::to_vec(action).map_err(ActionError::Encode)?,
+        })
+    }
+
+    /// Serialize a non-document operation payload. Unlike [`Self::encode`],
+    /// this intentionally requires no [`Action`] implementation: effects and
+    /// views are handled by the owning application, not replayed into a CRDT.
+    pub fn encode_operation<T>(type_id: impl Into<String>, payload: &T) -> Result<Self, ActionError>
+    where
+        T: Serialize,
+    {
+        Ok(Self {
+            type_id: type_id.into(),
+            payload: serde_json::to_vec(payload).map_err(ActionError::Encode)?,
         })
     }
 }
