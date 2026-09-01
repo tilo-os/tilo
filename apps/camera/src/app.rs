@@ -1186,7 +1186,15 @@ impl CameraApp {
         let (cx, cy, r) = (circle.center.x, circle.center.y, circle.radius);
         let c = &theme.tokens.colors;
         p::circle(scene, t, cx, cy, r, p::alpha(c.neutral[0], 0.5));
-        p::circle_stroke(scene, t, cx, cy, r, c.border_white_10, 1.0);
+        p::circle_stroke(
+            scene,
+            t,
+            cx,
+            cy,
+            r,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         let ir = r * 0.52;
         p::icon(
             scene,
@@ -1361,7 +1369,14 @@ impl CameraApp {
             )
         };
         p::fill_round(scene, t, panel, 22.0, fill);
-        p::stroke_round(scene, t, panel, 22.0, c.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            panel,
+            22.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let icx = panel.center().x;
         let icy = panel.y0 + 56.0;
@@ -1691,7 +1706,14 @@ impl CameraApp {
                 height / 2.0,
                 p::alpha(colors.neutral[0], 0.5),
             );
-            p::stroke_round(scene, t, rect, height / 2.0, colors.border_white_10, 1.0);
+            p::stroke_round(
+                scene,
+                t,
+                rect,
+                height / 2.0,
+                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+                1.0,
+            );
         }
         let fg = if active {
             white()
@@ -1860,7 +1882,14 @@ impl CameraApp {
         } else {
             let c = &theme.tokens.colors;
             p::fill_round(scene, t, thumb, 14.0, p::alpha(c.neutral[0], 0.5));
-            p::stroke_round(scene, t, thumb, 14.0, c.border_white_10, 1.5);
+            p::stroke_round(
+                scene,
+                t,
+                thumb,
+                14.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.5,
+            );
             p::icon(
                 scene,
                 t,
@@ -1943,7 +1972,15 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let lx = full.x1 - 60.0;
         p::circle(scene, t, lx, cy, 26.0, p::alpha(c.neutral[0], 0.5));
-        p::circle_stroke(scene, t, lx, cy, 26.0, c.border_white_10, 1.0);
+        p::circle_stroke(
+            scene,
+            t,
+            lx,
+            cy,
+            26.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         p::icon(
             scene,
             t,
@@ -2115,7 +2152,14 @@ impl CameraApp {
         let width = tw.max(sw) + 32.0;
         let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + 52.0);
         p::fill_round(scene, t, rect, 16.0, p::alpha(colors.neutral[0], 0.55));
-        p::stroke_round(scene, t, rect, 16.0, colors.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            rect,
+            16.0,
+            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+            1.0,
+        );
         p::text(scene, tr, pos.x + 16.0, pos.y + 12.0, title, 15.0, white());
         p::text(
             scene,
@@ -2370,7 +2414,14 @@ impl CameraApp {
                 img.paint_at(scene, t, card);
             }
             p::pop(scene);
-            p::stroke_round(scene, t, card, 14.0, c.border_white_10, 1.0);
+            p::stroke_round(
+                scene,
+                t,
+                card,
+                14.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.0,
+            );
             self.push_region(card, Action::ScanLibraryItem(cap.id.clone()));
         }
         p::pop(scene);
@@ -2403,7 +2454,14 @@ impl CameraApp {
             bottom,
         );
         p::fill_round(scene, t, card, 18.0, p::alpha(c.neutral[0], 0.92));
-        p::stroke_round(scene, t, card, 18.0, c.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            card,
+            18.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let icon_name = code_icon(&s.kind);
         let badge = Rect::new(
@@ -2456,7 +2514,7 @@ impl CameraApp {
                 p::fill_round(scene, t, br, 15.0, theme.accent_primary);
                 p::text_in(scene, tr, br, label, 13.0, white());
             } else {
-                p::fill_round(scene, t, br, 15.0, c.surface_white_10);
+                p::fill_round(scene, t, br, 15.0, c.lift(0.72));
                 p::text_in(scene, tr, br, label, 13.0, p::alpha(white(), 0.92));
             }
             self.push_region(br, Action::Scan(i));
@@ -2474,7 +2532,14 @@ impl CameraApp {
     ) {
         let c = &theme.tokens.colors;
         p::fill_round(scene, t, panel, 20.0, p::alpha(c.neutral[0], 0.55));
-        p::stroke_round(scene, t, panel, 20.0, c.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            panel,
+            20.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         let px = panel.x0 + 18.0;
         p::text(
             scene,

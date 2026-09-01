@@ -1543,7 +1543,14 @@ impl MailApp {
             ),
         );
         fill_round(scene, t, mr, 10.0, c.surfaces.raised);
-        stroke_round(scene, t, mr, 10.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            mr,
+            10.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         let (read, starred) = self
             .shared
             .borrow()
@@ -1560,7 +1567,7 @@ impl MailApp {
                     t,
                     Rect::new(item.x0 + 4.0, item.y0 + 1.0, item.x1 - 4.0, item.y1 - 1.0),
                     6.0,
-                    c.surface_white_10,
+                    c.lift(0.72),
                 );
             }
             let danger = matches!(a, CtxAction::Delete);
@@ -1604,7 +1611,14 @@ impl MailApp {
             &RoundedRect::from_rect(Rect::new(p.x0, p.y0 + 6.0, p.x1, p.y1 + 10.0), 16.0),
         );
         fill_round(scene, t, p, 16.0, c.surfaces.raised);
-        stroke_round(scene, t, p, 16.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            p,
+            16.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         let pad = 26.0;
         let lx = p.x0 + pad;
         let last_mouse = self.shared.borrow().last_mouse;
@@ -1794,9 +1808,9 @@ impl MailApp {
             let bg = if active {
                 c.accent[5].with_alpha_factor(0.22)
             } else if hov {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             };
             fill_round(scene, t, *rect, 8.0, bg);
             stroke_round(
@@ -1808,7 +1822,7 @@ impl MailApp {
                 if active {
                     c.accent[5]
                 } else {
-                    c.border_white_10
+                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
                 },
             );
             let col = if active { c.text_primary } else { c.neutral[7] };
@@ -2036,11 +2050,7 @@ impl MailApp {
                         t,
                         *rect,
                         9.0,
-                        if hov {
-                            c.surface_white_10
-                        } else {
-                            c.surface_white_5
-                        },
+                        if hov { c.lift(0.72) } else { c.lift(0.35) },
                     );
                     let (w, _) = tr.measure("Cancel", 13.0, None);
                     tr.draw_text(
@@ -2065,7 +2075,7 @@ impl MailApp {
                         if hov {
                             c.semantic.danger.with_alpha_factor(0.22)
                         } else {
-                            c.surface_white_5
+                            c.lift(0.35)
                         },
                     );
                     stroke_round(
@@ -2106,7 +2116,14 @@ impl MailApp {
             self.rect.y1 - 16.0,
         );
         fill_round(scene, t, toast, 10.0, c.neutral[2]);
-        stroke_round(scene, t, toast, 10.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            toast,
+            10.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         tr.draw_text(
             scene,
             "\u{2713}",
