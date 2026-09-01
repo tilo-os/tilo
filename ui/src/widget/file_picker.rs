@@ -17,6 +17,7 @@
 //! sandbox boundary.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use automerge::{AutoCommit, ObjId};
@@ -519,8 +520,10 @@ impl FilePicker {
             FilePickerMode::Save => {
                 let name = self.filename.trim();
                 if !name.is_empty() {
-                    let target = self.current_dir.join(name);
-                    self.pending_outcome = Some(FilePickerOutcome::Selected(vec![target]));
+                    self.pending_outcome = Some(match self.safe_save_target(name) {
+                        Some(target) => FilePickerOutcome::Selected(vec![target]),
+                        None => FilePickerOutcome::Cancelled,
+                    });
                 } else if let Some(p) = self.first_selected_file() {
                     self.pending_outcome = Some(FilePickerOutcome::Selected(vec![p]));
                 } else {
@@ -543,6 +546,23 @@ impl FilePicker {
                 }
             }
         }
+    }
+
+    /// Resolve a Save filename without allowing the editable footer to turn
+    /// into an unrestricted path input. The name must be one ordinary path
+    /// component, and the real parent directory must still be beneath one of
+    /// the real chooser roots (symlink navigation must not escape the scope).
+    fn safe_save_target(&self, name: &str) -> Option<PathBuf> {
+        let mut components = Path::new(name).components();
+        let component = components.next()?;
+        if components.next().is_some() || !matches!(component, std::path::Component::Normal(_)) {
+            return None;
+        }
+        let current = fs::canonicalize(&self.current_dir).ok()?;
+        let inside_root = self.accessible_roots.iter().any(|root| {
+            fs::canonicalize(root).is_ok_and(|canonical_root| current.starts_with(canonical_root))
+        });
+        inside_root.then(|| self.current_dir.join(name))
     }
 
     fn first_selected_file(&self) -> Option<PathBuf> {
@@ -1554,6 +1574,41 @@ mod tests {
             picker.take_outcome(),
             Some(FilePickerOutcome::Selected(vec![root.join("new.txt")]))
         );
+    }
+
+    #[test]
+    fn save_mode_rejects_absolute_and_traversal_filenames() {
+        let (_guard, root) = temp_tree();
+        for unsafe_name in ["/tmp/stolen", "../outside", "sub/file", ".", ".."] {
+            let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename(unsafe_name);
+            picker.click_open();
+            assert_eq!(
+                picker.take_outcome(),
+                Some(FilePickerOutcome::Cancelled),
+                "save name {unsafe_name:?} escaped the picker scope"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_mode_revalidates_a_symlinked_current_directory() {
+        use std::os::unix::fs::symlink;
+
+        let (_guard, root) = temp_tree();
+        let outside = tempfile::tempdir().unwrap();
+        let escape = root.join("escape");
+        symlink(outside.path(), &escape).unwrap();
+        let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Save)
+            .with_filename("identity.qos");
+        // Navigation is lexically within `root`; commit must catch where it
+        // actually resolves before returning a privileged save target.
+        picker.navigate_to(&escape);
+        picker.click_open();
+        assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
     }
 
     #[test]
