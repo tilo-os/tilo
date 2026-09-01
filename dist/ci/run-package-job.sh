@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run one packaging target in its own architecture-specific CI container.
-# The outer mode is invoked by Forgejo on the existing runner. The inner mode
-# runs after docker/setup-qemu-action has registered arm64 binfmt support.
+# The outer mode is invoked by Forgejo on the existing runner. ARM jobs copy a
+# pinned static QEMU interpreter into the target container, so they do not rely
+# on binfmt registration escaping the runner's own container namespace.
 set -euo pipefail
 
 usage() {
@@ -23,30 +24,55 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     mkdir -p "$output"
     log_dir=$(mktemp -d)
     container=
+    qemu_container=
     cleanup_container() {
         if [[ -n $container ]]; then
             docker rm --force "$container" >/dev/null 2>&1 || true
+        fi
+        if [[ -n $qemu_container ]]; then
+            docker rm --force "$qemu_container" >/dev/null 2>&1 || true
         fi
         rm -rf -- "$log_dir"
     }
     trap cleanup_container EXIT
 
+    inner_command='
+        set -eu
+        mkdir /artifacts
+        cd /workspace
+        exec dist/ci/run-package-job.sh
+    '
+    entrypoint=/bin/sh
+    container_args=(-c "$inner_command")
+    if [[ $arch == arm64 ]]; then
+        qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+        if ! qemu_container=$(docker create --platform linux/amd64 "$qemu_image"); then
+            echo 'stage=create-qemu-helper status=1' > "$output/CI_FAILURE"
+            exit 1
+        fi
+        if ! docker cp "$qemu_container:/usr/bin/qemu-aarch64" "$log_dir/qemu-aarch64"; then
+            echo 'stage=extract-qemu status=1' > "$output/CI_FAILURE"
+            exit 1
+        fi
+        docker rm "$qemu_container" >/dev/null
+        qemu_container=
+        entrypoint=/qemu-aarch64
+        # This QEMU build preserves argv[0], so pass the target program twice:
+        # once as the executable and once as the guest's argv[0].
+        container_args=(/bin/sh /bin/sh -c "$inner_command")
+    fi
+
     create_log=$log_dir/create.log
     set +e
     container=$(docker create --platform "linux/$arch" \
-        --entrypoint /bin/sh \
+        --entrypoint "$entrypoint" \
         --env QOS_IN_PACKAGE_CONTAINER=1 \
         --env QOS_PACKAGE_DISTRO="$distro" \
         --env QOS_EXPECT_ARCH="$arch" \
         --env QOS_DEB_REVISION="$revision" \
         --env CARGO_INCREMENTAL=0 \
         --env CARGO_TERM_COLOR=never \
-        "$image" -c '
-            set -eu
-            mkdir /artifacts
-            cd /workspace
-            exec dist/ci/run-package-job.sh
-        ' 2> >(tee "$create_log" >&2))
+        "$image" "${container_args[@]}" 2> >(tee "$create_log" >&2))
     container_status=$?
     set -e
     if (( container_status != 0 )); then
@@ -55,6 +81,12 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             tail -n 8 "$create_log"
         } > "$output/CI_FAILURE"
         exit "$container_status"
+    fi
+    if [[ $arch == arm64 ]]; then
+        if ! docker cp "$log_dir/qemu-aarch64" "$container:/qemu-aarch64"; then
+            echo 'stage=inject-qemu status=1' > "$output/CI_FAILURE"
+            exit 1
+        fi
     fi
     # docker cp works with Docker-in-Docker and socket-mounted runners where a
     # bind path inside the runner is not a real path from the daemon's view.
@@ -151,6 +183,9 @@ fedora-42)
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
     ;;
 arch)
+    # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
+    # not expose it; Arch documents DisableSandbox specifically for this case.
+    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
     stage=prepare-arch-builder

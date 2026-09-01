@@ -122,18 +122,19 @@ publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
 Forgejo release. Ubuntu 24.04 and Debian 13 are independent build/test jobs.
 
 The workflow uses the existing `runner` Forgejo label for every job. amd64
-containers run directly; ARM64 jobs register QEMU binfmt support with
-`docker/setup-qemu-action` and then run the same target-architecture container
-under user-mode emulation. This avoids requiring an otherwise-unused ARM
-runner and keeps every emulated build in CI rather than on developer machines.
+containers run directly; ARM64 jobs copy a digest-pinned static QEMU
+interpreter into the target-architecture container and use it as the entrypoint.
+This avoids requiring an otherwise-unused ARM runner, does not depend on
+cross-namespace binfmt registration, and keeps every emulated build in CI
+rather than on developer machines.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
 so dependency resolution, ELF linkage, package metadata, installation, and
 `ldd` verification all exercise the target ABI. The runner must expose Docker
-and allow binfmt registration. No publishing secret beyond the existing
-`REGISTRY_TOKEN` is introduced; it must have repository and package write
-permission for tag releases.
+and allow ordinary Docker create/copy/start operations. No publishing secret
+beyond the existing `REGISTRY_TOKEN` is introduced; it must have repository and
+package write permission for tag releases.
 
 Every distro job first checks the architecture visible inside its container,
 builds inside its target distribution, and then installs the result with that
