@@ -15,7 +15,7 @@ use std::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -107,6 +107,9 @@ const PANEL_MIN_W: f64 = 300.0;
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(280);
 /// Cap on rows shown in the floating search-results overlay.
 const SEARCH_OVERLAY_MAX: usize = 6;
+/// One semantic live-activity identity for the current turn-by-turn session.
+/// Rerouting changes its content, not the surface the user positioned.
+const NAVIGATION_FLOAT_ID: &str = "maps.active-navigation";
 /// Idle gap after the last pan/zoom before refetching viewport POIs (Overpass).
 const POI_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
 /// Only fetch POIs at city-block scale and closer — a whole-country viewport
@@ -314,6 +317,21 @@ pub struct MapsApp {
     /// The current traffic-congestion picture. Empty until real peer reports
     /// arrive — the honest live state (see [`crate::traffic`]).
     traffic: TrafficData,
+    /// One-shot request emitted by the overflow action and drained by the
+    /// shared shell floating-surface host.
+    pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    /// One geometry/drag state for the attached and shell-presented live turn
+    /// card. Ownership changes; the Maps widget and route data never do.
+    navigation_placement: ui::floating_surface::FloatingPlacement,
+    navigation_drag_handle: Rect,
+    /// Compact, always-available end-navigation action in the live turn card.
+    /// Kept separate from the title-bar drag target so a quick stop can never
+    /// accidentally begin an app -> shell ownership handoff.
+    navigation_end_rect: Rect,
+    navigation_end_hovered: bool,
+    /// Authoritative combined-output bounds supplied by the shell. Standalone
+    /// app/test hosts leave this empty and fall back to the app rect.
+    floating_surface_bounds: Rect,
 }
 
 impl Default for MapsApp {
@@ -323,6 +341,223 @@ impl Default for MapsApp {
 }
 
 impl MapsApp {
+    /// Compact live-navigation surface for the shell floating host. The source
+    /// stays app-owned so route changes immediately update an already-detached
+    /// overlay instead of snapshotting stale directions.
+    pub fn active_navigation_request(
+        &self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.active_navigation_request_from(self.navigation_rect())
+    }
+
+    fn active_navigation_request_from(
+        &self,
+        source_region: Rect,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.model
+            .route
+            .as_ref()
+            .map(|_route| ui::floating_surface::FloatingSurfaceRequest {
+                id: NAVIGATION_FLOAT_ID.into(),
+                title: "Active navigation".into(),
+                role: ui::floating_surface::FloatingRole::Navigation,
+                source: ui::floating_surface::FloatingSource::AppElement {
+                    app_id: "dev.qos.maps".into(),
+                    element_id: "active-navigation".into(),
+                    region: source_region,
+                },
+                preferred_size: vello::kurbo::Size::new(360.0, 156.0),
+                aspect_ratio: None,
+                initial_rect: Some(self.navigation_rect()),
+                presentation_rect: Some(self.navigation_rect().inflate(8.0, 8.0)),
+                tracking_source: None,
+            })
+    }
+
+    fn navigation_rect(&self) -> Rect {
+        self.navigation_placement
+            .rect(self.rect, self.desktop_floating_bounds())
+    }
+
+    fn desktop_floating_bounds(&self) -> Rect {
+        if self.floating_surface_bounds.area() > 0.0 {
+            self.floating_surface_bounds
+        } else {
+            self.rect
+        }
+    }
+
+    fn draw_navigation_surface(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(route) = self.model.route.clone() else {
+            self.navigation_drag_handle = Rect::ZERO;
+            self.navigation_end_rect = Rect::ZERO;
+            self.navigation_end_hovered = false;
+            return;
+        };
+        let rect = self.navigation_rect();
+        let visual =
+            self.navigation_placement
+                .presentation_transform(transform, rect, theme.reduce_motion);
+        let c = &theme.tokens.colors;
+        let shadow =
+            ui::surface::soft_outline(rect.inflate(5.0, 5.0) + vello::kurbo::Vec2::new(0.0, 2.0));
+        scene.fill(
+            Fill::NonZero,
+            visual,
+            draw::alpha(c.neutral[0], 0.30),
+            None,
+            &shadow,
+        );
+        let body = ui::surface::soft_outline(rect);
+        scene.fill(Fill::NonZero, visual, c.surfaces.raised, None, &body);
+        scene.stroke(&Stroke::new(1.0), visual, c.border_standard, None, &body);
+        let end = Rect::new(rect.x1 - 58.0, rect.y0 + 6.0, rect.x1 - 8.0, rect.y0 + 30.0);
+        self.navigation_end_rect = end;
+        let handle = Rect::new(rect.x0, rect.y0, end.x0 - 4.0, rect.y0 + 34.0);
+        self.navigation_drag_handle = handle;
+        draw::text_w(
+            scene,
+            tr,
+            visual,
+            "Navigation",
+            rect.x0 + 16.0,
+            rect.y0 + 10.0,
+            12.0,
+            theme.text_dim,
+            TextWeight::Medium,
+        );
+        ui::surface::floating_drag_grip(scene, visual, rect, theme.text_dim);
+
+        // Ending a live activity is intentionally explicit. At rest this reads
+        // as quiet chrome; hover adds a soft danger wash without changing the
+        // button's geometry (and therefore without making the title jump).
+        let end_fill = if self.navigation_end_hovered {
+            draw::alpha(c.semantic.danger, 0.16)
+        } else {
+            draw::alpha(c.neutral[3], 0.62)
+        };
+        let end_stroke = if self.navigation_end_hovered {
+            draw::alpha(c.semantic.danger, 0.58)
+        } else {
+            c.border_standard
+        };
+        let end_text = if self.navigation_end_hovered {
+            c.semantic.danger
+        } else {
+            theme.text_dim
+        };
+        draw::fill_rrect(scene, visual, end, 10.0, end_fill);
+        draw::stroke_rrect(scene, visual, end, 10.0, 1.0, end_stroke);
+        draw::fill_rrect(
+            scene,
+            visual,
+            Rect::new(
+                end.x0 + 9.0,
+                end.center().y - 2.5,
+                end.x0 + 14.0,
+                end.center().y + 2.5,
+            ),
+            1.5,
+            end_text,
+        );
+        draw::text_w(
+            scene,
+            tr,
+            visual,
+            "End",
+            end.x0 + 19.0,
+            end.y0 + 6.0,
+            11.0,
+            end_text,
+            TextWeight::Medium,
+        );
+
+        let instruction = route.steps.first();
+        let glyph = instruction.map_or("↑", |step| step.maneuver.glyph());
+        let text = instruction.map_or("Continue on the route", |step| step.instruction.as_str());
+        let badge = Rect::new(
+            rect.x0 + 16.0,
+            rect.y0 + 48.0,
+            rect.x0 + 52.0,
+            rect.y0 + 84.0,
+        );
+        draw::fill_circle(
+            scene,
+            visual,
+            badge.center(),
+            18.0,
+            draw::alpha(theme.accent_primary, 0.18),
+        );
+        draw::text_center(
+            scene,
+            tr,
+            visual,
+            glyph,
+            badge.x0,
+            badge.x1,
+            badge.y0 + 8.0,
+            17.0,
+            theme.accent_primary,
+        );
+        draw::text_clip(
+            scene,
+            tr,
+            visual,
+            text,
+            rect.x0 + 64.0,
+            rect.y0 + 47.0,
+            15.0,
+            theme.text_primary,
+            rect.width() - 82.0,
+        );
+        let next_distance = instruction.map_or(route.distance_m, |step| step.distance_m);
+        draw::text(
+            scene,
+            tr,
+            visual,
+            &geo::fmt_distance(next_distance),
+            rect.x0 + 64.0,
+            rect.y0 + 70.0,
+            12.0,
+            theme.text_dim,
+        );
+        draw::line(
+            scene,
+            visual,
+            Point::new(rect.x0 + 16.0, rect.y0 + 98.0),
+            Point::new(rect.x1 - 16.0, rect.y0 + 98.0),
+            1.0,
+            c.border_standard,
+        );
+        draw::text_w(
+            scene,
+            tr,
+            visual,
+            &geo::fmt_duration(route.duration_s),
+            rect.x0 + 16.0,
+            rect.y0 + 114.0,
+            16.0,
+            theme.accent_primary,
+            TextWeight::Bold,
+        );
+        draw::text_right(
+            scene,
+            tr,
+            visual,
+            &format!("{} remaining", geo::fmt_distance(route.distance_m)),
+            rect.x1 - 16.0,
+            rect.y0 + 116.0,
+            12.0,
+            theme.text_dim,
+        );
+    }
+
     /// Live app: spawns the background tile worker (network + decode off the
     /// UI thread) and starts from an empty model — real OSM imagery, no
     /// fabricated places. The user's own searches, routes and saved pins are
@@ -429,6 +664,7 @@ impl MapsApp {
                 m.push(MenuItem::action("Attribution", || {}));
                 m.push(MenuItem::action("Offline maps", || {}));
                 m.push(MenuItem::action("Licenses", || {}));
+                m.push(MenuItem::action("Float navigation", || {}));
                 m
             },
             map_info: None,
@@ -442,6 +678,14 @@ impl MapsApp {
             panel_collapsed: false,
             traffic_on: false,
             traffic: TrafficData::default(),
+            pending_floating: None,
+            navigation_placement: ui::floating_surface::FloatingPlacement::attached(
+                vello::kurbo::Size::new(360.0, 156.0),
+            ),
+            navigation_drag_handle: Rect::ZERO,
+            navigation_end_rect: Rect::ZERO,
+            navigation_end_hovered: false,
+            floating_surface_bounds: Rect::ZERO,
         }
     }
 
@@ -517,6 +761,57 @@ impl MapsApp {
             (b.x1 - mr.width()) as f32,
             (b.y0 - mr.height() - 6.0) as f32,
         ]);
+    }
+
+    /// Headless visual-review hook for the production navigation renderer and
+    /// its real shell → app ownership edge. Called after layout so the
+    /// `Suspended` host path uses authoritative app-local coordinates.
+    #[doc(hidden)]
+    pub fn debug_stage_navigation_for_shot(&mut self, stage: &str) {
+        if stage == "attached" {
+            self.navigation_placement
+                .pin_handoff_for_visual_review(1_000);
+            return;
+        }
+        let detached = Rect::new(820.0, 120.0, 1_180.0, 276.0);
+        self.navigation_placement.detach_to_desktop(detached);
+        self.navigation_placement.set_desktop_transfer_covered(true);
+        self.navigation_placement.confirm_desktop_adoption();
+
+        if stage == "hover" {
+            self.navigation_end_hovered = true;
+        }
+
+        if matches!(stage, "returning" | "returned") {
+            let pointer = Point::new(detached.center().x, detached.y0 + 16.0);
+            self.navigation_placement.begin_drag(
+                pointer,
+                self.rect,
+                self.desktop_floating_bounds(),
+            );
+            let _ = self.navigation_placement.update_drag(
+                Point::new(720.0, 360.0),
+                self.rect,
+                self.desktop_floating_bounds(),
+            );
+        }
+
+        if stage == "returned"
+            && let Some(id) = self.active_navigation_request().map(|request| request.id)
+        {
+            <Self as Widget>::on_floating_surface_host_message(
+                self,
+                &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+            );
+        }
+
+        let handoff_phase = if matches!(stage, "returning" | "returned") {
+            500
+        } else {
+            1_000
+        };
+        self.navigation_placement
+            .pin_handoff_for_visual_review(handoff_phase);
     }
 
     /// Screenshot-only hook: open the floating search-results overlay populated
@@ -1504,6 +1799,10 @@ impl MapsApp {
 
     fn clear_route(&mut self, doc: &mut AutoCommit) {
         self.perform(doc, &MapsAction::ClearRoute);
+        self.navigation_placement.reset_attached();
+        self.navigation_drag_handle = Rect::ZERO;
+        self.navigation_end_rect = Rect::ZERO;
+        self.navigation_end_hovered = false;
     }
 
     /// Exchange the route's origin and destination (both the coordinates and
@@ -2351,6 +2650,17 @@ impl MapsApp {
                 },
             );
         }
+        if self.model.route.is_some()
+            && ((!self.navigation_placement.is_return_pending()
+                && matches!(
+                    self.navigation_placement.attachment(),
+                    ui::floating_surface::Attachment::App { .. }
+                ))
+                || !self.navigation_placement.is_desktop_covered())
+        {
+            self.draw_navigation_surface(scene, t, tr, theme);
+        }
+
         // The ⋯ overflow button (attribution / offline / licenses) sits bottom-
         // right; its menu and the info sheet draw last, on top of everything.
         self.draw_overflow(scene, t, tr, theme);
@@ -4899,6 +5209,25 @@ impl Widget for MapsApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+                if self.navigation_placement.is_dragging() {
+                    let source_region = self.navigation_rect().inflate(8.0, 8.0);
+                    let handoff = self.navigation_placement.update_drag(
+                        p,
+                        self.rect,
+                        self.desktop_floating_bounds(),
+                    );
+                    if handoff == ui::floating_surface::Handoff::Detached {
+                        self.pending_floating = self.active_navigation_request_from(source_region);
+                    }
+                    *handled = true;
+                    return;
+                }
+                let end_hovered =
+                    self.model.route.is_some() && self.navigation_end_rect.contains(p);
+                if self.navigation_end_hovered != end_hovered {
+                    self.navigation_end_hovered = end_hovered;
+                    *handled = true;
+                }
                 // Keep the field inputs' hover state current so a click lands a
                 // caret and a press-drag extends a selection.
                 self.forward_move_to_field_inputs(event, scale_factor, *modifiers);
@@ -4950,6 +5279,23 @@ impl Widget for MapsApp {
                 ..
             } => {
                 let p = self.last_mouse;
+                if self.model.route.is_some() && self.navigation_end_rect.contains(p) {
+                    self.clear_route(state);
+                    self.navigation_end_hovered = false;
+                    *handled = true;
+                    return;
+                }
+                if self.model.route.is_some() && self.navigation_drag_handle.contains(p) {
+                    let rect = self.navigation_rect();
+                    self.navigation_placement.set_preferred_size(rect.size());
+                    self.navigation_placement.begin_drag(
+                        p,
+                        self.rect,
+                        self.desktop_floating_bounds(),
+                    );
+                    *handled = true;
+                    return;
+                }
                 self.left_down = true;
                 self.drag_moved = false;
                 // The open ⋯ overflow menu owns the pointer: a row press selects,
@@ -5040,8 +5386,14 @@ impl Widget for MapsApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                let navigation_dragging = self.navigation_placement.is_dragging();
+                self.navigation_placement
+                    .end_drag(self.desktop_floating_bounds());
                 self.left_down = false;
                 self.dragging = false;
+                if navigation_dragging {
+                    *handled = true;
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -5135,6 +5487,123 @@ impl Widget for MapsApp {
         self.rect
     }
 
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_floating.take()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _: &PresenceCtx,
+    ) {
+        if self.model.route.is_some()
+            && matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            )
+        {
+            self.draw_navigation_surface(scene, transform, text_renderer, theme);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
+        let Some(id) = self.active_navigation_request().map(|request| request.id) else {
+            return Vec::new();
+        };
+        let returning_to_app = self.navigation_placement.is_return_pending();
+        if !returning_to_app
+            && !matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            )
+        {
+            return Vec::new();
+        }
+        vec![ui::floating_surface::FloatingSurfacePresentation {
+            id,
+            content_rect: self.navigation_rect(),
+            window_rect: self.navigation_rect().inflate(8.0, 8.0),
+            returning_to_app,
+        }]
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.active_navigation_request()
+            .map(|request| request.id)
+            .into_iter()
+            .collect()
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        self.floating_surface_bounds = bounds;
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        let Some(id) = self.active_navigation_request().map(|request| request.id) else {
+            return;
+        };
+        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+            id: request_id,
+            content_rect,
+            transfer_covered,
+            coordinate_offset,
+            ..
+        } = message
+            && request_id == &id
+            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
+        {
+            self.navigation_placement.prepare_desktop_rect_with_offset(
+                rect,
+                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+            );
+            self.navigation_placement
+                .set_desktop_transfer_covered(*transfer_covered);
+            return;
+        }
+        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+            id: request_id,
+            rect,
+        } = message
+            && request_id == &id
+            && ui::floating_surface::protocol_rect(*rect).is_ok()
+        {
+            self.navigation_placement.confirm_desktop_adoption();
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
+                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
+                if request_id == &id
+        ) {
+            let app = self.rect;
+            let desktop = self.desktop_floating_bounds();
+            self.navigation_placement.reattach_to_app(app, desktop);
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
+                if request_id == &id
+        ) {
+            self.navigation_placement.confirm_app_adoption(self.rect);
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.navigation_placement.is_dragging()
+    }
+
     fn needs_idle_sync(&self) -> bool {
         // Keep idling only while real work is outstanding: net requests, the
         // initial load, tiles genuinely in flight, or an active offline
@@ -5175,6 +5644,8 @@ impl Widget for MapsApp {
             // Keep pumping frames while a control tooltip counts toward its
             // reveal, so the dwell elapses even when the map is otherwise idle.
             || self.tooltip_host.needs_frame()
+            || self.navigation_placement.is_dragging()
+            || self.navigation_placement.is_handoff_animating()
     }
 
     fn draw_with_presence(
@@ -5294,14 +5765,20 @@ impl MapsApp {
         );
     }
 
-    /// Map an overflow-menu row selection to app state: attribution / licenses
-    /// sheets, or the offline-maps dialog. Indices match the push order in
-    /// [`build`].
+    /// Map an overflow-menu row selection to app state. Index 3 hands the live
+    /// route surface to the same shell host used by calls and browser `PiP`.
     fn overflow_select(&mut self, idx: usize) {
         match idx {
             0 => self.map_info = Some(MapInfo::Attribution),
             1 => self.offline_panel.open(self.tiles.cache_bytes()),
             2 => self.map_info = Some(MapInfo::Licenses),
+            3 => {
+                if self.model.route.is_some() {
+                    let rect = self.navigation_rect();
+                    self.navigation_placement.detach_to_desktop(rect);
+                    self.pending_floating = self.active_navigation_request();
+                }
+            }
             _ => {}
         }
         self.mark_dirty();
@@ -5560,9 +6037,8 @@ mod tests {
         );
     }
 
-    /// The ⋯ overflow menu carries exactly the attribution / offline-maps /
-    /// licenses options, opens from the bottom-right button, and each row routes
-    /// to its surface — the permanent copyright line no longer sits over the map.
+    /// The ⋯ overflow menu carries map utilities plus the shared live-navigation
+    /// handoff, opens from the bottom-right button, and routes every row.
     #[test]
     fn overflow_menu_opens_and_routes_to_its_options() {
         let mut a = app_at(1280.0, 800.0);
@@ -5572,7 +6048,15 @@ mod tests {
             .iter()
             .filter_map(|i| i.label())
             .collect();
-        assert_eq!(labels, vec!["Attribution", "Offline maps", "Licenses"]);
+        assert_eq!(
+            labels,
+            vec![
+                "Attribution",
+                "Offline maps",
+                "Licenses",
+                "Float navigation"
+            ]
+        );
 
         assert!(!a.overflow.is_open());
         tap(&mut a, &Hit::ToggleOverflow);
@@ -5595,6 +6079,10 @@ mod tests {
         a.offline_panel.close();
         a.overflow_select(2);
         assert_eq!(a.map_info, Some(MapInfo::Licenses));
+        a.overflow_select(3);
+        let request = Widget::take_floating_surface_request(&mut a)
+            .expect("sample route produces a live navigation float");
+        assert_eq!(request.role, ui::floating_surface::FloatingRole::Navigation);
 
         // Toggling again closes it.
         tap(&mut a, &Hit::ToggleOverflow);
@@ -7056,6 +7544,157 @@ mod tests {
                 button: MouseButton::Left,
             },
         )
+    }
+
+    fn release_left(a: &mut MapsApp) -> bool {
+        feed(
+            a,
+            &WindowEvent::MouseInput {
+                device_id: dummy_device_id(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        )
+    }
+
+    #[test]
+    fn live_navigation_drags_across_shell_ownership_without_a_jump() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        Widget::set_floating_surface_bounds(&mut a, Rect::new(0.0, 0.0, 1680.0, 900.0));
+        assert!(
+            a.model.route.is_some(),
+            "offline fixture has an active route"
+        );
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let origin = a.navigation_drag_handle.center();
+        let before = a.navigation_rect();
+        move_to(&mut a, origin.x, origin.y);
+        assert!(press_left(&mut a));
+        assert!(Widget::wants_pointer_capture(&a));
+
+        let outside = Point::new(1400.0, origin.y + 32.0);
+        assert!(move_to(&mut a, outside.x, outside.y));
+        assert!(matches!(
+            a.navigation_placement.attachment(),
+            ui::floating_surface::Attachment::Desktop { .. }
+        ));
+        assert_eq!(
+            a.navigation_rect(),
+            before + (outside - origin),
+            "navigation's transfer frame preserves exact geometry"
+        );
+        let request = Widget::take_floating_surface_request(&mut a)
+            .expect("navigation publishes one native-surface handoff");
+        let prepared_content = a.navigation_rect();
+        Widget::on_floating_surface_host_message(
+            &mut a,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: request.id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(prepared_content.inflate(8.0, 8.0)),
+                content_rect: ui::floating_surface::protocol_rect_array(prepared_content),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        assert!(!a.navigation_placement.is_desktop_adopted());
+        Widget::on_floating_surface_host_message(
+            &mut a,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: request.id,
+                rect: ui::floating_surface::protocol_rect_array(prepared_content),
+            },
+        );
+        assert!(a.navigation_placement.is_desktop_adopted());
+        assert_eq!(a.navigation_rect(), prepared_content);
+        let returned_pointer = Point::new(980.0, 310.0);
+        assert!(move_to(&mut a, returned_pointer.x, returned_pointer.y));
+        assert!(a.navigation_placement.is_return_pending());
+        let final_shell_rect = a.navigation_rect();
+        let presentations = Widget::floating_surface_presentations(&a);
+        assert_eq!(presentations.len(), 1);
+        assert!(presentations[0].returning_to_app);
+        let request_id = a.active_navigation_request().unwrap().id;
+        Widget::on_floating_surface_host_message(
+            &mut a,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id },
+        );
+        assert!(matches!(
+            a.navigation_placement.attachment(),
+            ui::floating_surface::Attachment::App { .. }
+        ));
+        assert_eq!(
+            a.navigation_rect(),
+            final_shell_rect,
+            "the first app-owned navigation frame exactly covers the final shell frame"
+        );
+        assert!(Widget::wants_pointer_capture(&a));
+
+        let continued_pointer = returned_pointer + vello::kurbo::Vec2::new(-16.0, 9.0);
+        assert!(move_to(&mut a, continued_pointer.x, continued_pointer.y));
+        assert_eq!(
+            a.navigation_rect(),
+            final_shell_rect + (continued_pointer - returned_pointer),
+            "the first primary-window motion continues the same drag"
+        );
+        assert!(release_left(&mut a));
+        assert!(!Widget::wants_pointer_capture(&a));
+    }
+
+    #[test]
+    fn live_navigation_end_action_is_distinct_from_its_drag_handle() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        assert!(a.model.route.is_some(), "fixture starts navigating");
+        assert!(a.navigation_end_rect.area() > 0.0);
+        assert!(
+            a.navigation_drag_handle
+                .intersect(a.navigation_end_rect)
+                .area()
+                == 0.0,
+            "ending navigation must never begin a drag"
+        );
+
+        let end = a.navigation_end_rect.center();
+        assert!(move_to(&mut a, end.x, end.y));
+        assert!(a.navigation_end_hovered);
+        assert!(press_left(&mut a));
+        assert!(
+            a.model.route.is_none(),
+            "the visible End action clears the route"
+        );
+        assert!(!a.navigation_placement.is_dragging());
+        assert_eq!(a.navigation_end_rect, Rect::ZERO);
+    }
+
+    #[test]
+    fn rerouting_preserves_the_positioned_navigation_surface_identity() {
+        let mut a = app_at(1280.0, 720.0);
+        let first = a
+            .active_navigation_request()
+            .expect("offline fixture has active navigation");
+        let route = a.model.route.as_mut().unwrap();
+        route.to.lat += 0.01;
+        route.steps[0].instruction = "Turn right after the reroute".into();
+        let rerouted = a.active_navigation_request().unwrap();
+
+        assert_eq!(first.id, NAVIGATION_FLOAT_ID);
+        assert_eq!(rerouted.id, first.id);
+        assert!(matches!(
+            rerouted.source,
+            ui::floating_surface::FloatingSource::AppElement {
+                ref app_id,
+                ref element_id,
+                ..
+            } if app_id == "dev.qos.maps" && element_id == "active-navigation"
+        ));
     }
 
     /// A scroll over open map area must zoom the view (not scroll a panel),

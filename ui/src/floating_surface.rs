@@ -1,0 +1,1635 @@
+//! Shared placement contract for app-bound overlays and shell-owned `PiP`.
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "placement math is bounded logical-pixel geometry using kurbo operators"
+)]
+//!
+//! Apps describe *what* should float; this module owns *how* it moves.  The
+//! same state machine is used while a surface is attached to its app and after
+//! the shell adopts it as desktop `PiP`, avoiding a second set of drag/snap rules.
+
+use vello::kurbo::Affine;
+use vello::kurbo::{Point, Rect, Size, Vec2};
+
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::io::{Read, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
+
+const HANDOFF_SETTLE: std::time::Duration = std::time::Duration::from_millis(180);
+const SNAP_SETTLE: std::time::Duration = std::time::Duration::from_millis(170);
+
+/// Stable identity of content that can survive an app → desktop hand-off.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FloatingSource {
+    /// A semantically stable app element plus its current app-local fallback
+    /// box. Identity lets the app keep updating the same source as its layout
+    /// changes; the region lets the compositor present the first frame
+    /// immediately without querying private app internals.
+    AppElement {
+        app_id: String,
+        element_id: String,
+        region: Rect,
+    },
+    AppRegion {
+        app_id: String,
+        region: Rect,
+    },
+    Surface {
+        surface_id: u64,
+    },
+    Composite(Vec<FloatingSource>),
+}
+
+/// Presentation hints understood by both app and shell hosts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatingRole {
+    PictureInPicture,
+    ActiveCall,
+    Navigation,
+    LiveActivity,
+}
+
+/// Version of the app ↔ shell floating-surface lifecycle wire contract.
+/// Geometry is encoded as plain logical-pixel arrays rather than renderer
+/// types so sandbox services, Wayland protocol shims, and test transports can
+/// all carry the same messages.
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
+pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
+pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "dev.qos.shell-float.";
+const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FloatingSurfaceProtocolSource {
+    AppElement {
+        app_id: String,
+        element_id: String,
+        region: [f64; 4],
+    },
+    AppRegion {
+        app_id: String,
+        region: [f64; 4],
+    },
+    Surface {
+        surface_id: u64,
+    },
+    Composite {
+        sources: Vec<FloatingSurfaceProtocolSource>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FloatingSurfaceProtocolRole {
+    PictureInPicture,
+    ActiveCall,
+    Navigation,
+    LiveActivity,
+}
+
+/// Starting mode for an app-requested session-shell chooser. The request only
+/// opens trusted shell UI; it never grants an app capture permission or pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureStudioProtocolMode {
+    Screenshot,
+    Recording,
+    PictureInPicture,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FloatingSurfaceProtocolRequest {
+    pub version: u16,
+    pub id: String,
+    pub title: String,
+    pub role: FloatingSurfaceProtocolRole,
+    pub source: FloatingSurfaceProtocolSource,
+    pub preferred_size: [f64; 2],
+    pub aspect_ratio: Option<f64>,
+    /// Desktop-space transfer rectangle for an app-owned native surface.
+    /// Optional so ordinary media PiP and version-1 peers remain compatible.
+    #[serde(default)]
+    pub initial_rect: Option<[f64; 4]>,
+    /// Full transparent native-window bounds, including app-drawn shadows.
+    #[serde(default)]
+    pub presentation_rect: Option<[f64; 4]>,
+}
+
+/// App → shell lifecycle. `Suspend` is the reversible half of an attached
+/// ↔ desktop handoff: the authenticated native surface and its renderer stay
+/// warm while its pixels return to the app. `Dismiss` is deliberately
+/// permanent and reserved for hang-up, navigation-end, or an explicit close.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FloatingSurfaceClientMessage {
+    /// Ask the trusted session shell to show its ordinary user-confirmed
+    /// chooser. This shares the same authenticated channel as floating
+    /// surfaces so a separately hosted app and an embedded app have identical
+    /// PiP UX.
+    OpenCaptureStudio {
+        mode: CaptureStudioProtocolMode,
+    },
+    Present {
+        request: FloatingSurfaceProtocolRequest,
+    },
+    UpdateRegion {
+        id: String,
+        region: [f64; 4],
+    },
+    /// Live desktop placement of an app-owned secondary surface. The shell
+    /// clamps it to the combined output before presentation.
+    SurfaceGeometry {
+        id: String,
+        /// Full native-window bounds.
+        rect: [f64; 4],
+        /// Shared placement/hit geometry inside that transparent window.
+        content_rect: [f64; 4],
+    },
+    /// The primary window has presented a frame with the transferred pixels
+    /// removed. The shell may now move its proxy/native surface away from the
+    /// source rect without ever exposing two copies.
+    SourceCleared {
+        id: String,
+    },
+    /// The primary app window has presented the first frame containing the
+    /// reattached surface. Until this arrives, the compositor keeps a frozen
+    /// copy of the last desktop-owned pixels in exactly the same place, so
+    /// hiding the native secondary can never expose a blank transfer frame.
+    DestinationPresented {
+        id: String,
+    },
+    Suspend {
+        id: String,
+        rect: [f64; 4],
+        content_rect: [f64; 4],
+    },
+    Dismiss {
+        id: String,
+    },
+}
+
+/// Shell → app lifecycle. The shell supplies one authoritative combined
+/// desktop coordinate space and explicitly acknowledges ownership changes;
+/// transports must not infer either from timing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FloatingSurfaceHostMessage {
+    DesktopBounds {
+        bounds: [f64; 4],
+    },
+    /// Authorises creation of one secondary toplevel. `token` is random and
+    /// scoped to this authenticated connection; merely copying an app id can
+    /// never gain overlay authority.
+    PrepareSurface {
+        id: String,
+        token: String,
+        rect: [f64; 4],
+        content_rect: [f64; 4],
+        /// True when the shell has already installed a frozen, pixel-exact
+        /// transfer frame for this surface. The app can hide its in-window
+        /// copy immediately in that case; if capture failed it keeps drawing
+        /// until the native surface acknowledges its first buffer.
+        transfer_covered: bool,
+        /// App-local → desktop pointer-coordinate translation. Kept
+        /// separate from clamped window geometry so a live drag can rebase
+        /// without treating compositor clamping as pointer motion.
+        coordinate_offset: [f64; 2],
+    },
+    Adopted {
+        id: String,
+        rect: [f64; 4],
+    },
+    /// The shell has hidden, but retained, the authenticated native surface.
+    /// A later `Present` for the same connection/id resumes that exact
+    /// surface instead of issuing a new capability or renderer.
+    Suspended {
+        id: String,
+    },
+    Reattach {
+        id: String,
+    },
+    Closed {
+        id: String,
+    },
+}
+
+/// Non-blocking app-side connection to the session shell. The launcher hands
+/// the already-connected socket into the sandbox as
+/// `QOS_SVC_SHELL-UI_FD`; newline-delimited JSON keeps the tiny lifecycle
+/// protocol inspectable and lets the compositor service evolve independently
+/// of app/widget releases.
+pub struct FloatingSurfaceServiceClient {
+    stream: UnixStream,
+    incoming: Vec<u8>,
+    outgoing: VecDeque<Vec<u8>>,
+    outgoing_offset: usize,
+}
+
+impl FloatingSurfaceServiceClient {
+    /// Discover the optional session service. Outside qOS (or on an older
+    /// shell) this returns `None`; apps retain their ordinary attached UI.
+    pub fn discover() -> Option<Self> {
+        let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
+        // The inherited service descriptor belongs to this one client. Lift
+        // it exactly once; dropping the client closes it cleanly.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        Self::from_stream(UnixStream::from(owned)).ok()
+    }
+
+    fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
+        stream.set_nonblocking(true)?;
+        Ok(Self {
+            stream,
+            incoming: Vec::new(),
+            outgoing: VecDeque::new(),
+            outgoing_offset: 0,
+        })
+    }
+
+    pub fn send(&mut self, message: &FloatingSurfaceClientMessage) -> Result<(), String> {
+        let mut frame = serde_json::to_vec(message)
+            .map_err(|error| format!("encode floating-surface message: {error}"))?;
+        if frame.len() > MAX_PROTOCOL_FRAME_BYTES {
+            return Err("floating-surface message exceeds 1 MiB".into());
+        }
+        frame.push(b'\n');
+        self.outgoing.push_back(frame);
+        self.flush_outgoing()
+            .map_err(|error| format!("send floating-surface message: {error}"))
+    }
+
+    /// Flush queued writes and collect every complete host message currently
+    /// available. `WouldBlock` is ordinary idle state, never a disconnect.
+    pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
+        self.flush_outgoing()
+            .map_err(|error| format!("send floating-surface message: {error}"))?;
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match self.stream.read(&mut chunk) {
+                Ok(0) => return Err("floating-surface service disconnected".into()),
+                Ok(count) => {
+                    self.incoming.extend_from_slice(&chunk[..count]);
+                    if self.incoming.len() > MAX_PROTOCOL_FRAME_BYTES {
+                        return Err("floating-surface host message exceeds 1 MiB".into());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(format!("read floating-surface service: {error}")),
+            }
+        }
+
+        let mut messages = Vec::new();
+        while let Some(newline) = self.incoming.iter().position(|byte| *byte == b'\n') {
+            let frame: Vec<u8> = self.incoming.drain(..=newline).collect();
+            let payload = frame.get(..newline).unwrap_or_default();
+            if payload.is_empty() {
+                continue;
+            }
+            messages.push(
+                serde_json::from_slice(payload)
+                    .map_err(|error| format!("decode floating-surface host message: {error}"))?,
+            );
+        }
+        Ok(messages)
+    }
+
+    fn flush_outgoing(&mut self) -> std::io::Result<()> {
+        while let Some(frame) = self.outgoing.front() {
+            let remaining = frame.get(self.outgoing_offset..).unwrap_or_default();
+            match self.stream.write(remaining) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "floating-surface service accepted zero bytes",
+                    ));
+                }
+                Ok(count) => {
+                    self.outgoing_offset = self.outgoing_offset.saturating_add(count);
+                    if self.outgoing_offset >= frame.len() {
+                        self.outgoing.pop_front();
+                        self.outgoing_offset = 0;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloatingSurfaceRequest {
+    pub id: String,
+    pub title: String,
+    pub role: FloatingRole,
+    pub source: FloatingSource,
+    pub preferred_size: Size,
+    pub aspect_ratio: Option<f64>,
+    pub initial_rect: Option<Rect>,
+    pub presentation_rect: Option<Rect>,
+    /// Shell-internal source binding retained in app-local coordinates. It is
+    /// deliberately absent from the wire representation: the authenticated
+    /// compositor installs it while translating an external request, then
+    /// re-resolves it against the app's live surface on every mirror frame.
+    pub tracking_source: Option<FloatingSource>,
+}
+
+/// App-owned presentation currently living in desktop coordinates. The UI
+/// runtime uses this one read-only description both to render the secondary
+/// window and to stream placement changes to the compositor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloatingSurfacePresentation {
+    pub id: String,
+    pub content_rect: Rect,
+    pub window_rect: Rect,
+    /// The pointer crossed back into the parent app, but the shell still owns
+    /// the visible pixels until it acknowledges suspension. Keeping this
+    /// presentation alive for that interval supplies the exact final geometry
+    /// and prevents app + proxy from painting simultaneously.
+    pub returning_to_app: bool,
+}
+
+impl From<&FloatingSurfaceRequest> for FloatingSurfaceProtocolRequest {
+    fn from(request: &FloatingSurfaceRequest) -> Self {
+        Self {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+            id: request.id.clone(),
+            title: request.title.clone(),
+            role: request.role.into(),
+            source: (&request.source).into(),
+            preferred_size: [request.preferred_size.width, request.preferred_size.height],
+            aspect_ratio: request.aspect_ratio,
+            initial_rect: request.initial_rect.map(protocol_rect_array),
+            presentation_rect: request.presentation_rect.map(protocol_rect_array),
+        }
+    }
+}
+
+impl TryFrom<FloatingSurfaceProtocolRequest> for FloatingSurfaceRequest {
+    type Error = String;
+
+    fn try_from(request: FloatingSurfaceProtocolRequest) -> Result<Self, Self::Error> {
+        if request.version != FLOATING_SURFACE_PROTOCOL_VERSION {
+            return Err(format!(
+                "unsupported floating-surface protocol version {}",
+                request.version
+            ));
+        }
+        if request.id.trim().is_empty() {
+            return Err("floating-surface id is empty".into());
+        }
+        let [width, height] = request.preferred_size;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return Err("floating-surface preferred size must be finite and positive".into());
+        }
+        if request
+            .aspect_ratio
+            .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0)
+        {
+            return Err("floating-surface aspect ratio must be finite and positive".into());
+        }
+        Ok(Self {
+            id: request.id,
+            title: request.title,
+            role: request.role.into(),
+            source: request.source.try_into()?,
+            preferred_size: Size::new(width, height),
+            aspect_ratio: request.aspect_ratio,
+            initial_rect: request.initial_rect.map(protocol_rect).transpose()?,
+            presentation_rect: request.presentation_rect.map(protocol_rect).transpose()?,
+            tracking_source: None,
+        })
+    }
+}
+
+pub fn protocol_rect_array(rect: Rect) -> [f64; 4] {
+    [rect.x0, rect.y0, rect.x1, rect.y1]
+}
+
+impl From<FloatingRole> for FloatingSurfaceProtocolRole {
+    fn from(role: FloatingRole) -> Self {
+        match role {
+            FloatingRole::PictureInPicture => Self::PictureInPicture,
+            FloatingRole::ActiveCall => Self::ActiveCall,
+            FloatingRole::Navigation => Self::Navigation,
+            FloatingRole::LiveActivity => Self::LiveActivity,
+        }
+    }
+}
+
+impl From<FloatingSurfaceProtocolRole> for FloatingRole {
+    fn from(role: FloatingSurfaceProtocolRole) -> Self {
+        match role {
+            FloatingSurfaceProtocolRole::PictureInPicture => Self::PictureInPicture,
+            FloatingSurfaceProtocolRole::ActiveCall => Self::ActiveCall,
+            FloatingSurfaceProtocolRole::Navigation => Self::Navigation,
+            FloatingSurfaceProtocolRole::LiveActivity => Self::LiveActivity,
+        }
+    }
+}
+
+impl From<&FloatingSource> for FloatingSurfaceProtocolSource {
+    fn from(source: &FloatingSource) -> Self {
+        match source {
+            FloatingSource::AppElement {
+                app_id,
+                element_id,
+                region,
+            } => Self::AppElement {
+                app_id: app_id.clone(),
+                element_id: element_id.clone(),
+                region: protocol_rect_array(*region),
+            },
+            FloatingSource::AppRegion { app_id, region } => Self::AppRegion {
+                app_id: app_id.clone(),
+                region: [region.x0, region.y0, region.x1, region.y1],
+            },
+            FloatingSource::Surface { surface_id } => Self::Surface {
+                surface_id: *surface_id,
+            },
+            FloatingSource::Composite(sources) => Self::Composite {
+                sources: sources.iter().map(Self::from).collect(),
+            },
+        }
+    }
+}
+
+impl TryFrom<FloatingSurfaceProtocolSource> for FloatingSource {
+    type Error = String;
+
+    fn try_from(source: FloatingSurfaceProtocolSource) -> Result<Self, Self::Error> {
+        Ok(match source {
+            FloatingSurfaceProtocolSource::AppElement {
+                app_id,
+                element_id,
+                region,
+            } => {
+                if app_id.trim().is_empty() || element_id.trim().is_empty() {
+                    return Err("floating app-element source ids must not be empty".into());
+                }
+                Self::AppElement {
+                    app_id,
+                    element_id,
+                    region: protocol_rect(region)?,
+                }
+            }
+            FloatingSurfaceProtocolSource::AppRegion { app_id, region } => {
+                if app_id.trim().is_empty() {
+                    return Err("floating app-region source app id is empty".into());
+                }
+                Self::AppRegion {
+                    app_id,
+                    region: protocol_rect(region)?,
+                }
+            }
+            FloatingSurfaceProtocolSource::Surface { surface_id } => Self::Surface { surface_id },
+            FloatingSurfaceProtocolSource::Composite { sources } => {
+                if sources.is_empty() {
+                    return Err("floating composite source is empty".into());
+                }
+                Self::Composite(
+                    sources
+                        .into_iter()
+                        .map(Self::try_from)
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
+        })
+    }
+}
+
+pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
+    let [x0, y0, x1, y1] = coords;
+    if coords.iter().any(|value| !value.is_finite()) || x1 <= x0 || y1 <= y0 {
+        return Err("floating-surface rect must be finite with positive area".into());
+    }
+    Ok(Rect::new(x0, y0, x1, y1))
+}
+
+/// Where the floating surface currently belongs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Attachment {
+    /// Moves with its application. `offset` is from the app's top-right
+    /// floating inset, so resizing/moving the app retains the relationship.
+    App { offset: Vec2 },
+    /// Independent desktop coordinates, owned by shell chrome.
+    Desktop { rect: Rect },
+}
+
+/// Result of updating a drag. Hosts use the edge to animate the hand-off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handoff {
+    None,
+    Detached,
+    Reattached,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    pointer_origin: Point,
+    rect_origin: Rect,
+    last_pointer: Point,
+    last_sample: std::time::Instant,
+    /// Low-pass pointer velocity in logical pixels/second. Presentation uses
+    /// it only for the tiny handoff deformation; placement remains exactly
+    /// under the pointer and never acquires imprecise inertial drift.
+    velocity: Vec2,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HandoffMotion {
+    started: std::time::Instant,
+    axis: Vec2,
+    strength: f64,
+}
+
+#[derive(Clone, Debug)]
+struct SettleMotion {
+    /// Armed by the first geometry sample, not by the ownership event. A
+    /// delayed renderer must still present the exact transfer rect once
+    /// before easing toward its destination.
+    started: std::cell::Cell<Option<std::time::Instant>>,
+    from: Rect,
+    to: Rect,
+}
+
+/// Placement + drag state shared by call, navigation, browser `PiP` and
+/// arbitrary captured regions.
+#[derive(Clone, Debug)]
+pub struct FloatingPlacement {
+    attachment: Attachment,
+    /// The shell has presented the app-owned secondary surface at least once.
+    /// Until this flips, the app may keep painting its clipped in-window copy
+    /// so a detach never contains a transparent handoff frame.
+    desktop_adopted: bool,
+    /// The shell is already drawing either the frozen transfer frame or the
+    /// live native surface. Kept separate from `desktop_adopted` so a valid
+    /// proxy can remove the clipped app copy without pretending the client
+    /// window has committed yet.
+    desktop_covered: bool,
+    /// Shell → app is a handshake, not an instantaneous enum flip. While
+    /// true, app-local drawing stays suppressed and the runtime publishes one
+    /// final geometry before requesting suspension.
+    return_pending: bool,
+    /// App-local rect published by the exact boundary-crossing event. A
+    /// shell Prepare reply refers to this snapshot; later pointer motion must
+    /// be carried forward, not mistaken for compositor clamping.
+    handoff_rect: Option<Rect>,
+    drag: Option<Drag>,
+    preferred_size: Size,
+    /// Visual chrome surrounding the content rect while it belongs to an app.
+    /// Keeping this here makes the *complete* soft surface stay inside its
+    /// parent, while desktop geometry can continue to identify the stable
+    /// content region used by the native-surface protocol.
+    attached_chrome: [f64; 4],
+    /// Translation between the app's local widget space and the shell's
+    /// desktop space while a native surface owns presentation.
+    desktop_coordinate_offset: Vec2,
+    handoff_motion: Option<HandoffMotion>,
+    /// Exact render-only handoff phase used by deterministic visual review.
+    /// Production interaction always leaves this unset and follows the clock.
+    handoff_progress_override: Option<f64>,
+    settle_motion: Option<SettleMotion>,
+}
+
+impl FloatingPlacement {
+    pub fn attached(preferred_size: Size) -> Self {
+        Self {
+            attachment: Attachment::App { offset: Vec2::ZERO },
+            desktop_adopted: false,
+            desktop_covered: false,
+            return_pending: false,
+            handoff_rect: None,
+            drag: None,
+            preferred_size,
+            attached_chrome: [0.0; 4],
+            desktop_coordinate_offset: Vec2::ZERO,
+            handoff_motion: None,
+            handoff_progress_override: None,
+            settle_motion: None,
+        }
+    }
+
+    pub fn attachment(&self) -> Attachment {
+        self.attachment
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    pub fn is_desktop_adopted(&self) -> bool {
+        self.desktop_adopted
+    }
+
+    pub fn is_desktop_covered(&self) -> bool {
+        self.desktop_covered
+    }
+
+    pub fn is_return_pending(&self) -> bool {
+        self.return_pending
+    }
+
+    pub fn set_preferred_size(&mut self, size: Size) {
+        self.preferred_size = size;
+    }
+
+    /// Declare app-owned decoration around the placement's content rect as
+    /// `[left, top, right, bottom]` logical pixels.
+    pub fn set_attached_chrome(&mut self, chrome: [f64; 4]) {
+        self.attached_chrome = chrome.map(|value| value.max(0.0));
+    }
+
+    pub fn reset_attached(&mut self) {
+        self.attachment = Attachment::App { offset: Vec2::ZERO };
+        self.desktop_adopted = false;
+        self.desktop_covered = false;
+        self.return_pending = false;
+        self.handoff_rect = None;
+        self.drag = None;
+        self.handoff_motion = None;
+        self.handoff_progress_override = None;
+        self.settle_motion = None;
+        self.desktop_coordinate_offset = Vec2::ZERO;
+    }
+
+    /// Host-declined/programmatic shell → app return. The surface keeps its
+    /// current desktop rect on the first frame and eases back to the app home,
+    /// so an unavailable native-surface path never makes it vanish or jump.
+    pub fn reattach_to_app(&mut self, app: Rect, desktop: Rect) {
+        let from = self.rect(app, desktop) - self.desktop_coordinate_offset;
+        let home = self.attached_home_rect(app);
+        self.attachment = Attachment::App { offset: Vec2::ZERO };
+        self.desktop_adopted = false;
+        self.desktop_covered = false;
+        self.return_pending = false;
+        self.handoff_rect = None;
+        self.drag = None;
+        self.desktop_coordinate_offset = Vec2::ZERO;
+        self.handoff_progress_override = None;
+        let started = std::time::Instant::now();
+        self.settle_motion = (from != home).then_some(SettleMotion {
+            started: std::cell::Cell::new(None),
+            from,
+            to: home,
+        });
+        self.handoff_motion = Some(HandoffMotion {
+            started,
+            axis: home.center() - from.center(),
+            strength: 0.55,
+        });
+    }
+
+    /// Programmatic counterpart to crossing the app edge (for a “Float” menu
+    /// action). The supplied rect is already in desktop coordinates.
+    pub fn detach_to_desktop(&mut self, rect: Rect) {
+        self.attachment = Attachment::Desktop { rect };
+        self.desktop_adopted = false;
+        self.desktop_covered = false;
+        self.return_pending = false;
+        self.handoff_rect = None;
+        self.drag = None;
+        self.settle_motion = None;
+        self.handoff_progress_override = None;
+        self.handoff_motion = Some(HandoffMotion {
+            started: std::time::Instant::now(),
+            axis: Vec2::new(1.0, 0.0),
+            strength: 0.55,
+        });
+    }
+
+    /// Apply the compositor's clamped transfer geometry before the native
+    /// surface's first draw, without claiming that pixels are visible yet.
+    pub fn prepare_desktop_rect(&mut self, rect: Rect) {
+        let inferred = match self.attachment {
+            Attachment::Desktop { rect: previous } => rect.origin() - previous.origin(),
+            Attachment::App { .. } => Vec2::ZERO,
+        };
+        self.prepare_desktop_rect_with_offset(rect, inferred);
+    }
+
+    /// Prepare desktop geometry while rebasing a still-held pointer grab from
+    /// app-local into desktop coordinates. The correction term keeps the
+    /// prepared (possibly compositor-clamped) rect exact on this frame and
+    /// on the first native pointer event.
+    pub fn prepare_desktop_rect_with_offset(&mut self, rect: Rect, coordinate_offset: Vec2) {
+        let returning_to_app = self.return_pending;
+        let previous = match self.attachment {
+            Attachment::Desktop { rect } => Some(rect),
+            Attachment::App { .. } => None,
+        };
+        if let (Some(previous), Some(drag)) = (previous, self.drag.as_mut()) {
+            let referenced = self.handoff_rect.unwrap_or(previous);
+            let clamp_correction = rect.origin() - (referenced + coordinate_offset).origin();
+            drag.pointer_origin += coordinate_offset;
+            drag.last_pointer += coordinate_offset;
+            drag.rect_origin = drag.rect_origin + coordinate_offset + clamp_correction;
+            self.attachment = Attachment::Desktop {
+                rect: previous + coordinate_offset + clamp_correction,
+            };
+        } else {
+            self.attachment = Attachment::Desktop { rect };
+        }
+        self.handoff_rect = None;
+        self.return_pending = returning_to_app;
+        self.desktop_coordinate_offset = coordinate_offset;
+        self.settle_motion = None;
+    }
+
+    /// Tell placement whether the shell can already cover the old app-local
+    /// pixels during native-surface startup.
+    pub fn set_desktop_transfer_covered(&mut self, covered: bool) {
+        self.desktop_covered = covered;
+    }
+
+    /// Confirm that the native surface has committed a visible buffer. This
+    /// deliberately does not replay the acknowledgement's geometry: while
+    /// the surface was preparing, pointer motion may already have advanced
+    /// beyond that earlier rectangle.
+    pub fn confirm_desktop_adoption(&mut self) {
+        if matches!(self.attachment, Attachment::Desktop { .. }) {
+            self.desktop_adopted = true;
+            self.desktop_covered = true;
+        }
+    }
+
+    /// Complete the shell → app half of the ownership handshake. The shell
+    /// has hidden the native/proxy surface, so the attached copy may now be
+    /// included in the next primary frame.
+    pub fn confirm_app_adoption(&mut self, app: Rect) {
+        let Attachment::Desktop { rect } = self.attachment else {
+            return;
+        };
+        let local_rect = rect - self.desktop_coordinate_offset;
+        let home = self.attached_home_rect(app);
+        self.attachment = Attachment::App {
+            offset: local_rect.origin() - home.origin(),
+        };
+        if let Some(drag) = self.drag.as_mut() {
+            drag.pointer_origin -= self.desktop_coordinate_offset;
+            drag.last_pointer -= self.desktop_coordinate_offset;
+            drag.rect_origin = drag.rect_origin - self.desktop_coordinate_offset;
+        }
+        self.desktop_coordinate_offset = Vec2::ZERO;
+        self.return_pending = false;
+        self.desktop_adopted = false;
+        self.desktop_covered = false;
+    }
+
+    /// Convenience for non-drag programmatic adoption.
+    pub fn adopt_desktop_rect(&mut self, rect: Rect) {
+        self.prepare_desktop_rect(rect);
+        self.confirm_desktop_adoption();
+    }
+
+    pub fn is_handoff_animating(&self) -> bool {
+        (self.handoff_progress_override.is_none()
+            && self
+                .handoff_motion
+                .is_some_and(|motion| motion.started.elapsed() < HANDOFF_SETTLE))
+            || self.settle_motion.as_ref().is_some_and(|motion| {
+                motion
+                    .started
+                    .get()
+                    .is_none_or(|started| started.elapsed() < SNAP_SETTLE)
+            })
+    }
+
+    /// Pin the subtle ownership-transfer deformation to an exact phase for
+    /// screenshot review. This does not alter geometry, hit testing, or the
+    /// production animation timeline.
+    #[doc(hidden)]
+    pub fn pin_handoff_for_visual_review(&mut self, permille: u16) {
+        if self.handoff_motion.is_some() {
+            self.handoff_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+        }
+    }
+
+    /// A tiny, render-only stretch along the drag direction when ownership
+    /// changes. Geometry and hit testing stay on the exact drag rect, so the
+    /// handoff cannot jump; reduced-motion disables the flourish entirely.
+    pub fn presentation_transform(
+        &self,
+        transform: Affine,
+        rect: Rect,
+        reduce_motion: bool,
+    ) -> Affine {
+        let Some(motion) = self.handoff_motion else {
+            return transform;
+        };
+        if reduce_motion {
+            return transform;
+        }
+        let progress = self.handoff_progress_override.unwrap_or_else(|| {
+            (motion.started.elapsed().as_secs_f64() / HANDOFF_SETTLE.as_secs_f64()).clamp(0.0, 1.0)
+        });
+        let amount = (1.0 - progress).powi(2) * motion.strength;
+        if amount <= f64::EPSILON {
+            return transform;
+        }
+        let horizontal = motion.axis.x.abs() >= motion.axis.y.abs();
+        let (sx, sy) = if horizontal {
+            (1.0 + 0.018 * amount, 1.0 - 0.008 * amount)
+        } else {
+            (1.0 - 0.008 * amount, 1.0 + 0.018 * amount)
+        };
+        let center = rect.center();
+        transform
+            .pre_translate((center.x, center.y).into())
+            .pre_scale_non_uniform(sx, sy)
+            .pre_translate((-center.x, -center.y).into())
+    }
+
+    /// Resolve the live rect. Attached overlays follow `app`; detached ones
+    /// retain screen coordinates and only clamp to the desktop.
+    pub fn rect(&self, app: Rect, desktop: Rect) -> Rect {
+        let resolved = match self.attachment {
+            Attachment::App { offset } => self.attached_home_rect(app) + offset,
+            Attachment::Desktop { rect } => clamp_rect(rect, desktop, 64.0),
+        };
+        self.settle_motion.as_ref().map_or(resolved, |motion| {
+            let Some(started) = motion.started.get() else {
+                motion.started.set(Some(std::time::Instant::now()));
+                return motion.from;
+            };
+            let t = (started.elapsed().as_secs_f64() / SNAP_SETTLE.as_secs_f64()).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            Rect::new(
+                motion.from.x0 + (motion.to.x0 - motion.from.x0) * eased,
+                motion.from.y0 + (motion.to.y0 - motion.from.y0) * eased,
+                motion.from.x1 + (motion.to.x1 - motion.from.x1) * eased,
+                motion.from.y1 + (motion.to.y1 - motion.from.y1) * eased,
+            )
+        })
+    }
+
+    fn attached_home_rect(&self, app: Rect) -> Rect {
+        let [left, top, right, bottom] = self.attached_chrome;
+        let w = self
+            .preferred_size
+            .width
+            .min((app.width() - left - right - 32.0).max(1.0));
+        let h = self
+            .preferred_size
+            .height
+            .min((app.height() - top - bottom - 32.0).max(1.0));
+        Rect::from_origin_size(
+            Point::new(app.x1 - right - w - 16.0, app.y0 + top + 16.0),
+            Size::new(w, h),
+        )
+    }
+
+    pub fn begin_drag(&mut self, pointer: Point, app: Rect, desktop: Rect) {
+        let rect_origin = self.rect(app, desktop);
+        self.settle_motion = None;
+        self.handoff_progress_override = None;
+        self.drag = Some(Drag {
+            pointer_origin: pointer,
+            rect_origin,
+            last_pointer: pointer,
+            last_sample: std::time::Instant::now(),
+            velocity: Vec2::ZERO,
+        });
+    }
+
+    /// Detaches after crossing the app by a deliberate 28px, and reattaches
+    /// when the pointer returns well inside it. The asymmetric thresholds stop
+    /// the surface flickering between owners along the border.
+    pub fn update_drag(&mut self, pointer: Point, app: Rect, desktop: Rect) -> Handoff {
+        let Some(mut drag) = self.drag else {
+            return Handoff::None;
+        };
+        self.settle_motion = None;
+        let delta = pointer - drag.pointer_origin;
+        let moved = clamp_rect(drag.rect_origin + delta, desktop, 64.0);
+        let now = std::time::Instant::now();
+        let sample_delta = pointer - drag.last_pointer;
+        let elapsed = now.duration_since(drag.last_sample).as_secs_f64();
+        let sample = if (0.001..=0.250).contains(&elapsed) {
+            sample_delta * (1.0 / elapsed)
+        } else {
+            sample_delta
+        };
+        drag.velocity = if drag.velocity.hypot() <= f64::EPSILON {
+            sample
+        } else {
+            drag.velocity * 0.35 + sample * 0.65
+        };
+        drag.last_pointer = pointer;
+        drag.last_sample = now;
+        self.drag = Some(drag);
+        let motion_axis = if drag.velocity.hypot() > 1.0 {
+            drag.velocity
+        } else {
+            delta
+        };
+        // Slow, deliberate boundary crossings barely breathe; a quick throw
+        // gets the full (still restrained) 1.8% stretch.
+        let motion_strength = (drag.velocity.hypot() / 1_200.0).clamp(0.45, 1.0);
+        let app_in_pointer_space = match self.attachment {
+            Attachment::Desktop { .. } => app + self.desktop_coordinate_offset,
+            Attachment::App { .. } => app,
+        };
+        match self.attachment {
+            Attachment::App { .. } if !app.inflate(28.0, 28.0).contains(pointer) => {
+                self.attachment = Attachment::Desktop { rect: moved };
+                self.handoff_rect = Some(moved);
+                self.handoff_progress_override = None;
+                self.handoff_motion = Some(HandoffMotion {
+                    started: now,
+                    axis: motion_axis,
+                    strength: motion_strength,
+                });
+                Handoff::Detached
+            }
+            Attachment::Desktop { .. }
+                if !self.return_pending && app_in_pointer_space.inset(36.0).contains(pointer) =>
+            {
+                self.attachment = Attachment::Desktop { rect: moved };
+                // Keep the primary copy hidden until the shell has consumed
+                // the final geometry and acknowledged that its proxy/native
+                // surface is no longer visible.
+                self.return_pending = true;
+                self.handoff_progress_override = None;
+                self.handoff_motion = Some(HandoffMotion {
+                    started: now,
+                    axis: motion_axis,
+                    strength: motion_strength,
+                });
+                Handoff::Reattached
+            }
+            Attachment::Desktop { .. } => {
+                self.attachment = Attachment::Desktop { rect: moved };
+                Handoff::None
+            }
+            Attachment::App { .. } => {
+                let home = self.attached_home_rect(app);
+                self.attachment = Attachment::App {
+                    offset: Vec2::new(moved.x0 - home.x0, moved.y0 - home.y0),
+                };
+                Handoff::None
+            }
+        }
+    }
+
+    pub fn end_drag(&mut self, desktop: Rect) {
+        let release_velocity = self.drag.take().map_or(Vec2::ZERO, |drag| drag.velocity);
+        if let Attachment::Desktop { rect } = self.attachment {
+            let from = clamp_rect(rect, desktop, 64.0);
+            let to = snap_to_edges(from, desktop, 16.0);
+            self.attachment = Attachment::Desktop { rect: to };
+            if from != to {
+                let axis = to.center() - from.center();
+                let started = std::time::Instant::now();
+                self.settle_motion = Some(SettleMotion {
+                    started: std::cell::Cell::new(None),
+                    from,
+                    to,
+                });
+                self.handoff_progress_override = None;
+                let motion_axis = if release_velocity.hypot() > 1.0 {
+                    release_velocity
+                } else {
+                    axis
+                };
+                let strength = (release_velocity.hypot() / 1_200.0).clamp(0.45, 1.0);
+                self.handoff_motion = Some(HandoffMotion {
+                    started,
+                    axis: motion_axis,
+                    strength,
+                });
+            }
+        }
+    }
+}
+
+fn clamp_rect(rect: Rect, bounds: Rect, reachable: f64) -> Rect {
+    let mut dx = 0.0;
+    let mut dy = 0.0;
+    if rect.x1 < bounds.x0 + reachable {
+        dx = bounds.x0 + reachable - rect.x1;
+    }
+    if rect.x0 > bounds.x1 - reachable {
+        dx = bounds.x1 - reachable - rect.x0;
+    }
+    if rect.y1 < bounds.y0 + reachable {
+        dy = bounds.y0 + reachable - rect.y1;
+    }
+    if rect.y0 > bounds.y1 - reachable {
+        dy = bounds.y1 - reachable - rect.y0;
+    }
+    rect + Vec2::new(dx, dy)
+}
+
+fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
+    let mut out = rect;
+    let threshold = 32.0;
+    if (rect.x0 - bounds.x0).abs() < threshold {
+        out = out + Vec2::new(bounds.x0 + gap - rect.x0, 0.0);
+    }
+    if (bounds.x1 - rect.x1).abs() < threshold {
+        out = out + Vec2::new(bounds.x1 - gap - out.x1, 0.0);
+    }
+    if (rect.y0 - bounds.y0).abs() < threshold {
+        out = out + Vec2::new(0.0, bounds.y0 + gap - rect.y0);
+    }
+    if (bounds.y1 - rect.y1).abs() < threshold {
+        out = out + Vec2::new(0.0, bounds.y1 - gap - out.y1);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attached_surface_follows_the_app() {
+        let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let a = p.rect(Rect::new(100.0, 80.0, 900.0, 700.0), desk);
+        let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
+        assert_eq!(b.x0 - a.x0, 140.0);
+        assert_eq!(b.y0 - a.y0, 40.0);
+    }
+
+    #[test]
+    fn attached_chrome_keeps_the_complete_surface_inside_its_app() {
+        let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        p.set_attached_chrome([12.0, 40.0, 12.0, 156.0]);
+        let content = p.rect(app, desk);
+        let complete = Rect::new(
+            content.x0 - 12.0,
+            content.y0 - 40.0,
+            content.x1 + 12.0,
+            content.y1 + 156.0,
+        );
+        assert!(app.contains(complete.origin()));
+        assert!(app.contains(Point::new(complete.x1, complete.y1)));
+        assert_eq!(complete.y0, app.y0 + 16.0);
+        assert_eq!(complete.x1, app.x1 - 16.0);
+    }
+
+    #[test]
+    fn drag_crossing_app_edge_hands_surface_to_desktop() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        let pointer = Point::new(600.0, 150.0);
+        let before = p.rect(app, desk);
+        p.begin_drag(pointer, app, desk);
+        let outside = Point::new(940.0, 150.0);
+        assert_eq!(p.update_drag(outside, app, desk), Handoff::Detached);
+        assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
+        assert_eq!(
+            p.rect(app, desk),
+            before + (outside - pointer),
+            "ownership transfer must not move the surface by even one logical pixel"
+        );
+    }
+
+    #[test]
+    fn handoff_flourish_keeps_the_surface_center_fixed() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        p.begin_drag(Point::new(600.0, 150.0), app, desk);
+        let _ = p.update_drag(Point::new(940.0, 150.0), app, desk);
+        let rect = p.rect(app, desk);
+        let transform = p.presentation_transform(Affine::IDENTITY, rect, false);
+        assert_eq!(transform * rect.center(), rect.center());
+        assert_eq!(
+            p.presentation_transform(Affine::IDENTITY, rect, true),
+            Affine::IDENTITY,
+            "reduced motion must disable the handoff flourish"
+        );
+    }
+
+    #[test]
+    fn visual_review_can_compare_both_owners_at_the_exact_same_handoff_phase() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
+        p.pin_handoff_for_visual_review(500);
+        let rect = p.rect(app, desk);
+        let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
+
+        p.handoff_motion.as_mut().unwrap().started =
+            std::time::Instant::now() - HANDOFF_SETTLE - std::time::Duration::from_secs(1);
+        assert_eq!(
+            p.presentation_transform(Affine::IDENTITY, rect, false),
+            desktop_transform,
+            "a pinned review frame must not drift with wall-clock time"
+        );
+
+        p.confirm_app_adoption(app);
+        assert_eq!(p.rect(app, desk), rect);
+        assert_eq!(
+            p.presentation_transform(Affine::IDENTITY, rect, false),
+            desktop_transform,
+            "switching owners must preserve the exact visual handoff phase"
+        );
+        assert!(
+            !p.is_handoff_animating(),
+            "a pinned review frame must not keep the headless renderer alive"
+        );
+    }
+
+    #[test]
+    fn handoff_flourish_follows_recent_pointer_velocity() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        p.begin_drag(Point::new(600.0, 150.0), app, desk);
+        p.drag.as_mut().unwrap().last_sample =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        assert_eq!(
+            p.update_drag(Point::new(600.0, 230.0), app, desk),
+            Handoff::None
+        );
+        p.drag.as_mut().unwrap().last_sample =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        assert_eq!(
+            p.update_drag(Point::new(950.0, 220.0), app, desk),
+            Handoff::Detached
+        );
+        let motion = p.handoff_motion.unwrap();
+        assert!(
+            motion.axis.x.abs() > motion.axis.y.abs(),
+            "the boundary flourish should follow the latest fast rightward motion"
+        );
+        assert!(motion.strength > 0.9, "a quick throw gets the full cue");
+    }
+
+    #[test]
+    fn reattachment_preserves_the_dragged_rect_on_the_transfer_frame() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        let origin = Point::new(600.0, 150.0);
+        let initial = p.rect(app, desk);
+        p.begin_drag(origin, app, desk);
+        assert_eq!(
+            p.update_drag(Point::new(950.0, 150.0), app, desk),
+            Handoff::Detached
+        );
+        let returned = Point::new(500.0, 300.0);
+        assert_eq!(p.update_drag(returned, app, desk), Handoff::Reattached);
+        assert!(p.is_return_pending());
+        assert!(matches!(p.attachment(), Attachment::Desktop { .. }));
+        assert_eq!(
+            p.rect(app, desk),
+            initial + (returned - origin),
+            "shell → app ownership transfer must preserve geometry too"
+        );
+        p.confirm_app_adoption(app);
+        assert!(!p.is_return_pending());
+        assert!(matches!(p.attachment(), Attachment::App { .. }));
+        assert_eq!(p.rect(app, desk), initial + (returned - origin));
+    }
+
+    #[test]
+    fn shell_to_app_adoption_preserves_pointer_velocity_and_next_drag_delta() {
+        let app = Rect::new(0.0, 0.0, 700.0, 600.0);
+        let desktop = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        let app_to_desktop = Vec2::new(240.0, 100.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        let origin = Point::new(600.0, 120.0);
+        p.begin_drag(origin, app, desktop);
+        p.drag.as_mut().unwrap().last_sample =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        assert_eq!(
+            p.update_drag(Point::new(900.0, 150.0), app, desktop),
+            Handoff::Detached
+        );
+
+        let prepared = p.rect(app, desktop) + app_to_desktop;
+        p.prepare_desktop_rect_with_offset(prepared, app_to_desktop);
+        p.confirm_desktop_adoption();
+        p.drag.as_mut().unwrap().last_sample =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        let returned_desktop_pointer = Point::new(620.0, 310.0);
+        assert_eq!(
+            p.update_drag(returned_desktop_pointer, app, desktop),
+            Handoff::Reattached
+        );
+        let last_shell_rect = p.rect(app, desktop);
+        let shell_velocity = p.drag.unwrap().velocity;
+        let shell_motion = p.handoff_motion.unwrap();
+
+        p.confirm_app_adoption(app);
+        assert!(p.is_dragging(), "the held drag survives the ownership edge");
+        assert_eq!(
+            p.rect(app, desktop) + app_to_desktop,
+            last_shell_rect,
+            "the first app-owned pixels cover the exact final shell rect"
+        );
+        assert_eq!(
+            p.drag.unwrap().velocity,
+            shell_velocity,
+            "the soft handoff flourish must retain its velocity vector"
+        );
+        let app_motion = p.handoff_motion.unwrap();
+        assert_eq!(app_motion.started, shell_motion.started);
+        assert_eq!(app_motion.axis, shell_motion.axis);
+        assert_eq!(app_motion.strength, shell_motion.strength);
+
+        let next_delta = Vec2::new(12.0, -8.0);
+        let next_local_pointer = returned_desktop_pointer - app_to_desktop + next_delta;
+        assert_eq!(
+            p.update_drag(next_local_pointer, app, desktop),
+            Handoff::None
+        );
+        assert_eq!(
+            p.rect(app, desktop) + app_to_desktop,
+            last_shell_rect + next_delta,
+            "the first primary-window pointer event continues the same drag"
+        );
+        p.end_drag(desktop);
+        assert!(!p.is_dragging());
+    }
+
+    #[test]
+    fn edge_snap_eases_from_the_release_rect_instead_of_jumping() {
+        let app = Rect::new(100.0, 100.0, 700.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let released = Rect::new(1055.0, 300.0, 1375.0, 480.0);
+        let target = Rect::new(1064.0, 300.0, 1384.0, 480.0);
+        let mut p = FloatingPlacement::attached(released.size());
+        p.attachment = Attachment::Desktop { rect: released };
+        p.end_drag(desk);
+        assert!(p.is_handoff_animating());
+        assert!((p.rect(app, desk).x0 - released.x0).abs() < 1.0);
+
+        p.settle_motion.as_mut().unwrap().started.set(Some(
+            std::time::Instant::now() - SNAP_SETTLE - std::time::Duration::from_millis(1),
+        ));
+        assert_eq!(p.rect(app, desk), target);
+    }
+
+    #[test]
+    fn detached_surface_uses_real_desktop_reachability_bounds() {
+        let app = Rect::new(100.0, 100.0, 700.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        p.begin_drag(Point::new(600.0, 150.0), app, desk);
+        assert_eq!(
+            p.update_drag(Point::new(6_000.0, 150.0), app, desk),
+            Handoff::Detached
+        );
+        let r = p.rect(app, desk);
+        assert_eq!(r.x0, desk.x1 - 64.0);
+        assert_eq!(r.x1, desk.x1 - 64.0 + 320.0);
+    }
+
+    #[test]
+    fn declined_handoff_animates_back_without_a_first_frame_jump() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        p.begin_drag(Point::new(600.0, 150.0), app, desk);
+        let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
+        let detached = p.rect(app, desk);
+        p.reattach_to_app(app, desk);
+        assert!(matches!(p.attachment(), Attachment::App { .. }));
+        assert!(
+            (p.rect(app, desk).x0 - detached.x0).abs() < 1.0,
+            "the decline frame stays where the pointer left it"
+        );
+        p.settle_motion.as_mut().unwrap().started.set(Some(
+            std::time::Instant::now() - SNAP_SETTLE - std::time::Duration::from_millis(1),
+        ));
+        assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
+    }
+
+    #[test]
+    fn composite_sources_make_multi_window_pip_a_first_class_request() {
+        let req = FloatingSurfaceRequest {
+            id: "pair".into(),
+            title: "Compare".into(),
+            role: FloatingRole::PictureInPicture,
+            source: FloatingSource::Composite(vec![
+                FloatingSource::Surface { surface_id: 1 },
+                FloatingSource::Surface { surface_id: 2 },
+            ]),
+            preferred_size: Size::new(480.0, 270.0),
+            aspect_ratio: Some(16.0 / 9.0),
+            initial_rect: None,
+            presentation_rect: None,
+            tracking_source: None,
+        };
+        assert!(matches!(req.source, FloatingSource::Composite(ref v) if v.len() == 2));
+    }
+
+    #[test]
+    fn protocol_round_trip_preserves_composite_source_geometry() {
+        let request = FloatingSurfaceRequest {
+            id: "comparison".into(),
+            title: "Live comparison".into(),
+            role: FloatingRole::PictureInPicture,
+            source: FloatingSource::Composite(vec![
+                FloatingSource::AppRegion {
+                    app_id: "dev.qos.editor".into(),
+                    region: Rect::new(12.0, 30.0, 412.0, 330.0),
+                },
+                FloatingSource::AppElement {
+                    app_id: "dev.qos.browser".into(),
+                    element_id: "video:main".into(),
+                    region: Rect::new(20.0, 40.0, 620.0, 378.0),
+                },
+                FloatingSource::Surface { surface_id: 42 },
+            ]),
+            preferred_size: Size::new(520.0, 320.0),
+            aspect_ratio: Some(1.625),
+            initial_rect: Some(Rect::new(600.0, 80.0, 1_120.0, 400.0)),
+            presentation_rect: Some(Rect::new(590.0, 70.0, 1_130.0, 410.0)),
+            tracking_source: None,
+        };
+        let message = FloatingSurfaceClientMessage::Present {
+            request: (&request).into(),
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        let decoded: FloatingSurfaceClientMessage = serde_json::from_str(&json).unwrap();
+        let FloatingSurfaceClientMessage::Present { request: wire } = decoded else {
+            panic!("present must remain present across the transport");
+        };
+        assert_eq!(FloatingSurfaceRequest::try_from(wire).unwrap(), request);
+    }
+
+    #[test]
+    fn prepare_applies_clamping_without_ending_the_live_handoff() {
+        let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+        let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+        let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        placement.begin_drag(Point::new(600.0, 150.0), app, desk);
+        assert_eq!(
+            placement.update_drag(Point::new(950.0, 150.0), app, desk),
+            Handoff::Detached
+        );
+        let prepared = Rect::new(1_000.0, 120.0, 1_320.0, 300.0);
+        placement.prepare_desktop_rect(prepared);
+        assert_eq!(placement.rect(app, desk), prepared);
+        assert!(placement.is_dragging(), "the pointer grab survives prepare");
+        assert!(
+            !placement.is_desktop_adopted(),
+            "creation is not evidence that pixels are visible"
+        );
+
+        placement.confirm_desktop_adoption();
+        assert!(placement.is_desktop_adopted());
+        assert_eq!(
+            placement.rect(app, desk),
+            prepared,
+            "ownership acknowledgement cannot replay stale geometry"
+        );
+    }
+
+    #[test]
+    fn prepare_rebases_a_held_drag_without_moving_its_first_native_frame() {
+        let app = Rect::new(0.0, 0.0, 700.0, 600.0);
+        let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
+        let mut placement = FloatingPlacement::attached(Size::new(320.0, 180.0));
+        let press = Point::new(600.0, 40.0);
+        placement.begin_drag(press, app, desk);
+        let outside = Point::new(750.0, 40.0);
+        assert_eq!(placement.update_drag(outside, app, desk), Handoff::Detached);
+        let local_detached = placement.rect(app, desk);
+        let coordinate_offset = Vec2::new(240.0, 110.0);
+        let prepared = local_detached + coordinate_offset;
+        placement.prepare_desktop_rect_with_offset(prepared, coordinate_offset);
+        assert_eq!(placement.rect(app, desk), prepared);
+
+        // The compositor may deliver a native cursor event without the mouse
+        // moving at all. Its coordinates are desktop-space; it must not pull
+        // the surface by the app's origin.
+        assert_eq!(
+            placement.update_drag(outside + coordinate_offset, app, desk),
+            Handoff::None
+        );
+        assert_eq!(placement.rect(app, desk), prepared);
+    }
+
+    #[test]
+    fn prepare_preserves_pointer_motion_that_arrived_after_the_handoff_request() {
+        let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
+        let desk = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+        let app_origin = Vec2::new(262.0, 124.0);
+        let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
+        let press = Point::new(1_114.0, 24.0);
+        placement.begin_drag(press, app, desk);
+        let crossing = Point::new(1_114.0, -64.0);
+        assert_eq!(
+            placement.update_drag(crossing, app, desk),
+            Handoff::Detached
+        );
+        let request_rect = placement.rect(app, desk);
+
+        // A fast lateral move lands before the shell replies to Present.
+        let pre_prepare_pointer = Point::new(738.0, -64.0);
+        assert_eq!(
+            placement.update_drag(pre_prepare_pointer, app, desk),
+            Handoff::None
+        );
+        let live_before_prepare = placement.rect(app, desk);
+
+        placement.prepare_desktop_rect_with_offset(request_rect + app_origin, app_origin);
+        assert_eq!(
+            placement.rect(app, desk),
+            live_before_prepare + app_origin,
+            "Prepare references the crossing frame; newer live motion must survive it"
+        );
+        assert_eq!(
+            placement.update_drag(pre_prepare_pointer + app_origin, app, desk),
+            Handoff::None
+        );
+        assert_eq!(placement.rect(app, desk), live_before_prepare + app_origin);
+    }
+
+    #[test]
+    fn proxy_phase_primary_motion_stays_in_desktop_pointer_space() {
+        let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
+        let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+        let app_origin = Vec2::new(262.0, 124.0);
+        let mut placement = FloatingPlacement::attached(Size::new(360.0, 156.0));
+        let press_local = Point::new(1_114.0, 24.0);
+        let initial_local = placement.rect(app, desktop);
+        placement.begin_drag(press_local, app, desktop);
+        assert_eq!(
+            placement.update_drag(Point::new(1_114.0, -104.0), app, desktop),
+            Handoff::Detached
+        );
+        let local_detached = placement.rect(app, desktop);
+        placement.prepare_desktop_rect_with_offset(local_detached + app_origin, app_origin);
+
+        // The native renderer is still warming, so compositor pointer focus
+        // remains on the primary window and reports app-local coordinates.
+        // The runtime translates that event before the shared placement sees
+        // it; ownership can then return without losing the app origin.
+        let returned_desktop = Point::new(1_376.0, 180.0);
+        let returned_primary_local = returned_desktop - app_origin;
+        assert_eq!(
+            placement.update_drag(returned_primary_local + app_origin, app, desktop),
+            Handoff::Reattached
+        );
+        assert!(placement.is_return_pending());
+        let returned_desktop_rect = placement.rect(app, desktop);
+        let expected_desktop =
+            initial_local + app_origin + (returned_desktop - (press_local + app_origin));
+        assert_eq!(returned_desktop_rect, expected_desktop);
+        placement.confirm_app_adoption(app);
+        assert_eq!(placement.rect(app, desktop) + app_origin, expected_desktop);
+    }
+
+    #[test]
+    fn native_surface_protocol_carries_outer_and_content_geometry() {
+        let messages = [
+            FloatingSurfaceHostMessage::PrepareSurface {
+                id: "call".into(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: [92.0, 32.0, 488.0, 288.0],
+                content_rect: [100.0, 40.0, 480.0, 280.0],
+                transfer_covered: true,
+                coordinate_offset: [220.0, 90.0],
+            },
+            FloatingSurfaceHostMessage::Adopted {
+                id: "call".into(),
+                rect: [100.0, 40.0, 480.0, 280.0],
+            },
+        ];
+        for message in messages {
+            let json = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+                message
+            );
+        }
+        let geometry = FloatingSurfaceClientMessage::SurfaceGeometry {
+            id: "call".into(),
+            rect: [192.0, 72.0, 588.0, 328.0],
+            content_rect: [200.0, 80.0, 580.0, 320.0],
+        };
+        let json = serde_json::to_string(&geometry).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
+            geometry
+        );
+
+        for message in [
+            FloatingSurfaceClientMessage::OpenCaptureStudio {
+                mode: CaptureStudioProtocolMode::PictureInPicture,
+            },
+            FloatingSurfaceClientMessage::SourceCleared { id: "call".into() },
+            FloatingSurfaceClientMessage::DestinationPresented { id: "call".into() },
+            FloatingSurfaceClientMessage::Suspend {
+                id: "call".into(),
+                rect: [192.0, 72.0, 588.0, 328.0],
+                content_rect: [200.0, 80.0, 580.0, 320.0],
+            },
+            FloatingSurfaceClientMessage::Dismiss { id: "call".into() },
+        ] {
+            let json = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FloatingSurfaceClientMessage>(&json).unwrap(),
+                message
+            );
+        }
+        let suspended = FloatingSurfaceHostMessage::Suspended { id: "call".into() };
+        let json = serde_json::to_string(&suspended).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+            suspended
+        );
+    }
+
+    #[test]
+    fn protocol_rejects_stale_versions_and_invalid_geometry() {
+        let base = FloatingSurfaceProtocolRequest {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+            id: "call".into(),
+            title: "Call".into(),
+            role: FloatingSurfaceProtocolRole::ActiveCall,
+            source: FloatingSurfaceProtocolSource::AppRegion {
+                app_id: "dev.qos.chat".into(),
+                region: [10.0, 20.0, 210.0, 140.0],
+            },
+            preferred_size: [360.0, 220.0],
+            aspect_ratio: None,
+            initial_rect: Some([900.0, 40.0, 1_260.0, 260.0]),
+            presentation_rect: Some([892.0, 32.0, 1_268.0, 268.0]),
+        };
+        let mut stale = base.clone();
+        stale.version = FLOATING_SURFACE_PROTOCOL_VERSION + 1;
+        assert!(FloatingSurfaceRequest::try_from(stale).is_err());
+
+        let mut inverted = base;
+        inverted.source = FloatingSurfaceProtocolSource::AppRegion {
+            app_id: "dev.qos.chat".into(),
+            region: [210.0, 20.0, 10.0, 140.0],
+        };
+        assert!(FloatingSurfaceRequest::try_from(inverted).is_err());
+    }
+
+    #[test]
+    fn host_protocol_makes_bounds_and_ownership_explicit() {
+        let bounds = FloatingSurfaceHostMessage::DesktopBounds {
+            bounds: [0.0, 0.0, 3200.0, 1080.0],
+        };
+        let json = serde_json::to_string(&bounds).unwrap();
+        assert!(json.contains("desktop_bounds"));
+        assert_eq!(
+            serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+            bounds
+        );
+        assert_ne!(
+            FloatingSurfaceHostMessage::Adopted {
+                id: "call".into(),
+                rect: [100.0, 100.0, 460.0, 320.0],
+            },
+            FloatingSurfaceHostMessage::Reattach { id: "call".into() }
+        );
+    }
+
+    #[test]
+    fn nonblocking_service_client_exchanges_complete_lifecycle_frames() {
+        use std::io::{BufRead, BufReader};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        shell_side
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
+        let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };
+        client.send(&outbound).unwrap();
+
+        let mut line = String::new();
+        BufReader::new(shell_side.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<FloatingSurfaceClientMessage>(line.trim()).unwrap(),
+            outbound
+        );
+
+        let inbound = FloatingSurfaceHostMessage::DesktopBounds {
+            bounds: [0.0, 0.0, 2560.0, 1440.0],
+        };
+        let mut bytes = serde_json::to_vec(&inbound).unwrap();
+        bytes.push(b'\n');
+        shell_side.write_all(&bytes).unwrap();
+        let mut received = Vec::new();
+        for _ in 0..100 {
+            received.extend(client.pump().unwrap());
+            if !received.is_empty() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(received, vec![inbound]);
+    }
+}

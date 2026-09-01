@@ -98,6 +98,9 @@ pub struct OverlayFlags {
     pub room_activity: bool,
     /// Device-local wireless display picker (Win+P).
     pub projection: bool,
+    /// Screenshot / recording / arbitrary-region `PiP` selector
+    /// (`Super+Shift+S`, or direct PiP via `Super+Shift+P`).
+    pub capture: bool,
 }
 
 /// Seeded by which chord opened the palette: `Ctrl+K` →

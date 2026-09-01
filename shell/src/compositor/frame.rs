@@ -17,7 +17,10 @@ use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
+use vello::peniko::{
+    BlendMode, Blob, Color, Compose, Extend, Fill, ImageAlphaType, ImageBrush, ImageData,
+    ImageFormat, Mix,
+};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::compositor::foreign::ForeignSurfaceWidget;
@@ -30,6 +33,69 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+
+struct FloatingTransferProxy {
+    key: String,
+    rect: Rect,
+    image: ImageData,
+}
+
+fn floating_transfer_proxy_needed(
+    suspended: bool,
+    native_presented: bool,
+    source_clear_pending: bool,
+    native_pixels_mapped: bool,
+) -> bool {
+    if suspended {
+        // Reverse handoff: the native surface is already hidden, but its last
+        // frame remains until the primary app window confirms replacement.
+        source_clear_pending
+    } else {
+        !native_presented || source_clear_pending || !native_pixels_mapped
+    }
+}
+
+impl FloatingTransferProxy {
+    fn new(
+        key: String,
+        rect: Rect,
+        frame: &crate::compositor::state::FloatingTransferFrame,
+    ) -> Self {
+        Self {
+            key,
+            rect,
+            image: ImageData {
+                data: Blob::new(frame.rgba.clone()),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::AlphaPremultiplied,
+                width: frame.width,
+                height: frame.height,
+            },
+        }
+    }
+
+    fn draw(&self, scene: &mut Scene) {
+        if self.rect.area() <= 0.0 || self.image.width == 0 || self.image.height == 0 {
+            return;
+        }
+        let sx = self.rect.width() / f64::from(self.image.width);
+        let sy = self.rect.height() / f64::from(self.image.height);
+        let brush_transform =
+            Affine::translate((self.rect.x0, self.rect.y0)).pre_scale_non_uniform(sx, sy);
+        let brush = ImageBrush::new(self.image.clone()).with_extend(Extend::Pad);
+        // The frozen primary buffer is opaque outside the app's surface.
+        // Mask those corner pixels with the exact shared floating silhouette
+        // so the warm-up bridge reads as the same soft object, not a crop box.
+        let silhouette = ui::surface::soft_outline(self.rect.inset(2.0));
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &brush,
+            Some(brush_transform),
+            &silhouette,
+        );
+    }
+}
 
 /// Multipliers are deliberately conservative: the selected Kelvin value is
 /// a comfort target, not a claim that an uncalibrated panel now has reference
@@ -157,6 +223,13 @@ pub struct FrameBuilder {
     /// Compositor-authorised OSK, deliberately outside the workspace/tile
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
+    /// Authenticated app-owned call/navigation toplevels. Like the OSK these
+    /// are real client buffers outside the workspace tree, but each carries
+    /// its own desktop placement and native input target.
+    floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
+    /// Pixel-exact final app frames shown only while a newly authorised
+    /// secondary surface is preparing its first buffer.
+    floating_transfer_proxies: Vec<FloatingTransferProxy>,
     osk_anchor_x: Option<f64>,
     osk_active: bool,
 }
@@ -274,6 +347,8 @@ impl FrameBuilder {
             },
             peer_presence: None,
             osk_overlay: None,
+            floating_overlays: Vec::new(),
+            floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
             osk_active: false,
         };
@@ -542,6 +617,20 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        for proxy in &self.floating_transfer_proxies {
+            proxy.draw(&mut scene);
+        }
+        for (_, surface) in &mut self.floating_overlays {
+            if surface.is_mapped() {
+                surface.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut self.text_renderer,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
+        }
         if self.osk_active
             && let Some(keyboard) = self.osk_overlay.as_mut()
             && keyboard.is_mapped()
@@ -816,6 +905,10 @@ impl FrameBuilder {
     pub fn needs_animation_frame(&self) -> bool {
         self.host.needs_animation_frame()
             || self
+                .floating_overlays
+                .iter()
+                .any(|(_, surface)| surface.needs_animation_frame())
+            || self
                 .osk_overlay
                 .as_ref()
                 .is_some_and(Widget::needs_animation_frame)
@@ -840,10 +933,188 @@ impl FrameBuilder {
         &mut self.host
     }
 
+    /// Drain user-confirmed screenshot/recording/PiP work after the selector
+    /// has closed. The native compositor owns execution because it alone has
+    /// the clean scene and GPU-readable pixels.
+    pub fn take_capture_intents(&mut self) -> Vec<ui::widget::CaptureIntent> {
+        self.host.take_capture_intents()
+    }
+
+    /// Drain app-originated call/navigation/media handoffs. The app keeps
+    /// producing the source; the compositor chooses the shell presentation.
+    pub fn take_floating_surface_requests(
+        &mut self,
+    ) -> Vec<ui::floating_surface::FloatingSurfaceRequest> {
+        self.host.take_floating_surface_requests()
+    }
+
+    pub fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.host.take_floating_surface_source_updates()
+    }
+
+    pub fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.host.active_floating_surface_ids()
+    }
+
+    pub fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        self.host.on_floating_surface_host_message(message);
+    }
+
+    pub fn set_capture_recording_active(&mut self, active: bool) {
+        self.host.set_capture_recording_active(active);
+    }
+
+    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
+        self.host
+            .set_capture_recording_transition_progress(permille);
+    }
+
+    pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
+        self.host.set_capture_pip_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_paused(&mut self, paused: bool) {
+        self.host.set_capture_recording_paused(paused);
+    }
+
+    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
+        self.host
+            .set_capture_recording_state_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
+        self.host
+            .set_capture_recording_receipt_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_finished(&mut self) {
+        self.host.set_capture_recording_finished();
+    }
+
+    pub fn set_capture_screenshot_finished(
+        &mut self,
+        copied: bool,
+        width: u32,
+        height: u32,
+        preview: ui::widget::CapturePreview,
+    ) {
+        self.host
+            .set_capture_screenshot_finished(copied, width, height, preview);
+    }
+
+    pub fn set_capture_screenshot_transition_progress(&mut self, permille: u16) {
+        self.host
+            .set_capture_screenshot_transition_progress(permille);
+    }
+
+    #[doc(hidden)]
+    pub fn set_screenshot_markup_transition_progress(&mut self, permille: u16) {
+        self.host
+            .set_screenshot_markup_transition_progress(permille);
+    }
+
+    pub fn set_capture_screenshot_pin_pending(&mut self, pending: bool) {
+        self.host.set_capture_screenshot_pin_pending(pending);
+    }
+
+    pub fn set_capture_screenshot_pinned(&mut self) {
+        self.host.set_capture_screenshot_pinned();
+    }
+
+    pub fn set_capture_replay_active(&mut self, active: bool, audio: ui::widget::AudioCaptureMode) {
+        self.host.set_capture_replay_active(active, audio);
+    }
+
+    pub fn set_capture_replay_buffered_seconds(&mut self, seconds: u8) {
+        self.host.set_capture_replay_buffered_seconds(seconds);
+    }
+
+    pub fn set_capture_replay_saved(&mut self) {
+        self.host.set_capture_replay_saved();
+    }
+
+    pub fn set_capture_audio_available(&mut self, system: bool, microphone: bool) {
+        self.host.set_capture_audio_available(system, microphone);
+    }
+
+    /// Paint live selected apps in virtual-desktop coordinates without the
+    /// physical output clip. This is the authoritative source for a full-app
+    /// or whole-strip capture, including apps not presently on the monitor.
+    pub fn paint_capture_targets(
+        &mut self,
+        target_ids: &[String],
+        extent: ui::widget::CaptureExtent,
+        complete_semantic_content: bool,
+    ) -> (Scene, Vec<Rect>) {
+        let mut scene = Scene::new();
+        let rects = self.host.draw_capture_targets(
+            target_ids,
+            extent,
+            complete_semantic_content,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
+            &self.presence,
+        );
+        (scene, rects)
+    }
+
+    /// Append compositor-owned capture surfaces after the clean desktop
+    /// source has been consumed. This keeps live mirrors recursive-safe and
+    /// recording status out of the encoded pixels.
+    pub fn draw_capture_overlays(&mut self, scene: &mut Scene) {
+        self.host.draw_capture_overlays(
+            scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
+            &self.presence,
+        );
+    }
+
+    pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
+        self.host.take_closed_capture_mirrors()
+    }
+
     /// On-screen rectangle of the tile currently painting the foreign
     /// wayland surface `surface_id`, or `None` if no visible tile hosts it.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
         self.host.foreign_surface_rect(surface_id)
+    }
+
+    /// Resolve the visible foreign surface owned by an authenticated app-id.
+    /// The live widget rect is authoritative; persisted tree geometry can be a
+    /// frame behind during strip motion. If several instances exist, prefer
+    /// the first currently visible active tab rather than an off-screen/stale
+    /// sibling.
+    pub fn foreign_surface_for_app(&mut self, app_id: &str) -> Option<(u64, vello::kurbo::Rect)> {
+        let surface_ids: Vec<u64> = {
+            let tree = self.chrome.borrow();
+            tree.tree()
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter_map(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign {
+                        app_id: candidate,
+                        surface_id,
+                    } if candidate == app_id => Some(*surface_id),
+                    _ => None,
+                })
+                .collect()
+        };
+        for surface_id in surface_ids {
+            if let Some(rect) = self.host.foreign_surface_rect(surface_id) {
+                return Some((surface_id, rect));
+            }
+        }
+        None
     }
 
     /// Install/remove the trusted keyboard mirror and anchor it to the output
@@ -878,6 +1149,120 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
+    /// Reconcile authenticated app-owned toplevels with the compositor's
+    /// presentation pass. Widgets are retained by surface id so a geometry
+    /// update never resets buffer sequence, mapping state, or opening chrome.
+    pub fn set_floating_surfaces(&mut self, surfaces: &[(u64, String, Rect)]) {
+        self.floating_overlays
+            .retain(|(surface_id, _)| surfaces.iter().any(|(id, _, _)| id == surface_id));
+        for (surface_id, app_id, rect) in surfaces {
+            let index = self
+                .floating_overlays
+                .iter()
+                .position(|(id, _)| id == surface_id)
+                .unwrap_or_else(|| {
+                    self.floating_overlays.push((
+                        *surface_id,
+                        ForeignSurfaceWidget::new_floating(*surface_id, app_id.clone()),
+                    ));
+                    self.floating_overlays.len().saturating_sub(1)
+                });
+            if let Some((_, surface)) = self.floating_overlays.get_mut(index) {
+                surface.place_floating(*rect);
+            }
+        }
+    }
+
+    /// Reconcile frozen transfer frames from both capability-authorised
+    /// (window not created yet) and mapped-but-bufferless native surfaces.
+    /// Existing widgets retain their image allocation while only geometry
+    /// changes under a live pointer drag.
+    pub(crate) fn set_floating_transfer_surfaces(
+        &mut self,
+        pending: &[crate::compositor::state::PendingFloatingToplevel],
+        live: &[crate::compositor::state::FloatingToplevel],
+    ) {
+        let presentation_rect = |rect: Rect,
+                                 source: Option<
+            crate::compositor::state::FloatingTransferSource,
+        >| { source.map_or(rect, |source| source.rect) };
+        let mut wanted = Vec::new();
+        for surface in pending
+            .iter()
+            .filter(|surface| !surface.suspended || surface.transfer_source.is_some())
+        {
+            if surface.transfer_frame.is_some() {
+                wanted.push((
+                    format!("{}:{}", surface.connection, surface.public_id),
+                    presentation_rect(surface.rect, surface.transfer_source),
+                    surface.transfer_frame.as_ref(),
+                ));
+            }
+        }
+        for surface in live.iter().filter(|surface| {
+            let native_pixels_ready = self
+                .floating_overlays
+                .iter()
+                .find(|(surface_id, _)| *surface_id == surface.surface_id)
+                .is_some_and(|(_, overlay)| overlay.is_mapped());
+            floating_transfer_proxy_needed(
+                surface.suspended,
+                surface.presented,
+                surface.transfer_source.is_some(),
+                native_pixels_ready,
+            )
+        }) {
+            if surface.transfer_frame.is_some() {
+                wanted.push((
+                    format!("{}:{}", surface.connection, surface.public_id),
+                    presentation_rect(surface.rect, surface.transfer_source),
+                    surface.transfer_frame.as_ref(),
+                ));
+            }
+        }
+        self.floating_transfer_proxies
+            .retain(|proxy| wanted.iter().any(|(key, _, _)| key == &proxy.key));
+        for (key, rect, frame) in wanted {
+            if let Some(proxy) = self
+                .floating_transfer_proxies
+                .iter_mut()
+                .find(|proxy| proxy.key == key)
+            {
+                proxy.rect = rect;
+            } else if let Some(frame) = frame {
+                self.floating_transfer_proxies
+                    .push(FloatingTransferProxy::new(key, rect, frame));
+            }
+        }
+    }
+
+    /// Top-most mapped app-owned activity under `point`.
+    pub fn floating_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
+        let point = Point::new(point.0, point.1);
+        self.floating_overlays
+            .iter()
+            .rev()
+            .find_map(|(surface_id, surface)| {
+                let rect = surface.get_rect();
+                (surface.is_mapped() && rect.contains(point)).then_some((*surface_id, rect))
+            })
+    }
+
+    pub fn floating_surface_rect(&self, surface_id: u64) -> Option<Rect> {
+        self.floating_overlays
+            .iter()
+            .find(|(id, surface)| *id == surface_id && surface.is_mapped())
+            .map(|(_, surface)| surface.get_rect())
+    }
+
+    pub fn floating_surface_rects(&self) -> Vec<(u64, Rect)> {
+        self.floating_overlays
+            .iter()
+            .filter(|(_, surface)| surface.is_mapped())
+            .map(|(id, surface)| (*id, surface.get_rect()))
+            .collect()
+    }
+
     /// Hit-test the mapped keyboard. An unmapped/hidden surface never steals
     /// clicks from the application beneath it.
     pub fn osk_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
@@ -893,6 +1278,10 @@ impl FrameBuilder {
 
     pub fn viewport(&self) -> (f64, f64) {
         self.viewport
+    }
+
+    pub fn capture_pointer_position(&self) -> Option<vello::kurbo::Point> {
+        self.host.pointer_position()
     }
 
     /// Inner node id (host's root child). Required by the input dispatch
@@ -1143,6 +1532,16 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist() {
+        assert!(floating_transfer_proxy_needed(false, false, true, false));
+        assert!(floating_transfer_proxy_needed(false, true, true, true));
+        assert!(floating_transfer_proxy_needed(false, true, false, false));
+        assert!(!floating_transfer_proxy_needed(false, true, false, true));
+        assert!(floating_transfer_proxy_needed(true, false, true, false));
+        assert!(!floating_transfer_proxy_needed(true, false, false, false));
+    }
 
     #[test]
     fn night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin() {

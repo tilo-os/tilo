@@ -475,6 +475,74 @@ impl TileHost {
         }
     }
 
+    /// Desktop-space card rect for an app-provided complete semantic canvas.
+    /// The provider reports tile-content size; the shell card grows from the
+    /// live tile's top-left and never shrinks below the live window surface.
+    pub fn complete_content_rect(&self) -> Option<Rect> {
+        let TileContent::App(app) = &self.content else {
+            return None;
+        };
+        let size = app.complete_content_size()?;
+        if !size.width.is_finite()
+            || !size.height.is_finite()
+            || size.width <= 0.0
+            || size.height <= 0.0
+        {
+            return None;
+        }
+        Some(Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + size.width.max(self.rect.width()),
+            self.rect.y0 + size.height.max(self.rect.height()),
+        ))
+    }
+
+    /// Paint a complete app-provided canvas in the ordinary window card. The
+    /// app owns only its semantic pixels; shared clipping, corner radius and
+    /// focus edge remain toolkit code, exactly as on screen.
+    pub fn draw_complete_content_capture(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
+        let rect = self.complete_content_rect()?;
+        let radius = f64::from(theme.tokens.radii.xl);
+        let shape = RoundedRect::from_rect(rect, radius);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card,
+            None,
+            &shape,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &shape,
+        );
+        let painted = match &mut self.content {
+            TileContent::App(app) => {
+                app.draw_complete_content(scene, rect, transform, tr, theme, presence)
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        };
+        scene.pop_layer();
+        if !painted {
+            return None;
+        }
+        // Export crops to the app bounds, so the live drop shadow is neither
+        // visible nor useful. Omitting it also avoids stretching a
+        // window-height raster effect across a multi-page document.
+        self.draw_edge_at(scene, transform, theme, radius, rect);
+        Some(rect)
+    }
+
     /// Exposed for tests to pin the curve shape without peeking into
     /// Vello's scene buffer.
     #[cfg(test)]
@@ -756,6 +824,71 @@ impl Widget for TileHost {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        match &mut self.content {
+            TileContent::App(widget) => widget.take_floating_surface_request(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        match &mut self.content {
+            TileContent::App(widget) => widget.take_capture_studio_request(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        match &mut self.content {
+            TileContent::App(widget) => widget.take_floating_surface_source_updates(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        }
+    }
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.set_floating_surface_bounds(bounds);
+        }
+    }
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        match &self.content {
+            TileContent::App(widget) => widget.floating_surface_presentations(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        match &self.content {
+            TileContent::App(widget) => widget.active_floating_surface_ids(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.on_floating_surface_host_message(message);
+        }
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        match &self.content {
+            TileContent::App(widget) => widget.wants_pointer_capture(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        }
+    }
     /// Presence identity is the record shown, not the tile — the only
     /// thing that tells two tabs of one app apart, since a peer's caret is
     /// a position in *a document*. Unbound tiles report nothing.
@@ -821,16 +954,16 @@ impl TileHost {
     /// fencing off the content area would draw a shape belonging to
     /// nothing else on screen. Lighting the window's own footprint keeps
     /// the signal attached to the object it describes.
-    fn draw_shadows(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_shadows_at(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`): 25 px
         // downward offset, ~50 px bleed so the falloff clears the corners.
         let ambient_pad = 50.0_f64;
         let ambient_y = 25.0_f64;
         let ambient_target = Rect::new(
-            self.rect.x0 - ambient_pad,
-            self.rect.y0 - ambient_pad + ambient_y,
-            self.rect.x1 + ambient_pad,
-            self.rect.y1 + ambient_pad + ambient_y,
+            rect.x0 - ambient_pad,
+            rect.y0 - ambient_pad + ambient_y,
+            rect.x1 + ambient_pad,
+            rect.y1 + ambient_pad + ambient_y,
         );
         draw_shadow_sprite(
             scene,
@@ -842,10 +975,10 @@ impl TileHost {
         if self.focused {
             let bloom_pad = 120.0_f64;
             let bloom_target = Rect::new(
-                self.rect.x0 - bloom_pad,
-                self.rect.y0 - bloom_pad,
-                self.rect.x1 + bloom_pad,
-                self.rect.y1 + bloom_pad,
+                rect.x0 - bloom_pad,
+                rect.y0 - bloom_pad,
+                rect.x1 + bloom_pad,
+                rect.y1 + bloom_pad,
             );
             draw_shadow_sprite(
                 scene,
@@ -857,6 +990,10 @@ impl TileHost {
         }
     }
 
+    fn draw_shadows(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.draw_shadows_at(scene, transform, theme, self.rect);
+    }
+
     /// The window's outline. Painted *outside* the card's silhouette, safe
     /// from app content by the clip in `draw_steady_state` rather than a
     /// paint-order race: a stroke over unknown app content can't pick one
@@ -866,14 +1003,21 @@ impl TileHost {
     /// radius grows by the same half so it stays concentric at the
     /// corners. Focus reuses this same edge (colour + weight) rather than a
     /// second ring, keeping the signal part of the window's own silhouette.
-    fn draw_edge(&self, scene: &mut Scene, transform: Affine, theme: &Theme, radius: f64) {
+    fn draw_edge_at(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        radius: f64,
+        rect: Rect,
+    ) {
         let (edge_width, edge_color) = if self.focused {
             (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
         let half = edge_width / 2.0;
-        let edge = RoundedRect::from_rect(self.rect.inflate(half, half), radius + half);
+        let edge = RoundedRect::from_rect(rect.inflate(half, half), radius + half);
         scene.stroke(
             &vello::kurbo::Stroke::new(edge_width),
             transform,
@@ -881,6 +1025,10 @@ impl TileHost {
             None,
             &edge,
         );
+    }
+
+    fn draw_edge(&self, scene: &mut Scene, transform: Affine, theme: &Theme, radius: f64) {
+        self.draw_edge_at(scene, transform, theme, radius, self.rect);
     }
 
     /// Ambient shadow → focus bloom → white card + border → hosted app or
@@ -1227,6 +1375,115 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    struct FloatingProbe {
+        acknowledged: std::rc::Rc<std::cell::Cell<bool>>,
+        update: Option<Rect>,
+    }
+
+    impl Widget for FloatingProbe {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "FloatingProbe"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+            self.update
+                .take()
+                .map(|rect| vec![("probe-pip".into(), rect)])
+                .unwrap_or_default()
+        }
+        fn active_floating_surface_ids(&self) -> Vec<String> {
+            vec!["probe-pip".into()]
+        }
+        fn on_floating_surface_host_message(
+            &mut self,
+            message: &crate::floating_surface::FloatingSurfaceHostMessage,
+        ) {
+            if matches!(
+                message,
+                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
+                    if id == "probe-pip"
+            ) {
+                self.acknowledged.set(true);
+            }
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for FloatingProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Browser
+        }
+        fn app_title(&self) -> &'static str {
+            "Floating probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("P")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn tile_host_forwards_the_complete_floating_surface_lifecycle() {
+        let acknowledged = std::rc::Rc::new(std::cell::Cell::new(false));
+        let source = Rect::new(20.0, 30.0, 420.0, 255.0);
+        let mut host = TileHost::new(TileContent::App(Box::new(FloatingProbe {
+            acknowledged: acknowledged.clone(),
+            update: Some(source),
+        })));
+
+        assert_eq!(host.active_floating_surface_ids(), vec!["probe-pip"]);
+        assert_eq!(
+            host.take_floating_surface_source_updates(),
+            vec![("probe-pip".into(), source)]
+        );
+        assert!(host.take_floating_surface_source_updates().is_empty());
+
+        host.on_floating_surface_host_message(
+            &crate::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: "probe-pip".into(),
+                rect: [100.0, 80.0, 500.0, 305.0],
+            },
+        );
+        assert!(acknowledged.get());
     }
 
     fn body_of(store: &RecordStore, id: &RecordId) -> Option<String> {

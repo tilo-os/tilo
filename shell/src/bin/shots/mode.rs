@@ -290,7 +290,7 @@ pub mod recording {
     impl RecordingSink<'_> {
         fn encode_current(&mut self, driver: &mut ShellDriver) -> Result<(), String> {
             let scene = driver.paint();
-            let rgba = self.renderer.render_rgba(&scene);
+            let rgba = self.renderer.render_rgba_resilient(&scene);
             for _ in 0..self.frames_per_step {
                 let nalus = self
                     .encoder

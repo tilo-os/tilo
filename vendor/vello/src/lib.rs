@@ -491,7 +491,7 @@ impl Renderer {
         // changes, the pooled buffers at the old sizes are dropped
         // rather than kept for a size nothing will ask for again.
         self.budget.set_viewport(params.width, params.height);
-        if self.budget.collect(device, &mut self.engine) {
+        if self.budget.collect(device, &mut self.engine).0 {
             self.engine.clear_pool();
         }
         let measure = self.budget.wants_readback();
@@ -533,6 +533,32 @@ impl Renderer {
         }
 
         Ok(())
+    }
+
+    /// Collect the bump counters for the frame most recently submitted by
+    /// [`Self::render_to_texture`]. Returns `true` when that frame overflowed
+    /// and therefore dropped geometry. One-shot/readback renderers call this
+    /// after waiting for the GPU so they can resubmit immediately; interactive
+    /// renderers can keep their normal next-frame recovery.
+    #[doc(hidden)]
+    pub fn settle_bump_budget(&mut self, device: &Device) -> bool {
+        let mut overflowed = false;
+        // A one-shot readback has already waited for the rendered texture,
+        // but the tiny counter buffer's map callback can become observable a
+        // poll later. Give it a bounded blocking settle so "not ready yet" is
+        // never mistaken for "the frame fit".
+        for _ in 0..4 {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            let (changed, frame_overflowed) = self.budget.collect(device, &mut self.engine);
+            overflowed |= frame_overflowed;
+            if changed {
+                self.engine.clear_pool();
+            }
+            if !self.budget.has_pending_readback() {
+                break;
+            }
+        }
+        overflowed
     }
 
     /// Overwrite `image` with `texture`.

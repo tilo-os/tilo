@@ -6,7 +6,7 @@
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::kurbo::{Point, Vec2};
+use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -17,7 +17,7 @@ use crate::actions;
 use crate::app::{
     ChatApp, ContextMenu, Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
-use crate::call::{CallAction, OverlayDrag};
+use crate::call::CallAction;
 use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
 
@@ -152,10 +152,54 @@ impl ChatApp {
     ) {
         self.last_mouse = last_mouse;
         // Live-drag the floating call overlay.
-        if let Some(drag) = self.overlay_drag {
-            let delta = self.last_mouse - drag.origin;
-            self.call.overlay_offset = drag.start_offset + Vec2::new(delta.x, delta.y);
+        if self.call.placement.is_dragging() {
+            // Freeze the complete last in-app presentation, including its
+            // soft silhouette and controls. The compositor uses this exact
+            // region as the visual bridge until the app-owned native surface
+            // commits its first buffer.
+            let source_region = self.huddle_panel().inflate(8.0, 8.0);
+            let desktop = self.desktop_floating_bounds();
+            let handoff = self
+                .call
+                .placement
+                .update_drag(self.last_mouse, self.rect, desktop);
+            if handoff == ui::floating_surface::Handoff::Detached {
+                let mut request = self
+                    .call
+                    .floating_request(source_region, self.call_video_rect());
+                if let Some(request) = request.as_mut() {
+                    request.presentation_rect = Some(self.huddle_panel().inflate(8.0, 8.0));
+                }
+                self.pending_floating = request;
+            }
             self.request_relayout();
+            *handled = true;
+        }
+        let hovered = if self.call.placement.is_dragging() {
+            None
+        } else {
+            self.hit_at(self.last_mouse).filter(|hit| {
+                matches!(
+                    hit,
+                    Hit::CallParticipantsToggle
+                        | Hit::CallMute
+                        | Hit::CallDeafen
+                        | Hit::CallAudioOnly
+                        | Hit::CallShareScreen
+                        | Hit::CallExpand
+                        | Hit::CallLeave
+                )
+            })
+        };
+        let hover_changed = match (&self.call_hovered, &hovered) {
+            (Some(before), Some(after)) => {
+                std::mem::discriminant(before) != std::mem::discriminant(after)
+            }
+            (None, None) => false,
+            _ => true,
+        };
+        if hover_changed {
+            self.call_hovered = hovered;
             *handled = true;
         }
         // Track an in-progress channel-row swipe.
@@ -181,11 +225,13 @@ impl ChatApp {
     ) {
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
-                // Begin dragging the overlay (only meaningful docked).
-                self.overlay_drag = Some(OverlayDrag {
-                    origin: self.last_mouse,
-                    start_offset: self.call.overlay_offset,
-                });
+                let huddle = self.call_video_rect();
+                self.call.placement.set_preferred_size(huddle.size());
+                self.call.placement.begin_drag(
+                    self.last_mouse,
+                    self.rect,
+                    self.desktop_floating_bounds(),
+                );
                 *handled = true;
             }
             Some(Hit::Channel(id)) => {
@@ -227,7 +273,7 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        self.overlay_drag = None;
+        self.call.placement.end_drag(self.desktop_floating_bounds());
         // End any composer drag-selection in progress.
         self.forward_release_to_composers(event, scale, modifiers, doc);
         if let Some(sw) = self.swipe.take() {
@@ -2029,6 +2075,225 @@ mod tests {
         let mods = Modifiers::default();
         let mut handled = false;
         app.dispatch_event(ev, 1.0, mods, doc, &mut handled);
+    }
+
+    #[test]
+    fn detached_call_keeps_live_controls_in_the_shell_presentation_pass() {
+        use ui::Widget;
+        use ui::floating_surface::Attachment;
+        use ui::presence::PresenceCtx;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+        use vello::Scene;
+        use vello::kurbo::{Affine, Rect};
+
+        let (mut app, mut doc) = app_with_doc();
+        app.call.join("c_huddle");
+        render_frame(&mut app, 1200.0, 800.0);
+        Widget::set_floating_surface_bounds(&mut app, Rect::new(0.0, 0.0, 1600.0, 900.0));
+
+        let handle = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::CallDragHandle).then_some(*rect))
+            .expect("the attached live call exposes its drag handle");
+        let pointer_origin = handle.center();
+        let surface_origin = app.call_video_rect();
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor(pointer_origin.x, pointer_origin.y),
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Pressed, MouseButton::Left),
+        );
+        assert!(Widget::wants_pointer_capture(&app));
+
+        let outside = Point::new(1300.0, pointer_origin.y + 40.0);
+        feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
+        assert!(matches!(
+            app.call.placement.attachment(),
+            Attachment::Desktop { .. }
+        ));
+        assert_eq!(
+            app.call_video_rect(),
+            surface_origin + (outside - pointer_origin),
+            "the transfer frame preserves the live surface geometry"
+        );
+        assert!(
+            Widget::take_floating_surface_request(&mut app).is_some(),
+            "the compositor receives the one-shot adoption request"
+        );
+
+        // Preparing a native window is not yet proof of pixels. Keep the
+        // clipped app copy alive until the compositor acknowledges the first
+        // committed floating buffer, so there is no transparent transfer
+        // frame even when GPU/window setup takes a beat.
+        render_frame(&mut app, 1200.0, 800.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
+            1
+        );
+        let prepared_content = app.call_video_rect();
+        let prepared_window = app.huddle_panel().inflate(8.0, 8.0);
+        Widget::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: "chat-call:c_huddle".into(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(prepared_window),
+                content_rect: ui::floating_surface::protocol_rect_array(prepared_content),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        assert!(!app.call.placement.is_desktop_adopted());
+        let mut scene = Scene::new();
+        let mut text_renderer = TextRenderer::new();
+        Widget::draw_floating_surfaces(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(!scene.encoding().is_empty());
+
+        Widget::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: "chat-call:c_huddle".into(),
+                rect: ui::floating_surface::protocol_rect_array(prepared_content),
+            },
+        );
+        assert!(app.call.placement.is_desktop_adopted());
+        render_frame(&mut app, 1200.0, 800.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
+            0
+        );
+        let mut scene = Scene::new();
+        Widget::draw_floating_surfaces(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
+            1
+        );
+
+        // Drag back well inside Chat. The runtime sees `returning_to_app` in
+        // the presentation and asks the shell to suspend its native surface;
+        // until that acknowledgement arrives only the shell pass may paint.
+        let returned_pointer = Point::new(980.0, pointer_origin.y + 84.0);
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor(returned_pointer.x, returned_pointer.y),
+        );
+        assert!(app.call.placement.is_return_pending());
+        let final_shell_rect = app.call_video_rect();
+        let presentations = Widget::floating_surface_presentations(&app);
+        assert_eq!(presentations.len(), 1);
+        assert!(presentations[0].returning_to_app);
+
+        Widget::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended {
+                id: "chat-call:c_huddle".into(),
+            },
+        );
+        assert!(matches!(
+            app.call.placement.attachment(),
+            Attachment::App { .. }
+        ));
+        assert_eq!(
+            app.call_video_rect(),
+            final_shell_rect,
+            "the first app-owned call frame must exactly cover the final shell frame"
+        );
+        assert!(
+            Widget::wants_pointer_capture(&app),
+            "the held drag survives shell suspension"
+        );
+
+        let continued_pointer = returned_pointer + vello::kurbo::Vec2::new(-18.0, 11.0);
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor(continued_pointer.x, continued_pointer.y),
+        );
+        assert_eq!(
+            app.call_video_rect(),
+            final_shell_rect + (continued_pointer - returned_pointer),
+            "the first primary-window motion continues the same drag"
+        );
+
+        // Release is still delivered after both ownership boundaries.
+        feed(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Released, MouseButton::Left),
+        );
+        assert!(!Widget::wants_pointer_capture(&app));
+    }
+
+    #[test]
+    fn call_controls_track_hover_and_clear_it_on_departure() {
+        let (mut app, mut doc) = app_with_doc();
+        app.call.join("c_huddle");
+        render_frame(&mut app, 1200.0, 800.0);
+        let leave = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::CallLeave).then_some(*rect))
+            .expect("the live huddle exposes Leave");
+
+        feed(
+            &mut app,
+            &mut doc,
+            &cursor(leave.center().x, leave.center().y),
+        );
+        assert!(matches!(app.call_hovered, Some(Hit::CallLeave)));
+
+        feed(&mut app, &mut doc, &cursor(2.0, 2.0));
+        assert!(app.call_hovered.is_none());
+    }
+
+    #[test]
+    fn call_resize_samples_keep_content_and_native_chrome_in_one_geometry() {
+        use ui::Widget;
+
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        render_frame(&mut app, 1200.0, 800.0);
+        app.debug_stage_floating_call_for_shot("floating-call-collapse-000");
+
+        let stable_content = app.call_video_rect();
+        let mut prior_height = f64::INFINITY;
+        for reveal in [1.0_f32, 0.75, 0.5, 0.25, 0.0] {
+            app.call_chrome_motion.pin_for_visual_review(reveal);
+            render_frame(&mut app, 1200.0, 800.0);
+            let presentation = Widget::floating_surface_presentations(&app)
+                .into_iter()
+                .next()
+                .expect("the detached call publishes its animated native bounds");
+            assert_eq!(presentation.content_rect, stable_content);
+            assert_eq!(
+                presentation.window_rect,
+                app.huddle_panel().inflate(8.0, 8.0)
+            );
+            assert!(presentation.window_rect.height() <= prior_height);
+            prior_height = presentation.window_rect.height();
+        }
+        assert_eq!(prior_height, app.huddle_panel().inflate(8.0, 8.0).height());
     }
 
     /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).

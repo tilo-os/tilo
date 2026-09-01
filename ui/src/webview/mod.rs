@@ -148,6 +148,20 @@ pub enum WebViewCommand {
     /// express (e.g. skipping `YouTube` video ads). Run at document-start
     /// in all frames.
     SetUserScripts(Arc<Vec<String>>),
+    /// Find the most useful visible HTML video in the current page. The
+    /// result is delivered asynchronously as [`WebViewEvent::MediaElement`]
+    /// or [`WebViewEvent::MediaElementUnavailable`]. Browser chrome uses the
+    /// returned viewport geometry to create a live, element-sized PiP rather
+    /// than mirroring the whole page.
+    RequestMediaElement {
+        request_id: u64,
+    },
+    /// Re-resolve a previously selected media element by its stable page-local
+    /// identity. Active PiP uses this without silently switching videos.
+    RequestMediaElementById {
+        request_id: u64,
+        element_id: String,
+    },
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
@@ -170,6 +184,26 @@ pub enum WebViewEvent {
         can_go_back: bool,
         can_go_forward: bool,
     },
+    MediaElement {
+        request_id: u64,
+        element: MediaElementInfo,
+    },
+    MediaElementUnavailable {
+        request_id: u64,
+    },
+}
+
+/// A visible media element expressed relative to the web viewport. Keeping
+/// this normalised makes it independent of physical display scale and lets
+/// browser chrome map it onto the current app surface after a resize.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaElementInfo {
+    /// Opaque identity stable for the lifetime of the current document.
+    pub element_id: String,
+    /// `[x, y, width, height]`, each relative to the viewport dimensions.
+    pub viewport_rect: [f64; 4],
+    pub intrinsic_size: [u32; 2],
+    pub label: String,
 }
 
 /// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA

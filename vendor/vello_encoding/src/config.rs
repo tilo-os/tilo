@@ -524,12 +524,13 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// | blend      | 0                 | -        | 0                 | -        |
 /// | ptcl (dyn) | 659200            | 80.8     | 1361664           | 42.0     |
 ///
-/// So the ones that track screen area are written per tile with roughly
-/// twice the measured headroom, and the ones that track how much *stuff*
-/// is on screen -- lines, and the binning list -- are flat. At 1920x1080
-/// that is 13 MB reserved against upstream's 165 MB; at 3840x2160, 37 MB,
-/// where upstream's ptcl constant is itself only four times the
-/// structural floor.
+/// So the ones that track screen area are written per tile, while the ones
+/// that track how much *stuff* is on screen also carry measured flat floors.
+/// With the later foreign-surface, complete-app-capture and late-shell-chrome
+/// workloads below included, 1920x1080 reserves about 22 MiB against
+/// upstream's 167 MiB. At 3840x2160 it is about 71 MiB, where viewport-scaled
+/// floors dominate and upstream's flat ptcl constant is itself smaller than
+/// the measured per-tile requirement.
 ///
 /// The 28-scene catalogue above has no *foreign* surface in it, and a
 /// composited Wayland client is not a flat fill: `foreign.rs` draws it
@@ -553,15 +554,41 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 /// viewport like the tile-indexed ones. A flat constant cannot cover a large or
 /// high-DPI surface: a subtree cache at scale 2 measured 105,450 lines against
 /// the old flat 65,536, and the overflow drops geometry silently.
+// Semantic whole-app capture is a different first-frame workload from the
+// on-screen catalogue: the shell renders a complete, potentially off-screen
+// app into a second target while still painting the desktop and picker. A
+// 1310x1188 Notes capture measured 137,812 lines in the 1600x900 compositor
+// target (24.2/viewport tile), but that extra work is scene complexity rather
+// than screen-area coverage. Model it as a 160K flat floor; the existing
+// 16/tile term takes over again on genuinely large/high-DPI targets. This
+// avoids multiplying one 1600x900 measurement across every future display.
 const FLOOR_LINES_PER_TILE: u32 = 16;
-const FLOOR_LINES_MIN: u32 = 1 << 16;
+const FLOOR_LINES_MIN: u32 = 10 << 14;
 const FLOOR_BINNING: u32 = 1 << 14;
 const FLOOR_BLEND_SPILL: u32 = 1 << 14;
-const FLOOR_TILES_PER_TILE: u32 = 24;
+// The same desktop + complete-app picker measured 102,091 tile allocations.
+// Model that cold-scene complexity as a flat 120K floor, while 16/tile takes
+// over on larger outputs. This keeps useful headroom without multiplying its
+// app complexity by display area.
+const FLOOR_TILES_PER_TILE: u32 = 16;
+const FLOOR_TILES_MIN: u32 = 30 << 12;
 const FLOOR_SEG_COUNTS_PER_TILE: u32 = 8;
-const FLOOR_SEG_COUNTS_MIN: u32 = 1 << 17;
+// The same complete-app render measured 144,180 segment counts and segments
+// in its off-screen target. Keep both paired buffers above that real workload;
+// a flat 128K floor made the saved pixels drop before adaptive growth arrived.
+const FLOOR_SEG_COUNTS_MIN: u32 = 10 << 14;
 const FLOOR_PTCL_PER_TILE: u32 = 320;
-const FLOOR_PTCL_MIN: u32 = 1 << 17;
+// A/B isolation with `VELLO_BUMP_BUDGET=ptcl` found a second real shape the
+// per-tile catalogue misses: dense shell chrome appended after a full desktop
+// scene. At 1600x900 the recording pill could disappear on a later frame even
+// though `bump.ptcl` reported only ~156k dynamic words and `failed == 0`; pinning
+// only ptcl to upstream made every frame stable. A direct A/B threshold run
+// then showed 2M still dropped the settled paused pill while 2.5M kept every
+// pause and saved-receipt frame intact. This flat 2.5M-word floor covers
+// that unreported command-list pressure without carrying upstream's 8M words,
+// and it adds nothing at sufficiently large viewports where the measured
+// 320-words-per-tile floor already wins.
+const FLOOR_PTCL_MIN: u32 = 5 << 19;
 
 /// How much bump-allocated scratch a renderer reserves, in elements.
 ///
@@ -629,7 +656,9 @@ impl BumpBudget {
                 .saturating_mul(FLOOR_LINES_PER_TILE)
                 .max(FLOOR_LINES_MIN),
             binning: FLOOR_BINNING,
-            tiles: n_tiles.saturating_mul(FLOOR_TILES_PER_TILE),
+            tiles: n_tiles
+                .saturating_mul(FLOOR_TILES_PER_TILE)
+                .max(FLOOR_TILES_MIN),
             seg_counts: n_tiles
                 .saturating_mul(FLOOR_SEG_COUNTS_PER_TILE)
                 .max(FLOOR_SEG_COUNTS_MIN),
@@ -789,6 +818,24 @@ mod tests {
         );
     }
 
+    /// Dense shell chrome is appended after the desktop scene so it is the
+    /// first geometry lost when command-list pressure is under-reported. The
+    /// active-recorder sequence (start, pause, settled pause, saved receipt)
+    /// A/B'd at 1600x900: 2M words still dropped the pill, while 2.5M kept all
+    /// frames intact. Unlike the foreign-surface case, the GPU counter stayed
+    /// far below both values and did not set `failed`, so this must remain an
+    /// explicit measured floor until the shader exposes that pressure.
+    #[test]
+    fn ptcl_floor_keeps_dense_late_shell_chrome_stable() {
+        let n_tiles = 1600u32.div_ceil(16) * 900u32.div_ceil(16);
+        let floor = BumpBudget::floor_for_viewport(n_tiles);
+        assert!(
+            floor.ptcl >= 2_621_440,
+            "floor of {} ptcl words is below the measured 2.5M stability threshold for late shell chrome",
+            floor.ptcl,
+        );
+    }
+
     /// A cached subtree redrawn at scale 2 measured 105,450 lines against
     /// a flat floor of 65,536, overflowed (`failed=0x4`) and lost geometry.
     ///
@@ -799,7 +846,7 @@ mod tests {
     /// likely to be measured and most likely to be somebody's actual desktop.
     #[test]
     fn lines_floor_scales_with_the_viewport_it_has_to_cover() {
-        let n_tiles = 1920u32.div_ceil(16) * 1080u32.div_ceil(16);
+        let n_tiles = 3840u32.div_ceil(16) * 2160u32.div_ceil(16);
         let measured_lines = 105_450;
         let floor = BumpBudget::floor_for_viewport(n_tiles);
         assert!(
@@ -808,16 +855,36 @@ mod tests {
              scale 2 asked for at {n_tiles} tiles",
             floor.lines,
         );
-        // And the viewport is what decides: a desktop must reserve more than a
-        // small window, or the floor is flat in disguise.
+        // Once a viewport outgrows the scene-complexity minimum, area must take
+        // over: a 4K desktop reserves more than a small window rather than
+        // leaving the per-tile term flat in disguise.
         let small = BumpBudget::floor_for_viewport(320u32.div_ceil(16) * 240u32.div_ceil(16));
         assert!(
             floor.lines > small.lines,
-            "a desktop reserves {} lines and a 320x240 window {} -- the floor is not \
+            "a 4K desktop reserves {} lines and a 320x240 window {} -- the floor is not \
              scaling with the viewport",
             floor.lines,
             small.lines,
         );
+    }
+
+    /// Selecting a complete semantic app creates two cold renderer workloads:
+    /// the desktop plus picker at 1600x900, and the app's complete 1310x1188
+    /// off-screen target. Logged first frames measured 137,812 / 126,771 lines;
+    /// the latter then needed 144,180 segment counts and segments. These are
+    /// exactly the frames users inspect before trusting a beyond-screen save,
+    /// so adaptive repair on frame two is too late.
+    #[test]
+    fn floors_cover_first_frame_of_complete_offscreen_app_capture() {
+        let desktop = BumpBudget::floor_for_viewport(1600u32.div_ceil(16) * 900u32.div_ceil(16));
+        assert!(desktop.lines >= 137_812);
+        assert!(desktop.tiles >= 102_091);
+
+        let complete_app =
+            BumpBudget::floor_for_viewport(1310u32.div_ceil(16) * 1188u32.div_ceil(16));
+        assert!(complete_app.lines >= 126_771);
+        assert!(complete_app.seg_counts >= 144_180);
+        assert!(complete_app.segments >= 144_180);
     }
 
     /// The structural `n_tiles * PTCL_INITIAL_ALLOC` term is reserved on
@@ -864,7 +931,13 @@ mod tests {
             s.bin_data.len(),
             layout.bin_data_start,
         );
-        let cfg = RenderConfig::new(&layout, 1920, 1080, &peniko::Color::BLACK, &BumpBudget::INITIAL);
+        let cfg = RenderConfig::new(
+            &layout,
+            1920,
+            1080,
+            &peniko::Color::BLACK,
+            &BumpBudget::INITIAL,
+        );
         assert!(
             cfg.gpu.binning_size < s.bin_data.len(),
             "binning_size {} underflowed",
@@ -924,8 +997,11 @@ mod tests {
         );
     }
 
-    /// The whole point: a desktop-sized viewport reserves a fraction of
-    /// what upstream's constants do.
+    /// The whole point: a desktop-sized viewport reserves a fraction of what
+    /// upstream's constants do. The complete off-screen-app and late-shell-
+    /// chrome floors are real first-frame correctness requirements, so the
+    /// bound is sevenfold rather than rewarding a broken frame to preserve the
+    /// earlier eightfold figure.
     #[test]
     fn a_desktop_viewport_reserves_far_less_than_upstream() {
         let ours = sizes(1920, 1080, &BumpBudget::INITIAL);
@@ -941,8 +1017,8 @@ mod tests {
         };
         let (ours, theirs) = (bytes(&ours), bytes(&theirs));
         assert!(
-            ours * 8 < theirs,
-            "reserved {ours} bytes against upstream's {theirs}; expected under an eighth",
+            ours * 7 < theirs,
+            "reserved {ours} bytes against upstream's {theirs}; expected at least a sevenfold reduction",
         );
     }
 }
