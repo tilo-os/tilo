@@ -15,6 +15,23 @@
           default = self.packages.${system}.qos-session;
         });
 
+      checks = forAllSystems (system: {
+        # Force the exported module through a real NixOS option evaluation on
+        # each release architecture. `nix flake check --no-build` then catches
+        # stale display-manager, PAM, or portal option wiring without building
+        # a second system closure.
+        qos-session-module = (nixpkgs.lib.nixosSystem {
+          inherit system;
+          modules = [
+            self.nixosModules.qos-session
+            {
+              services.qos-session.enable = true;
+              system.stateVersion = "24.11";
+            }
+          ];
+        }).config.system.build.toplevel;
+      });
+
       nixosModules.qos-session = { config, lib, pkgs, ... }:
         let cfg = config.services.qos-session;
         in {
