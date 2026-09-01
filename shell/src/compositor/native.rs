@@ -2254,13 +2254,51 @@ pub fn run() -> ! {
                         match req {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
                             }
-                            PeerSyncRequest::IssueInviteFor(name) => {
-                                bridge_net.issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name)
-                            }
+                            PeerSyncRequest::IssueInviteFor { name, role } => bridge_net
+                                .issue_invite_named_with_role(
+                                    active,
+                                    INVITE_EXPIRY_SECONDS,
+                                    &name,
+                                    role,
+                                )
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
-                                .map(|room| room.to_string()),
+                                .map(|room| room.to_string())
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::ListPendingInvitations => {
+                                let room = bridge_tree
+                                    .read()
+                                    .active_workspace()
+                                    .map(|workspace| workspace.room)
+                                    .ok_or_else(|| "no active workspace".to_string())?;
+                                Ok(crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                                    bridge_net
+                                        .pending_invitations(room)
+                                        .into_iter()
+                                        .map(|invite| crate::shell::overlay_host::PendingInvitationSummary {
+                                            id: invite.id,
+                                            name: invite.name,
+                                            role: invite.role,
+                                            expiry_unix_seconds: invite.expiry_unix_seconds,
+                                        })
+                                        .collect(),
+                                ))
+                            }
+                            PeerSyncRequest::ResendInvitation(id) => bridge_net
+                                .resend_invitation(&id)
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::CancelInvitation(id) => {
+                                if bridge_net.cancel_invitation(&id) {
+                                    Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                                        "canceled".into(),
+                                    ))
+                                } else {
+                                    Err("invitation is no longer pending".into())
+                                }
+                            }
                         }
                     }));
                 Some(net)
@@ -2282,6 +2320,14 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+    if let Some(broker) = collab_broker.as_ref() {
+        let dispatcher = broker.follow_dispatcher();
+        frame_builder
+            .host_mut()
+            .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+                dispatcher.set(&room.to_string(), peer_id);
+            }));
+    }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;

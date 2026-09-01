@@ -1034,6 +1034,7 @@ mod tests {
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
                     room: String::new(),
+                    invite_id: None,
                 },
             })
             .await
@@ -1274,6 +1275,7 @@ mod tests {
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
                     room: "hosted".into(),
+                    invite_id: None,
                 },
             })
             .await

@@ -203,10 +203,9 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
 }
 
 #[test]
-fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
-    // With no roster on the active workspace the top bar falls back to the
-    // tree-level one (mirroring `SidebarWheelChrome::sync_from_tree`) —
-    // without it, demo trees that only set `tree.collaborators` render empty.
+fn topbar_does_not_leak_tree_collaborators_into_an_empty_workspace() {
+    // The active workspace roster is authoritative. A tree-level roster may
+    // describe people elsewhere, but must not create phantom room presence.
     let mut tree = WorkspaceTree::bootstrap_default();
     let active_id = tree.active;
     let active_ws = tree
@@ -218,14 +217,13 @@ fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
     tree.collaborators = vec![Collaborator::new("a", "Ada")];
 
     let top = TopBarChrome::from_tree(&tree);
-    assert_eq!(top.collaborator_initials(), &['A']);
+    assert!(top.collaborator_initials().is_empty());
     assert_eq!(top.collaborator_overflow(), 0);
 }
 
 #[test]
-fn sidebar_active_card_inherits_tree_collaborator_count() {
-    // The fallback only fires when the active workspace has no roster of its
-    // own; clear every workspace so the precondition is stated, not borrowed.
+fn sidebar_active_card_uses_only_its_workspace_roster() {
+    // A global roster must never be copied onto the active room card.
     let mut tree = WorkspaceTree::bootstrap_default();
     for ws in &mut tree.workspaces {
         ws.collaborators.clear();
@@ -241,13 +239,12 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
         Collaborator::new("e", "Eli"),
     ];
     let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.active_collaborator_count(), 5);
+    assert_eq!(wheel.active_collaborator_count(), 0);
 }
 
 #[test]
 fn sidebar_cards_read_per_workspace_collaborator_rosters() {
-    // Each workspace's own `collaborators` populates its card, with a
-    // tree-level fallback only on the active card.
+    // Each workspace's own `collaborators` populates its card.
     let mut tree = WorkspaceTree::bootstrap_default();
     let w1_id = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
@@ -270,9 +267,8 @@ fn sidebar_cards_read_per_workspace_collaborator_rosters() {
 }
 
 #[test]
-fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
-    // The fallback applies only to the *active* card — otherwise every card
-    // would show the same phantom roster.
+fn sidebar_cards_without_workspace_rosters_show_zero_dots() {
+    // Neither active nor inactive cards borrow the global roster.
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
@@ -283,7 +279,7 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     tree.active = w0;
 
     let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.card_collab_count(0), 2);
+    assert_eq!(wheel.card_collab_count(0), 0);
     assert_eq!(wheel.card_collab_count(1), 0);
 }
 

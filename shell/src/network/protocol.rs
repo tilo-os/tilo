@@ -26,7 +26,15 @@ pub enum NeighbourMsg {
     /// answer — an empty/unparseable value names no room (not a wildcard) and gets
     /// no document back. The transport emits one on peer-join, before it knows
     /// what room the peer is in.
-    SyncReq { since: Vec<u8>, room: String },
+    SyncReq {
+        since: Vec<u8>,
+        room: String,
+        /// Hash of the exact signed bearer invite being redeemed. Ordinary
+        /// anti-entropy requests omit it; an authority uses it once to bind
+        /// the authenticated transport identity to that invite's role.
+        #[serde(default)]
+        invite_id: Option<[u8; 32]>,
+    },
     /// Response: a batch of opaque Automerge change blobs for `room`. The blobs
     /// carry the room identity too; the receiver checks the two agree before
     /// merging.
@@ -54,6 +62,10 @@ pub enum NeighbourMsg {
     /// wall-clock (`SystemTime`) would drift under NTP on the WAN case.
     SurfaceFrame {
         surface: SurfaceId,
+        /// Hashed Iroh endpoint of the stream owner. Bound to the
+        /// authenticated publisher before encoded bytes are dispatched.
+        #[serde(default)]
+        source_peer: PeerId,
         encoded_h264: Vec<u8>,
         ts: u64,
     },
@@ -257,6 +269,7 @@ mod tests {
                 NeighbourMsg::SyncReq {
                     since: vec![1, 2, 3],
                     room: ROOM.into(),
+                    invite_id: Some([9; 32]),
                 },
             ),
             (
@@ -287,6 +300,7 @@ mod tests {
                 "surface frame",
                 NeighbourMsg::SurfaceFrame {
                     surface: 7,
+                    source_peer: 0xABCD,
                     encoded_h264: vec![0, 0, 0, 1, 0x67],
                     ts: 1_700_000_001,
                 },
