@@ -2,15 +2,15 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::ExitCode;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_vm::{
-    ApplianceConfig, DomainState, EgressLease, EgressPurpose, LibvirtBackend, StdCommandRunner,
-    VmBackend,
+    ApplianceConfig, DomainState, EgressLease, EgressPurpose, GraphicsAssignment,
+    GraphicsCapabilities, LibvirtBackend, StdCommandRunner, VmBackend,
 };
 
 const ROOT: &str = "/var/lib/qos/windows";
@@ -18,6 +18,7 @@ const UUID_FILE: &str = "/var/lib/qos/windows/domain.uuid";
 const SYSTEM_DISK: &str = "/var/lib/qos/windows/system.qcow2";
 const NVRAM: &str = "/var/lib/qos/windows/nvram.fd";
 const LEASE_ROOT: &str = "/run/qos/windows-vm/leases";
+const GRAPHICS_ASSIGNMENT: &str = "/var/lib/qos/windows/graphics-assignment.json";
 
 fn main() -> ExitCode {
     match run() {
@@ -39,6 +40,21 @@ fn run() -> Result<(), String> {
         .map(|value| value.into_string().map_err(|_| usage()))
         .collect::<Result<Vec<_>, _>>()?;
 
+    // This read-only probe is useful before the appliance is provisioned. It
+    // never creates a VF/mdev or unbinds the GPU currently displaying qOS.
+    if action == "graphics-capabilities" {
+        if !rest.is_empty() {
+            return Err(usage());
+        }
+        let capabilities = GraphicsCapabilities::probe().map_err(|error| error.to_string())?;
+        println!(
+            "{}",
+            serde_json::to_string(&capabilities)
+                .map_err(|error| format!("cannot encode graphics capabilities: {error}"))?
+        );
+        return Ok(());
+    }
+
     // The timer is installed on every qOS host. Before the singleton is
     // provisioned there can be no lease and no domain identity to inspect.
     if action == "egress-reap" && !Path::new(LEASE_ROOT).exists() {
@@ -52,7 +68,11 @@ fn run() -> Result<(), String> {
     let config = ApplianceConfig::recommended(domain_uuid.trim(), SYSTEM_DISK, NVRAM);
     let backend = LibvirtBackend::new(StdCommandRunner);
 
-    if !matches!(action.as_str(), "egress-open" | "egress-close") && !rest.is_empty() {
+    if !matches!(
+        action.as_str(),
+        "egress-open" | "egress-close" | "graphics-attach"
+    ) && !rest.is_empty()
+    {
         return Err(usage());
     }
 
@@ -79,6 +99,45 @@ fn run() -> Result<(), String> {
         "restart" => backend.restart(&config).map_err(|e| e.to_string()),
         "suspend" => backend.suspend(&config).map_err(|e| e.to_string()),
         "resume" => backend.resume(&config).map_err(|e| e.to_string()),
+        "graphics-attach" => {
+            if rest.len() != 2 {
+                return Err("usage: qos-windows-vm-control graphics-attach {sriov-vf|mdev} <canonical-id>".to_string());
+            }
+            if Path::new(GRAPHICS_ASSIGNMENT).exists() {
+                return Err("a Windows graphics partition is already recorded; detach it first".to_string());
+            }
+            let capabilities = GraphicsCapabilities::probe().map_err(|error| error.to_string())?;
+            let assignment = match rest[0].as_str() {
+                "sriov-vf" => capabilities.sriov_assignment(&rest[1]),
+                "mdev" => capabilities.mediated_assignment(&rest[1]),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                "the selected partition is not an existing VFIO-ready display VF/mdev"
+                    .to_string()
+            })?;
+            write_graphics_assignment(&assignment)?;
+            if let Err(error) = backend.attach_graphics(&config, &assignment) {
+                let _ = fs::remove_file(GRAPHICS_ASSIGNMENT);
+                return Err(error.to_string());
+            }
+            println!(
+                "{}",
+                serde_json::to_string(&assignment)
+                    .map_err(|error| format!("cannot encode graphics assignment: {error}"))?
+            );
+            Ok(())
+        }
+        "graphics-detach" => {
+            let assignment = read_graphics_assignment()?;
+            backend
+                .detach_graphics(&config, &assignment)
+                .map_err(|error| error.to_string())?;
+            fs::remove_file(GRAPHICS_ASSIGNMENT)
+                .map_err(|error| format!("cannot retire graphics assignment: {error}"))?;
+            println!("{{\"schema_version\":1,\"result\":\"detached\"}}");
+            Ok(())
+        }
         "egress-open" => {
             let purpose = match rest.first().map(String::as_str) {
                 Some("activation") => EgressPurpose::Activation,
@@ -128,7 +187,37 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: qos-windows-vm-control {status|define|start|shutdown|force-shutdown|restart|suspend|resume|egress-open|egress-close|egress-reap}".to_string()
+    "usage: qos-windows-vm-control {status|graphics-capabilities|graphics-attach|graphics-detach|define|start|shutdown|force-shutdown|restart|suspend|resume|egress-open|egress-close|egress-reap}".to_string()
+}
+
+fn write_graphics_assignment(assignment: &GraphicsAssignment) -> Result<(), String> {
+    let bytes = serde_json::to_vec(assignment)
+        .map_err(|error| format!("cannot encode graphics assignment: {error}"))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(GRAPHICS_ASSIGNMENT)
+        .map_err(|error| format!("cannot record graphics assignment: {error}"))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("cannot commit graphics assignment: {error}"))
+}
+
+fn read_graphics_assignment() -> Result<GraphicsAssignment, String> {
+    let metadata = fs::symlink_metadata(GRAPHICS_ASSIGNMENT)
+        .map_err(|_| "no qOS-managed Windows graphics partition is attached".to_string())?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err("the graphics assignment record has unsafe permissions".to_string());
+    }
+    let bytes = fs::read(GRAPHICS_ASSIGNMENT)
+        .map_err(|error| format!("cannot read graphics assignment: {error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("graphics assignment record is invalid: {error}"))
 }
 
 fn lease_path(id: &str) -> Result<std::path::PathBuf, String> {

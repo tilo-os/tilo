@@ -13,17 +13,18 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use compat_service::{
-    AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, BwrapExecutor,
-    CanonicalRailCapabilityBroker, CanonicalRailPortalAuthority, CapabilityAuthority, CapsuleStore,
-    CompatSessionHandle, HostSession, LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility,
-    SharedSessionCapabilityBroker, ShippedCataloguePaths, SystemResourceBroker,
-    SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability, VmCandidatePublication,
-    VmDelegate, VmInstallation, VmInstallerInput, VmInventory, VmRouteRequest,
-    VmSharedSessionTracker, VmUninstallation, load_shipped_catalogue, spawn_session_service,
+    AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, BwrapExecutor, CapabilityAuthority,
+    CapsuleStore, CompatSessionHandle, HostSession, LauncherAuthenticator, LiveVmDelegate,
+    ManagedCompatibility, PortalRailPortalAuthority, SharedSessionCapabilityBroker,
+    ShippedCataloguePaths, SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry,
+    VmAvailability, VmCandidatePublication, VmDelegate, VmInstallation, VmInstallerInput,
+    VmInventory, VmRouteRequest, VmSharedSessionTracker, VmUninstallation, load_shipped_catalogue,
+    spawn_session_service,
 };
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
-    ProvisioningStore, StdCommandRunner, WindowsAppliance,
+    PortalDocumentStore, PortalRailCapabilityBroker, ProvisioningStore, StdCommandRunner,
+    WindowsAppliance,
 };
 
 use crate::shell::state::WorkspaceTreeHandle;
@@ -152,13 +153,14 @@ fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
     .map_err(|error| format!("could not open authenticated guest bridge: {error}"))?;
     let runner = StdCommandRunner;
     let shared_session = VmSharedSessionTracker::default();
+    let portal_documents = Arc::new(PortalDocumentStore::default());
     let appliance = WindowsAppliance::new(
         configuration,
         ProvisioningStore::new(format!("{ROOT}/session/state.json")),
         LibvirtBackend::new(runner),
         bridge,
         SharedSessionCapabilityBroker::new(
-            CanonicalRailCapabilityBroker::default(),
+            PortalRailCapabilityBroker::new(Arc::clone(&portal_documents)),
             shared_session.clone(),
         ),
         SessionPresentationLauncher {
@@ -168,7 +170,7 @@ fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
     );
     Ok(Arc::new(LiveVmDelegate::with_shared_session_tracker(
         appliance,
-        CanonicalRailPortalAuthority::new(presentation),
+        PortalRailPortalAuthority::new(presentation, portal_documents),
         presentation,
         shared_session,
     )))
