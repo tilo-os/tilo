@@ -94,7 +94,7 @@ pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
         buffer.set_text(s, &Attrs::new(), Shaping::Advanced, None);
         buffer.shape_until_scroll(fs, false);
         for run in buffer.layout_runs() {
-            total_glyphs += run.glyphs.len();
+            total_glyphs = total_glyphs.saturating_add(run.glyphs.len());
         }
     }
     total_glyphs

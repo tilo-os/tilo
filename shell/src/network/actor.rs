@@ -24,7 +24,7 @@ use crate::network::protocol::NeighbourMsg;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
-const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_mins(10);
+const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 pub type WorkspaceId = u64;
@@ -48,7 +48,7 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
-    fn material_for(
+    pub(crate) fn material_for(
         &self,
         ws: WorkspaceId,
     ) -> (DeviceCert, Vec<qos_user_identity::RevocationEntry>) {
@@ -170,7 +170,10 @@ enum InternalEvent {
     HostConnected {
         ws: WorkspaceId,
         peer: EndpointId,
-        result: Result<RelayCoeditSession, String>,
+        // Boxed: `RelayCoeditSession` (an authenticated relay client plus
+        // its subscription state) is far larger than every sibling variant,
+        // so an unboxed `Result` here would size the whole enum to fit it.
+        result: Box<Result<RelayCoeditSession, String>>,
     },
     Closed {
         ws: WorkspaceId,
@@ -222,6 +225,367 @@ impl Actor {
     }
 }
 
+/// Mutable state shared across every `select!` branch of [`run`]'s event
+/// loop, bundled into a struct so each branch's handling can be split into
+/// its own method instead of one long function body.
+struct ActorState {
+    endpoint: Endpoint,
+    lookup: MemoryLookup,
+    host_identity: Option<HostIdentity>,
+    listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+    gossip: Gossip,
+    internal_tx: mpsc::Sender<InternalEvent>,
+    topics: HashMap<WorkspaceId, TopicRuntime>,
+    subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
+    peers: HashMap<EndpointId, EndpointAddr>,
+    hosts: HashMap<EndpointId, EndpointAddr>,
+    host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
+    peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
+    recent: HashSet<(WorkspaceId, [u8; 32])>,
+    recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
+}
+
+impl ActorState {
+    /// Handle one [`NetCmd`]. Returns `false` once the command channel has
+    /// closed, so [`run`]'s loop should stop.
+    async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
+        match command {
+            Some(NetCmd::JoinWorkspace { ws, on_event }) => {
+                self.handle_join_workspace(ws, on_event).await;
+            }
+            Some(NetCmd::LeaveWorkspace { ws }) => {
+                self.subscribers.remove(&ws);
+                self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
+                if let Some(topic) = self.topics.remove(&ws) {
+                    topic.pump.abort();
+                }
+                let leaving: Vec<_> = self
+                    .host_sessions
+                    .keys()
+                    .filter(|(session_ws, _)| *session_ws == ws)
+                    .copied()
+                    .collect();
+                for key in leaving {
+                    if let Some(runtime) = self.host_sessions.remove(&key) {
+                        runtime.pump.abort();
+                    }
+                }
+            }
+            Some(NetCmd::Publish { ws, msg }) => {
+                publish(&self.topics, &self.host_sessions, ws, msg, false).await;
+            }
+            Some(NetCmd::PublishCheckpoint { ws, msg }) => {
+                publish(&self.topics, &self.host_sessions, ws, msg, true).await;
+            }
+            Some(NetCmd::Connect { addr }) => {
+                let id = addr.id;
+                self.lookup.add_endpoint_info(addr.clone());
+                self.peers.insert(id, addr);
+                for topic in self.topics.values() {
+                    if let Err(error) = topic.sender.join_peers(vec![id]).await {
+                        tracing::warn!(peer = %id, %error, "iroh gossip peer join failed");
+                    }
+                }
+            }
+            Some(NetCmd::ConnectHost { addr }) => {
+                let id = addr.id;
+                self.lookup.add_endpoint_info(addr.clone());
+                self.hosts.insert(id, addr.clone());
+                let Some(identity) = self.host_identity.as_ref() else {
+                    tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
+                    return true;
+                };
+                for ws in self.topics.keys().copied() {
+                    schedule_host_topic(
+                        &self.endpoint,
+                        identity,
+                        ws,
+                        addr.clone(),
+                        &self.internal_tx,
+                        &self.host_sessions,
+                        &mut self.connecting_hosts,
+                    );
+                }
+            }
+            None => return false,
+        }
+        true
+    }
+
+    /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
+    /// to keep that dispatcher short.
+    async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
+        self.subscribers.insert(ws, on_event);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.topics.entry(ws) {
+            let bootstrap = self.peers.keys().copied().collect();
+            match self.gossip.subscribe(topic_id(ws), bootstrap).await {
+                Ok(topic) => {
+                    let (sender, mut receiver) = topic.split();
+                    let tx = self.internal_tx.clone();
+                    let pump = tokio::spawn(async move {
+                        while let Some(result) = receiver.next().await {
+                            match result {
+                                Ok(event) => {
+                                    if tx.send(InternalEvent::Topic { ws, event }).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(ws, %error, "iroh gossip subscription failed");
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = tx.send(InternalEvent::Closed { ws }).await;
+                    });
+                    e.insert(TopicRuntime { sender, pump });
+                }
+                Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
+            }
+        }
+        if let Some(identity) = self.host_identity.as_ref() {
+            for addr in self.hosts.values().cloned() {
+                schedule_host_topic(
+                    &self.endpoint,
+                    identity,
+                    ws,
+                    addr,
+                    &self.internal_tx,
+                    &self.host_sessions,
+                    &mut self.connecting_hosts,
+                );
+            }
+        }
+    }
+
+    /// Handle one [`InternalEvent`]. Returns `false` once the internal
+    /// channel has closed, so [`run`]'s loop should stop.
+    async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
+        match internal {
+            Some(InternalEvent::Topic { ws, event }) => {
+                self.handle_topic_event(ws, event).await;
+            }
+            Some(InternalEvent::Closed { ws }) => {
+                self.topics.remove(&ws);
+            }
+            Some(InternalEvent::HostConnected { ws, peer, result }) => {
+                self.handle_host_connected(ws, peer, result);
+            }
+            Some(InternalEvent::Host { ws, peer, event }) => {
+                self.handle_host_event(ws, peer, event).await;
+            }
+            None => return false,
+        }
+        true
+    }
+
+    /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
+    /// to keep that dispatcher short.
+    async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
+        if matches!(event, GossipEvent::NeighborUp(_)) {
+            // Authenticate this device as soon as the link is usable. State
+            // sync can otherwise arrive before the periodic identity
+            // announcement and be rejected by the peer.
+            self.announce_identity(ws).await;
+        }
+        let Some(tx) = self.subscribers.get(&ws) else {
+            return;
+        };
+        let event = match event {
+            GossipEvent::NeighborUp(peer) => {
+                self.peers_seen.insert((ws, peer), Instant::now());
+                Some(NetEvent::PeerJoined { ws, peer })
+            }
+            GossipEvent::NeighborDown(peer) => {
+                self.peers_seen.remove(&(ws, peer));
+                Some(NetEvent::PeerLeft { ws, peer })
+            }
+            GossipEvent::Received(message) => {
+                let peer = message.delivered_from;
+                let rediscovered = self.peers_seen.insert((ws, peer), Instant::now()).is_none();
+                let fingerprint = message_fingerprint(&message.content);
+                if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
+                    return;
+                }
+                match postcard::from_bytes::<NeighbourMsg>(&message.content) {
+                    Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
+                        Some(NetEvent::PeerJoined { ws, peer })
+                    }
+                    Ok(NeighbourMsg::Heartbeat { .. }) => None,
+                    Ok(msg) => Some(NetEvent::Msg { ws, peer, msg }),
+                    Err(error) => {
+                        tracing::warn!(ws, %error, "invalid collaboration message");
+                        None
+                    }
+                }
+            }
+            GossipEvent::Lagged => {
+                tracing::warn!(
+                    ws,
+                    "iroh gossip receiver lagged; anti-entropy will recover durable state"
+                );
+                None
+            }
+        };
+        if let Some(event) = event {
+            let _ = tx.send(event).await;
+        }
+    }
+
+    /// [`InternalEvent::HostConnected`] arm of [`Self::handle_internal`],
+    /// split out to keep that dispatcher short.
+    fn handle_host_connected(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        result: Box<Result<RelayCoeditSession, String>>,
+    ) {
+        self.connecting_hosts.remove(&(ws, peer));
+        if !self.topics.contains_key(&ws) {
+            return;
+        }
+        match *result {
+            Ok(session) => {
+                let session = Arc::new(session);
+                let pump =
+                    spawn_host_pump(ws, peer, Arc::clone(&session), self.internal_tx.clone());
+                self.host_sessions
+                    .insert((ws, peer), HostRuntime { session, pump });
+            }
+            Err(error) => {
+                tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
+            }
+        }
+    }
+
+    /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
+    /// to keep that dispatcher short.
+    async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
+        let mapped = match event {
+            HostEvent::Ready => Some(NetEvent::HostReady { ws, peer }),
+            HostEvent::Message {
+                author,
+                fingerprint,
+                msg,
+            } => {
+                if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
+                    return;
+                }
+                Some(NetEvent::Msg {
+                    ws,
+                    peer: author,
+                    msg,
+                })
+            }
+            HostEvent::Closed => {
+                if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
+                    runtime.pump.abort();
+                }
+                Some(NetEvent::PeerLeft { ws, peer })
+            }
+        };
+        if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
+            let _ = tx.send(event).await;
+        }
+    }
+
+    /// Drop peers that have gone quiet for longer than [`PEER_TIMEOUT`].
+    async fn run_eviction_tick(&mut self) {
+        let now = Instant::now();
+        let stale: Vec<_> = self
+            .peers_seen
+            .iter()
+            .filter_map(|(&(ws, peer), seen)| {
+                (now.duration_since(*seen) > PEER_TIMEOUT).then_some((ws, peer))
+            })
+            .collect();
+        for (ws, peer) in stale {
+            self.peers_seen.remove(&(ws, peer));
+            if let Some(tx) = self.subscribers.get(&ws) {
+                let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
+            }
+        }
+    }
+
+    /// Refresh the advertised listen address, retry any workspace hosts not
+    /// yet connected, and broadcast this device's identity + a liveness
+    /// heartbeat on every joined topic.
+    async fn run_heartbeat_tick(&mut self) {
+        if let Ok(mut out) = self.listen_addrs.lock() {
+            out.clear();
+            out.push(self.endpoint.addr());
+        }
+        if let Some(identity) = self.host_identity.as_ref() {
+            for ws in self.topics.keys().copied() {
+                for addr in self.hosts.values().cloned() {
+                    schedule_host_topic(
+                        &self.endpoint,
+                        identity,
+                        ws,
+                        addr,
+                        &self.internal_tx,
+                        &self.host_sessions,
+                        &mut self.connecting_hosts,
+                    );
+                }
+            }
+        }
+        let workspaces: Vec<_> = self.topics.keys().copied().collect();
+        for ws in workspaces {
+            self.announce_identity(ws).await;
+        }
+        let msg = NeighbourMsg::Heartbeat {
+            peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
+            ts: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+        };
+        if let Ok(bytes) = postcard::to_allocvec(&msg) {
+            for topic in self.topics.values() {
+                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+            }
+        }
+    }
+
+    /// Send this device's certificate to its direct neighbors on `ws`.
+    ///
+    /// Identity announcements are deliberately neighbor-only: receivers bind
+    /// the certificate to the endpoint that delivered it, so forwarding one
+    /// through another gossip peer would make that check fail.
+    async fn announce_identity(&self, ws: WorkspaceId) {
+        let (Some(identity), Some(topic)) = (self.host_identity.as_ref(), self.topics.get(&ws))
+        else {
+            return;
+        };
+        let (cert, revocations) = identity.material_for(ws);
+        let hello = NeighbourMsg::IdentityHello {
+            cert: Box::new(cert),
+            revocations,
+        };
+        let bytes = match postcard::to_allocvec(&hello) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(ws, %error, "could not encode collaboration identity announcement");
+                return;
+            }
+        };
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
+            tracing::warn!(ws, %error, "could not send collaboration identity announcement");
+        }
+    }
+
+    /// Re-announce every live workspace-host session so a late-joining
+    /// subscriber still sees `HostReady`.
+    async fn run_host_checkpoint_tick(&self) {
+        for &(ws, peer) in self.host_sessions.keys() {
+            if let Some(tx) = self.subscribers.get(&ws) {
+                let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
+            }
+        }
+    }
+}
+
 async fn run(
     endpoint: Endpoint,
     lookup: MemoryLookup,
@@ -236,278 +600,55 @@ async fn run(
         .accept(GOSSIP_ALPN, gossip.clone())
         .spawn();
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
-    let mut topics: HashMap<WorkspaceId, TopicRuntime> = HashMap::new();
-    let mut subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>> = HashMap::new();
-    let mut peers: HashMap<EndpointId, EndpointAddr> = HashMap::new();
-    let mut hosts: HashMap<EndpointId, EndpointAddr> = HashMap::new();
-    let mut host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime> = HashMap::new();
-    let mut connecting_hosts = HashSet::new();
+    let mut state = ActorState {
+        endpoint,
+        lookup,
+        host_identity,
+        listen_addrs,
+        gossip,
+        internal_tx,
+        topics: HashMap::new(),
+        subscribers: HashMap::new(),
+        peers: HashMap::new(),
+        hosts: HashMap::new(),
+        host_sessions: HashMap::new(),
+        connecting_hosts: HashSet::new(),
+        peers_seen: HashMap::new(),
+        recent: HashSet::new(),
+        recent_order: VecDeque::new(),
+    };
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
     let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     eviction.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     host_checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut peers_seen: HashMap<(WorkspaceId, EndpointId), Instant> = HashMap::new();
-    let mut recent = HashSet::new();
-    let mut recent_order = VecDeque::new();
     heartbeat.tick().await;
     eviction.tick().await;
     host_checkpoint.tick().await;
 
     loop {
         tokio::select! {
-            command = cmd_rx.recv() => match command {
-                Some(NetCmd::JoinWorkspace { ws, on_event }) => {
-                    subscribers.insert(ws, on_event);
-                    if let std::collections::hash_map::Entry::Vacant(e) = topics.entry(ws) {
-                        let bootstrap = peers.keys().copied().collect();
-                        match gossip.subscribe(topic_id(ws), bootstrap).await {
-                            Ok(topic) => {
-                                let (sender, mut receiver) = topic.split();
-                                let tx = internal_tx.clone();
-                                let pump = tokio::spawn(async move {
-                                    while let Some(result) = receiver.next().await {
-                                        match result {
-                                            Ok(event) => {
-                                                if tx.send(InternalEvent::Topic { ws, event }).await.is_err() {
-                                                    return;
-                                                }
-                                            }
-                                            Err(error) => {
-                                                tracing::warn!(ws, %error, "iroh gossip subscription failed");
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    let _ = tx.send(InternalEvent::Closed { ws }).await;
-                                });
-                                e.insert(TopicRuntime { sender, pump });
-                            }
-                            Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
-                        }
-                    }
-                    if let Some(identity) = host_identity.as_ref() {
-                        for addr in hosts.values().cloned() {
-                            schedule_host_topic(
-                                &endpoint,
-                                identity,
-                                ws,
-                                addr,
-                                &internal_tx,
-                                &host_sessions,
-                                &mut connecting_hosts,
-                            );
-                        }
-                    }
-                }
-                Some(NetCmd::LeaveWorkspace { ws }) => {
-                    subscribers.remove(&ws);
-                    peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
-                    if let Some(topic) = topics.remove(&ws) {
-                        topic.pump.abort();
-                    }
-                    let leaving: Vec<_> = host_sessions
-                        .keys()
-                        .filter(|(session_ws, _)| *session_ws == ws)
-                        .copied()
-                        .collect();
-                    for key in leaving {
-                        if let Some(runtime) = host_sessions.remove(&key) {
-                            runtime.pump.abort();
-                        }
-                    }
-                }
-                Some(NetCmd::Publish { ws, msg }) => {
-                    publish(&topics, &host_sessions, ws, msg, false).await;
-                }
-                Some(NetCmd::PublishCheckpoint { ws, msg }) => {
-                    publish(&topics, &host_sessions, ws, msg, true).await;
-                }
-                Some(NetCmd::Connect { addr }) => {
-                    let id = addr.id;
-                    lookup.add_endpoint_info(addr.clone());
-                    peers.insert(id, addr);
-                    for topic in topics.values() {
-                        if let Err(error) = topic.sender.join_peers(vec![id]).await {
-                            tracing::warn!(peer = %id, %error, "iroh gossip peer join failed");
-                        }
-                    }
-                }
-                Some(NetCmd::ConnectHost { addr }) => {
-                    let id = addr.id;
-                    lookup.add_endpoint_info(addr.clone());
-                    hosts.insert(id, addr.clone());
-                    let Some(identity) = host_identity.as_ref() else {
-                        tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
-                        continue;
-                    };
-                    for ws in topics.keys().copied() {
-                        schedule_host_topic(
-                            &endpoint,
-                            identity,
-                            ws,
-                            addr.clone(),
-                            &internal_tx,
-                            &host_sessions,
-                            &mut connecting_hosts,
-                        );
-                    }
-                }
-                None => break,
-            },
-            internal = internal_rx.recv() => match internal {
-                Some(InternalEvent::Topic { ws, event }) => {
-                    let Some(tx) = subscribers.get(&ws) else { continue };
-                    let event = match event {
-                        GossipEvent::NeighborUp(peer) => {
-                            peers_seen.insert((ws, peer), Instant::now());
-                            Some(NetEvent::PeerJoined { ws, peer })
-                        }
-                        GossipEvent::NeighborDown(peer) => {
-                            peers_seen.remove(&(ws, peer));
-                            Some(NetEvent::PeerLeft { ws, peer })
-                        }
-                        GossipEvent::Received(message) => {
-                            let peer = message.delivered_from;
-                            let rediscovered = peers_seen.insert((ws, peer), Instant::now()).is_none();
-                            let fingerprint = message_fingerprint(&message.content);
-                            if !mark_new_message(ws, fingerprint, &mut recent, &mut recent_order) {
-                                continue;
-                            }
-                            match postcard::from_bytes::<NeighbourMsg>(&message.content) {
-                                Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
-                                    Some(NetEvent::PeerJoined { ws, peer })
-                                }
-                                Ok(NeighbourMsg::Heartbeat { .. }) => None,
-                                Ok(msg) => Some(NetEvent::Msg { ws, peer, msg }),
-                                Err(error) => {
-                                    tracing::warn!(ws, %error, "invalid collaboration message");
-                                    None
-                                }
-                            }
-                        }
-                        GossipEvent::Lagged => {
-                            tracing::warn!(ws, "iroh gossip receiver lagged; anti-entropy will recover durable state");
-                            None
-                        }
-                    };
-                    if let Some(event) = event {
-                        let _ = tx.send(event).await;
-                    }
-                }
-                Some(InternalEvent::Closed { ws }) => { topics.remove(&ws); }
-                Some(InternalEvent::HostConnected { ws, peer, result }) => {
-                    connecting_hosts.remove(&(ws, peer));
-                    if !topics.contains_key(&ws) {
-                        continue;
-                    }
-                    match result {
-                        Ok(session) => {
-                            let session = Arc::new(session);
-                            let pump = spawn_host_pump(ws, peer, Arc::clone(&session), internal_tx.clone());
-                            host_sessions.insert((ws, peer), HostRuntime { session, pump });
-                        }
-                        Err(error) => {
-                            tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
-                        }
-                    }
-                }
-                Some(InternalEvent::Host { ws, peer, event }) => {
-                    let mapped = match event {
-                        HostEvent::Ready => Some(NetEvent::HostReady { ws, peer }),
-                        HostEvent::Message { author, fingerprint, msg } => {
-                            if !mark_new_message(ws, fingerprint, &mut recent, &mut recent_order) {
-                                continue;
-                            }
-                            Some(NetEvent::Msg { ws, peer: author, msg })
-                        }
-                        HostEvent::Closed => {
-                            if let Some(runtime) = host_sessions.remove(&(ws, peer)) {
-                                runtime.pump.abort();
-                            }
-                            Some(NetEvent::PeerLeft { ws, peer })
-                        }
-                    };
-                    if let (Some(event), Some(tx)) = (mapped, subscribers.get(&ws)) {
-                        let _ = tx.send(event).await;
-                    }
-                }
-                None => break,
-            },
-            _ = eviction.tick() => {
-                let now = Instant::now();
-                let stale: Vec<_> = peers_seen
-                    .iter()
-                    .filter_map(|(&(ws, peer), seen)| {
-                        (now.duration_since(*seen) > PEER_TIMEOUT).then_some((ws, peer))
-                    })
-                    .collect();
-                for (ws, peer) in stale {
-                    peers_seen.remove(&(ws, peer));
-                    if let Some(tx) = subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
-                    }
-                }
-            },
-            _ = heartbeat.tick() => {
-                if let Ok(mut out) = listen_addrs.lock() {
-                    out.clear();
-                    out.push(endpoint.addr());
-                }
-                if let Some(identity) = host_identity.as_ref() {
-                    for ws in topics.keys().copied() {
-                        for addr in hosts.values().cloned() {
-                            schedule_host_topic(
-                                &endpoint,
-                                identity,
-                                ws,
-                                addr,
-                                &internal_tx,
-                                &host_sessions,
-                                &mut connecting_hosts,
-                            );
-                        }
-                    }
-                }
-                if let Some(identity) = host_identity.as_ref() {
-                    for (&ws, topic) in &topics {
-                        let (cert, revocations) = identity.material_for(ws);
-                        let hello = NeighbourMsg::IdentityHello {
-                            cert: Box::new(cert),
-                            revocations,
-                        };
-                        if let Ok(bytes) = postcard::to_allocvec(&hello) {
-                            let _ = topic.sender.broadcast(Bytes::from(bytes)).await;
-                        }
-                    }
-                }
-                let msg = NeighbourMsg::Heartbeat {
-                    peer: crate::network::behaviour::peer_liveness_handle(&endpoint.id()),
-                    ts: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_millis() as u64),
-                };
-                if let Ok(bytes) = postcard::to_allocvec(&msg) {
-                    for topic in topics.values() {
-                        let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
-                    }
+            command = cmd_rx.recv() => {
+                if !state.handle_command(command).await {
+                    break;
                 }
             }
-            _ = host_checkpoint.tick() => {
-                for &(ws, peer) in host_sessions.keys() {
-                    if let Some(tx) = subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
-                    }
+            internal = internal_rx.recv() => {
+                if !state.handle_internal(internal).await {
+                    break;
                 }
             }
+            _ = eviction.tick() => state.run_eviction_tick().await,
+            _ = heartbeat.tick() => state.run_heartbeat_tick().await,
+            _ = host_checkpoint.tick() => state.run_host_checkpoint_tick().await,
         }
     }
 
-    for (_, topic) in topics {
+    for (_, topic) in state.topics {
         topic.pump.abort();
     }
-    for (_, host) in host_sessions {
+    for (_, host) in state.host_sessions {
         host.pump.abort();
     }
     let _ = router.shutdown().await;
@@ -569,23 +710,19 @@ fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Re
                 Retention::Delta
             },
         ),
-        NeighbourMsg::AppCrdtSnapshot {
-            app_id, record_id, ..
+        NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
         } => {
             let route = format!("app\0{app_id}\0{record_id}");
-            return Some((
-                *blake3::hash(route.as_bytes()).as_bytes(),
-                Retention::Checkpoint,
-            ));
-        }
-        NeighbourMsg::AppCrdtIncremental {
-            app_id, record_id, ..
-        }
-        | NeighbourMsg::AppCrdtIncrementalSigned {
-            app_id, record_id, ..
-        } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), Retention::Delta));
+            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
+            let retention = match mutation {
+                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
+                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
+            };
+            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
         }
         _ => return None,
     };
@@ -667,7 +804,7 @@ fn schedule_host_topic(
             .send(InternalEvent::HostConnected {
                 ws,
                 peer: host,
-                result,
+                result: Box::new(result),
             })
             .await;
     });
@@ -684,10 +821,6 @@ fn spawn_host_pump(
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
                 HostInbound::Delta { author, data }
-                | HostInbound::SignedDelta {
-                    author,
-                    op_bytes: data,
-                }
                 | HostInbound::Presence {
                     author,
                     payload: data,
@@ -742,6 +875,25 @@ mod tests {
     use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
+    fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
+        let envelope = collab_types::SignedOp::new_unsigned(
+            mutation.encode().expect("typed mutation"),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        NeighbourMsg::AppDocument {
+            peer: 1,
+            app_id: "app".into(),
+            cluster_id: "room".into(),
+            record_id: "doc".into(),
+            envelope: Box::new(envelope),
+        }
+    }
+
     #[test]
     fn host_persists_state_but_never_late_session_actions() {
         assert!(matches!(
@@ -766,16 +918,17 @@ mod tests {
         ));
         assert!(matches!(
             retention(
-                &NeighbourMsg::AppCrdtSnapshot {
-                    peer: 1,
-                    app_id: "app".into(),
-                    cluster_id: "room".into(),
-                    record_id: "doc".into(),
-                    data: vec![2],
-                },
+                &document(&collab_types::DocumentMutation::Snapshot(vec![2])),
                 false,
             ),
             Some((_, Retention::Checkpoint))
+        ));
+        assert!(matches!(
+            retention(
+                &document(&collab_types::DocumentMutation::Incremental(vec![2])),
+                false,
+            ),
+            Some((_, Retention::Delta))
         ));
         for live in [
             NeighbourMsg::RemoteInput {
@@ -846,7 +999,6 @@ mod tests {
     async fn two_actors_exchange_over_iroh() {
         let (a, lookup_a) = endpoint().await;
         let (b, lookup_b) = endpoint().await;
-        let a_addr = a.addr();
         let b_addr = b.addr();
         let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
         let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
@@ -867,7 +1019,6 @@ mod tests {
             .await
             .unwrap();
         cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_b.send(NetCmd::Connect { addr: a_addr }).await.unwrap();
         loop {
             let event = timeout(Duration::from_secs(10), rx_a.recv())
                 .await
@@ -883,6 +1034,7 @@ mod tests {
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
                     room: String::new(),
+                    invite_id: None,
                 },
             })
             .await
@@ -904,13 +1056,90 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn two_actors_exchange_through_authenticated_workspace_host() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actors_announce_identity_when_a_neighbor_connects() {
         use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
-        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "host");
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+
+        let root_a = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root_b = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
+        let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
+        let expected_a = cert_a.device_public_key;
+        let expected_b = cert_b.device_public_key;
+        let (endpoint_a, lookup_a) = identified_endpoint(&key_a).await;
+        let (endpoint_b, lookup_b) = identified_endpoint(&key_b).await;
+        let addr_b = endpoint_b.addr();
+        let identity_a = HostIdentity {
+            device_cert: cert_a,
+            device_signing_key: key_a,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let identity_b = HostIdentity {
+            device_cert: cert_b,
+            device_signing_key: key_b,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+            endpoint_a,
+            lookup_a,
+            Some(identity_a),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            endpoint_b,
+            lookup_b,
+            Some(identity_b),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+
+        for (rx, expected) in [(&mut rx_a, expected_b), (&mut rx_b, expected_a)] {
+            timeout(Duration::from_secs(4), async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        msg: NeighbourMsg::IdentityHello { cert, .. },
+                        ..
+                    }) = rx.recv().await
+                        && cert.device_public_key == expected
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("identity announcement should not wait for the heartbeat");
+        }
+    }
+
+    /// Spin up a relay pinned to workspace 42 and admit `a_pub`/`b_pub` to
+    /// it. The returned `TempDir` must be kept alive for as long as the
+    /// relay is used — dropping it deletes the on-disk state root.
+    async fn spawn_pinned_relay_for_two_members(
+        root: &ed25519_dalek::SigningKey,
+        a_pub: [u8; 32],
+        b_pub: [u8; 32],
+    ) -> (Relay, tempfile::TempDir) {
+        let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
@@ -929,34 +1158,29 @@ mod tests {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(
-                42,
-                true,
-                vec![
-                    a_key.verifying_key().to_bytes(),
-                    b_key.verifying_key().to_bytes(),
-                ],
-                state.path().to_path_buf(),
-            )
+            .set_workspace_membership(42, true, vec![a_pub, b_pub], state.path().to_path_buf())
             .await
             .unwrap();
+        (relay, state)
+    }
 
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let identity_a = HostIdentity {
-            device_cert: a_cert,
-            device_signing_key: a_key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let identity_b = HostIdentity {
-            device_cert: b_cert,
-            device_signing_key: b_key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
+    /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
+    /// and block until both report `HostReady`. Returns each actor's
+    /// command sender and event receiver.
+    async fn join_workspace_and_await_host_ready(
+        a: Endpoint,
+        lookup_a: MemoryLookup,
+        identity_a: HostIdentity,
+        b: Endpoint,
+        lookup_b: MemoryLookup,
+        identity_b: HostIdentity,
+        relay: &Relay,
+    ) -> (
+        mpsc::Sender<NetCmd>,
+        mpsc::Receiver<NetEvent>,
+        mpsc::Sender<NetCmd>,
+        mpsc::Receiver<NetEvent>,
+    ) {
         let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
             a,
             lookup_a,
@@ -1008,12 +1232,50 @@ mod tests {
                 }
             }
         }
+        (cmd_a, rx_a, cmd_b, rx_b)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_actors_exchange_through_authenticated_workspace_host() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity_a = HostIdentity {
+            device_cert: a_cert,
+            device_signing_key: a_key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let identity_b = HostIdentity {
+            device_cert: b_cert,
+            device_signing_key: b_key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+            a, lookup_a, identity_a, b, lookup_b, identity_b, &relay,
+        )
+        .await;
+
         cmd_a
             .send(NetCmd::Publish {
                 ws: 42,
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
                     room: "hosted".into(),
+                    invite_id: None,
                 },
             })
             .await

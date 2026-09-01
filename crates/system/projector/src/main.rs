@@ -784,7 +784,7 @@ fn adapt_capture_profile(
             .checked_mul(u64::from(height))
             .and_then(|value| value.checked_mul(u64::from(fps)));
         let bitrate_kbps = pixels_per_second
-            .map_or(u64::from(maximum.bitrate_kbps), |value| value / 12_000)
+            .map_or_else(|| u64::from(maximum.bitrate_kbps), |value| value / 12_000)
             .clamp(2_500, u64::from(maximum.bitrate_kbps));
         CaptureProfile::new(
             width,
@@ -1140,6 +1140,14 @@ fn terminate_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// `(device, connected session, receiver-message channel)` — the result of
+/// [`connect_cast_device`].
+type CastConnection = (
+    Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+    ConnectedSession,
+    mpsc::Receiver<String>,
+);
+
 /// Opens the receiver connection for a cast session and waits for the
 /// receiver's `Connected` event.
 ///
@@ -1152,14 +1160,7 @@ fn connect_cast_device(
     address: std::net::IpAddr,
     port: u16,
     name: String,
-) -> Result<
-    (
-        Arc<dyn fcast_sender_sdk::device::CastingDevice>,
-        ConnectedSession,
-        mpsc::Receiver<String>,
-    ),
-    String,
-> {
+) -> Result<CastConnection, String> {
     let context = fcast_sender_sdk::context::CastContext::new()
         .map_err(|error| format!("cannot initialise Cast session: {error}"))?;
     let info = DeviceInfo {
@@ -1288,7 +1289,7 @@ fn run_adaptive_feedback_loop(
 /// the receiver sees a first frame quickly, before the feedback loop has any
 /// throughput data to adapt from.
 fn initial_capture_profile(
-    stream_policy: &DisplayStreamPolicy,
+    stream_policy: DisplayStreamPolicy,
     maximum_profile: CaptureProfile,
 ) -> CaptureProfile {
     if stream_policy.adaptive {
@@ -1321,7 +1322,7 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let paths = SessionPaths::resolve()?;
     paths.clear_markers();
     let mut maximum_profile = stream_policy.ceiling(None);
-    let initial_profile = initial_capture_profile(&stream_policy, maximum_profile);
+    let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
     publish_capture_profile(&paths, initial_profile)?;
     fs::write(&paths.pid, std::process::id().to_string())
         .map_err(|error| format!("cannot record projection session: {error}"))?;
@@ -1346,7 +1347,7 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let (device, connected, fault_rx) = connect_cast_device(protocol, address, port, name)?;
     maximum_profile = stream_policy.ceiling(connected.receiver_resolution);
     let local_addr = connected.local_addr;
-    let initial_profile = initial_capture_profile(&stream_policy, maximum_profile);
+    let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
     publish_capture_profile(&paths, initial_profile)?;
 
     let playlist_deadline = Instant::now()
@@ -1543,6 +1544,12 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::used_underscore_binding,
+        reason = "zbus::interface's generated dispatcher binds start_find's _options parameter \
+                  by name in dispatch code that lands in this module but outside the annotated \
+                  impl, so neither an impl- nor fn-level allow reaches it; the mock ignores it"
+    )]
     use super::*;
     use fcast_sender_sdk::IpAddr;
     use mdns_sd::{ServiceDaemon, ServiceInfo};
@@ -1588,10 +1595,6 @@ mod tests {
     )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.WifiP2P")]
     impl SimulatedP2pDevice {
-        #[allow(
-            clippy::used_underscore_binding,
-            reason = "zbus::interface's generated dispatcher binds this parameter by name even though the mock ignores it"
-        )]
         fn start_find(&self, _options: HashMap<String, OwnedValue>) {}
 
         fn stop_find(&self) {}
@@ -1720,7 +1723,7 @@ mod tests {
 
     fn write_fcast_packet(stream: &mut TcpStream, opcode: u8, body: &[u8]) {
         let body_len = u32::try_from(body.len()).unwrap_or(u32::MAX);
-        let size = body_len.checked_add(1).unwrap_or(u32::MAX);
+        let size = body_len.saturating_add(1);
         stream
             .write_all(&size.to_le_bytes())
             .expect("write FCast size");

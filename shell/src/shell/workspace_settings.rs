@@ -23,6 +23,7 @@ use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::overlay::{FocusTrap, Modal};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{Avatar, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyle};
 
 use crate::shell::state::{
     CapOverride, CapRole, Effect, Expiry, Principal, Scope, Subject, UserId, Verb, Workspace,
@@ -83,7 +84,7 @@ impl WsTab {
     pub fn label(&self) -> &'static str {
         match self {
             WsTab::General => "General",
-            WsTab::Members => "Members",
+            WsTab::Members => "People",
             WsTab::Permissions => "Privacy & Security",
             WsTab::Apps => "Apps & Files",
         }
@@ -111,12 +112,6 @@ impl WsTab {
             WsTab::Apps,
         ]
     }
-}
-
-/// The workspace's invite URL, kept in one place so this and the
-/// compositor's inline copy can't drift.
-pub fn invite_link(ws: &Workspace) -> String {
-    format!("quickdesktop://invite/{}", u64::from(ws.id))
 }
 
 /// The `WorkspaceSettings` lens state.
@@ -169,10 +164,6 @@ impl WorkspaceSettings {
 
     pub fn remove_collaborator(&mut self, ws: &mut Workspace, collab_id: &str) {
         ws.collaborators.retain(|c| c.id != collab_id);
-    }
-
-    pub fn invite_link(&self, ws: &Workspace) -> String {
-        invite_link(ws)
     }
 
     // -----------------------------------------------------------------
@@ -398,6 +389,15 @@ const EXPIRY_SEGMENT_WIDTH: f64 = 58.0;
 /// permission prompt's dimmed-Revoke treatment.
 const DISABLED_ALPHA: f32 = 0.40;
 
+/// Below this the contextual lens is a narrow sheet. Controls keep their
+/// meaning, but multi-column policy rows and the permission composer promote
+/// onto a second line instead of escaping through the card edge.
+const COMPACT_PANE_WIDTH: f64 = 460.0;
+
+fn compact_pane(pane: Rect) -> bool {
+    pane.width() < COMPACT_PANE_WIDTH
+}
+
 /// Paint a section header — a small upper-case caption plus a count.
 fn draw_section_header(
     scene: &mut Scene,
@@ -444,6 +444,13 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
 
 /// A concise explanation and live status at the top of each policy pane.
 /// It gives normal users orientation without hiding the full controls.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one positional argument per painted value, shared across the three panes \
+              that open with this intro card; a context struct would need to be rebuilt \
+              at each call site anyway since scene/text_renderer are reborrowed for more \
+              drawing right after this call"
+)]
 fn draw_pane_intro(
     scene: &mut Scene,
     transform: Affine,
@@ -505,7 +512,14 @@ fn draw_pane_intro(
         title,
         tokens.typography.scale.sm,
         colors.text_primary,
-        transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0)),
+        {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+            )]
+            let title_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0));
+            title_transform
+        },
         None,
     );
     let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
@@ -520,7 +534,14 @@ fn draw_pane_intro(
         &shown,
         tokens.typography.scale.xs,
         colors.text_dim,
-        transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0)),
+        {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+            )]
+            let detail_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0));
+            detail_transform
+        },
         None,
     );
     draw_pill(
@@ -561,20 +582,14 @@ fn draw_pill(
         anchor.x,
         anchor.y + h / 2.0,
     );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        tint.color.with_alpha_factor(0.20 * tint.alpha),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
-    );
-    text_renderer.draw_text(
+    Badge::paint_at(
         scene,
+        transform,
+        rect,
         label,
-        size,
-        tint.color.with_alpha_factor(tint.alpha),
-        at(transform, rect.x0 + pad_x, rect.y0 + pad_y),
-        None,
+        tint.color.with_alpha_factor(0.20 * tint.alpha),
+        text_renderer,
+        theme,
     );
     rect
 }
@@ -591,19 +606,32 @@ fn draw_avatar(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    // People use the shared avatar primitive so initials, palette choice,
+    // and contrast stay identical wherever a person appears. App subjects
+    // retain the square document-like treatment: it distinguishes an app
+    // principal from a human identity at a glance.
+    if !square {
+        let initials = Avatar::initials_for_name(label);
+        let initials = if initials.is_empty() { "?" } else { &initials };
+        Avatar::draw_at(
+            scene,
+            transform,
+            rect,
+            initials,
+            Avatar::color_for_initials(initials, theme),
+            theme,
+            text_renderer,
+        );
+        return;
+    }
     let colors = &theme.tokens.colors;
     let tint = subject_tint(label, theme);
-    let radius = if square {
-        f64::from(theme.tokens.radii.md)
-    } else {
-        rect.width() / 2.0
-    };
     scene.fill(
         Fill::NonZero,
         transform,
         tint.with_alpha_factor(0.30),
         None,
-        &RoundedRect::from_rect(rect, radius),
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
     );
     let initial: String = label
         .chars()
@@ -756,29 +784,15 @@ fn draw_danger_button(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    let tokens = &theme.tokens;
-    let danger = tokens.colors.semantic.danger;
-    let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        danger.with_alpha_factor(0.20 * alpha),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
-    );
-    let size = tokens.typography.scale.sm;
-    let (tw, th) = text_renderer.measure(label, size, None);
-    text_renderer.draw_text(
+    Button::paint(
         scene,
-        label,
-        size,
-        danger.with_alpha_factor(alpha),
-        at(
-            transform,
-            rect.center().x - f64::from(tw) / 2.0,
-            rect.center().y - f64::from(th) / 2.0,
-        ),
-        None,
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(rect, label)
+            .danger()
+            .disabled(!enabled)
+            .text_size(theme.tokens.typography.scale.sm),
     );
 }
 
@@ -792,28 +806,15 @@ fn draw_primary_button(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    let tokens = &theme.tokens;
-    let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        tokens.colors.accent[5].with_alpha_factor(alpha),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
-    );
-    let size = tokens.typography.scale.sm;
-    let (tw, th) = text_renderer.measure(label, size, None);
-    text_renderer.draw_text(
+    Button::paint(
         scene,
-        label,
-        size,
-        tokens.colors.text_primary.with_alpha_factor(alpha),
-        at(
-            transform,
-            rect.center().x - f64::from(tw) / 2.0,
-            rect.center().y - f64::from(th) / 2.0,
-        ),
-        None,
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(rect, label)
+            .primary()
+            .disabled(!enabled)
+            .text_size(theme.tokens.typography.scale.sm),
     );
 }
 
@@ -888,10 +889,10 @@ fn device_label(device: &str) -> &str {
 
 pub fn scope_label(scope: &Scope) -> String {
     match scope {
-        Scope::Workspace => "this workspace".to_string(),
-        Scope::Room(_) => "this room".to_string(),
+        Scope::Workspace | Scope::Room(_) => "this workspace".to_string(),
         Scope::App(app) => format!("the {app} app"),
         Scope::FsPath(path) => fs_scope_label(path),
+        Scope::FsRecord(record) => format!("one shared file ({})", short_id(record)),
         Scope::Device(device) => device_label(device).to_string(),
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
@@ -973,7 +974,7 @@ pub fn granted_by_label(cap: &CapOverride) -> Option<String> {
         Principal::App(id) => format!("granted by the {id} app"),
         Principal::Agent(id) => format!("granted by agent {}", short_id(id)),
         Principal::Token(id) => format!("granted by token {}", short_id(id)),
-        Principal::Room(id) => format!("granted by room {}", short_id(id)),
+        Principal::Room(id) => format!("granted by workspace {}", short_id(id)),
     })
 }
 
@@ -1034,7 +1035,6 @@ enum GrantTarget {
     Device(&'static str),
     AnyHost,
     WorkspaceFiles,
-    Workspace,
 }
 
 /// One entry in the composer's "what does this allow" picker. Every
@@ -1089,20 +1089,15 @@ static GRANT_CHOICES: &[GrantChoice] = &[
         target: GrantTarget::WorkspaceFiles,
         verb: Verb::Write,
     },
-    GrantChoice {
-        label: "Administer workspace",
-        target: GrantTarget::Workspace,
-        verb: Verb::Admin,
-    },
 ];
 
 /// Fallback for [`GrantDraft::choice`] if the index and [`GRANT_CHOICES`]'s
 /// length ever disagree — unreachable in practice since the index is
 /// always taken modulo the live length, but a real value beats a panic.
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
-    label: "Administer workspace",
-    target: GrantTarget::Workspace,
-    verb: Verb::Admin,
+    label: "Edit workspace files",
+    target: GrantTarget::WorkspaceFiles,
+    verb: Verb::Write,
 };
 
 /// The path workspace files are projected at. A capability scoped here
@@ -1227,7 +1222,6 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverrid
         GrantTarget::Device(d) => Scope::Device(d.to_string()),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
-        GrantTarget::Workspace => Scope::Workspace,
     };
     Some(CapOverride::grant(subject, scope, choice.verb).expiring(draft.expiry))
 }
@@ -1290,25 +1284,25 @@ pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, cap_id: &str) -> CapEdit
 
 /// The roles a member's role chip cycles through. `Denied` is not in
 /// the cycle — that's what Revoke expresses, not an accidental click.
-const ROLE_CYCLE: [CapRole; 4] = [
-    CapRole::Viewer,
-    CapRole::Commenter,
-    CapRole::Editor,
-    CapRole::Owner,
-];
+const ROLE_CYCLE: [CapRole; 3] = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
 
 /// Inverse of the mapping [`Workspace::role_of`] reads.
 fn role_verb(role: CapRole) -> Option<Verb> {
     match role {
-        CapRole::Owner => Some(Verb::Admin),
+        // Ownership is a structural governance transfer, not a role-chip
+        // mutation. Until that ceremony is signed and replicated end-to-end,
+        // this panel must never manufacture a second apparent owner.
+        CapRole::Owner | CapRole::Denied => None,
         CapRole::Editor => Some(Verb::Write),
         CapRole::Commenter => Some(Verb::Comment),
         CapRole::Viewer => Some(Verb::Read),
-        CapRole::Denied => None,
     }
 }
 
 pub fn next_role(role: CapRole) -> CapRole {
+    if matches!(role, CapRole::Owner | CapRole::Denied) {
+        return CapRole::Viewer;
+    }
     let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
     let next = idx
         .wrapping_add(1)
@@ -1345,7 +1339,7 @@ pub fn set_member_role(
     let Some(verb) = role_verb(role) else {
         return CapEdit::default();
     };
-    if !ws.may_administer(actor) {
+    if !ws.may_administer(actor) || actor == member {
         return CapEdit::default();
     }
     // The owner's role is structural, not a capability — nothing to rewrite.
@@ -1354,14 +1348,16 @@ pub fn set_member_role(
     }
     let mut edit = CapEdit::default();
     for id in membership_ids(ws, member) {
-        if ws.revoke_as(actor, &id) {
+        // Authority was proven once above. Mutate atomically from that
+        // snapshot: re-checking after each removal lets a delegated admin
+        // remove its own authority midway and strands a half-written edit.
+        if ws.revoke_capability(&id) {
             edit.revoked.push(id);
         }
     }
-    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb);
-    if let Some(id) = ws.grant_as(actor, cap) {
-        edit.granted.push(id);
-    }
+    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb)
+        .granted_by(Principal::Person(actor.clone()));
+    edit.granted.push(ws.grant_capability(cap));
     edit
 }
 
@@ -1369,7 +1365,8 @@ pub fn set_member_role(
 pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> CapEdit {
     // The owner is the workspace's root of trust; removing them would
     // leave a room no one can administer.
-    if ws.owner.as_deref() == Some(member.as_str()) {
+    if ws.owner.as_deref() == Some(member.as_str()) || actor == member || !ws.may_administer(actor)
+    {
         return CapEdit::default();
     }
     let ids: Vec<String> = ws
@@ -1380,7 +1377,7 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Cap
         .collect();
     let mut edit = CapEdit::default();
     for id in ids {
-        if ws.revoke_as(actor, &id) {
+        if ws.revoke_capability(&id) {
             edit.revoked.push(id);
         }
     }
@@ -1506,7 +1503,7 @@ pub fn draw_members_pane(
         pane_rect,
         Icon::Home,
         &format!("{roster_count} people share this workspace"),
-        "Roles set the baseline; specific exceptions remain visible in Privacy & Security.",
+        "Removing someone blocks future sync and edits; copies already downloaded stay with them.",
         if is_owner { "You manage" } else { "View only" },
         text_renderer,
         theme,
@@ -1526,7 +1523,7 @@ pub fn draw_members_pane(
             Icon::Shield,
             (
                 "No one else is in this workspace",
-                "Share the invite link from the General tab to add someone.",
+                "Create a signed invite from the General tab to add someone.",
             ),
             text_renderer,
             theme,
@@ -1541,7 +1538,7 @@ pub fn draw_members_pane(
             pane_rect.x0 + PANE_PAD_X,
             pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
         ),
-        "MEMBERS",
+        "PEOPLE",
         Some(ordered_roster(ws).len()),
         text_renderer,
         theme,
@@ -1635,11 +1632,12 @@ fn draw_member_row(
         None,
     );
 
+    let can_manage_row = is_owner && !row.is_workspace_owner && &row.user != local_user;
     draw_member_role_chip(
         scene,
         transform,
         row,
-        is_owner,
+        can_manage_row,
         detail_size,
         text_renderer,
         theme,
@@ -1650,7 +1648,7 @@ fn draw_member_row(
         transform,
         row.remove_rect,
         "Remove",
-        is_owner && !row.is_workspace_owner,
+        can_manage_row,
         text_renderer,
         theme,
     );
@@ -1662,14 +1660,14 @@ fn draw_member_role_chip(
     scene: &mut Scene,
     transform: Affine,
     row: &MemberRow,
-    is_owner: bool,
+    interactive: bool,
     detail_size: f32,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let role_interactive = is_owner && !row.is_workspace_owner;
+    let role_interactive = interactive;
     let chip_tint = if row.role == CapRole::Denied {
         colors.semantic.danger
     } else if row.is_workspace_owner {
@@ -1751,7 +1749,9 @@ pub fn default_app_rows(
     resources.dedup();
     let x0 = pane.x0 + PANE_PAD_X;
     let x1 = pane.x1 - PANE_PAD_X;
-    let control_w = 190.0;
+    let compact = compact_pane(pane);
+    let row_h = if compact { 94.0 } else { 64.0 };
+    let row_step = if compact { 104.0 } else { 72.0 };
     resources
         .into_iter()
         .enumerate()
@@ -1767,17 +1767,37 @@ pub fn default_app_rows(
                 + PANE_INTRO_HEIGHT
                 + PANE_INTRO_GAP
                 + 44.0
-                + index as f64 * 72.0;
-            let row_rect = Rect::new(x0, y0, x1, y0 + 64.0);
-            (row_rect.y1 <= pane.y1 - 10.0).then(|| DefaultAppRow {
+                + index as f64 * row_step;
+            let row_rect = Rect::new(x0, y0, x1, y0 + row_h);
+            let (workspace_rect, user_rect) = if compact {
+                let gap = 8.0;
+                let control_w = (row_rect.width() - gap) / 2.0;
+                let controls_y = row_rect.y1 - 10.0 - CONTROL_HEIGHT;
+                (
+                    Rect::new(x0, controls_y, x0 + control_w, controls_y + CONTROL_HEIGHT),
+                    Rect::new(
+                        x0 + control_w + gap,
+                        controls_y,
+                        x1,
+                        controls_y + CONTROL_HEIGHT,
+                    ),
+                )
+            } else {
+                let control_w = 190.0;
+                (
+                    Rect::new(
+                        x1 - control_w * 2.0 - 12.0,
+                        y0 + 26.0,
+                        x1 - control_w - 12.0,
+                        y0 + 56.0,
+                    ),
+                    Rect::new(x1 - control_w, y0 + 26.0, x1, y0 + 56.0),
+                )
+            };
+            (row_rect.y1 <= pane.y1 - 10.0).then_some(DefaultAppRow {
                 resource,
-                workspace_rect: Rect::new(
-                    x1 - control_w * 2.0 - 12.0,
-                    y0 + 26.0,
-                    x1 - control_w - 12.0,
-                    y0 + 56.0,
-                ),
-                user_rect: Rect::new(x1 - control_w, y0 + 26.0, x1, y0 + 56.0),
+                workspace_rect,
+                user_rect,
                 row_rect,
             })
         })
@@ -1805,7 +1825,7 @@ pub fn draw_default_apps_pane(
     scene: &mut Scene,
     transform: Affine,
     pane: Rect,
-    ctx: DefaultAppsCtx<'_>,
+    ctx: &DefaultAppsCtx<'_>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
@@ -1813,7 +1833,7 @@ pub fn draw_default_apps_pane(
         ws,
         local_user,
         candidates,
-    } = ctx;
+    } = *ctx;
     let resources = candidates
         .iter()
         .flat_map(|candidate| candidate.resources.iter())
@@ -1825,6 +1845,36 @@ pub fn draw_default_apps_pane(
     } else {
         format!("{custom_rules} custom rules")
     };
+    draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
+    let can_admin = ws.may_administer(local_user);
+    draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
+    if candidates.iter().all(|a| a.resources.is_empty()) {
+        draw_empty_state(
+            scene,
+            transform,
+            pane,
+            Icon::LayoutGrid,
+            (
+                "No file handlers installed",
+                "Apps appear here after they declare supported file types.",
+            ),
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+/// The intro card, section heading and column labels above the row list —
+/// split out of [`draw_default_apps_pane`] so that function stays readable
+/// as one top-to-bottom pass over the pane.
+fn draw_default_apps_header(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    status: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     draw_pane_intro(
         scene,
         transform,
@@ -1832,7 +1882,7 @@ pub fn draw_default_apps_pane(
         Icon::LayoutGrid,
         "Defaults without lock-in",
         "The workspace supplies a baseline; each person can explicitly choose something else.",
-        &status,
+        status,
         text_renderer,
         theme,
     );
@@ -1846,26 +1896,72 @@ pub fn draw_default_apps_pane(
         text_renderer,
         theme,
     );
-    text_renderer.draw_text(
-        scene,
-        "Workspace choice",
-        theme.tokens.typography.scale.xs,
-        theme.tokens.colors.text_dim,
-        at(transform, pane.x1 - 404.0, heading_y + 22.0),
-        None,
-    );
-    text_renderer.draw_text(
-        scene,
-        "Your choice",
-        theme.tokens.typography.scale.xs,
-        theme.tokens.colors.text_dim,
-        at(transform, pane.x1 - 194.0, heading_y + 22.0),
-        None,
-    );
-    let can_admin = ws.may_administer(local_user);
+    if compact_pane(pane) {
+        let x0 = pane.x0 + PANE_PAD_X;
+        let x1 = pane.x1 - PANE_PAD_X;
+        let midpoint = x0 + (x1 - x0) / 2.0;
+        text_renderer.draw_text(
+            scene,
+            "Workspace choice",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, x0, heading_y + 22.0),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Your choice",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, midpoint + 4.0, heading_y + 22.0),
+            None,
+        );
+    } else {
+        text_renderer.draw_text(
+            scene,
+            "Workspace choice",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, pane.x1 - 404.0, heading_y + 22.0),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Your choice",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, pane.x1 - 194.0, heading_y + 22.0),
+            None,
+        );
+    }
+}
+
+/// One row per resource kind: the workspace's policy cycler and the local
+/// user's own override, split out of [`draw_default_apps_pane`] to keep it
+/// under `too_many_lines`.
+fn draw_default_apps_rows(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    ctx: &DefaultAppsCtx<'_>,
+    can_admin: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let DefaultAppsCtx {
+        ws,
+        local_user,
+        candidates,
+    } = *ctx;
     for row in default_app_rows(pane, candidates) {
         draw_row_card(scene, transform, row.row_rect, theme);
         let label = row.resource.display_label();
+        let label = elide(
+            &label,
+            theme.tokens.typography.scale.sm,
+            row.row_rect.width() - 24.0,
+            text_renderer,
+        );
         text_renderer.draw_text(
             scene,
             &label,
@@ -1909,20 +2005,6 @@ pub fn draw_default_apps_pane(
             row.user_rect,
             choice_label,
             true,
-            text_renderer,
-            theme,
-        );
-    }
-    if candidates.iter().all(|a| a.resources.is_empty()) {
-        draw_empty_state(
-            scene,
-            transform,
-            pane,
-            Icon::LayoutGrid,
-            (
-                "No file handlers installed",
-                "Apps appear here after they declare supported file types.",
-            ),
             text_renderer,
             theme,
         );
@@ -2060,7 +2142,7 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
         },
         Subject::Principal(Principal::Room(id)) => GrantSubject {
             kind: SubjectKind::Other,
-            id: format!("room {}", short_id(id)),
+            id: format!("workspace {}", short_id(id)),
         },
     }
 }
@@ -2097,7 +2179,19 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     }
 
     // ---- Composer -------------------------------------------------
-    let card = Rect::new(
+    let card = permission_composer_card(pane_rect);
+    layout_composer_controls(&mut layout, ws, card, compact_pane(pane_rect));
+    layout_capability_rows(&mut layout, ws, pane_rect, card);
+    layout
+}
+
+fn permission_composer_card(pane_rect: Rect) -> Rect {
+    let composer_height = if compact_pane(pane_rect) {
+        COMPOSER_HEIGHT + 44.0
+    } else {
+        COMPOSER_HEIGHT
+    };
+    Rect::new(
         pane_rect.x0 + PANE_PAD_X,
         pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
         pane_rect.x1 - PANE_PAD_X,
@@ -2106,11 +2200,65 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
             + PANE_INTRO_HEIGHT
             + PANE_INTRO_GAP
             + SECTION_HEADER_HEIGHT
-            + COMPOSER_HEIGHT,
-    );
+            + composer_height,
+    )
+}
+
+/// The composer card's subject/choice/expiry/submit controls — split out of
+/// [`permissions_pane_layout`] to keep it under `too_many_lines`.
+fn layout_composer_controls(
+    layout: &mut PermissionsPaneLayout,
+    ws: &Workspace,
+    card: Rect,
+    compact: bool,
+) {
     let inner_x0 = card.x0 + 12.0;
     let inner_x1 = card.x1 - 12.0;
     let controls_y = card.y1 - 12.0 - CONTROL_HEIGHT;
+    if compact {
+        let gap = 8.0_f64;
+        let subject_w = (inner_x1 - inner_x0 - gap) / 2.0;
+        let top_y = card.y0 + 32.0;
+        layout.subject_rect = Rect::new(
+            inner_x0,
+            top_y,
+            inner_x0 + subject_w,
+            top_y + CONTROL_HEIGHT,
+        );
+        layout.choice_rect = Rect::new(
+            layout.subject_rect.x1 + gap,
+            top_y,
+            inner_x1,
+            top_y + CONTROL_HEIGHT,
+        );
+        let submit_w = 72.0;
+        let expiry_gap = 6.0;
+        let expiry_w = (inner_x1 - inner_x0 - submit_w - gap) / 3.0;
+        layout.expiry_rects = std::array::from_fn(|i| {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "i is a fixed 3-element array index, always 0..=2"
+            )]
+            let x0 = inner_x0 + i as f64 * expiry_w;
+            Rect::new(
+                x0,
+                controls_y,
+                x0 + expiry_w - expiry_gap,
+                controls_y + CONTROL_HEIGHT,
+            )
+        });
+        layout.submit_rect = Rect::new(
+            inner_x1 - submit_w,
+            controls_y,
+            inner_x1,
+            controls_y + CONTROL_HEIGHT,
+        );
+        if grant_subjects(ws).is_empty() {
+            layout.subject_rect = Rect::ZERO;
+            layout.submit_rect = Rect::ZERO;
+        }
+        return;
+    }
     let gap = 8.0_f64;
     let expiry_w = EXPIRY_SEGMENT_WIDTH * 3.0;
     let flexible = (inner_x1 - inner_x0) - expiry_w - SUBMIT_WIDTH - gap * 3.0;
@@ -2154,8 +2302,17 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
         layout.subject_rect = Rect::ZERO;
         layout.submit_rect = Rect::ZERO;
     }
+}
 
-    // ---- Capability rows ------------------------------------------
+/// The capability list below the composer, stopping once a row would run
+/// past the pane — split out of [`permissions_pane_layout`] to keep it
+/// under `too_many_lines`.
+fn layout_capability_rows(
+    layout: &mut PermissionsPaneLayout,
+    ws: &Workspace,
+    pane_rect: Rect,
+    card: Rect,
+) {
     let entries = listed_capabilities(ws);
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
@@ -2197,7 +2354,6 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
         placed = placed.saturating_add(1);
     }
     layout.overflow = entries.len().saturating_sub(placed);
-    layout
 }
 
 /// Non-owners see the same list and controls, painted disabled, with a
@@ -2323,7 +2479,11 @@ fn draw_who_what_pickers(
 ) {
     let (ws, draft) = subject_draft;
     let (text_renderer, theme) = render;
-    let caption_y = card.y0 + 12.0;
+    let caption_y = if compact_pane(card) {
+        layout.subject_rect.y0 - 18.0
+    } else {
+        card.y0 + 12.0
+    };
     let subject = draft_subject(ws, draft);
     match &subject {
         Some(entry) => {
@@ -2404,17 +2564,7 @@ fn draw_permission_composer(
         text_renderer,
         theme,
     );
-    let card = Rect::new(
-        pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
-        pane_rect.x1 - PANE_PAD_X,
-        pane_rect.y0
-            + PANE_PAD_TOP
-            + PANE_INTRO_HEIGHT
-            + PANE_INTRO_GAP
-            + SECTION_HEADER_HEIGHT
-            + COMPOSER_HEIGHT,
-    );
+    let card = permission_composer_card(pane_rect);
     let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
     scene.fill(
         Fill::NonZero,
@@ -2441,7 +2591,11 @@ fn draw_permission_composer(
         (&mut *text_renderer, theme),
     );
 
-    let caption_y = card.y0 + 12.0;
+    let caption_y = if compact_pane(pane_rect) {
+        layout.expiry_rects[0].y0 - 18.0
+    } else {
+        card.y0 + 12.0
+    };
     draw_control_caption(
         scene,
         transform,
@@ -2484,61 +2638,42 @@ fn draw_expiry_track(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let expiry_track = Rect::new(
-        layout.expiry_rects[0].x0,
-        layout.expiry_rects[0].y0,
-        layout.expiry_rects[2].x1,
-        layout.expiry_rects[2].y1,
-    );
-    let track_rr = RoundedRect::from_rect(expiry_track, f64::from(tokens.radii.md));
-    let track_alpha = if is_owner { 1.0 } else { DISABLED_ALPHA };
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.surfaces.raised.with_alpha_factor(track_alpha),
-        None,
-        &track_rr,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.border_standard.with_alpha_factor(track_alpha),
-        None,
-        &track_rr,
-    );
-    for (seg, expiry) in layout.expiry_rects.into_iter().zip(EXPIRY_CHOICES) {
-        let selected = draft.expiry == expiry;
-        if selected {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5].with_alpha_factor(0.90 * track_alpha),
-                None,
-                &RoundedRect::from_rect(seg.inset(2.0), f64::from(tokens.radii.md) - 2.0),
-            );
-        }
-        let label = expiry_label(expiry);
-        let size = tokens.typography.scale.sm;
-        let (tw, th) = text_renderer.measure(label, size, None);
-        let color = if selected {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
-        text_renderer.draw_text(
-            scene,
-            label,
-            size,
-            color.with_alpha_factor(track_alpha),
-            at(
-                transform,
-                seg.center().x - f64::from(tw) / 2.0,
-                seg.center().y - f64::from(th) / 2.0,
-            ),
-            None,
+    let selected = EXPIRY_CHOICES
+        .iter()
+        .position(|expiry| *expiry == draft.expiry)
+        .unwrap_or_default();
+    let labels = EXPIRY_CHOICES.map(expiry_label);
+    // `SegmentedFace` owns the selected/unselected contrast, separators and
+    // shared focus-compatible geometry. The surrounding disabled layer keeps
+    // a viewer's immutable policy visibly unavailable without changing which
+    // actions the router authorizes.
+    if !is_owner {
+        let track = Rect::new(
+            layout.expiry_rects[0].x0,
+            layout.expiry_rects[0].y0,
+            layout.expiry_rects[2].x1,
+            layout.expiry_rects[2].y1,
         );
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            DISABLED_ALPHA,
+            transform,
+            &track,
+        );
+    }
+    ui::widget::ToggleGroup::paint(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        &SegmentedFace::new(&layout.expiry_rects, &labels, selected)
+            .style(SegmentedStyle::Solid)
+            .radius(f64::from(theme.tokens.radii.md))
+            .text_size(theme.tokens.typography.scale.sm),
+    );
+    if !is_owner {
+        scene.pop_layer();
     }
 }
 
@@ -2625,6 +2760,10 @@ fn draw_permission_row(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact settings layout geometry is the behavior under test"
+)]
 mod tab_tests {
     //! The modal's tab surface: default tab, switching, sidebar
     //! geometry, and that the sidebar renders without a pane drawer.
@@ -2951,8 +3090,46 @@ mod members_pane_tests {
     fn role_chip_cycles_through_the_positive_roles() {
         assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
         assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
-        assert_eq!(next_role(CapRole::Editor), CapRole::Owner);
+        assert_eq!(next_role(CapRole::Editor), CapRole::Viewer);
         assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
+        assert_eq!(next_role(CapRole::Denied), CapRole::Viewer);
+    }
+
+    #[test]
+    fn role_control_cannot_create_or_transfer_ownership() {
+        let mut ws = ws_with_two_members();
+        let edit = set_member_role(
+            &mut ws,
+            &OWNER.to_string(),
+            &PEER.to_string(),
+            CapRole::Owner,
+        );
+        assert!(edit.is_empty());
+        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+        assert_eq!(ws.owner.as_deref(), Some(OWNER));
+    }
+
+    #[test]
+    fn delegated_admin_cannot_partially_demote_or_remove_itself() {
+        let mut ws = ws_with_two_members();
+        let admin =
+            CapOverride::membership(Subject::person(PEER), ws.room.to_string(), Verb::Admin);
+        ws.grant_as(&OWNER.to_string(), admin)
+            .expect("owner delegates administration");
+        let before = ws.capabilities.clone();
+
+        assert!(
+            set_member_role(
+                &mut ws,
+                &PEER.to_string(),
+                &PEER.to_string(),
+                CapRole::Viewer,
+            )
+            .is_empty()
+        );
+        assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_empty());
+        assert_eq!(ws.capabilities, before);
+        assert!(ws.may_administer(&PEER.to_string()));
     }
 
     #[test]
@@ -3040,6 +3217,23 @@ mod permissions_pane_tests {
 
     fn pane() -> Rect {
         Rect::new(0.0, 0.0, 660.0, 480.0)
+    }
+
+    #[test]
+    fn stable_file_record_scope_is_presented_without_inventing_a_path() {
+        let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        assert_eq!(
+            scope_label(&Scope::FsRecord(record.to_string())),
+            "one shared file (b0d4e23f-c…)"
+        );
+        assert_eq!(
+            capability_allows(&CapOverride::grant(
+                Subject::Principal(Principal::App("files".to_string())),
+                Scope::FsRecord(record.to_string()),
+                Verb::Read,
+            )),
+            "View one shared file (b0d4e23f-c…)"
+        );
     }
 
     #[test]
@@ -3579,6 +3773,45 @@ mod permissions_pane_tests {
         assert!(layout.expiry_rects[2].x1 <= layout.submit_rect.x0);
         assert!(layout.subject_rect.x1 <= layout.choice_rect.x0);
         assert!(layout.choice_rect.x1 <= layout.expiry_rects[0].x0);
+    }
+
+    #[test]
+    fn narrow_panes_stack_policy_controls_inside_their_rows() {
+        let ws = ws_with_grants();
+        let pane = Rect::new(0.0, 0.0, 326.0, 620.0);
+        let layout = permissions_pane_layout(&ws, pane);
+        for rect in std::iter::once(layout.subject_rect)
+            .chain(std::iter::once(layout.choice_rect))
+            .chain(layout.expiry_rects)
+            .chain(std::iter::once(layout.submit_rect))
+        {
+            assert!(
+                rect.x0 >= pane.x0 && rect.x1 <= pane.x1,
+                "compact permission control must remain inside its pane: {rect:?} in {pane:?}"
+            );
+        }
+        assert!(
+            layout.subject_rect.y1 < layout.expiry_rects[0].y0,
+            "narrow composer promotes expiry/grant controls to a second row"
+        );
+
+        let candidates = [desktop_policy::AppCandidate {
+            package_id: "dev.qos.viewer".into(),
+            display_name: "Viewer".into(),
+            resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
+        }];
+        let rows = default_app_rows(pane, &candidates);
+        let row = rows.first().expect("a narrow policy row fits");
+        assert!(row.workspace_rect.x0 >= row.row_rect.x0);
+        assert!(row.user_rect.x1 <= row.row_rect.x1);
+        assert!(
+            row.workspace_rect.y0 > row.row_rect.y0 + 20.0,
+            "the resource label keeps its own line above both choices"
+        );
+        assert!(
+            row.workspace_rect.x1 <= row.user_rect.x0,
+            "the two explicit choices never overlap at phone width"
+        );
     }
 
     #[test]

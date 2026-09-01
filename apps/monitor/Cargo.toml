@@ -13,10 +13,13 @@ path = "src/lib.rs"
 name = "monitor"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 automerge.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

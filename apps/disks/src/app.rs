@@ -18,19 +18,35 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use ui::vello::peniko::{Color, Fill};
-use ui::winit::event::WindowEvent;
+use ui::winit::dpi::PhysicalPosition;
+use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use ui::winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
+use ui::widget::{
+    Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
+};
 
 use crate::doc::DisksDoc;
 use crate::model::{
-    AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartStatus, Topology, fmt_hours, fmt_size,
+    AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartAttr, SmartInfo, SmartStatus,
+    Topology, fmt_hours, fmt_size,
 };
+
+/// Panic-free leaf construction for [`Widget::build_layout`]. `new_leaf`
+/// always inserts and returns `Ok`; `Widget::build_layout` returns a bare
+/// `NodeId` (not a `Result`) across every implementor, so surfacing a
+/// theoretical error here would mean threading a `Result` through the whole
+/// toolkit for a branch that can't be taken.
+#[allow(clippy::unwrap_used, reason = "new_leaf cannot fail; see doc comment")]
+fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
+    taffy.new_leaf(style).unwrap()
+}
 use crate::ops::{self, Op};
 
 /// Result of a background action thread, drained in `update`.
@@ -280,6 +296,18 @@ struct ModalLayout {
     confirm: Rect,
 }
 
+/// Column x-positions for the partitions tab's table, resolved once from
+/// `area` and shared by the header and every row.
+#[derive(Clone, Copy)]
+struct PartitionColumns {
+    name: f64,
+    label: f64,
+    fs: f64,
+    size: f64,
+    mount: f64,
+    used: f64,
+}
+
 pub struct DisksApp {
     topo: Topology,
     topo_json_cache: String,
@@ -291,14 +319,17 @@ pub struct DisksApp {
     pending: Option<Pending>,
     /// Typed confirmation text for a destructive (Format) action. The Erase
     /// button only unlocks once this matches the target device name.
-    confirm_input: String,
+    confirm_input: TextInput,
     status: String,
     /// True in the live binary (`DISKS_LIVE`): actions actually execute.
     /// False for `--shots` and unit tests, which stay inert.
     live: bool,
     /// Receiver for the currently-running background action, if any.
     action_rx: Option<mpsc::Receiver<ActionResult>>,
-    seeded: bool,
+    /// One-time first-frame setup: the live seed and the initial layout
+    /// settle. Grouped so they don't pile up as same-shaped bools next to
+    /// `dirty` and `live`.
+    init: InitState,
     rect: Rect,
     dirty: bool,
     last_mouse: Point,
@@ -314,15 +345,21 @@ pub struct DisksApp {
     hover_tab: Option<Tab>,
     /// Hovered partition (map segment or table row), for a live highlight.
     hover_part: Option<usize>,
-    hover_whole_disk: bool,
     /// Eased open/closed state of the drive-list flap. Open by default when
     /// the list is docked (wide window); closed by default when it collapses
     /// to an overlay (narrow window). The same kernel the shared `NavSplit`
     /// widget drives — adopted directly here because the whole app is one
     /// self-drawing canvas rather than a tree of `ui` elements.
     flap: FlapState,
-    /// Whether a hamburger toggle is hovered (overlay mode only).
-    hover_menu: bool,
+    /// Hamburger-toggle and whole-disk-pill hover, checked together each
+    /// frame when resolving the overlay's hit targets.
+    hover_toggle: HoverToggles,
+}
+
+/// One-time first-frame setup flags for [`DisksApp`] (part of `DisksApp`).
+#[derive(Default)]
+struct InitState {
+    seeded: bool,
     /// `false` until the first layout pass resolves the width. Used to settle
     /// the flap to its resolved default on the very first frame (so a cold
     /// start at a narrow width opens straight to the detail, with no flash of
@@ -330,11 +367,24 @@ pub struct DisksApp {
     laid_out: bool,
 }
 
+/// Hover state for the overlay hamburger toggle and the whole-disk pill
+/// (part of [`DisksApp`]).
+#[derive(Default)]
+struct HoverToggles {
+    /// Whether a hamburger toggle is hovered (overlay mode only).
+    menu: bool,
+    whole_disk: bool,
+}
+
 impl Default for DisksApp {
     fn default() -> Self {
         Self::new()
     }
 }
+
+/// Whole-disk pill, partition map segments, and partition table row rects
+/// returned by [`DisksApp::compute_content_rects`].
+type ContentRects = (Rect, Vec<(Rect, usize)>, Vec<(Rect, usize)>);
 
 impl DisksApp {
     pub fn new() -> Self {
@@ -345,11 +395,11 @@ impl DisksApp {
             selected_part: None,
             tab: Tab::Overview,
             pending: None,
-            confirm_input: String::new(),
+            confirm_input: TextInput::local().with_font_size(14.0),
             status: String::new(),
             live: std::env::var("DISKS_LIVE").is_ok(),
             action_rx: None,
-            seeded: false,
+            init: InitState::default(),
             rect: Rect::ZERO,
             dirty: true,
             last_mouse: Point::ZERO,
@@ -361,10 +411,8 @@ impl DisksApp {
             hover_action: None,
             hover_tab: None,
             hover_part: None,
-            hover_whole_disk: false,
             flap: FlapState::open_when_docked(),
-            hover_menu: false,
-            laid_out: false,
+            hover_toggle: HoverToggles::default(),
         }
     }
 
@@ -434,8 +482,7 @@ impl DisksApp {
                 .and_then(|i| drive.partitions.get(i))
                 .is_some_and(|p| p.mountpoint.is_some()),
             // Format works on either the selected partition or the whole disk.
-            ActionKind::Format => true,
-            ActionKind::Benchmark => true,
+            ActionKind::Format | ActionKind::Benchmark => true,
             ActionKind::Eject => drive.removable,
         }
     }
@@ -450,151 +497,19 @@ impl DisksApp {
             f64::midpoint(TOPBAR_H, 32.0),
         );
 
-        // Responsive split: in a wide window the drive list is a permanent
-        // column beside the detail; in a narrow window it collapses to an
-        // overlay flap that the hamburger summons over the full-width detail.
-        let split = self.split_layout();
-        let (sidebar, scrim, hamburger, list_x0, detail_x0) = match split {
-            SplitLayout::Docked => {
-                // The list column eases in/out by the reveal so toggling it is
-                // smooth; the detail follows the list's trailing edge.
-                let inset = SIDEBAR_W * self.flap.reveal();
-                let sidebar = Rect::new(v.x0, v.y0, v.x0 + inset, v.y1);
-                let detail_x0 = v.x0 + inset + if inset > 0.5 { 0.0 } else { PAD };
-                (
-                    sidebar,
-                    Rect::ZERO,
-                    None,
-                    v.x0 + PAD,
-                    detail_x0.max(v.x0 + PAD),
-                )
-            }
-            SplitLayout::Overlay => {
-                // Detail spans the full width; the list slides in from the
-                // left over a scrim. The hamburger lives in the top bar.
-                let slide = self.flap.slide();
-                let panel_x0 = v.x0 - SIDEBAR_W * (1.0 - slide);
-                let sidebar = Rect::new(panel_x0, v.y0, panel_x0 + SIDEBAR_W, v.y1);
-                let scrim = if self.flap.reveal() > 0.001 {
-                    v
-                } else {
-                    Rect::ZERO
-                };
-                let ham = Rect::new(
-                    PAD,
-                    (TOPBAR_H - 30.0) / 2.0,
-                    PAD + 38.0,
-                    f64::midpoint(TOPBAR_H, 30.0),
-                );
-                (sidebar, scrim, Some(ham), panel_x0 + PAD, v.x0 + PAD)
-            }
-        };
-
-        // Drive list: a "DRIVES" section header, then a scrolling body of
-        // rows anchored to the (possibly sliding) list column.
-        let list_header = Rect::new(
-            list_x0,
-            TOPBAR_H + PAD,
-            list_x0 + LIST_W,
-            TOPBAR_H + PAD + LIST_HEADER_H,
-        );
-        let list_body = Rect::new(list_x0, list_header.y1, list_x0 + LIST_W, v.y1 - PAD);
-        let mut cards = Vec::new();
-        let mut cy = list_body.y0 - self.list_scroll;
-        for _ in &self.topo.drives {
-            cards.push(Rect::new(list_x0, cy, list_x0 + LIST_W, cy + CARD_H));
-            cy += CARD_H + CARD_GAP;
-        }
+        let (split, sidebar, scrim, hamburger, list_x0, detail_x0) = self.compute_split(v);
+        let (list_header, list_body, cards) = self.compute_drive_list_layout(list_x0, v);
 
         let dx0 = detail_x0;
         let dx1 = v.x1 - PAD;
         let region_top = TOPBAR_H + PAD;
         let header = Rect::new(dx0, region_top, dx1, region_top + HEADER_H);
 
-        // Action band: Mount / Unmount / Format / Benchmark / Eject, laid out
-        // left-to-right below the identity header, each flagged applicable or
-        // not for the current drive/partition selection.
-        let action_bar = Rect::new(dx0, header.y1 + 12.0, dx1, header.y1 + 12.0 + ACTIONBAR_H);
-        let mut action_buttons = Vec::new();
-        let drive_ref = self.drive();
-        let btn_h = 32.0;
-        let btn_y = action_bar.y0 + 34.0;
-        let mut bx = action_bar.x0 + 14.0;
-        for a in ActionKind::bar() {
-            let w = (a.label().len() as f64) * 8.0 + 30.0;
-            let enabled = drive_ref.is_some_and(|d| self.action_enabled(d, a));
-            action_buttons.push((Rect::new(bx, btn_y, bx + w, btn_y + btn_h), a, enabled));
-            bx += w + 10.0;
-        }
-
-        // Tab bar.
-        let tab_top = action_bar.y1 + 12.0;
-        let mut tabs = Vec::new();
-        let mut tx = dx0;
-        for t in Tab::all() {
-            let w = (t.title().len() as f64) * 8.2 + 28.0;
-            tabs.push((Rect::new(tx, tab_top, tx + w, tab_top + TAB_H), t));
-            tx += w + 6.0;
-        }
-
+        let (action_bar, action_buttons) = self.compute_action_bar_layout(dx0, dx1, header);
+        let (tabs, tab_top) = Self::compute_tabs_layout(dx0, action_bar);
         let content = Rect::new(dx0, tab_top + TAB_H + PAD, dx1, v.y1 - PAD);
-
-        // Content-scoped interactive rects (computed in *unscrolled* content
-        // coordinates; hit-testing offsets the pointer by `content_scroll`).
-        let pill_w = 116.0;
-        let whole_disk_pill = Rect::new(
-            content.x1 - pill_w,
-            content.y0 - 3.0,
-            content.x1,
-            content.y0 + 19.0,
-        );
-        let mut part_segments = Vec::new();
-        let mut part_rows = Vec::new();
-        if let Some(d) = drive_ref {
-            if self.tab == Tab::Overview {
-                let map = Rect::new(
-                    content.x0,
-                    content.y0 + 20.0,
-                    content.x1,
-                    content.y0 + 20.0 + 58.0,
-                );
-                for (r, idx) in partition_segments(d, map) {
-                    if let Some(i) = idx {
-                        part_segments.push((r, i));
-                    }
-                }
-            } else if self.tab == Tab::Partitions {
-                let mut ry = content.y0 + 24.0;
-                for i in 0..d.partitions.len() {
-                    part_rows.push((Rect::new(content.x0, ry - 6.0, content.x1, ry + 30.0), i));
-                    ry += 38.0;
-                }
-            }
-        }
-
-        // Confirm modal (type-to-confirm for destructive actions).
-        let modal = self.pending.map(|_| {
-            let w = 480.0;
-            let h = 258.0;
-            let cx = f64::midpoint(v.x0, v.x1);
-            let cy = f64::midpoint(v.y0, v.y1);
-            let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-            let input = Rect::new(
-                card.x0 + 22.0,
-                card.y0 + 128.0,
-                card.x1 - 22.0,
-                card.y0 + 128.0 + 36.0,
-            );
-            let by = card.y1 - 18.0 - 36.0;
-            let confirm = Rect::new(card.x1 - 18.0 - 130.0, by, card.x1 - 18.0, by + 36.0);
-            let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + 36.0);
-            ModalLayout {
-                card,
-                input,
-                cancel,
-                confirm,
-            }
-        });
+        let (whole_disk_pill, part_segments, part_rows) = self.compute_content_rects(content);
+        let modal = self.compute_modal_layout(v);
 
         // Empty-state Rescan button, only when there is nothing to show.
         let empty_rescan = if self.topo.drives.is_empty() {
@@ -625,9 +540,182 @@ impl DisksApp {
         }
     }
 
-    // ---- drawing primitives -------------------------------------------
-    fn txt(
+    /// Resolve the responsive split (part of [`Self::compute_layout`]): in
+    /// a wide window the drive list is a permanent column beside the
+    /// detail; in a narrow window it collapses to an overlay flap that the
+    /// hamburger summons over the full-width detail.
+    fn compute_split(&self, v: Rect) -> (SplitLayout, Rect, Rect, Option<Rect>, f64, f64) {
+        let split = self.split_layout();
+        match split {
+            SplitLayout::Docked => {
+                // The list column eases in/out by the reveal so toggling it is
+                // smooth; the detail follows the list's trailing edge.
+                let inset = SIDEBAR_W * self.flap.reveal();
+                let sidebar = Rect::new(v.x0, v.y0, v.x0 + inset, v.y1);
+                let detail_x0 = v.x0 + inset + if inset > 0.5 { 0.0 } else { PAD };
+                (
+                    split,
+                    sidebar,
+                    Rect::ZERO,
+                    None,
+                    v.x0 + PAD,
+                    detail_x0.max(v.x0 + PAD),
+                )
+            }
+            SplitLayout::Overlay => {
+                // Detail spans the full width; the list slides in from the
+                // left over a scrim. The hamburger lives in the top bar.
+                let slide = self.flap.slide();
+                let panel_x0 = v.x0 - SIDEBAR_W * (1.0 - slide);
+                let sidebar = Rect::new(panel_x0, v.y0, panel_x0 + SIDEBAR_W, v.y1);
+                let scrim = if self.flap.reveal() > 0.001 {
+                    v
+                } else {
+                    Rect::ZERO
+                };
+                let ham = Rect::new(
+                    PAD,
+                    (TOPBAR_H - 30.0) / 2.0,
+                    PAD + 38.0,
+                    f64::midpoint(TOPBAR_H, 30.0),
+                );
+                (split, sidebar, scrim, Some(ham), panel_x0 + PAD, v.x0 + PAD)
+            }
+        }
+    }
+
+    /// The drive list's "DRIVES" section header, scrolling body, and
+    /// per-drive card rects, anchored to the (possibly sliding) list column
+    /// (part of [`Self::compute_layout`]).
+    fn compute_drive_list_layout(&self, list_x0: f64, v: Rect) -> (Rect, Rect, Vec<Rect>) {
+        let list_header = Rect::new(
+            list_x0,
+            TOPBAR_H + PAD,
+            list_x0 + LIST_W,
+            TOPBAR_H + PAD + LIST_HEADER_H,
+        );
+        let list_body = Rect::new(list_x0, list_header.y1, list_x0 + LIST_W, v.y1 - PAD);
+        let mut cards = Vec::new();
+        let mut cy = list_body.y0 - self.list_scroll;
+        for _ in &self.topo.drives {
+            cards.push(Rect::new(list_x0, cy, list_x0 + LIST_W, cy + CARD_H));
+            cy += CARD_H + CARD_GAP;
+        }
+        (list_header, list_body, cards)
+    }
+
+    /// The action band rects — Mount / Unmount / Format / Benchmark / Eject,
+    /// left-to-right below the identity header, each flagged applicable or
+    /// not for the current drive/partition selection (part of
+    /// [`Self::compute_layout`]).
+    fn compute_action_bar_layout(
         &self,
+        dx0: f64,
+        dx1: f64,
+        header: Rect,
+    ) -> (Rect, Vec<(Rect, ActionKind, bool)>) {
+        let action_bar = Rect::new(dx0, header.y1 + 12.0, dx1, header.y1 + 12.0 + ACTIONBAR_H);
+        let mut action_buttons = Vec::new();
+        let drive_ref = self.drive();
+        let btn_h = 32.0;
+        let btn_y = action_bar.y0 + 34.0;
+        let mut bx = action_bar.x0 + 14.0;
+        for a in ActionKind::bar() {
+            let w = (a.label().len() as f64) * 8.0 + 30.0;
+            let enabled = drive_ref.is_some_and(|d| self.action_enabled(d, a));
+            action_buttons.push((Rect::new(bx, btn_y, bx + w, btn_y + btn_h), a, enabled));
+            bx += w + 10.0;
+        }
+        (action_bar, action_buttons)
+    }
+
+    /// The tab bar rects, below the action band (part of
+    /// [`Self::compute_layout`]).
+    fn compute_tabs_layout(dx0: f64, action_bar: Rect) -> (Vec<(Rect, Tab)>, f64) {
+        let tab_top = action_bar.y1 + 12.0;
+        let mut tabs = Vec::new();
+        let mut tx = dx0;
+        for t in Tab::all() {
+            let w = (t.title().len() as f64) * 8.2 + 28.0;
+            tabs.push((Rect::new(tx, tab_top, tx + w, tab_top + TAB_H), t));
+            tx += w + 6.0;
+        }
+        (tabs, tab_top)
+    }
+
+    /// Content-scoped interactive rects — the whole-disk pill, partition
+    /// map segments, and partition table rows — computed in *unscrolled*
+    /// content coordinates; hit-testing offsets the pointer by
+    /// `content_scroll` (part of [`Self::compute_layout`]).
+    fn compute_content_rects(&self, content: Rect) -> ContentRects {
+        let pill_w = 116.0;
+        let whole_disk_pill = Rect::new(
+            content.x1 - pill_w,
+            content.y0 - 3.0,
+            content.x1,
+            content.y0 + 19.0,
+        );
+        let mut part_segments = Vec::new();
+        let mut part_rows = Vec::new();
+        if let Some(d) = self.drive() {
+            if self.tab == Tab::Overview {
+                let map = Rect::new(
+                    content.x0,
+                    content.y0 + 20.0,
+                    content.x1,
+                    content.y0 + 20.0 + 58.0,
+                );
+                for (r, idx) in partition_segments(d, map) {
+                    if let Some(i) = idx {
+                        part_segments.push((r, i));
+                    }
+                }
+            } else if self.tab == Tab::Partitions {
+                let mut ry = content.y0 + 24.0;
+                for i in 0..d.partitions.len() {
+                    part_rows.push((Rect::new(content.x0, ry - 6.0, content.x1, ry + 30.0), i));
+                    ry += 38.0;
+                }
+            }
+        }
+        (whole_disk_pill, part_segments, part_rows)
+    }
+
+    /// The confirm-modal rects (type-to-confirm for destructive actions), if
+    /// a [`Pending`] action is awaiting confirmation (part of
+    /// [`Self::compute_layout`]).
+    fn compute_modal_layout(&self, v: Rect) -> Option<ModalLayout> {
+        self.pending.map(|_| {
+            let w = 480.0;
+            let h = 258.0;
+            let cx = f64::midpoint(v.x0, v.x1);
+            let cy = f64::midpoint(v.y0, v.y1);
+            let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+            let input = Rect::new(
+                card.x0 + 22.0,
+                card.y0 + 128.0,
+                card.x1 - 22.0,
+                card.y0 + 128.0 + 36.0,
+            );
+            let by = card.y1 - 18.0 - 36.0;
+            let confirm = Rect::new(card.x1 - 18.0 - 130.0, by, card.x1 - 18.0, by + 36.0);
+            let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + 36.0);
+            ModalLayout {
+                card,
+                input,
+                cancel,
+                confirm,
+            }
+        })
+    }
+
+    // ---- drawing primitives -------------------------------------------
+    // Each of `txt` / `txt_right` / `txt_center` takes every value it draws
+    // independently (position, size, colour, weight, ...); bundling them
+    // into a params struct would just move the same field count into a
+    // call-site literal at 74 call sites for no behavioural difference.
+    #[allow(clippy::too_many_arguments, reason = "see the comment above")]
+    fn txt(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
@@ -649,8 +737,8 @@ impl DisksApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_right(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
@@ -661,7 +749,7 @@ impl DisksApp {
         weight: TextWeight,
     ) {
         let (w, _) = tr.measure_weighted(s, size, None, weight);
-        self.txt(
+        Self::txt(
             scene,
             tr,
             s,
@@ -674,8 +762,8 @@ impl DisksApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_center(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
@@ -686,7 +774,7 @@ impl DisksApp {
         weight: TextWeight,
     ) {
         let (w, _) = tr.measure_weighted(s, size, None, weight);
-        self.txt(
+        Self::txt(
             scene,
             tr,
             s,
@@ -753,26 +841,17 @@ impl DisksApp {
         // Hamburger toggle (narrow window only): summons the drive-list flap.
         // It nudges the title rightward so the two never collide.
         let title_x = if let Some(hb) = lay.hamburger {
-            let hov = self.hover_menu;
-            Self::fill_rr(
+            let hov = self.hover_toggle.menu;
+            Button::paint(
                 scene,
                 t,
-                hb,
-                8.0,
-                if hov { c.neutral[3] } else { c.neutral[2] },
+                tr,
+                theme,
+                &ButtonFace::new(hb, "")
+                    .icon(Icon::Menu)
+                    .accessible_name("Show drives")
+                    .hovered(hov),
             );
-            Self::stroke_rr(scene, t, hb, 8.0, c.border_standard, 1.0);
-            let lx = hb.x0 + 11.0;
-            for i in 0..3 {
-                let ly = hb.y0 + 10.0 + f64::from(i) * 5.0;
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    t,
-                    c.text_primary,
-                    None,
-                    &Line::new(Point::new(lx, ly), Point::new(hb.x1 - 11.0, ly)),
-                );
-            }
             hb.x1 + 12.0
         } else {
             PAD
@@ -785,7 +864,7 @@ impl DisksApp {
             fmt_size(self.topo.total_size()),
             fmt_size(self.topo.total_used()),
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &summary,
@@ -800,23 +879,15 @@ impl DisksApp {
         // Refresh button.
         let r = lay.refresh;
         let hov = r.contains(self.last_mouse);
-        Self::fill_rr(
+        Button::paint(
             scene,
             t,
-            r,
-            8.0,
-            if hov { c.neutral[3] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(scene, t, r, 8.0, c.border_standard, 1.0);
-        self.txt_center(
-            scene,
             tr,
-            "↻ Rescan",
-            13.0,
-            c.text_primary,
-            f64::midpoint(r.x0, r.x1),
-            r.y0 + 8.0,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(r, "Rescan")
+                .icon(Icon::Refresh)
+                .text_size(13.0)
+                .hovered(hov),
         );
     }
 
@@ -829,30 +900,8 @@ impl DisksApp {
         t: Affine,
         lay: &Layout,
     ) {
-        let c = &theme.tokens.colors;
         // Section header — anchors the column as an explicit, pickable list.
-        let hr = lay.list_header;
-        self.txt(
-            scene,
-            tr,
-            "DRIVES",
-            11.5,
-            c.text_dim,
-            hr.x0 + 2.0,
-            hr.y0 + 8.0,
-            None,
-            TextWeight::Bold,
-        );
-        self.txt_right(
-            scene,
-            tr,
-            &format!("{}", self.topo.drives.len()),
-            11.5,
-            c.text_dim,
-            hr.x1 - 2.0,
-            hr.y0 + 8.0,
-            TextWeight::Semibold,
-        );
+        self.draw_drive_list_header(scene, tr, theme, lay.list_header);
 
         // Rows, clipped to the scrolling body so a long list can't spill over
         // the header or the window edge.
@@ -870,121 +919,170 @@ impl DisksApp {
             }
             let selected = i == self.selected;
             let hover = self.hover_card == Some(i);
-            let bg = if selected {
-                with_alpha(theme.accent_primary, 46)
-            } else if hover {
-                c.neutral[3]
-            } else {
-                c.surfaces.raised
-            };
-            Self::fill_rr(scene, t, r, 12.0, bg);
-            Self::stroke_rr(
-                scene,
-                t,
-                r,
-                12.0,
-                if selected {
-                    theme.accent_primary
-                } else {
-                    c.border_standard
-                },
-                if selected { 2.0 } else { 1.0 },
-            );
-            // Left accent bar — the unmistakable "this row is selected" cue.
-            if selected {
-                Self::fill_rr(
-                    scene,
-                    t,
-                    Rect::new(r.x0, r.y0 + 10.0, r.x0 + 4.0, r.y1 - 10.0),
-                    2.0,
-                    theme.accent_primary,
-                );
-            }
-
-            let inset = if selected { 8.0 } else { 0.0 };
-            // Kind badge.
-            let badge = Rect::new(
-                r.x0 + 14.0 + inset,
-                r.y0 + 14.0,
-                r.x0 + 14.0 + inset + 52.0,
-                r.y0 + 14.0 + 22.0,
-            );
-            Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
-            self.txt_center(
-                scene,
-                tr,
-                drive.kind.tag(),
-                12.0,
-                Color::WHITE,
-                f64::midpoint(badge.x0, badge.x1),
-                badge.y0 + 4.0,
-                TextWeight::Bold,
-            );
-
-            // Model + name + size.
-            let tx = r.x0 + 14.0 + inset;
-            self.txt(
-                scene,
-                tr,
-                &drive.model,
-                15.0,
-                c.text_primary,
-                tx,
-                r.y0 + 42.0,
-                Some((r.width() - 28.0 - inset) as f32),
-                TextWeight::Semibold,
-            );
-            let sub = format!("/dev/{}  ·  {}", drive.name, fmt_size(drive.size));
-            self.txt(
-                scene,
-                tr,
-                &sub,
-                12.0,
-                c.text_dim,
-                tx,
-                r.y0 + 63.0,
-                None,
-                TextWeight::Regular,
-            );
-
-            // Mini usage bar across drive.
-            let used_frac = if drive.size > 0 {
-                drive.used_total() as f64 / drive.size as f64
-            } else {
-                0.0
-            };
-            let barr = Rect::new(tx, r.y1 - 16.0, r.x1 - 14.0, r.y1 - 10.0);
-            Self::bar(
-                scene,
-                t,
-                barr,
-                used_frac,
-                c.neutral[4],
-                usage_color(theme, used_frac),
-            );
-
-            // Health dot + short label at a glance.
-            let status = drive.smart_status();
-            let dot_c = status_color(theme, status);
-            let dot = Rect::new(r.x1 - 26.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 28.0);
-            Self::fill_rr(scene, t, dot, 5.0, dot_c);
-            self.txt_right(
-                scene,
-                tr,
-                status.label(),
-                10.5,
-                dot_c,
-                r.x1 - 32.0,
-                r.y0 + 17.0,
-                TextWeight::Semibold,
-            );
+            Self::draw_drive_row(scene, tr, theme, t, r, drive, selected, hover);
         }
         scene.pop_layer();
     }
 
+    /// The "DRIVES" section header + drive count (part of
+    /// [`Self::draw_drive_list`]).
+    fn draw_drive_list_header(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hr: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::txt(
+            scene,
+            tr,
+            "DRIVES",
+            11.5,
+            c.text_dim,
+            hr.x0 + 2.0,
+            hr.y0 + 8.0,
+            None,
+            TextWeight::Bold,
+        );
+        Self::txt_right(
+            scene,
+            tr,
+            &format!("{}", self.topo.drives.len()),
+            11.5,
+            c.text_dim,
+            hr.x1 - 2.0,
+            hr.y0 + 8.0,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// One drive card: kind badge, model/name/size, usage bar, and health
+    /// dot (part of [`Self::draw_drive_list`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_drive_row(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        r: Rect,
+        drive: &Drive,
+        selected: bool,
+        hover: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let bg = if selected {
+            with_alpha(theme.accent_primary, 46)
+        } else if hover {
+            c.neutral[3]
+        } else {
+            c.surfaces.raised
+        };
+        Self::fill_rr(scene, t, r, 12.0, bg);
+        Self::stroke_rr(
+            scene,
+            t,
+            r,
+            12.0,
+            if selected {
+                theme.accent_primary
+            } else {
+                c.border_standard
+            },
+            if selected { 2.0 } else { 1.0 },
+        );
+        // Left accent bar — the unmistakable "this row is selected" cue.
+        if selected {
+            Self::fill_rr(
+                scene,
+                t,
+                Rect::new(r.x0, r.y0 + 10.0, r.x0 + 4.0, r.y1 - 10.0),
+                2.0,
+                theme.accent_primary,
+            );
+        }
+
+        let inset = if selected { 8.0 } else { 0.0 };
+        // Kind badge.
+        let badge = Rect::new(
+            r.x0 + 14.0 + inset,
+            r.y0 + 14.0,
+            r.x0 + 14.0 + inset + 52.0,
+            r.y0 + 14.0 + 22.0,
+        );
+        Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
+        Self::txt_center(
+            scene,
+            tr,
+            drive.kind.tag(),
+            12.0,
+            Color::WHITE,
+            f64::midpoint(badge.x0, badge.x1),
+            badge.y0 + 4.0,
+            TextWeight::Bold,
+        );
+
+        // Model + name + size.
+        let tx = r.x0 + 14.0 + inset;
+        Self::txt(
+            scene,
+            tr,
+            &drive.model,
+            15.0,
+            c.text_primary,
+            tx,
+            r.y0 + 42.0,
+            Some((r.width() - 28.0 - inset) as f32),
+            TextWeight::Semibold,
+        );
+        let sub = format!("/dev/{}  ·  {}", drive.name, fmt_size(drive.size));
+        Self::txt(
+            scene,
+            tr,
+            &sub,
+            12.0,
+            c.text_dim,
+            tx,
+            r.y0 + 63.0,
+            None,
+            TextWeight::Regular,
+        );
+
+        // Mini usage bar across drive.
+        let used_frac = if drive.size > 0 {
+            drive.used_total() as f64 / drive.size as f64
+        } else {
+            0.0
+        };
+        let barr = Rect::new(tx, r.y1 - 16.0, r.x1 - 14.0, r.y1 - 10.0);
+        Self::bar(
+            scene,
+            t,
+            barr,
+            used_frac,
+            c.neutral[4],
+            usage_color(theme, used_frac),
+        );
+
+        // Health dot + short label at a glance.
+        let status = drive.smart_status();
+        let dot_c = status_color(theme, status);
+        let dot = Rect::new(r.x1 - 26.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 28.0);
+        Self::fill_rr(scene, t, dot, 5.0, dot_c);
+        Self::txt_right(
+            scene,
+            tr,
+            status.label(),
+            10.5,
+            dot_c,
+            r.x1 - 32.0,
+            r.y0 + 17.0,
+            TextWeight::Semibold,
+        );
+    }
+
     // ---- detail header -------------------------------------------------
     fn draw_header(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -998,7 +1096,7 @@ impl DisksApp {
         Self::stroke_rr(scene, t, h, 14.0, c.border_standard, 1.0);
 
         let tx = h.x0 + 20.0;
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &drive.model,
@@ -1022,7 +1120,7 @@ impl DisksApp {
                 .map(|s| format!("  ·  S/N {s}"))
                 .unwrap_or_default(),
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &meta,
@@ -1037,7 +1135,7 @@ impl DisksApp {
         // Health + connection chips.
         let chip_y = h.y0 + 62.0;
         let status = drive.smart_status();
-        self.draw_chip(
+        Self::draw_chip(
             scene,
             tr,
             theme,
@@ -1052,9 +1150,9 @@ impl DisksApp {
             .clone()
             .unwrap_or_else(|| "—".into())
             .to_uppercase();
-        self.draw_chip(scene, tr, theme, t, tx + 132.0, chip_y, &tran, c.neutral[5]);
+        Self::draw_chip(scene, tr, theme, t, tx + 132.0, chip_y, &tran, c.neutral[5]);
         if drive.removable {
-            self.draw_chip(
+            Self::draw_chip(
                 scene,
                 tr,
                 theme,
@@ -1085,7 +1183,23 @@ impl DisksApp {
         Self::fill_rr(scene, t, bar, 12.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, bar, 12.0, c.border_standard, 1.0);
 
-        // Target line: exactly what the buttons below operate on.
+        self.draw_action_bar_target(scene, tr, theme, t, bar, drive);
+        self.draw_action_bar_buttons(scene, tr, theme, t, lay);
+        self.draw_action_bar_caption(scene, tr, theme, bar);
+    }
+
+    /// The target line: exactly what the buttons below operate on (part of
+    /// [`Self::draw_action_bar`]).
+    fn draw_action_bar_target(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        bar: Rect,
+        drive: &Drive,
+    ) {
+        let c = &theme.tokens.colors;
         let (scope, detail, scope_c) = match self.part() {
             Some(p) => (
                 "PARTITION",
@@ -1108,7 +1222,7 @@ impl DisksApp {
             bar.y0 + 9.0 + 18.0,
         );
         Self::fill_rr(scene, t, tag, 6.0, with_alpha(scope_c, 46));
-        self.txt(
+        Self::txt(
             scene,
             tr,
             scope,
@@ -1119,7 +1233,7 @@ impl DisksApp {
             None,
             TextWeight::Bold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &detail,
@@ -1130,15 +1244,25 @@ impl DisksApp {
             Some((bar.width() - (tag.x1 - bar.x0) - 24.0) as f32),
             TextWeight::Medium,
         );
+    }
 
-        // Buttons.
+    /// The action buttons row (part of [`Self::draw_action_bar`]).
+    fn draw_action_bar_buttons(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        lay: &Layout,
+    ) {
+        let c = &theme.tokens.colors;
         for (r, a, enabled) in &lay.action_buttons {
             let hov = *enabled && self.hover_action == Some(*a);
             if !enabled {
                 // Disabled — clearly inert.
                 Self::fill_rr(scene, t, *r, 8.0, with_alpha(c.neutral[2], 120));
                 Self::stroke_rr(scene, t, *r, 8.0, with_alpha(c.border_standard, 120), 1.0);
-                self.txt_center(
+                Self::txt_center(
                     scene,
                     tr,
                     a.label(),
@@ -1169,7 +1293,7 @@ impl DisksApp {
             };
             Self::fill_rr(scene, t, *r, 8.0, bg);
             Self::stroke_rr(scene, t, *r, 8.0, border, 1.0);
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 a.label(),
@@ -1180,8 +1304,18 @@ impl DisksApp {
                 TextWeight::Medium,
             );
         }
+    }
 
-        // Caption: describe the hovered action, or the current scope by default.
+    /// Describe the hovered action, or the current scope by default (part
+    /// of [`Self::draw_action_bar`]).
+    fn draw_action_bar_caption(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         let caption = match self.hover_action {
             Some(a) => a.describe().to_string(),
             None => match self.part() {
@@ -1195,7 +1329,7 @@ impl DisksApp {
                 }
             },
         };
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &caption,
@@ -1208,8 +1342,12 @@ impl DisksApp {
         );
     }
 
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/w/r are the standard graphics convention: transform, position, measured width, resulting rect"
+    )]
     fn draw_chip(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         _theme: &Theme,
@@ -1223,7 +1361,7 @@ impl DisksApp {
         let r = Rect::new(x, y, x + f64::from(w) + 22.0, y + 24.0);
         Self::fill_rr(scene, t, r, 12.0, with_alpha(color, 38));
         Self::stroke_rr(scene, t, r, 12.0, with_alpha(color, 120), 1.0);
-        self.txt(
+        Self::txt(
             scene,
             tr,
             label,
@@ -1282,7 +1420,7 @@ impl DisksApp {
         let c = &theme.tokens.colors;
         let area = lay.content;
         // Section heading + "Whole disk" selector (top-right).
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "PARTITION MAP",
@@ -1293,7 +1431,7 @@ impl DisksApp {
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "— click a partition to select it",
@@ -1306,7 +1444,7 @@ impl DisksApp {
         );
         let pill = lay.whole_disk_pill;
         let whole = self.part().is_none();
-        let pill_hov = self.hover_whole_disk;
+        let pill_hov = self.hover_toggle.whole_disk;
         let pill_c = theme.accent_primary;
         Self::fill_rr(
             scene,
@@ -1329,7 +1467,7 @@ impl DisksApp {
             if whole { pill_c } else { c.border_standard },
             if whole { 1.6 } else { 1.0 },
         );
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "◍ Whole disk",
@@ -1344,7 +1482,7 @@ impl DisksApp {
         self.draw_partition_map(scene, tr, theme, t, map, drive);
         // Legend.
         let legend_y = map.y1 + 12.0;
-        self.draw_legend(scene, tr, theme, t, area.x0, legend_y, area.x1, drive);
+        Self::draw_legend(scene, tr, theme, t, area.x0, legend_y, area.x1, drive);
 
         // Two columns below: capacity (left) + SMART summary (right). Sized to
         // their natural content height (not the viewport) so scrolling can
@@ -1357,7 +1495,7 @@ impl DisksApp {
         let right = Rect::new(left.x1 + gap, cols_top, area.x1, cols_bottom);
 
         self.draw_capacity(scene, tr, theme, t, left, drive);
-        self.draw_smart_card(scene, tr, theme, t, right, drive);
+        Self::draw_smart_card(scene, tr, theme, t, right, drive);
     }
 
     /// Natural pixel height of the current tab's content, used to size the
@@ -1397,7 +1535,9 @@ impl DisksApp {
             let is_sel = idx.is_some() && idx == sel;
             let is_hov = idx.is_some() && idx == self.hover_part;
             if let Some(i) = idx {
-                let p = &drive.partitions[i];
+                let Some(p) = drive.partitions.get(i) else {
+                    continue;
+                };
                 let mut col = role_color(theme, p.role());
                 // Dim the unselected segments once something is selected so
                 // the chosen partition reads as the focus.
@@ -1411,7 +1551,7 @@ impl DisksApp {
                     Self::fill_rr(scene, t, used_r, 2.0, with_alpha(Color::BLACK, 70));
                 }
                 if seg.width() > 64.0 {
-                    self.txt(
+                    Self::txt(
                         scene,
                         tr,
                         &p.display_label(),
@@ -1422,7 +1562,7 @@ impl DisksApp {
                         Some((seg.width() - 12.0) as f32),
                         TextWeight::Semibold,
                     );
-                    self.txt(
+                    Self::txt(
                         scene,
                         tr,
                         &fmt_size(p.size),
@@ -1438,7 +1578,7 @@ impl DisksApp {
                 // Free tail.
                 Self::fill_rr(scene, t, seg, radius, role_color(theme, PartRole::Free));
                 if seg.width() > 64.0 {
-                    self.txt(
+                    Self::txt(
                         scene,
                         tr,
                         "Free",
@@ -1449,7 +1589,7 @@ impl DisksApp {
                         None,
                         TextWeight::Semibold,
                     );
-                    self.txt(
+                    Self::txt(
                         scene,
                         tr,
                         &fmt_size(drive.free_tail()),
@@ -1479,8 +1619,8 @@ impl DisksApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_legend(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1496,54 +1636,49 @@ impl DisksApp {
         // Flow the swatches left-to-right, wrapping to a second row (the layout
         // budgets two rows under the map) with x reset to the left margin — so
         // a drive with many partitions never runs its legend off the edge.
-        let mut place = |label: String,
-                         color: Color,
-                         sub: String,
-                         this: &Self,
-                         scene: &mut Scene,
-                         tr: &mut TextRenderer| {
-            let advance = ((label.len().max(sub.len()) as f64) * 6.5 + 34.0).max(120.0);
-            if x + advance > x1 && x > x0 && yy < y + 22.0 {
-                x = x0;
-                yy = y + 22.0;
-            }
-            // Past the two-row budget the remaining entries would overlap the
-            // capacity/SMART columns below — stop rather than draw garbage.
-            if yy >= y + 22.0 && x + advance > x1 && x > x0 {
-                return;
-            }
-            let sw = Rect::new(x, yy + 1.0, x + 12.0, yy + 13.0);
-            Self::fill_rr(scene, t, sw, 3.0, color);
-            this.txt(
-                scene,
-                tr,
-                &label,
-                11.5,
-                c.text_primary,
-                x + 18.0,
-                yy,
-                None,
-                TextWeight::Medium,
-            );
-            this.txt(
-                scene,
-                tr,
-                &sub,
-                11.0,
-                c.text_dim,
-                x + 18.0,
-                yy + 14.0,
-                None,
-                TextWeight::Regular,
-            );
-            x += advance;
-        };
+        let mut place =
+            |label: String, color: Color, sub: String, scene: &mut Scene, tr: &mut TextRenderer| {
+                let advance = ((label.len().max(sub.len()) as f64) * 6.5 + 34.0).max(120.0);
+                if x + advance > x1 && x > x0 && yy < y + 22.0 {
+                    x = x0;
+                    yy = y + 22.0;
+                }
+                // Past the two-row budget the remaining entries would overlap the
+                // capacity/SMART columns below — stop rather than draw garbage.
+                if yy >= y + 22.0 && x + advance > x1 && x > x0 {
+                    return;
+                }
+                let sw = Rect::new(x, yy + 1.0, x + 12.0, yy + 13.0);
+                Self::fill_rr(scene, t, sw, 3.0, color);
+                Self::txt(
+                    scene,
+                    tr,
+                    &label,
+                    11.5,
+                    c.text_primary,
+                    x + 18.0,
+                    yy,
+                    None,
+                    TextWeight::Medium,
+                );
+                Self::txt(
+                    scene,
+                    tr,
+                    &sub,
+                    11.0,
+                    c.text_dim,
+                    x + 18.0,
+                    yy + 14.0,
+                    None,
+                    TextWeight::Regular,
+                );
+                x += advance;
+            };
         for p in &drive.partitions {
             place(
                 p.display_label(),
                 role_color(theme, p.role()),
                 format!("{}  {}", p.role().legend(), fmt_size(p.size)),
-                self,
                 scene,
                 tr,
             );
@@ -1553,7 +1688,6 @@ impl DisksApp {
                 "Free".into(),
                 role_color(theme, PartRole::Free),
                 fmt_size(drive.free_tail()),
-                self,
                 scene,
                 tr,
             );
@@ -1570,7 +1704,7 @@ impl DisksApp {
         drive: &Drive,
     ) {
         let c = &theme.tokens.colors;
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "FILESYSTEMS & USAGE",
@@ -1588,7 +1722,7 @@ impl DisksApp {
             .filter(|p| p.mountpoint.is_some())
             .collect();
         if mounted.is_empty() {
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 "No mounted filesystems.",
@@ -1619,7 +1753,7 @@ impl DisksApp {
                 );
             }
             let mp = p.mountpoint.clone().unwrap_or_default();
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 &p.display_label(),
@@ -1630,7 +1764,7 @@ impl DisksApp {
                 None,
                 TextWeight::Semibold,
             );
-            self.txt_right(
+            Self::txt_right(
                 scene,
                 tr,
                 &mp,
@@ -1657,7 +1791,7 @@ impl DisksApp {
                     p.fstype.clone().unwrap_or_default()
                 ),
             };
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 &detail,
@@ -1673,7 +1807,6 @@ impl DisksApp {
     }
 
     fn draw_smart_card(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1687,7 +1820,7 @@ impl DisksApp {
         let pad = 16.0;
         let x = area.x0 + pad;
         let status = drive.smart_status();
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "SMART HEALTH",
@@ -1699,30 +1832,10 @@ impl DisksApp {
             TextWeight::Semibold,
         );
 
-        // Status pill.
-        let sc = status_color(theme, status);
-        let pill = Rect::new(
-            x,
-            area.y0 + pad + 22.0,
-            x + 150.0,
-            area.y0 + pad + 22.0 + 30.0,
-        );
-        Self::fill_rr(scene, t, pill, 8.0, with_alpha(sc, 45));
-        Self::stroke_rr(scene, t, pill, 8.0, sc, 1.2);
-        self.txt(
-            scene,
-            tr,
-            status.label(),
-            15.0,
-            sc,
-            x + 12.0,
-            pill.y0 + 7.0,
-            None,
-            TextWeight::Bold,
-        );
+        let pill = Self::draw_smart_status_pill(scene, tr, theme, t, area, x, pad, status);
 
         let Some(smart) = &drive.smart else {
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 "No SMART data available.",
@@ -1743,7 +1856,7 @@ impl DisksApp {
                 .detail
                 .as_deref()
                 .unwrap_or("No SMART data available.");
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 note,
@@ -1757,10 +1870,66 @@ impl DisksApp {
             return;
         }
 
+        Self::draw_smart_card_body(scene, tr, theme, t, area, x, pad, pill, smart);
+    }
+
+    /// The status pill under the "SMART HEALTH" label (part of
+    /// [`Self::draw_smart_card`]). Returns the pill's rect so the caller can
+    /// anchor the rest of the card beneath it.
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_smart_status_pill(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        x: f64,
+        pad: f64,
+        status: SmartStatus,
+    ) -> Rect {
+        let sc = status_color(theme, status);
+        let pill = Rect::new(
+            x,
+            area.y0 + pad + 22.0,
+            x + 150.0,
+            area.y0 + pad + 22.0 + 30.0,
+        );
+        Self::fill_rr(scene, t, pill, 8.0, with_alpha(sc, 45));
+        Self::stroke_rr(scene, t, pill, 8.0, sc, 1.2);
+        Self::txt(
+            scene,
+            tr,
+            status.label(),
+            15.0,
+            sc,
+            x + 12.0,
+            pill.y0 + 7.0,
+            None,
+            TextWeight::Bold,
+        );
+        pill
+    }
+
+    /// The temperature gauge + stat rows below the status pill, once SMART
+    /// telemetry is known to have at least one usable value (part of
+    /// [`Self::draw_smart_card`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_smart_card_body(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        x: f64,
+        pad: f64,
+        pill: Rect,
+        smart: &SmartInfo,
+    ) {
+        let c = &theme.tokens.colors;
         // Temperature gauge.
         let mut yy = pill.y1 + 18.0;
         if let Some(temp) = smart.temp_c {
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 "Temperature",
@@ -1771,7 +1940,7 @@ impl DisksApp {
                 None,
                 TextWeight::Regular,
             );
-            self.txt_right(
+            Self::txt_right(
                 scene,
                 tr,
                 &format!("{temp} °C"),
@@ -1788,76 +1957,56 @@ impl DisksApp {
         }
 
         // Stat rows.
-        let stat = |label: &str,
-                    val: String,
-                    this: &Self,
-                    scene: &mut Scene,
-                    tr: &mut TextRenderer,
-                    yy: &mut f64| {
-            if *yy > area.y1 - 22.0 {
-                return;
-            }
-            this.txt(
-                scene,
-                tr,
-                label,
-                12.0,
-                c.text_dim,
-                x,
-                *yy,
-                None,
-                TextWeight::Regular,
-            );
-            this.txt_right(
-                scene,
-                tr,
-                &val,
-                12.5,
-                c.text_primary,
-                area.x1 - pad,
-                *yy,
-                TextWeight::Semibold,
-            );
-            *yy += 22.0;
-        };
+        let stat =
+            |label: &str, val: String, scene: &mut Scene, tr: &mut TextRenderer, yy: &mut f64| {
+                if *yy > area.y1 - 22.0 {
+                    return;
+                }
+                Self::txt(
+                    scene,
+                    tr,
+                    label,
+                    12.0,
+                    c.text_dim,
+                    x,
+                    *yy,
+                    None,
+                    TextWeight::Regular,
+                );
+                Self::txt_right(
+                    scene,
+                    tr,
+                    &val,
+                    12.5,
+                    c.text_primary,
+                    area.x1 - pad,
+                    *yy,
+                    TextWeight::Semibold,
+                );
+                *yy += 22.0;
+            };
         if let Some(h) = smart.power_on_hours {
             stat(
                 "Power-on time",
                 format!("{} ({} h)", fmt_hours(h), h),
-                self,
                 scene,
                 tr,
                 &mut yy,
             );
         }
         if let Some(pc) = smart.power_cycles {
-            stat("Power cycles", pc.to_string(), self, scene, tr, &mut yy);
+            stat("Power cycles", pc.to_string(), scene, tr, &mut yy);
         }
         if let Some(re) = smart.reallocated {
-            stat(
-                "Reallocated sectors",
-                re.to_string(),
-                self,
-                scene,
-                tr,
-                &mut yy,
-            );
+            stat("Reallocated sectors", re.to_string(), scene, tr, &mut yy);
         }
         if let Some(pu) = smart.pct_used {
-            stat(
-                "Wear (NVMe used)",
-                format!("{pu} %"),
-                self,
-                scene,
-                tr,
-                &mut yy,
-            );
+            stat("Wear (NVMe used)", format!("{pu} %"), scene, tr, &mut yy);
         }
         if let Some(w) = smart.written_gb {
             stat(
                 "Host writes",
                 fmt_size((w as u64) * 1_000_000_000),
-                self,
                 scene,
                 tr,
                 &mut yy,
@@ -1867,7 +2016,6 @@ impl DisksApp {
 
     // ---- content: SMART tab -------------------------------------------
     fn draw_smart_tab(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1875,14 +2023,38 @@ impl DisksApp {
         area: Rect,
         drive: &Drive,
     ) {
-        let c = &theme.tokens.colors;
         let status = drive.smart_status();
+        let banner = Self::draw_smart_tab_banner(scene, tr, theme, t, area, drive, status);
+
+        let Some(smart) = &drive.smart else {
+            return;
+        };
+
+        let tiles_top = banner.y1 + 16.0;
+        let tile_h = 78.0;
+        Self::draw_smart_tiles(scene, tr, theme, t, area, smart, tiles_top, tile_h);
+
+        let table_top = tiles_top + tile_h + 18.0;
+        Self::draw_smart_attr_table(scene, tr, theme, t, area, smart, table_top);
+    }
+
+    /// The overall self-assessment banner (part of [`Self::draw_smart_tab`]).
+    /// Returns its rect so the caller can anchor the stat tiles beneath it.
+    fn draw_smart_tab_banner(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        drive: &Drive,
+        status: SmartStatus,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
         let sc = status_color(theme, status);
-        // Banner.
         let banner = Rect::new(area.x0, area.y0, area.x1, area.y0 + 64.0);
         Self::fill_rr(scene, t, banner, 12.0, with_alpha(sc, 38));
         Self::stroke_rr(scene, t, banner, 12.0, with_alpha(sc, 120), 1.0);
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &format!("● Overall self-assessment: {}", status.label()),
@@ -1914,7 +2086,7 @@ impl DisksApp {
         } else {
             generic
         };
-        self.txt(
+        Self::txt(
             scene,
             tr,
             sub,
@@ -1925,34 +2097,53 @@ impl DisksApp {
             Some((banner.width() - 36.0) as f32),
             TextWeight::Regular,
         );
+        banner
+    }
 
-        let Some(smart) = &drive.smart else {
-            return;
-        };
-
-        // Stat tiles row.
-        let tiles_top = banner.y1 + 16.0;
-        let tile_h = 78.0;
+    /// The temperature / power-on / power-cycles / reallocated / wear stat
+    /// tiles row (part of [`Self::draw_smart_tab`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_smart_tiles(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        smart: &SmartInfo,
+        tiles_top: f64,
+        tile_h: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let tiles: Vec<(String, String)> = vec![
             (
                 "Temperature".into(),
-                smart.temp_c.map_or("—".into(), |v| format!("{v} °C")),
+                smart
+                    .temp_c
+                    .map_or_else(|| "—".into(), |v| format!("{v} °C")),
             ),
             (
                 "Power-on hours".into(),
-                smart.power_on_hours.map_or("—".into(), |v| v.to_string()),
+                smart
+                    .power_on_hours
+                    .map_or_else(|| "—".into(), |v| v.to_string()),
             ),
             (
                 "Power cycles".into(),
-                smart.power_cycles.map_or("—".into(), |v| v.to_string()),
+                smart
+                    .power_cycles
+                    .map_or_else(|| "—".into(), |v| v.to_string()),
             ),
             (
                 "Reallocated".into(),
-                smart.reallocated.map_or("—".into(), |v| v.to_string()),
+                smart
+                    .reallocated
+                    .map_or_else(|| "—".into(), |v| v.to_string()),
             ),
             (
                 "Wear used".into(),
-                smart.pct_used.map_or("—".into(), |v| format!("{v} %")),
+                smart
+                    .pct_used
+                    .map_or_else(|| "—".into(), |v| format!("{v} %")),
             ),
         ];
         let n = tiles.len() as f64;
@@ -1963,7 +2154,7 @@ impl DisksApp {
             let r = Rect::new(tx, tiles_top, tx + tw, tiles_top + tile_h);
             Self::fill_rr(scene, t, r, 10.0, c.surfaces.raised);
             Self::stroke_rr(scene, t, r, 10.0, c.border_standard, 1.0);
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 label,
@@ -1974,7 +2165,7 @@ impl DisksApp {
                 None,
                 TextWeight::Medium,
             );
-            self.txt(
+            Self::txt(
                 scene,
                 tr,
                 val,
@@ -1986,10 +2177,21 @@ impl DisksApp {
                 TextWeight::Bold,
             );
         }
+    }
 
-        // Attribute table.
-        let table_top = tiles_top + tile_h + 18.0;
-        self.txt(
+    /// The SMART attributes table (part of [`Self::draw_smart_tab`]).
+    /// The column headers for the SMART attribute table (part of
+    /// [`Self::draw_smart_attr_table`]). Returns `(header_y, id_x, name_x,
+    /// val_x, stat_x)` so each row aligns beneath them.
+    fn draw_smart_attr_table_header(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        table_top: f64,
+    ) -> (f64, f64, f64, f64, f64) {
+        let c = &theme.tokens.colors;
+        Self::txt(
             scene,
             tr,
             "SMART ATTRIBUTES",
@@ -2005,7 +2207,7 @@ impl DisksApp {
         let name_x = area.x0 + 54.0;
         let val_x = area.x1 - 220.0;
         let stat_x = area.x1 - 90.0;
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "ID",
@@ -2016,7 +2218,7 @@ impl DisksApp {
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "ATTRIBUTE",
@@ -2027,7 +2229,7 @@ impl DisksApp {
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "VALUE",
@@ -2038,7 +2240,7 @@ impl DisksApp {
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "STATUS",
@@ -2049,59 +2251,103 @@ impl DisksApp {
             None,
             TextWeight::Semibold,
         );
+        (header_y, id_x, name_x, val_x, stat_x)
+    }
+
+    /// One row of the SMART attribute table (part of
+    /// [`Self::draw_smart_attr_table`]). `xs` is `(id_x, name_x, val_x,
+    /// stat_x)` from [`Self::draw_smart_attr_table_header`].
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_smart_attr_row(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        i: usize,
+        a: &SmartAttr,
+        xs: (f64, f64, f64, f64),
+        ry: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let (id_x, name_x, val_x, stat_x) = xs;
+        if i.is_multiple_of(2) {
+            Self::fill_rr(
+                scene,
+                t,
+                Rect::new(area.x0, ry - 4.0, area.x1, ry + 20.0),
+                4.0,
+                with_alpha(Color::WHITE, 8),
+            );
+        }
+        Self::txt(
+            scene,
+            tr,
+            &a.id.to_string(),
+            12.0,
+            c.text_dim,
+            id_x,
+            ry,
+            None,
+            TextWeight::Regular,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &a.name,
+            12.5,
+            c.text_primary,
+            name_x,
+            ry,
+            Some((val_x - name_x - 12.0) as f32),
+            TextWeight::Regular,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &a.value,
+            12.5,
+            c.text_primary,
+            val_x,
+            ry,
+            None,
+            TextWeight::Medium,
+        );
+        let (sl, scl) = match a.severity {
+            AttrSeverity::Ok => ("OK", c.semantic.success),
+            AttrSeverity::Warn => ("WARN", c.semantic.warning),
+            AttrSeverity::Crit => ("CRIT", c.semantic.danger),
+        };
+        Self::txt(scene, tr, sl, 11.5, scl, stat_x, ry, None, TextWeight::Bold);
+    }
+
+    fn draw_smart_attr_table(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        smart: &SmartInfo,
+        table_top: f64,
+    ) {
+        let (header_y, id_x, name_x, val_x, stat_x) =
+            Self::draw_smart_attr_table_header(scene, tr, theme, area, table_top);
         let mut ry = header_y + 22.0;
         for (i, a) in smart.attrs.iter().enumerate() {
             if ry > area.y1 - 20.0 {
                 break;
             }
-            if i % 2 == 0 {
-                Self::fill_rr(
-                    scene,
-                    t,
-                    Rect::new(area.x0, ry - 4.0, area.x1, ry + 20.0),
-                    4.0,
-                    with_alpha(Color::WHITE, 8),
-                );
-            }
-            self.txt(
+            Self::draw_smart_attr_row(
                 scene,
                 tr,
-                &a.id.to_string(),
-                12.0,
-                c.text_dim,
-                id_x,
+                theme,
+                t,
+                area,
+                i,
+                a,
+                (id_x, name_x, val_x, stat_x),
                 ry,
-                None,
-                TextWeight::Regular,
             );
-            self.txt(
-                scene,
-                tr,
-                &a.name,
-                12.5,
-                c.text_primary,
-                name_x,
-                ry,
-                Some((val_x - name_x - 12.0) as f32),
-                TextWeight::Regular,
-            );
-            self.txt(
-                scene,
-                tr,
-                &a.value,
-                12.5,
-                c.text_primary,
-                val_x,
-                ry,
-                None,
-                TextWeight::Medium,
-            );
-            let (sl, scl) = match a.severity {
-                AttrSeverity::Ok => ("OK", c.semantic.success),
-                AttrSeverity::Warn => ("WARN", c.semantic.warning),
-                AttrSeverity::Crit => ("CRIT", c.semantic.danger),
-            };
-            self.txt(scene, tr, sl, 11.5, scl, stat_x, ry, None, TextWeight::Bold);
             ry += 24.0;
         }
     }
@@ -2116,199 +2362,279 @@ impl DisksApp {
         area: Rect,
         drive: &Drive,
     ) {
+        let cols = Self::draw_partitions_header(scene, tr, theme, area);
+
+        let mut ry = area.y0 + 24.0;
+        for (i, p) in drive.partitions.iter().enumerate() {
+            let selected = self.selected_part == Some(i);
+            let hover = self.hover_part == Some(i);
+            Self::draw_partitions_row(scene, tr, theme, t, area, &cols, ry, i, p, selected, hover);
+            ry += 38.0;
+        }
+    }
+
+    /// The column headers (part of [`Self::draw_partitions_tab`]). Returns
+    /// the resolved column x-positions so each row aligns to them.
+    fn draw_partitions_header(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) -> PartitionColumns {
         let c = &theme.tokens.colors;
-        let name_x = area.x0 + 6.0;
-        let label_x = area.x0 + 140.0;
-        let fs_x = area.x0 + 290.0;
-        let size_x = area.x0 + 380.0;
-        let mount_x = area.x0 + 470.0;
-        let used_x = area.x1 - 6.0;
+        let cols = PartitionColumns {
+            name: area.x0 + 6.0,
+            label: area.x0 + 140.0,
+            fs: area.x0 + 290.0,
+            size: area.x0 + 380.0,
+            mount: area.x0 + 470.0,
+            used: area.x1 - 6.0,
+        };
         let hy = area.y0;
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "DEVICE",
             11.0,
             c.text_dim,
-            name_x,
+            cols.name,
             hy,
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "LABEL",
             11.0,
             c.text_dim,
-            label_x,
+            cols.label,
             hy,
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "FS",
             11.0,
             c.text_dim,
-            fs_x,
+            cols.fs,
             hy,
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "SIZE",
             11.0,
             c.text_dim,
-            size_x,
+            cols.size,
             hy,
             None,
             TextWeight::Semibold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             "MOUNT",
             11.0,
             c.text_dim,
-            mount_x,
+            cols.mount,
             hy,
             None,
             TextWeight::Semibold,
         );
-        self.txt_right(
+        Self::txt_right(
             scene,
             tr,
             "USED",
             11.0,
             c.text_dim,
-            used_x,
+            cols.used,
             hy,
             TextWeight::Semibold,
         );
+        cols
+    }
 
-        let mut ry = hy + 24.0;
-        for (i, p) in drive.partitions.iter().enumerate() {
-            let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry + 30.0);
-            let selected = self.selected_part == Some(i);
-            let hover = self.hover_part == Some(i);
-            if selected {
-                Self::fill_rr(scene, t, rowr, 6.0, with_alpha(theme.accent_primary, 40));
-                Self::stroke_rr(scene, t, rowr, 6.0, theme.accent_primary, 1.4);
-            } else if hover {
-                Self::fill_rr(scene, t, rowr, 6.0, c.neutral[3]);
-            } else if i % 2 == 0 {
-                Self::fill_rr(scene, t, rowr, 6.0, with_alpha(Color::WHITE, 8));
-            }
-            // role swatch (thickened when selected → doubles as the accent bar)
-            let sw = Rect::new(
-                area.x0,
-                ry + 2.0,
-                area.x0 + if selected { 5.0 } else { 4.0 },
-                ry + 18.0,
-            );
-            Self::fill_rr(
-                scene,
-                t,
-                sw,
-                2.0,
-                if selected {
-                    theme.accent_primary
-                } else {
-                    role_color(theme, p.role())
-                },
-            );
-            self.txt(
-                scene,
-                tr,
-                &p.name,
-                13.0,
-                c.text_primary,
-                name_x,
-                ry,
-                None,
-                TextWeight::Medium,
-            );
-            self.txt(
-                scene,
-                tr,
-                &p.label.clone().unwrap_or_else(|| "—".into()),
-                12.5,
-                c.text_dim,
-                label_x,
-                ry,
-                Some((fs_x - label_x - 8.0) as f32),
-                TextWeight::Regular,
-            );
-            self.txt(
-                scene,
-                tr,
-                &p.fstype.clone().unwrap_or_else(|| "—".into()),
-                12.5,
-                c.text_dim,
-                fs_x,
-                ry,
-                None,
-                TextWeight::Regular,
-            );
-            self.txt(
-                scene,
-                tr,
-                &fmt_size(p.size),
-                12.5,
-                c.text_primary,
-                size_x,
-                ry,
-                None,
-                TextWeight::Regular,
-            );
-            self.txt(
-                scene,
-                tr,
-                &p.mountpoint.clone().unwrap_or_else(|| "not mounted".into()),
-                12.5,
-                c.text_dim,
-                mount_x,
-                ry,
-                Some((used_x - mount_x - 70.0) as f32),
-                TextWeight::Regular,
-            );
-            // usage mini-bar + pct on the right
-            if let Some(f) = p.used_frac() {
-                let barr = Rect::new(used_x - 64.0, ry + 6.0, used_x, ry + 14.0);
-                Self::bar(scene, t, barr, f, c.neutral[3], usage_color(theme, f));
-                self.txt_right(
-                    scene,
-                    tr,
-                    &format!("{:.0}%", f * 100.0),
-                    11.0,
-                    c.text_dim,
-                    used_x,
-                    ry - 8.0,
-                    TextWeight::Regular,
-                );
-            } else {
-                self.txt_right(
-                    scene,
-                    tr,
-                    "—",
-                    12.0,
-                    c.text_dim,
-                    used_x,
-                    ry,
-                    TextWeight::Regular,
-                );
-            }
-            ry += 38.0;
+    /// The row's selection/hover/zebra background plus the role swatch (part
+    /// of [`Self::draw_partitions_row`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_partitions_row_bg(
+        scene: &mut Scene,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        ry: f64,
+        i: usize,
+        p: &Partition,
+        selected: bool,
+        hover: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry + 30.0);
+        if selected {
+            Self::fill_rr(scene, t, rowr, 6.0, with_alpha(theme.accent_primary, 40));
+            Self::stroke_rr(scene, t, rowr, 6.0, theme.accent_primary, 1.4);
+        } else if hover {
+            Self::fill_rr(scene, t, rowr, 6.0, c.neutral[3]);
+        } else if i.is_multiple_of(2) {
+            Self::fill_rr(scene, t, rowr, 6.0, with_alpha(Color::WHITE, 8));
         }
+        // role swatch (thickened when selected → doubles as the accent bar)
+        let sw = Rect::new(
+            area.x0,
+            ry + 2.0,
+            area.x0 + if selected { 5.0 } else { 4.0 },
+            ry + 18.0,
+        );
+        Self::fill_rr(
+            scene,
+            t,
+            sw,
+            2.0,
+            if selected {
+                theme.accent_primary
+            } else {
+                role_color(theme, p.role())
+            },
+        );
+    }
+
+    /// The name/label/fs/size/mount text fields of a partition row (part of
+    /// [`Self::draw_partitions_row`]).
+    fn draw_partitions_row_fields(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cols: &PartitionColumns,
+        ry: f64,
+        p: &Partition,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::txt(
+            scene,
+            tr,
+            &p.name,
+            13.0,
+            c.text_primary,
+            cols.name,
+            ry,
+            None,
+            TextWeight::Medium,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &p.label.clone().unwrap_or_else(|| "—".into()),
+            12.5,
+            c.text_dim,
+            cols.label,
+            ry,
+            Some((cols.fs - cols.label - 8.0) as f32),
+            TextWeight::Regular,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &p.fstype.clone().unwrap_or_else(|| "—".into()),
+            12.5,
+            c.text_dim,
+            cols.fs,
+            ry,
+            None,
+            TextWeight::Regular,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &fmt_size(p.size),
+            12.5,
+            c.text_primary,
+            cols.size,
+            ry,
+            None,
+            TextWeight::Regular,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &p.mountpoint.clone().unwrap_or_else(|| "not mounted".into()),
+            12.5,
+            c.text_dim,
+            cols.mount,
+            ry,
+            Some((cols.used - cols.mount - 70.0) as f32),
+            TextWeight::Regular,
+        );
+    }
+
+    /// The usage mini-bar (or the "—" placeholder when unmounted) at the
+    /// right of a partition row (part of [`Self::draw_partitions_row`]).
+    fn draw_partitions_row_usage(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        cols: &PartitionColumns,
+        ry: f64,
+        p: &Partition,
+    ) {
+        let c = &theme.tokens.colors;
+        if let Some(f) = p.used_frac() {
+            let barr = Rect::new(cols.used - 64.0, ry + 6.0, cols.used, ry + 14.0);
+            Self::bar(scene, t, barr, f, c.neutral[3], usage_color(theme, f));
+            Self::txt_right(
+                scene,
+                tr,
+                &format!("{:.0}%", f * 100.0),
+                11.0,
+                c.text_dim,
+                cols.used,
+                ry - 8.0,
+                TextWeight::Regular,
+            );
+        } else {
+            Self::txt_right(
+                scene,
+                tr,
+                "—",
+                12.0,
+                c.text_dim,
+                cols.used,
+                ry,
+                TextWeight::Regular,
+            );
+        }
+    }
+
+    /// One partition row: selection/hover/zebra background, role swatch,
+    /// name/label/fs/size/mount, and the usage mini-bar (part of
+    /// [`Self::draw_partitions_tab`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_partitions_row(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        area: Rect,
+        cols: &PartitionColumns,
+        ry: f64,
+        i: usize,
+        p: &Partition,
+        selected: bool,
+        hover: bool,
+    ) {
+        Self::draw_partitions_row_bg(scene, theme, t, area, ry, i, p, selected, hover);
+        Self::draw_partitions_row_fields(scene, tr, theme, cols, ry, p);
+        Self::draw_partitions_row_usage(scene, tr, theme, t, cols, ry, p);
     }
 
     // ---- modal ---------------------------------------------------------
     fn draw_modal(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2319,17 +2645,34 @@ impl DisksApp {
         let c = &theme.tokens.colors;
         // Scrim.
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
-        let card = ml.card;
-        Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
-        Self::stroke_rr(scene, t, card, 16.0, c.border_standard, 1.0);
-        let target = self.pending_target_name(pending);
+        Self::fill_rr(scene, t, ml.card, 16.0, c.surfaces.raised);
+        Self::stroke_rr(scene, t, ml.card, 16.0, c.border_standard, 1.0);
         let danger = pending.action.destructive();
+
+        self.draw_modal_card_text(scene, tr, theme, ml.card, pending, danger);
+        let ready = self.draw_modal_input(scene, tr, theme, t, ml, pending);
+        self.draw_modal_buttons(scene, tr, theme, t, ml, danger, ready);
+    }
+
+    /// The title + body text on the confirm card (part of
+    /// [`Self::draw_modal`]).
+    fn draw_modal_card_text(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pending: Pending,
+        danger: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let target = self.pending_target_name(pending);
         let title_c = if danger {
             c.semantic.danger
         } else {
             c.text_primary
         };
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &pending.action.confirm_title(&target),
@@ -2340,7 +2683,7 @@ impl DisksApp {
             None,
             TextWeight::Bold,
         );
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &pending.action.confirm_body(&target, self.live),
@@ -2351,60 +2694,44 @@ impl DisksApp {
             Some((card.width() - 44.0) as f32),
             TextWeight::Regular,
         );
+    }
 
-        // Type-to-confirm gate: the user must type the device name exactly.
+    /// The type-to-confirm gate: the user must type the device name exactly
+    /// (part of [`Self::draw_modal`]). Returns whether the typed text
+    /// currently matches.
+    fn draw_modal_input(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        ml: &ModalLayout,
+        pending: Pending,
+    ) -> bool {
+        let c = &theme.tokens.colors;
+        let card = ml.card;
+        let inp = ml.input;
         let expected = self.pending_target_leaf(pending);
         let ready = self.confirm_ready();
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &format!("Type “{expected}” to confirm:"),
             12.0,
             c.text_dim,
             card.x0 + 22.0,
-            ml.input.y0 - 20.0,
+            inp.y0 - 20.0,
             None,
             TextWeight::Medium,
         );
-        let inp = ml.input;
-        Self::fill_rr(scene, t, inp, 8.0, c.surfaces.base);
-        Self::stroke_rr(
-            scene,
-            t,
-            inp,
-            8.0,
-            if ready {
-                c.semantic.success
-            } else {
-                c.border_focus
-            },
-            1.4,
-        );
-        let shown = if self.confirm_input.is_empty() {
-            expected
-        } else {
-            self.confirm_input.clone()
-        };
-        let text_c = if self.confirm_input.is_empty() {
-            with_alpha(c.text_dim, 110) // placeholder
-        } else if ready {
-            c.semantic.success
-        } else {
-            c.text_primary
-        };
-        self.txt(
-            scene,
-            tr,
-            &shown,
-            14.0,
-            text_c,
-            inp.x0 + 12.0,
-            inp.y0 + 9.0,
-            Some((inp.width() - 24.0) as f32),
-            TextWeight::Medium,
-        );
+        self.confirm_input.set_placeholder(&expected);
+        self.confirm_input.apply_layout_external(inp);
+        self.confirm_input
+            .draw(scene, t, tr, theme, &PresenceCtx::empty());
         if ready {
-            self.txt_right(
+            // Keep the modal's positive match feedback around the shared field.
+            Self::stroke_rr(scene, t, inp, 8.0, c.semantic.success, 1.4);
+            Self::txt_right(
                 scene,
                 tr,
                 "✓ match",
@@ -2415,62 +2742,51 @@ impl DisksApp {
                 TextWeight::Semibold,
             );
         }
+        ready
+    }
 
-        // Cancel.
+    /// The Cancel + Confirm buttons — Confirm is locked (dimmed, inert)
+    /// until the typed name matches (part of [`Self::draw_modal`]).
+    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
+    fn draw_modal_buttons(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        ml: &ModalLayout,
+        danger: bool,
+        ready: bool,
+    ) {
         let cancel_hov = ml.cancel.contains(self.last_mouse);
-        Self::fill_rr(
+        Button::paint(
             scene,
             t,
-            ml.cancel,
-            9.0,
-            if cancel_hov {
-                c.neutral[3]
-            } else {
-                c.neutral[2]
-            },
-        );
-        Self::stroke_rr(scene, t, ml.cancel, 9.0, c.border_standard, 1.0);
-        self.txt_center(
-            scene,
             tr,
-            "Cancel",
-            14.0,
-            c.text_primary,
-            f64::midpoint(ml.cancel.x0, ml.cancel.x1),
-            ml.cancel.y0 + 9.0,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(ml.cancel, "Cancel")
+                .radius(9.0)
+                .hovered(cancel_hov),
         );
 
         // Confirm — locked (dimmed, inert) until the typed name matches.
         let confirm_hov = ready && ml.confirm.contains(self.last_mouse);
-        let cc = if danger {
-            c.semantic.danger
-        } else {
-            c.accent[5]
-        };
-        let fill = if !ready {
-            with_alpha(cc, 70)
-        } else if confirm_hov {
-            cc
-        } else {
-            with_alpha(cc, 220)
-        };
-        Self::fill_rr(scene, t, ml.confirm, 9.0, fill);
         let label = if danger { "Erase" } else { "Confirm" };
-        let label_c = if ready {
-            Color::WHITE
+        let face = if danger {
+            ButtonFace::new(ml.confirm, label).danger()
         } else {
-            with_alpha(Color::WHITE, 140)
+            ButtonFace::new(ml.confirm, label).primary()
         };
-        self.txt_center(
+        Button::paint(
             scene,
+            t,
             tr,
-            label,
-            14.0,
-            label_c,
-            f64::midpoint(ml.confirm.x0, ml.confirm.x1),
-            ml.confirm.y0 + 9.0,
-            TextWeight::Semibold,
+            theme,
+            &face
+                .radius(9.0)
+                .weight(TextWeight::Semibold)
+                .hovered(confirm_hov)
+                .disabled(!ready),
         );
     }
 
@@ -2505,7 +2821,7 @@ impl DisksApp {
             Self::stroke_rr(scene, t, ell, 8.0, with_alpha(c.text_dim, 110), 1.2);
         }
 
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "No storage devices found",
@@ -2520,7 +2836,7 @@ impl DisksApp {
         } else {
             "No devices to display."
         };
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             line,
@@ -2530,7 +2846,7 @@ impl DisksApp {
             card.y0 + 124.0,
             TextWeight::Regular,
         );
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "Reflecting the live system — nothing is invented here.",
@@ -2543,23 +2859,16 @@ impl DisksApp {
 
         // Rescan — re-runs the live probe (same path as the top-bar button).
         let hov = btn.contains(self.last_mouse);
-        Self::fill_rr(
+        Button::paint(
             scene,
             t,
-            btn,
-            9.0,
-            if hov { c.accent[4] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(scene, t, btn, 9.0, c.border_standard, 1.0);
-        self.txt_center(
-            scene,
             tr,
-            "↻ Rescan",
-            13.0,
-            c.text_primary,
-            cx,
-            btn.y0 + 8.0,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(btn, "Rescan")
+                .icon(Icon::Refresh)
+                .radius(9.0)
+                .text_size(13.0)
+                .hovered(hov),
         );
     }
 
@@ -2569,7 +2878,7 @@ impl DisksApp {
             return;
         }
         let c = &theme.tokens.colors;
-        self.txt(
+        Self::txt(
             scene,
             tr,
             &self.status,
@@ -2605,8 +2914,8 @@ impl DisksApp {
     fn confirm_ready(&self) -> bool {
         match self.pending {
             Some(p) => {
-                !self.confirm_input.trim().is_empty()
-                    && self.confirm_input.trim() == self.pending_target_leaf(p)
+                !self.confirm_input.value().trim().is_empty()
+                    && self.confirm_input.value().trim() == self.pending_target_leaf(p)
             }
             None => false,
         }
@@ -2633,7 +2942,8 @@ impl DisksApp {
                 drive: self.selected,
                 part,
             });
-            self.confirm_input.clear();
+            self.confirm_input.set_text("");
+            self.confirm_input.set_focus(true);
             DisksDoc::set_pending(
                 state,
                 &format!(
@@ -2678,7 +2988,7 @@ impl DisksApp {
             });
             self.action_rx = Some(rx);
             let msg = format!("{} {dev}…", action.gerund());
-            self.status = msg.clone();
+            self.status.clone_from(&msg);
             DisksDoc::set_status(state, &msg);
         } else {
             // Hermetic build / --shots: state what *would* run, no side effects.
@@ -2699,7 +3009,7 @@ impl DisksApp {
                     format!("Would power off {dev} via udisks2 (set DISKS_LIVE to execute)")
                 }
             };
-            self.status = plan.clone();
+            self.status.clone_from(&plan);
             DisksDoc::set_status(state, &plan);
         }
         self.dirty = true;
@@ -2711,14 +3021,16 @@ impl DisksApp {
             return;
         }
         let Some(p) = self.pending.take() else { return };
-        self.confirm_input.clear();
+        self.confirm_input.set_text("");
+        self.confirm_input.set_focus(false);
         DisksDoc::set_pending(state, "");
         self.dispatch_action(state, p.action, p.part);
     }
 
     fn cancel_pending(&mut self, state: &mut AutoCommit) {
         self.pending = None;
-        self.confirm_input.clear();
+        self.confirm_input.set_text("");
+        self.confirm_input.set_focus(false);
         DisksDoc::set_pending(state, "");
     }
 
@@ -2826,8 +3138,7 @@ fn kind_color(theme: &Theme, kind: DriveKind) -> Color {
         DriveKind::Hdd => c.neutral[5],
         DriveKind::Usb => c.semantic.success,
         DriveKind::Zram => c.accent[7],
-        DriveKind::Virtual => c.neutral[4],
-        DriveKind::Other => c.neutral[4],
+        DriveKind::Virtual | DriveKind::Other => c.neutral[4],
     }
 }
 
@@ -2878,7 +3189,7 @@ fn status_color(theme: &Theme, status: SmartStatus) -> Color {
 
 impl Widget for DisksApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        if !self.seeded {
+        if !self.init.seeded {
             if DisksDoc::is_empty(state) {
                 // Live: reflect the real system only. If the probe finds
                 // nothing (or the tools are missing) we seed an *empty*
@@ -2892,7 +3203,7 @@ impl Widget for DisksApp {
                 };
                 DisksDoc::seed(state, &topo);
             }
-            self.seeded = true;
+            self.init.seeded = true;
         }
 
         if let Some(json) = DisksDoc::topology_json(state)
@@ -2924,6 +3235,12 @@ impl Widget for DisksApp {
         let pending = DisksDoc::pending(state);
         let parsed = parse_pending(&pending);
         if parsed.is_some() != self.pending.is_some() {
+            if parsed.is_some() {
+                self.confirm_input.set_text("");
+                self.confirm_input.set_focus(true);
+            } else {
+                self.confirm_input.set_focus(false);
+            }
             self.pending = parsed;
             self.dirty = true;
         }
@@ -2949,7 +3266,7 @@ impl Widget for DisksApp {
             }
         }
         if let Some(res) = result {
-            self.status = res.text.clone();
+            self.status.clone_from(&res.text);
             DisksDoc::set_status(state, &res.text);
             // A mount/format/unmount/eject changed the on-disk topology.
             if res.refresh
@@ -2971,22 +3288,25 @@ impl Widget for DisksApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = leaf_node(
+            taffy,
+            Style {
                 size: ui::taffy::Size {
                     width: percent(1.0_f32),
                     height: percent(1.0_f32),
                 },
                 flex_grow: 1.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3000,9 +3320,9 @@ impl Widget for DisksApp {
         self.flap.reconcile(split);
         // Settle the very first frame to its resolved default so a cold start
         // at any width paints a static layout (no list sliding in/out).
-        if !self.laid_out {
+        if !self.init.laid_out {
             self.flap.snap(self.flap.is_open(split));
-            self.laid_out = true;
+            self.init.laid_out = true;
         }
     }
 
@@ -3060,7 +3380,7 @@ impl Widget for DisksApp {
 
         // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
-            self.draw_header(scene, tr, theme, transform, &lay, drive);
+            Self::draw_header(scene, tr, theme, transform, &lay, drive);
             self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
             // Content scrolls within its own clip so it stays usable when the
@@ -3083,7 +3403,7 @@ impl Widget for DisksApp {
             );
             match self.tab {
                 Tab::Overview => self.draw_overview(scene, tr, theme, ct, &lay, drive),
-                Tab::Smart => self.draw_smart_tab(scene, tr, theme, ct, ext, drive),
+                Tab::Smart => Self::draw_smart_tab(scene, tr, theme, ct, ext, drive),
                 Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, ct, ext, drive),
             }
             scene.pop_layer();
@@ -3138,210 +3458,82 @@ impl Widget for DisksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
+        modifiers: &ui::winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
-        use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
-        use ui::winit::keyboard::{Key, NamedKey};
-
         let lay = self.compute_layout();
+
+        // The confirmation text is deliberately local-only: it gates a
+        // machine-local destructive operation and must never enter the CRDT.
+        // Forward the complete event stream so selection, clipboard, IME and
+        // drag behavior come from the shared editor rather than a key shim.
+        if self.pending.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.handle_cursor_moved(*position, scale_factor, &lay);
+            }
+            if let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+                && matches!(logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter))
+            {
+                self.handle_key_press(logical_key, state, &lay, handled);
+                return;
+            }
+            self.confirm_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.confirm_input.take_dirty().is_some() {
+                self.dirty = true;
+            }
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                self.handle_mouse_click(state, &lay, handled);
+            } else {
+                // The open modal is fully blocking, including IME events and
+                // clicks/releases that the editor itself did not consume.
+                *handled = true;
+            }
+            return;
+        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_mouse = p;
-                // Content-space point: content is drawn shifted up by the scroll,
-                // so unshift the pointer before testing content-scoped rects.
-                let pc = Point::new(p.x, p.y + self.content_scroll);
-                let in_content = p.y >= lay.content.y0 - 6.0
-                    && p.y <= lay.content.y1
-                    && p.x >= lay.content.x0 - 8.0
-                    && p.x <= lay.content.x1 + 8.0;
-                let prev = (
-                    self.hover_card,
-                    self.hover_action,
-                    self.hover_tab,
-                    self.hover_menu,
-                    self.hover_part,
-                    self.hover_whole_disk,
-                );
-                // The drive list only receives hover when it's actually shown.
-                let list_shown = self.list_open();
-                self.hover_card = if list_shown && lay.list_body.contains(p) {
-                    lay.cards.iter().position(|r| r.contains(p))
-                } else {
-                    None
-                };
-                // Only applicable action buttons light up.
-                self.hover_action = lay
-                    .action_buttons
-                    .iter()
-                    .find(|(r, _, en)| *en && r.contains(p))
-                    .map(|(_, a, _)| *a);
-                self.hover_tab = lay
-                    .tabs
-                    .iter()
-                    .find(|(r, _)| r.contains(p))
-                    .map(|(_, t)| *t);
-                self.hover_menu = lay.hamburger.is_some_and(|hb| hb.contains(p));
-                self.hover_part = if in_content {
-                    match self.tab {
-                        Tab::Overview => lay
-                            .part_segments
-                            .iter()
-                            .find(|(r, _)| r.contains(pc))
-                            .map(|(_, i)| *i),
-                        Tab::Partitions => lay
-                            .part_rows
-                            .iter()
-                            .find(|(r, _)| r.contains(pc))
-                            .map(|(_, i)| *i),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                self.hover_whole_disk =
-                    in_content && self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc);
-                let now = (
-                    self.hover_card,
-                    self.hover_action,
-                    self.hover_tab,
-                    self.hover_menu,
-                    self.hover_part,
-                    self.hover_whole_disk,
-                );
-                if prev != now {
-                    self.dirty = true;
-                }
+                self.handle_cursor_moved(*position, scale_factor, &lay);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
-                    MouseScrollDelta::PixelDelta(pos) => -pos.y,
-                };
-                let p = self.last_mouse;
-                if self.list_open() && lay.list_body.contains(p) {
-                    let max = (self.list_h - lay.list_body.height()).max(0.0);
-                    self.list_scroll = (self.list_scroll + dy).clamp(0.0, max);
-                    *handled = true;
-                } else if lay.content.contains(p) {
-                    let max = (self.content_h - lay.content.height()).max(0.0);
-                    self.content_scroll = (self.content_scroll + dy).clamp(0.0, max);
-                    *handled = true;
-                }
-                self.dirty = true;
+                self.handle_mouse_wheel(delta, &lay, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let p = self.last_mouse;
-                // Modal first — it is fully blocking.
-                if let Some(ml) = lay.modal {
-                    if ml.confirm.contains(p) {
-                        self.confirm_pending(state);
-                    } else if ml.cancel.contains(p) {
-                        self.cancel_pending(state);
-                    }
-                    // Clicks anywhere else while modal is open are swallowed.
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                // Hamburger toggles the overlay flap (narrow window only).
-                if lay.hamburger.is_some_and(|hb| hb.contains(p)) {
-                    self.flap.toggle(self.split_layout());
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                // While the overlay flap is open, a click on the scrim (i.e.
-                // outside the sliding list panel) dismisses it.
-                if lay.split == SplitLayout::Overlay
-                    && self.list_open()
-                    && lay.scrim.width() > 0.0
-                    && !lay.sidebar.contains(p)
-                {
-                    self.flap.close();
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if lay.refresh.contains(p) {
-                    self.do_refresh(state);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                // Empty-state Rescan (only present when no drives are listed).
-                if lay.empty_rescan.is_some_and(|b| b.contains(p)) {
-                    self.do_refresh(state);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                // Drive cards are only clickable when the list is shown.
-                if self.list_open()
-                    && let Some(i) = lay.cards.iter().position(|r| r.contains(p))
-                {
-                    self.select(state, i);
-                    // Selecting from the overlay flap dismisses it so the
-                    // detail is immediately visible (single-pane feel).
-                    if lay.split == SplitLayout::Overlay {
-                        self.flap.close();
-                    }
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if let Some((_, tab)) = lay.tabs.iter().find(|(r, _)| r.contains(p)) {
-                    self.set_tab(state, *tab);
-                    *handled = true;
-                    return;
-                }
-                // Action-bar buttons — only the applicable ones respond.
-                if let Some((_, a, _)) = lay
-                    .action_buttons
-                    .iter()
-                    .find(|(r, _, en)| *en && r.contains(p))
-                {
-                    self.trigger_action(state, *a);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                // Content selection: whole-disk pill, partition map segment, or
-                // partition table row. Test in content space (unshift scroll).
-                let pc = Point::new(p.x, p.y + self.content_scroll);
-                if self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc) {
-                    self.select_part(state, None);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                if lay.content.contains(p) {
-                    if self.tab == Tab::Overview {
-                        if let Some((_, i)) = lay.part_segments.iter().find(|(r, _)| r.contains(pc))
-                        {
-                            self.select_part(state, Some(*i));
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                    } else if self.tab == Tab::Partitions
-                        && let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc))
-                    {
-                        self.select_part(state, Some(*i));
-                        *handled = true;
-                        self.dirty = true;
-                    }
-                }
+                self.handle_mouse_click(state, &lay, handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3352,100 +3544,7 @@ impl Widget for DisksApp {
                     },
                 ..
             } => {
-                // Modal key handling — Escape cancels, Enter confirms (when the
-                // typed name matches), and characters build the confirmation.
-                if self.pending.is_some() {
-                    match logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.cancel_pending(state);
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            self.confirm_pending(state);
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.confirm_input.pop();
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Named(NamedKey::Space) => {
-                            self.confirm_input.push(' ');
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Character(s) => {
-                            // Device names are printable ASCII; append them.
-                            for ch in s.chars().filter(|c| !c.is_control()) {
-                                self.confirm_input.push(ch);
-                            }
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
-                // Esc dismisses an open overlay flap before any other binding.
-                if matches!(logical_key, Key::Named(NamedKey::Escape))
-                    && lay.split == SplitLayout::Overlay
-                    && self.list_open()
-                {
-                    self.flap.close();
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                match logical_key {
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let n = self.topo.drives.len();
-                        if n > 0 {
-                            self.select(state, (self.selected + 1) % n);
-                            *handled = true;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let n = self.topo.drives.len();
-                        if n > 0 {
-                            self.select(state, (self.selected + n - 1) % n);
-                            *handled = true;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        let tabs = Tab::all();
-                        let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
-                        self.set_tab(state, tabs[(i + 1) % tabs.len()]);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        let tabs = Tab::all();
-                        let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
-                        self.set_tab(state, tabs[(i + tabs.len() - 1) % tabs.len()]);
-                        *handled = true;
-                    }
-                    Key::Character(s) => match s.as_str() {
-                        "1" => {
-                            self.set_tab(state, Tab::Overview);
-                            *handled = true;
-                        }
-                        "2" => {
-                            self.set_tab(state, Tab::Smart);
-                            *handled = true;
-                        }
-                        "3" => {
-                            self.set_tab(state, Tab::Partitions);
-                            *handled = true;
-                        }
-                        "r" | "R" => {
-                            self.do_refresh(state);
-                            *handled = true;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
+                self.handle_key_press(logical_key, state, &lay, handled);
             }
             _ => {}
         }
@@ -3481,6 +3580,304 @@ impl Widget for DisksApp {
 }
 
 impl DisksApp {
+    /// Track the pointer and recompute every hover flag (part of
+    /// [`Widget::handle_event`]).
+    fn handle_cursor_moved(
+        &mut self,
+        position: PhysicalPosition<f64>,
+        scale_factor: f64,
+        lay: &Layout,
+    ) {
+        let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_mouse = p;
+        // Content-space point: content is drawn shifted up by the scroll,
+        // so unshift the pointer before testing content-scoped rects.
+        let pc = Point::new(p.x, p.y + self.content_scroll);
+        let in_content = p.y >= lay.content.y0 - 6.0
+            && p.y <= lay.content.y1
+            && p.x >= lay.content.x0 - 8.0
+            && p.x <= lay.content.x1 + 8.0;
+        let prev = (
+            self.hover_card,
+            self.hover_action,
+            self.hover_tab,
+            self.hover_toggle.menu,
+            self.hover_part,
+            self.hover_toggle.whole_disk,
+        );
+        // The drive list only receives hover when it's actually shown.
+        let list_shown = self.list_open();
+        self.hover_card = if list_shown && lay.list_body.contains(p) {
+            lay.cards.iter().position(|r| r.contains(p))
+        } else {
+            None
+        };
+        // Only applicable action buttons light up.
+        self.hover_action = lay
+            .action_buttons
+            .iter()
+            .find(|(r, _, en)| *en && r.contains(p))
+            .map(|(_, a, _)| *a);
+        self.hover_tab = lay
+            .tabs
+            .iter()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, t)| *t);
+        self.hover_toggle.menu = lay.hamburger.is_some_and(|hb| hb.contains(p));
+        self.hover_part = if in_content {
+            match self.tab {
+                Tab::Overview => lay
+                    .part_segments
+                    .iter()
+                    .find(|(r, _)| r.contains(pc))
+                    .map(|(_, i)| *i),
+                Tab::Partitions => lay
+                    .part_rows
+                    .iter()
+                    .find(|(r, _)| r.contains(pc))
+                    .map(|(_, i)| *i),
+                Tab::Smart => None,
+            }
+        } else {
+            None
+        };
+        self.hover_toggle.whole_disk =
+            in_content && self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc);
+        let now = (
+            self.hover_card,
+            self.hover_action,
+            self.hover_tab,
+            self.hover_toggle.menu,
+            self.hover_part,
+            self.hover_toggle.whole_disk,
+        );
+        if prev != now {
+            self.dirty = true;
+        }
+    }
+
+    /// Scroll the drive list or the detail content, whichever the pointer
+    /// is over (part of [`Widget::handle_event`]).
+    fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, lay: &Layout, handled: &mut bool) {
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
+            MouseScrollDelta::PixelDelta(pos) => -pos.y,
+        };
+        let p = self.last_mouse;
+        if self.list_open() && lay.list_body.contains(p) {
+            let max = (self.list_h - lay.list_body.height()).max(0.0);
+            self.list_scroll = (self.list_scroll + dy).clamp(0.0, max);
+            *handled = true;
+        } else if lay.content.contains(p) {
+            let max = (self.content_h - lay.content.height()).max(0.0);
+            self.content_scroll = (self.content_scroll + dy).clamp(0.0, max);
+            *handled = true;
+        }
+        self.dirty = true;
+    }
+
+    /// A left click: modal buttons, the hamburger, the overlay scrim, the
+    /// list rows, the tabs, the action bar, and content-scoped hit targets
+    /// (whole-disk pill / partition map / partition rows), in priority
+    /// order (part of [`Widget::handle_event`]).
+    fn handle_mouse_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
+        let p = self.last_mouse;
+        // Modal first — it is fully blocking.
+        if let Some(ml) = lay.modal {
+            if ml.confirm.contains(p) {
+                self.confirm_pending(state);
+            } else if ml.cancel.contains(p) {
+                self.cancel_pending(state);
+            }
+            // Clicks anywhere else while modal is open are swallowed.
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        // Hamburger toggles the overlay flap (narrow window only).
+        if lay.hamburger.is_some_and(|hb| hb.contains(p)) {
+            self.flap.toggle(self.split_layout());
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        // While the overlay flap is open, a click on the scrim (i.e.
+        // outside the sliding list panel) dismisses it.
+        if lay.split == SplitLayout::Overlay
+            && self.list_open()
+            && lay.scrim.width() > 0.0
+            && !lay.sidebar.contains(p)
+        {
+            self.flap.close();
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        if lay.refresh.contains(p) {
+            self.do_refresh(state);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        // Empty-state Rescan (only present when no drives are listed).
+        if lay.empty_rescan.is_some_and(|b| b.contains(p)) {
+            self.do_refresh(state);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        // Drive cards are only clickable when the list is shown.
+        if self.list_open()
+            && let Some(i) = lay.cards.iter().position(|r| r.contains(p))
+        {
+            self.select(state, i);
+            // Selecting from the overlay flap dismisses it so the
+            // detail is immediately visible (single-pane feel).
+            if lay.split == SplitLayout::Overlay {
+                self.flap.close();
+            }
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        if let Some((_, tab)) = lay.tabs.iter().find(|(r, _)| r.contains(p)) {
+            self.set_tab(state, *tab);
+            *handled = true;
+            return;
+        }
+        // Action-bar buttons — only the applicable ones respond.
+        if let Some((_, a, _)) = lay
+            .action_buttons
+            .iter()
+            .find(|(r, _, en)| *en && r.contains(p))
+        {
+            self.trigger_action(state, *a);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        // Content selection: whole-disk pill, partition map segment, or
+        // partition table row. Test in content space (unshift scroll).
+        let pc = Point::new(p.x, p.y + self.content_scroll);
+        if self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc) {
+            self.select_part(state, None);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        if lay.content.contains(p) {
+            if self.tab == Tab::Overview {
+                if let Some((_, i)) = lay.part_segments.iter().find(|(r, _)| r.contains(pc)) {
+                    self.select_part(state, Some(*i));
+                    *handled = true;
+                    self.dirty = true;
+                }
+            } else if self.tab == Tab::Partitions
+                && let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc))
+            {
+                self.select_part(state, Some(*i));
+                *handled = true;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// A key press: while a destructive action is pending, Escape cancels and
+    /// Enter confirms; the shared [`TextInput`] owns every editing key.
+    /// Otherwise Escape dismisses an open overlay flap and the rest are
+    /// navigation shortcuts (part of [`Widget::handle_event`]).
+    fn handle_key_press(
+        &mut self,
+        logical_key: &Key,
+        state: &mut AutoCommit,
+        lay: &Layout,
+        handled: &mut bool,
+    ) {
+        // Modal key handling — editing keys were already routed through the
+        // shared field by `handle_event`.
+        if self.pending.is_some() {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.cancel_pending(state);
+                    *handled = true;
+                    self.dirty = true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.confirm_pending(state);
+                    *handled = true;
+                    self.dirty = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+        // Esc dismisses an open overlay flap before any other binding.
+        if matches!(logical_key, Key::Named(NamedKey::Escape))
+            && lay.split == SplitLayout::Overlay
+            && self.list_open()
+        {
+            self.flap.close();
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let n = self.topo.drives.len();
+                if n > 0 {
+                    self.select(state, (self.selected + 1) % n);
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let n = self.topo.drives.len();
+                if n > 0 {
+                    self.select(state, (self.selected + n - 1) % n);
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                let tabs = Tab::all();
+                let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
+                // `(i + 1) % tabs.len()` is always in bounds for a
+                // non-empty `tabs`, but `.get` degrades to a no-op
+                // instead of indexing blindly.
+                if let Some(&next) = tabs.get((i + 1) % tabs.len()) {
+                    self.set_tab(state, next);
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                let tabs = Tab::all();
+                let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
+                if let Some(&prev) = tabs.get((i + tabs.len() - 1) % tabs.len()) {
+                    self.set_tab(state, prev);
+                    *handled = true;
+                }
+            }
+            Key::Character(s) => match s.as_str() {
+                "1" => {
+                    self.set_tab(state, Tab::Overview);
+                    *handled = true;
+                }
+                "2" => {
+                    self.set_tab(state, Tab::Smart);
+                    *handled = true;
+                }
+                "3" => {
+                    self.set_tab(state, Tab::Partitions);
+                    *handled = true;
+                }
+                "r" | "R" => {
+                    self.do_refresh(state);
+                    *handled = true;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
     /// Re-probe the live system (no-op fallback to sample). Used by the
     /// Rescan button + `r` key.
     fn do_refresh(&mut self, state: &mut AutoCommit) {
@@ -3520,6 +3917,7 @@ fn parse_pending(s: &str) -> Option<Pending> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 
@@ -3577,12 +3975,12 @@ mod tests {
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_some(), "confirm is a no-op while locked");
 
-        app.confirm_input = "wrong".into();
+        app.confirm_input.set_text("wrong");
         assert!(!app.confirm_ready());
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_some(), "a mismatched name stays locked");
 
-        app.confirm_input = "nvme0n1".into(); // the whole-disk device name
+        app.confirm_input.set_text("nvme0n1"); // the whole-disk device name
         assert!(app.confirm_ready(), "the exact name unlocks Erase");
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_none(), "confirming clears the modal");
@@ -3794,7 +4192,10 @@ mod tests {
         }
 
         fn dispatch(&mut self, event: &WindowEvent) -> bool {
-            let mods = Modifiers::default();
+            self.dispatch_with_modifiers(event, Modifiers::default())
+        }
+
+        fn dispatch_with_modifiers(&mut self, event: &WindowEvent, mods: Modifiers) -> bool {
             let mut handled = false;
             let mut focus = None;
             self.app.handle_event(
@@ -3843,6 +4244,23 @@ mod tests {
 
     fn center(r: Rect) -> Point {
         Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
+    }
+
+    fn char_key(text: &str) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Character(text.into());
+        event.physical_key = ui::winit::keyboard::PhysicalKey::Unidentified(
+            ui::winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.location = ui::winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = Some(text.into());
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event,
+            is_synthetic: false,
+        }
     }
 
     #[test]
@@ -4049,6 +4467,84 @@ mod tests {
             "a disabled button reports nothing"
         );
         assert!(h.app.pending.is_none());
+    }
+
+    #[test]
+    fn modal_confirm_face_and_hit_target_share_the_type_gate() {
+        let mut h = Harness::new(1280.0, 800.0);
+        h.app.trigger_action(&mut h.doc, ActionKind::Format);
+        h.relayout();
+        let confirm = h.lay().modal.unwrap().confirm;
+
+        assert!(h.click(center(confirm)), "the modal consumes the click");
+        assert!(
+            h.app.pending.is_some(),
+            "the disabled shared face remains inert until the name matches"
+        );
+
+        let target = h.app.pending_target_leaf(h.app.pending.unwrap());
+        h.app.confirm_input.set_text(&target);
+        assert!(h.app.confirm_ready());
+        assert!(h.click(center(confirm)));
+        assert!(
+            h.app.pending.is_none(),
+            "the same rect activates once the shared face is enabled"
+        );
+    }
+
+    #[test]
+    fn format_modal_routes_pointer_selection_and_ime_through_shared_input() {
+        let mut h = Harness::new(1280.0, 800.0);
+        h.app.trigger_action(&mut h.doc, ActionKind::Format);
+        h.relayout();
+        let modal = h.lay().modal.unwrap();
+
+        // Moving then clicking Cancel must use the current modal pointer, not
+        // the position cached before the overlay opened.
+        assert!(h.click(center(modal.cancel)));
+        assert!(h.app.pending.is_none());
+
+        h.app.trigger_action(&mut h.doc, ActionKind::Format);
+        h.relayout();
+        let modal = h.lay().modal.unwrap();
+        let expected = h.app.pending_target_leaf(h.app.pending.unwrap());
+
+        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Preedit(
+            expected.clone(),
+            Some((0, expected.len())),
+        ))));
+        assert_eq!(h.app.confirm_input.value(), "", "preedit is not committed");
+        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(
+            expected.clone(),
+        ))));
+        assert!(h.app.confirm_ready());
+
+        let control = Modifiers::from(ui::winit::keyboard::ModifiersState::CONTROL);
+        assert!(h.dispatch_with_modifiers(&char_key("a"), control));
+        assert_eq!(
+            h.app.confirm_input.selection_range_public(),
+            Some((0, expected.len()))
+        );
+        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(expected,))));
+        assert!(h.click(center(modal.confirm)));
+        assert!(
+            h.app.pending.is_none(),
+            "Erase runs only after an exact match"
+        );
+    }
+
+    #[test]
+    fn icon_only_hamburger_face_has_a_spoken_name() {
+        let face = ButtonFace::new(Rect::ZERO, "")
+            .icon(Icon::Menu)
+            .accessible_name("Show drives");
+        assert_eq!(face.spoken_name(), "Show drives");
+        assert_eq!(
+            ButtonFace::new(Rect::ZERO, "Rescan")
+                .icon(Icon::Refresh)
+                .spoken_name(),
+            "Rescan"
+        );
     }
 
     /// Seed a harness with whatever the *real* probe returns (falling back to

@@ -7,7 +7,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use automerge::transaction::Transactable;
+use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 use collab_types::OpClass;
 
@@ -458,7 +458,7 @@ fn state_commit_action_stamps_the_change() {
         .duration_since(entries[0].timestamp)
         .expect("timestamp is in the past, not 1970-adjacent nonsense");
     assert!(
-        age < Duration::from_mins(10),
+        age < Duration::from_secs(600),
         "a just-committed action must be stamped with now, got {age:?} ago"
     );
 }
@@ -550,6 +550,43 @@ fn entry_ids_are_stable_across_peers() {
         .map(|e| e.id)
         .collect();
     assert_eq!(a, b, "same history, same row ids");
+}
+
+#[test]
+fn semantic_action_context_becomes_the_row_summary_and_browse_metadata() {
+    let (mut doc, c, mut ids) = qdoc_doc("alice");
+    let mut dm = qdoc::DocMut {
+        doc: &mut doc,
+        c: &c,
+        ids: &mut ids,
+    };
+    let block = dm.insert_block(None, "paragraph");
+    dm.splice_text(&block, 0, 0, "launch");
+    let context = qos_actions::ActionContext::for_resource(
+        "Edit",
+        "notes.note:launch",
+        "notes.note",
+        "Launch brief",
+    )
+    .with_app("org.qos.Notes", "Notes")
+    .with_purpose("Prepare the launch brief")
+    .with_group("issue:42", "Launch brief", "issue");
+    doc.commit_with(
+        CommitOptions::default()
+            .with_time(T0 + HOUR)
+            .with_message(context.change_message().expect("context encodes")),
+    );
+
+    let entries = source().entries(&mut doc);
+    let row = entries.last().expect("authored row");
+    assert_eq!(row.summary, "Prepare the launch brief");
+    assert_eq!(row.context.as_ref(), Some(&context));
+    assert!(HistoryFilter::default().with_app("Notes").matches(row));
+    assert!(
+        HistoryFilter::default()
+            .with_resource_kind("notes.note")
+            .matches(row)
+    );
 }
 
 /// `prefix_heads` has to handle a merged, non-linear change graph, and

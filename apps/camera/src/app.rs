@@ -30,6 +30,7 @@ use vello::peniko::Color;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{Image, ImageFit, Toggle, ToggleFace, Widget};
 use winit::event::WindowEvent;
 
@@ -359,8 +360,12 @@ impl CameraApp {
     /// host records **one** undo boundary bracketing it
     /// ([`ui::widget::Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CameraAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CAMERA_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CAMERA_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Camera", "Camera", action),
+        );
     }
 
     /// The context Ctrl+K needs to build Camera's resource tree: the gallery
@@ -762,7 +767,10 @@ impl CameraApp {
 
 fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
     let i = all.iter().position(|x| *x == cur).unwrap_or(0);
-    all[(i + 1) % all.len()]
+    // Callers always pass a non-empty `ALL` array of enum variants; fall
+    // back to `cur` rather than panicking if that ever stops holding.
+    let next = (i + 1) % all.len().max(1);
+    all.get(next).copied().unwrap_or(cur)
 }
 
 /// The frame size to request from a webcam for a chosen resolution preset.
@@ -970,6 +978,8 @@ impl Widget for CameraApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -985,7 +995,9 @@ impl Widget for CameraApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1405,42 +1417,17 @@ impl CameraApp {
     }
 
     fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some(msg) = self.toast.clone() else {
+        let Some(msg) = self.toast.as_deref() else {
             return;
         };
-        let c = &theme.tokens.colors;
-        let tw = f64::from(p::text_w(tr, &msg, 13.0));
-        let w = tw + 56.0;
-        let cx = self.stage_center_x();
-        let r = Rect::new(
-            cx - w / 2.0,
-            self.rect.y1 - 64.0,
-            cx + w / 2.0,
-            self.rect.y1 - 28.0,
-        );
-        p::fill_round(scene, t, r, 18.0, p::alpha(c.neutral[1], 0.96));
-        p::stroke_round(scene, t, r, 18.0, p::alpha(theme.accent_primary, 0.5), 1.0);
-        p::icon(
+        paint_transient(
             scene,
             t,
-            "check",
-            Rect::new(
-                r.x0 + 14.0,
-                r.center().y - 8.0,
-                r.x0 + 30.0,
-                r.center().y + 8.0,
-            ),
-            theme.status_success,
-            2.0,
-        );
-        p::text(
-            scene,
             tr,
-            r.x0 + 36.0,
-            r.center().y - 8.0,
-            &msg,
-            13.0,
-            c.text_primary,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Success),
         );
     }
 
@@ -1492,6 +1479,7 @@ struct ScrollMetrics {
 // ====================================================================
 
 /// Icon/label/style bundle for [`CameraApp::ctrl_pill`].
+#[derive(Clone, Copy)]
 struct PillContent<'a> {
     icon: Option<&'a str>,
     label: &'a str,
@@ -2272,8 +2260,12 @@ impl CameraApp {
         };
         let mut bez = BezPath::new();
         let pts: Vec<Point> = s.corners.iter().map(|c| pt(*c)).collect();
-        bez.move_to(pts[0]);
-        for q in &pts[1..] {
+        // `corners` is a fixed `[(f32, f32); 4]`, so `pts` always has 4 points.
+        let Some((first, rest)) = pts.split_first() else {
+            return;
+        };
+        bez.move_to(*first);
+        for q in rest {
             bez.line_to(*q);
         }
         bez.close_path();
@@ -2594,6 +2586,7 @@ fn code_icon(kind: &CodeKind) -> &'static str {
 // ====================================================================
 
 /// Layout + selection bundle for [`CameraApp::draw_gallery_grid`].
+#[derive(Clone, Copy)]
 struct GalleryGridCtx<'a> {
     grid: Rect,
     filtered: &'a [Capture],
@@ -2676,7 +2669,7 @@ impl CameraApp {
 
     /// The gallery's empty state, matching the active filter.
     fn draw_gallery_empty(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4209,12 +4202,12 @@ mod tests {
     fn wheel_scrolls_gallery_and_clamps_at_top() {
         let (mut app, mut doc, root) = sample_app();
         app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
-        assert_eq!(app.gallery_scroll, 0.0);
+        assert!(app.gallery_scroll.abs() < f64::EPSILON);
         // Wheel down moves the roll; wheel far up clamps back to the top.
         assert!(drive(&mut app, &wheel(-3.0), &mut doc, &root));
         assert!(app.gallery_scroll > 0.0);
         assert!(drive(&mut app, &wheel(100.0), &mut doc, &root));
-        assert_eq!(app.gallery_scroll, 0.0);
+        assert!(app.gallery_scroll.abs() < f64::EPSILON);
     }
 
     #[test]

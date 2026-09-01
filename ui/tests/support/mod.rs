@@ -27,7 +27,7 @@ use ui::widget::{Column, Text};
 ///     let mut relay = `MemoryRelay::new()`;
 ///     let alice = relay.attach("alice");
 ///     let bob   = relay.attach("bob");
-///     `alice.send(CollabRequest::SyncIncremental` { data: vec![1,2,3] });
+///     `alice.send(CollabRequest::DocumentIncremental` { data: vec![1,2,3] });
 ///     `relay.drain_peer_outbox(&alice)`;
 ///     pump(&mut relay);
 ///     let events = `bob.poll()`;
@@ -112,8 +112,8 @@ impl Peer {
 
 /// Process all pending outbound requests: translate each into a broadcast
 /// event to every other peer. Sender never receives its own broadcast.
-/// - `SyncIncremental` → `CRDTIncremental`
-/// - `SyncCRDT` → `CRDTUpdate`
+/// Document commands are wrapped in the same typed signed-envelope shape
+/// consumers receive from the production broker.
 /// - `Presence` → `RemotePresenceUpdate` (attributed to the sender's id,
 ///   so the receiving peer knows *who* the cursor/caret belongs to)
 /// - `Hello` is not fanned out
@@ -123,26 +123,23 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
-            CollabRequest::SyncIncremental { data } => {
+            CollabRequest::DocumentIncremental { data } => {
+                let event =
+                    document_event(&collab_types::DocumentMutation::Incremental(data), &from);
                 for id in &peer_ids {
                     if id == &from {
                         continue;
                     }
-                    inboxes
-                        .get_mut(id)
-                        .unwrap()
-                        .push_back(CollabEvent::CRDTIncremental { data: data.clone() });
+                    inboxes.get_mut(id).unwrap().push_back(event.clone());
                 }
             }
-            CollabRequest::SyncCRDT { data } => {
+            CollabRequest::DocumentSnapshot { data } => {
+                let event = document_event(&collab_types::DocumentMutation::Snapshot(data), &from);
                 for id in &peer_ids {
                     if id == &from {
                         continue;
                     }
-                    inboxes
-                        .get_mut(id)
-                        .unwrap()
-                        .push_back(CollabEvent::CRDTUpdate { data: data.clone() });
+                    inboxes.get_mut(id).unwrap().push_back(event.clone());
                 }
             }
             CollabRequest::Presence { key, payload } => {
@@ -160,7 +157,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                         });
                 }
             }
-            CollabRequest::SignedSyncIncremental { envelope } => {
+            CollabRequest::SignedOperation { envelope } => {
                 // Mirror the production fan-out (collaboration.rs): the
                 // in-toolkit test broker routes verbatim (no role
                 // enforcement — that's the shell collab_broker's job).
@@ -171,7 +168,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                     inboxes
                         .get_mut(id)
                         .unwrap()
-                        .push_back(CollabEvent::SignedCRDTIncremental {
+                        .push_back(CollabEvent::Document {
                             envelope: envelope.clone(),
                             from_user_id: from.clone(),
                         });
@@ -193,6 +190,27 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
         }
     }
+}
+
+fn document_event(mutation: &collab_types::DocumentMutation, from_user_id: &str) -> CollabEvent {
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().expect("test document mutation encodes"),
+        collab_types::ArtifactId::new(),
+        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+        collab_types::AttestationId::new(),
+        collab_types::OpClass::Splice,
+        std::time::SystemTime::UNIX_EPOCH,
+        0,
+    );
+    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+    CollabEvent::Document {
+        envelope: Box::new(envelope),
+        from_user_id: from_user_id.to_owned(),
+    }
+}
+
+pub fn document_mutation(event: &CollabEvent) -> Option<collab_types::DocumentMutation> {
+    event.document_mutation()?.ok()
 }
 
 /// Build a minimal headless `App` paired with a `Peer` for integration tests.

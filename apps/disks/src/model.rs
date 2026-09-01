@@ -299,7 +299,20 @@ impl Topology {
     /// EFI + root + home + swap, a SATA SSD, a spinning HDD that needs
     /// attention, and a USB stick.
     pub fn sample() -> Self {
-        let nvme = Drive {
+        Topology {
+            drives: vec![
+                Self::sample_nvme(),
+                Self::sample_ssd(),
+                Self::sample_hdd(),
+                Self::sample_usb(),
+            ],
+        }
+    }
+
+    /// The sample `NVMe` drive: EFI + root + home + swap, all healthy (part
+    /// of [`Self::sample`]).
+    fn sample_nvme() -> Drive {
+        Drive {
             name: "nvme0n1".into(),
             model: "Samsung SSD 990 PRO 1TB".into(),
             serial: Some("S6Z1NJ0T934217X".into()),
@@ -363,9 +376,13 @@ impl Topology {
                 ],
                 detail: None,
             }),
-        };
+        }
+    }
 
-        let ssd = Drive {
+    /// The sample SATA SSD: one healthy backup partition (part of
+    /// [`Self::sample`]).
+    fn sample_ssd() -> Drive {
+        Drive {
             name: "sda".into(),
             model: "Crucial MX500 500GB".into(),
             serial: Some("2138E6A0F1B2".into()),
@@ -399,9 +416,13 @@ impl Topology {
                 ],
                 detail: None,
             }),
-        };
+        }
+    }
 
-        let hdd = Drive {
+    /// The sample spinning HDD, flagged with a real attention-needing SMART
+    /// signal — reallocated + pending sectors (part of [`Self::sample`]).
+    fn sample_hdd() -> Drive {
+        Drive {
             name: "sdb".into(),
             model: "Seagate BarraCuda 2TB".into(),
             serial: Some("ZFL2K8WP".into()),
@@ -436,9 +457,14 @@ impl Topology {
                 ],
                 detail: None,
             }),
-        };
+        }
+    }
 
-        let usb = Drive {
+    /// The sample USB stick — removable, with SMART honestly reported as
+    /// unavailable through the bridge rather than fabricated (part of
+    /// [`Self::sample`]).
+    fn sample_usb() -> Drive {
+        Drive {
             name: "sdc".into(),
             model: "SanDisk Ultra USB 3.0".into(),
             serial: Some("4C530001230531119".into()),
@@ -468,10 +494,6 @@ impl Topology {
                     "USB mass-storage bridges rarely pass through SMART telemetry.".into(),
                 ),
             }),
-        };
-
-        Topology {
-            drives: vec![nvme, ssd, hdd, usb],
         }
     }
 }
@@ -488,11 +510,11 @@ fn attr(id: u16, name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
 /// Format a byte count as a short decimal-SI string (drive vendors use
 /// powers of 1000), e.g. `931.5 GB`, `512 MB`, `16.0 GB`.
 pub fn fmt_size(bytes: u64) -> String {
-    let b = bytes as f64;
     const KB: f64 = 1_000.0;
     const MB: f64 = 1_000_000.0;
     const GB: f64 = 1_000_000_000.0;
     const TB: f64 = 1_000_000_000_000.0;
+    let b = bytes as f64;
     if b >= TB {
         format!("{:.2} TB", b / TB)
     } else if b >= GB {

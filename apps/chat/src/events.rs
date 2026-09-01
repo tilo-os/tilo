@@ -39,11 +39,6 @@ fn now_secs() -> i64 {
         .map_or(NOW, |d| d.as_secs() as i64)
 }
 
-/// Byte offset of character index `ci` in `s` (clamped to the end).
-fn char_byte(s: &str, ci: usize) -> usize {
-    s.char_indices().nth(ci).map_or(s.len(), |(b, _)| b)
-}
-
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
 /// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
@@ -131,6 +126,9 @@ impl ChatApp {
             } => {
                 self.handle_keyboard_input(logical_key, event, scale, modifiers, doc, handled);
             }
+            WindowEvent::Ime(_) => {
+                *handled |= self.handle_text_input_event(event, scale, modifiers, doc);
+            }
             _ => {}
         }
     }
@@ -207,9 +205,9 @@ impl ChatApp {
             sw.current = self.last_mouse;
             *handled = true;
         }
-        // Keep both composers' hover state current so a click lands a
-        // caret at the click point and a press-drag extends a selection.
-        self.forward_move_to_composers(event, scale, modifiers, doc);
+        // Keep every shared input's hover/drag state current so clicks place
+        // carets and press-drags extend selections on inline editors too.
+        self.forward_move_to_text_inputs(event, scale, modifiers, doc);
     }
 
     /// A left-button press: begins a call-overlay drag, arms a channel-row
@@ -223,6 +221,7 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        self.keyboard_target = None;
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
                 let huddle = self.call_video_rect();
@@ -248,13 +247,16 @@ impl ChatApp {
                 *handled = true;
             }
             Some(hit) => {
-                let composer_hit = matches!(hit, Hit::FocusMain | Hit::FocusThread);
+                let text_input_hit = matches!(
+                    hit,
+                    Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
+                );
                 self.on_hit(hit, doc);
                 // A click in a composer focuses it (via `on_hit`) and
                 // then places the caret at the click point — forward the
                 // real press so the widget resolves the position.
-                if composer_hit {
-                    self.forward_press_to_focused_composer(event, scale, modifiers, doc);
+                if text_input_hit {
+                    self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
                 }
                 *handled = true;
             }
@@ -275,7 +277,7 @@ impl ChatApp {
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
         // End any composer drag-selection in progress.
-        self.forward_release_to_composers(event, scale, modifiers, doc);
+        self.forward_release_to_text_inputs(event, scale, modifiers, doc);
         if let Some(sw) = self.swipe.take() {
             let channel = self
                 .ws_channels()
@@ -295,9 +297,8 @@ impl ChatApp {
         }
     }
 
-    /// A pressed key: routed to the focused composer unless an inline
-    /// editor / rename / popover is open (or it's Escape, which unwinds the
-    /// top-most layer instead), in which case `on_key` handles it.
+    /// A pressed key: inline shared inputs win while open; otherwise the
+    /// focused composer receives it unless a popover owns the keyboard.
     #[allow(
         clippy::too_many_arguments,
         reason = "event-dispatch context bundle, not real parameter coupling"
@@ -311,8 +312,42 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        let composer_owns = self.editing.is_none()
-            && self.rename.is_none()
+        if self.rename.is_some() {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.cancel_rename();
+            } else {
+                self.route_rename_input(event, scale, modifiers, doc);
+            }
+            *handled = true;
+            return;
+        }
+        if self.editing.is_some() {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.cancel_edit();
+            } else {
+                self.route_edit_input(event, scale, modifiers, doc);
+            }
+            *handled = true;
+            return;
+        }
+
+        // Tab walks Chat's real primary-control inventory. Enter/Space then
+        // activates the same `Hit` path as a pointer, including the composers.
+        // This check deliberately precedes composer routing: a multiline input
+        // must not swallow the application's navigation key.
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            self.move_keyboard_target(modifiers.state().shift_key());
+            *handled = true;
+            return;
+        }
+        let activates = matches!(logical_key, Key::Named(NamedKey::Enter))
+            || matches!(logical_key, Key::Character(value) if value.as_str() == " ");
+        if self.keyboard_target.is_some() && activates && self.activate_keyboard_target(doc) {
+            *handled = true;
+            return;
+        }
+
+        let composer_owns = self.can_participate()
             && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
@@ -323,6 +358,65 @@ impl ChatApp {
             *handled = true;
         } else if self.on_key(logical_key, modifiers, doc) {
             *handled = true;
+        }
+    }
+
+    /// Route an IME event to whichever shared input owns focus. Composer
+    /// commits still splice into the collaborative draft; inline edit/rename
+    /// buffers remain local until their explicit Save/Enter boundary.
+    fn handle_text_input_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        if self.rename.is_some() {
+            self.route_rename_input(event, scale, modifiers, doc);
+            true
+        } else if self.editing.is_some() {
+            self.route_edit_input(event, scale, modifiers, doc);
+            true
+        } else if self.can_participate()
+            && self.menu.is_none()
+            && !self.emoji_open
+            && self.history_open.is_none()
+            && !self.attach_open
+        {
+            self.route_composer_key(event, scale, modifiers, doc);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn route_rename_input(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+        if self.rename_input.take_submit() {
+            self.commit_rename(doc);
+        } else {
+            let _ = self.rename_input.take_dirty();
+        }
+    }
+
+    fn route_edit_input(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+        if self.edit_input.take_submit() {
+            self.commit_edit(doc);
+        } else {
+            let _ = self.edit_input.take_dirty();
         }
     }
 
@@ -366,9 +460,9 @@ impl ChatApp {
         }
     }
 
-    /// Forward a `CursorMoved` to both composers so their hover / drag-select
+    /// Forward a `CursorMoved` to every text input so hover and drag-select
     /// state stays current regardless of which surface is focused.
-    fn forward_move_to_composers(
+    fn forward_move_to_text_inputs(
         &mut self,
         event: &WindowEvent,
         scale: f64,
@@ -377,10 +471,12 @@ impl ChatApp {
     ) {
         drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
         drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
+        drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+        drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
     }
 
-    /// Forward a mouse release to both composers so a drag-selection ends.
-    fn forward_release_to_composers(
+    /// Forward a mouse release to every text input so drag-selection ends.
+    fn forward_release_to_text_inputs(
         &mut self,
         event: &WindowEvent,
         scale: f64,
@@ -389,18 +485,26 @@ impl ChatApp {
     ) {
         drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
         drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
+        drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+        drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
     }
 
     /// Forward a press to the focused composer so it places the caret at the
     /// click point (the preceding `CursorMoved` already set its hover flag).
-    fn forward_press_to_focused_composer(
+    fn forward_press_to_focused_text_input(
         &mut self,
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
-        drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
+        if self.rename.is_some() {
+            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+        } else if self.editing.is_some() {
+            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+        } else {
+            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
+        }
     }
 
     /// Right-click opens a context menu for the channel/category/workspace
@@ -442,38 +546,42 @@ impl ChatApp {
             .map(|(_, h)| h.clone())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
+    )]
     fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
         // Any click dismisses an open context menu unless it's a menu action.
         if !matches!(hit, Hit::MenuAction { .. }) {
             self.menu = None;
         }
         match hit {
-            Hit::Workspace(id) => self.on_hit_workspace(id),
+            Hit::Inbox => {
+                self.inbox_open = true;
+                self.thread_open = None;
+                self.focus = Focus::Main;
+            }
+            Hit::CurrentContext => {
+                self.inbox_open = false;
+                self.on_hit_workspace(self.context_ws.clone());
+            }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
-            Hit::CategoryToggle(id) => {
+            Hit::CategoryToggle(id) if self.can_participate() => {
                 ChatDoc::toggle_category_collapsed(doc, &id);
             }
-            // Left-click on your own message body is a no-op — the edit menu
-            // is a right-click affordance (see `on_right_click`). The call
-            // drag handle is also a no-op here — it's handled at press time.
-            Hit::MessageMenu { .. } | Hit::CallDragHandle => {}
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
-            Hit::MenuAction { target, action } => {
+            Hit::MenuAction { target, action } if self.can_participate() => {
                 self.menu = None;
                 self.apply_menu_action(target, action, doc);
             }
             Hit::AddChannel {
                 workspace,
                 category,
-            } => self.on_hit_add_channel(&workspace, &category, doc),
-            Hit::AddCategory(ws) => self.on_hit_add_category(&ws, doc),
-            // Create a real, usable workspace (a general text channel + a
-            // voice channel) and switch to it — the rail "+" is a live
-            // create action, not decoration.
-            Hit::AddWorkspace => self.on_hit_add_workspace(doc),
-            Hit::RenameConfirm => self.commit_rename(doc),
+            } if self.can_participate() => self.on_hit_add_channel(&workspace, &category, doc),
+            Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_category(&ws, doc),
+            Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => {
                 self.emoji_open = true;
@@ -495,17 +603,17 @@ impl ChatApp {
                 self.set_composer_focus();
             }
             Hit::Send => self.send_focused(doc),
-            Hit::ComposerEmoji(anchor) => {
+            Hit::ComposerEmoji(anchor) if self.can_participate() => {
                 self.emoji_open = true;
                 self.emoji_target = None;
                 self.emoji_anchor = anchor;
             }
-            Hit::Attach => self.open_attach_picker(),
+            Hit::Attach if self.can_participate() => self.open_attach_picker(),
             Hit::AttachPick(path) => {
                 self.attach_open = false;
                 self.attach_file(doc, std::path::Path::new(&path));
             }
-            Hit::StartCall => self.on_hit_start_call(doc),
+            Hit::StartCall if self.can_participate() => self.on_hit_start_call(doc),
             Hit::CloseThread => {
                 self.thread_open = None;
                 self.focus = Focus::Main;
@@ -520,8 +628,10 @@ impl ChatApp {
                 }
             }
             Hit::CallDeafen => {
-                self.call.toggle_deafen();
-                self.sync_local_voice(doc);
+                if self.call_allows(CallAction::Speak) {
+                    self.call.toggle_deafen();
+                    self.sync_local_voice(doc);
+                }
             }
             Hit::CallAudioOnly => {
                 if self.call_allows(CallAction::Camera) {
@@ -538,6 +648,9 @@ impl ChatApp {
             Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
             Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
             Hit::Dismiss => self.on_hit_dismiss(),
+            // MessageMenu is a right-click affordance and CallDragHandle is
+            // handled at press time; permission-gated fallthroughs are no-ops.
+            _ => {}
         }
         // Whatever the interaction resolved to, the channel now in view is
         // read: advance its watermark so its unread badge stays cleared once
@@ -552,7 +665,6 @@ impl ChatApp {
             self.thread_open = None;
             self.scroll = 0.0;
             self.focus = Focus::Main;
-            self.caret = 0;
             self.active_channel.clear(); // force reload to pick first text channel
         }
     }
@@ -562,11 +674,13 @@ impl ChatApp {
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
         } else {
+            if let Some(workspace) = self.channel(&id).map(|channel| channel.workspace.clone()) {
+                self.active_ws = workspace;
+            }
             self.active_channel = id;
             self.thread_open = None;
             self.scroll = 0.0;
             self.focus = Focus::Main;
-            self.caret = 0;
             // Picking a channel in overlay mode closes the left flap.
             if self.left_mode == crate::responsive::FlapMode::Overlay {
                 self.left_flap.close();
@@ -594,16 +708,6 @@ impl ChatApp {
         self.begin_rename(MenuTarget::Category(id));
     }
 
-    fn on_hit_add_workspace(&mut self, doc: &mut AutoCommit) {
-        let id = ChatDoc::create_workspace(doc, "New Workspace");
-        self.active_ws = id;
-        self.thread_open = None;
-        self.scroll = 0.0;
-        self.focus = Focus::Main;
-        self.caret = 0;
-        self.active_channel.clear(); // reload picks the new ws's first text channel
-    }
-
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut AutoCommit) {
         if self.can_participate() {
             let action = self.reaction_toggle_action(msg, emoji);
@@ -621,7 +725,6 @@ impl ChatApp {
             self.focus = Focus::Thread;
             self.right_flap.open();
         }
-        self.caret = 0;
     }
 
     fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut AutoCommit) {
@@ -767,6 +870,13 @@ impl ChatApp {
     /// re-slots the participant tiles (and the host video node).
     fn toggle_screen_share(&mut self, doc: &mut AutoCommit) {
         if !self.call.active {
+            return;
+        }
+        // A peer may always stop an already-live share (including after a
+        // permission downgrade), but starting capture/transmission is a new
+        // workspace write and must pass the same call-action gate as joining
+        // or enabling a camera.
+        if !self.call.sharing && !self.call_allows(CallAction::ShareScreen) {
             return;
         }
         if self.call.sharing {
@@ -951,53 +1061,40 @@ impl ChatApp {
             MenuTarget::Message(_) | MenuTarget::Workspace(_) => None,
         }
         .unwrap_or_default();
-        self.caret = current.chars().count();
-        self.rename = Some((target, current));
+        self.rename_input.set_text(&current);
+        self.rename_input.set_cursor_pos(current.len());
+        self.rename = Some(target);
+        self.set_composer_focus();
     }
 
     /// Commit the inline rename to the CRDT and close the editor.
     fn commit_rename(&mut self, doc: &mut AutoCommit) {
-        if let Some((target, text)) = self.rename.take() {
-            let text = text.trim();
+        if let Some(target) = self.rename.take() {
+            let text = self.rename_input.value().trim().to_string();
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        self.perform_action(doc, &actions::rename_channel_action(&id, text));
+                        self.perform_action(doc, &actions::rename_channel_action(&id, &text));
                     }
                     // Categories are structural view grouping (not part of the
                     // exported channel/message action set) — a direct write.
-                    MenuTarget::Category(id) => ChatDoc::rename_category(doc, &id, text),
+                    MenuTarget::Category(id) => ChatDoc::rename_category(doc, &id, &text),
                     MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
             }
-            self.caret = 0;
+            self.rename_input.set_text("");
+            self.set_composer_focus();
             self.reload(doc);
         }
     }
 
+    fn cancel_rename(&mut self) {
+        self.rename = None;
+        self.rename_input.set_text("");
+        self.set_composer_focus();
+    }
+
     fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut AutoCommit) -> bool {
-        // The inline rename editor captures all keys while open.
-        if self.rename.is_some() {
-            return self.rename_key(key, doc);
-        }
-
-        // The inline message editor captures keys while open: Enter saves,
-        // Escape cancels; every other key edits its working text through the
-        // shared handlers below (which target `self.editing` when it's set).
-        if self.editing.is_some() {
-            match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.cancel_edit();
-                    return true;
-                }
-                Key::Named(NamedKey::Enter) if !modifiers.state().shift_key() => {
-                    self.commit_edit(doc);
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
         // Escape unwinds the top-most layer.
         if let Key::Named(NamedKey::Escape) = key {
             if self.attach_open {
@@ -1036,22 +1133,6 @@ impl ChatApp {
                 }
                 true
             }
-            Key::Named(NamedKey::Backspace) => {
-                self.backspace(doc);
-                true
-            }
-            Key::Named(NamedKey::Space) => {
-                self.insert_text(doc, " ");
-                true
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                self.caret = self.caret.saturating_sub(1);
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                self.caret = (self.caret + 1).min(self.editable_char_len());
-                true
-            }
             Key::Named(NamedKey::ArrowUp) => {
                 // Swallowed here (this path only runs for the inline message
                 // editor / popovers). The composer's own ArrowUp — including
@@ -1059,63 +1140,60 @@ impl ChatApp {
                 // handled in `route_composer_key`.
                 true
             }
-            Key::Named(NamedKey::Home) => {
-                self.caret = 0;
-                true
-            }
-            Key::Named(NamedKey::End) => {
-                self.caret = self.editable_char_len();
-                true
-            }
-            Key::Character(s) => {
-                if s.chars().all(|c| !c.is_control()) {
-                    self.insert_text(doc, s);
-                }
-                true
-            }
             _ => false,
         }
     }
 
-    /// Keystroke handling while the inline rename editor is open. Enter
-    /// commits, Escape cancels, the rest edits the working name (appended at
-    /// the end — a single-field name editor doesn't need a caret model).
-    fn rename_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
-        match key {
-            Key::Named(NamedKey::Enter) => {
-                self.commit_rename(doc);
-                true
-            }
-            Key::Named(NamedKey::Escape) => {
-                self.rename = None;
-                self.caret = 0;
-                true
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if let Some((_, text)) = &mut self.rename {
-                    text.pop();
-                    self.caret = text.chars().count();
-                }
-                true
-            }
-            Key::Named(NamedKey::Space) => {
-                if let Some((_, text)) = &mut self.rename {
-                    text.push(' ');
-                    self.caret = text.chars().count();
-                }
-                true
-            }
-            Key::Character(s) => {
-                if let Some((_, text)) = &mut self.rename
-                    && s.chars().all(|c| !c.is_control())
-                {
-                    text.push_str(s);
-                    self.caret = text.chars().count();
-                }
-                true
-            }
-            _ => true, // swallow everything else while renaming
+    /// Move synthetic focus over the controls that were actually painted in
+    /// the previous frame. The compositor has its own retained-widget focus;
+    /// Chat's immediate-mode children need this small local equivalent.
+    fn move_keyboard_target(&mut self, backwards: bool) {
+        let targets = self.semantic_hits();
+        if targets.is_empty() {
+            self.keyboard_target = None;
+            return;
         }
+        let next = match self.keyboard_target {
+            Some(current) if backwards => current.checked_sub(1).unwrap_or(targets.len() - 1),
+            Some(current) => (current + 1) % targets.len(),
+            None if backwards => targets.len() - 1,
+            None => 0,
+        };
+        self.keyboard_target = Some(next);
+        let Some((_, hit, ..)) = targets.get(next) else {
+            self.keyboard_target = None;
+            return;
+        };
+        match hit {
+            Hit::FocusMain => {
+                self.focus = Focus::Main;
+                ui::Widget::set_focus(&mut self.composer_main, true);
+                ui::Widget::set_focus(&mut self.composer_thread, false);
+            }
+            Hit::FocusThread => {
+                self.focus = Focus::Thread;
+                ui::Widget::set_focus(&mut self.composer_main, false);
+                ui::Widget::set_focus(&mut self.composer_thread, true);
+            }
+            _ => {
+                ui::Widget::set_focus(&mut self.composer_main, false);
+                ui::Widget::set_focus(&mut self.composer_thread, false);
+            }
+        }
+    }
+
+    fn activate_keyboard_target(&mut self, doc: &mut AutoCommit) -> bool {
+        let targets = self.semantic_hits();
+        let Some((_, hit, ..)) = self
+            .keyboard_target
+            .and_then(|index| targets.get(index))
+            .cloned()
+        else {
+            self.keyboard_target = None;
+            return false;
+        };
+        self.on_hit(hit, doc);
+        true
     }
 
     fn draft_key(&self) -> String {
@@ -1123,20 +1201,22 @@ impl ChatApp {
             Focus::Thread => self
                 .thread_draft_key()
                 .unwrap_or_else(|| self.active_channel.clone()),
-            _ => self.active_channel.clone(),
+            Focus::Main => self.active_channel.clone(),
         }
     }
 
-    /// Insert `s` at the caret. Routes to the inline message editor when one is
-    /// open (kept in memory until saved), otherwise into the focused composer
+    /// Insert `s` at the active shared input's caret. Message edits remain in
+    /// memory until saved; otherwise this targets the focused composer
     /// `TextInput` — used by the emoji picker, which splices a picked glyph as
     /// if typed. Composer keystrokes themselves go straight to the widget via
     /// [`route_composer_key`].
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
-        if let Some((_, text)) = &mut self.editing {
-            let at = char_byte(text, self.caret);
-            text.insert_str(at, s);
-            self.caret += s.chars().count();
+        if !self.can_participate() {
+            return;
+        }
+        if self.editing.is_some() {
+            self.edit_input.insert_at_cursor(s);
+            let _ = self.edit_input.take_dirty();
             return;
         }
         let key = self.draft_key();
@@ -1147,46 +1227,27 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    /// Backspace one character in the inline message editor. The composer's own
-    /// backspace is handled by its `TextInput`; this only serves the in-memory
-    /// message-edit working text.
-    fn backspace(&mut self, _doc: &mut AutoCommit) {
-        if self.caret == 0 {
-            return;
-        }
-        if let Some((_, text)) = &mut self.editing {
-            let end = char_byte(text, self.caret);
-            let start = char_byte(text, self.caret - 1);
-            text.replace_range(start..end, "");
-            self.caret -= 1;
-        }
-    }
-
-    /// Character count of the inline message editor's working text (the caret
-    /// indexes into it). The composer's length lives in its `TextInput`.
-    fn editable_char_len(&self) -> usize {
-        match &self.editing {
-            Some((_, text)) => text.chars().count(),
-            None => 0,
-        }
-    }
-
     /// Enter edit mode on one of your own messages: load its current body into
     /// the inline editor with the caret at the end. Only your own messages are
     /// editable; a foreign id is ignored. Closes any open popover.
     pub(crate) fn begin_edit(&mut self, id: Id) {
+        if !self.can_participate() {
+            return;
+        }
         let Some(m) = self.message(&id) else { return };
         if m.author != self.me.id {
             return;
         }
         let text = m.text.clone();
-        self.caret = text.chars().count();
-        self.editing = Some((id, text));
+        self.edit_input.set_text(&text);
+        self.edit_input.set_cursor_pos(text.len());
+        self.editing = Some(id);
         self.focus = Focus::Main;
         self.menu = None;
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
+        self.set_composer_focus();
     }
 
     /// The id of your most recent message in the surface the composer is
@@ -1215,10 +1276,15 @@ impl ChatApp {
     /// message's history and flags it edited), then close the editor. An
     /// edit that empties the message is discarded rather than blanking it.
     fn commit_edit(&mut self, doc: &mut AutoCommit) {
-        let Some((id, text)) = self.editing.take() else {
+        if !self.can_participate() {
+            return;
+        }
+        let Some(id) = self.editing.take() else {
             return;
         };
-        self.caret = 0;
+        let text = self.edit_input.value().to_string();
+        self.edit_input.set_text("");
+        self.set_composer_focus();
         if text.trim().is_empty() {
             return;
         }
@@ -1233,7 +1299,8 @@ impl ChatApp {
     /// Discard the inline message editor without writing.
     fn cancel_edit(&mut self) {
         self.editing = None;
-        self.caret = 0;
+        self.edit_input.set_text("");
+        self.set_composer_focus();
     }
 
     fn send_focused(&mut self, doc: &mut AutoCommit) {
@@ -1247,7 +1314,7 @@ impl ChatApp {
                 Some(key) => (key, self.thread_open.clone()),
                 None => (self.active_channel.clone(), None),
             },
-            _ => (self.active_channel.clone(), None),
+            Focus::Main => (self.active_channel.clone(), None),
         };
         let text = ChatDoc::draft_text(doc, &key);
         if text.trim().is_empty() {
@@ -1279,7 +1346,6 @@ impl ChatApp {
             ),
         );
         ChatDoc::clear_draft(doc, &key);
-        self.caret = 0;
         if matches!(self.focus, Focus::Main) {
             self.scroll = 0.0;
         }
@@ -1751,16 +1817,42 @@ mod tests {
     fn inline_rename_writes_through() {
         let (mut app, mut doc) = app_with_doc();
         app.begin_rename(MenuTarget::Channel("c_random".into()));
-        // Replace the name by clearing + typing.
-        if let Some((_, text)) = &mut app.rename {
-            text.clear();
-        }
-        for ch in "watercooler".chars() {
-            app.rename_key(&Key::Character(ch.to_string().into()), &mut doc);
-        }
-        app.commit_rename(&mut doc);
+        app.rename_input.select_all();
+        type_str(&mut app, &mut doc, "watercooler");
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
         let c = app.channels.iter().find(|c| c.id == "c_random").unwrap();
         assert_eq!(c.name, "watercooler");
+    }
+
+    #[test]
+    fn inline_rename_selection_and_ime_stay_local_until_enter() {
+        let (mut app, mut doc) = app_with_doc();
+        let original = app.channel("c_random").unwrap().name.clone();
+        app.begin_rename(MenuTarget::Channel("c_random".into()));
+
+        feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+        assert_eq!(
+            app.rename_input.selection_range_public(),
+            Some((0, original.len()))
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+        );
+        assert_eq!(app.rename_input.value(), "東京");
+        assert_eq!(
+            ChatDoc::list_channels(&doc)
+                .into_iter()
+                .find(|channel| channel.id == "c_random")
+                .unwrap()
+                .name,
+            original,
+            "partial rename text is not collaborative state"
+        );
+
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        assert_eq!(app.channel("c_random").unwrap().name, "東京");
     }
 
     #[test]
@@ -1909,26 +2001,18 @@ mod tests {
             "Edit loads the message into the inline editor"
         );
         assert_eq!(
-            app.editing.as_ref().unwrap().1,
+            app.edit_input.value(),
             original,
             "editor seeded with the current body"
         );
 
-        let mods = Modifiers::default();
-        // Clear the working text, then type a new body — all via the key path.
-        while app.editing.as_ref().is_some_and(|(_, t)| !t.is_empty()) {
-            app.on_key(&Key::Named(NamedKey::Backspace), mods, &mut doc);
-        }
-        for ch in "Revised: host tile carries the follow control.".chars() {
-            let k = if ch == ' ' {
-                Key::Named(NamedKey::Space)
-            } else {
-                Key::Character(ch.to_string().into())
-            };
-            app.on_key(&k, mods, &mut doc);
-        }
-        // Enter commits.
-        app.on_key(&Key::Named(NamedKey::Enter), mods, &mut doc);
+        app.edit_input.select_all();
+        type_str(
+            &mut app,
+            &mut doc,
+            "Revised: host tile carries the follow control.",
+        );
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
 
         assert!(app.editing.is_none(), "saving closes the editor");
         let m = app.message("m_me1").unwrap();
@@ -1946,6 +2030,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn message_edit_selection_and_ime_commit_only_on_save() {
+        let (mut app, mut doc) = app_with_doc();
+        let original = app.message("m_me1").unwrap().text.clone();
+        app.begin_edit("m_me1".into());
+
+        feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+        assert_eq!(
+            app.edit_input.selection_range_public(),
+            Some((0, original.len()))
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
+        );
+        assert_eq!(
+            app.edit_input.value(),
+            original,
+            "preedit does not alter the committed input value"
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+        );
+        assert_eq!(app.edit_input.value(), "東京");
+        assert_eq!(
+            ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .find(|message| message.id == "m_me1")
+                .unwrap()
+                .text,
+            original,
+            "partial edits stay local until Save"
+        );
+
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        assert_eq!(app.message("m_me1").unwrap().text, "東京");
+    }
+
+    #[test]
+    fn clicking_message_editor_places_the_shared_input_caret() {
+        let (mut app, mut doc) = app_with_doc();
+        app.begin_edit("m_me1".into());
+        render_frame(&mut app, 1280.0, 720.0);
+        let editor = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::FocusEdit).then_some(*rect))
+            .expect("the open editor records its input hit region");
+
+        let x = editor.x0 + 18.0;
+        let y = editor.y0 + 14.0;
+        feed(&mut app, &mut doc, &cursor(x, y));
+        feed(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Pressed, MouseButton::Left),
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Released, MouseButton::Left),
+        );
+        let cursor = app.edit_input.cursor_pos();
+        assert!(
+            cursor < app.edit_input.value().len(),
+            "clicking near the left edge moves the caret away from the end"
+        );
+
+        type_str(&mut app, &mut doc, "Z");
+        assert_eq!(app.edit_input.cursor_pos(), cursor + 1);
+        assert!(!app.edit_input.value().ends_with('Z'));
+    }
+
     /// `ArrowUp` in an empty composer loads your most recent message into the
     /// inline editor (Slack/Discord convention).
     #[test]
@@ -1958,10 +2118,10 @@ mod tests {
             "composer starts empty"
         );
         feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
-        let (id, text) = app.editing.clone().expect("ArrowUp opened the editor");
+        let id = app.editing.clone().expect("ArrowUp opened the editor");
         assert_eq!(id, "m_me2", "loaded the last own top-level message");
         assert_eq!(
-            text,
+            app.edit_input.value(),
             app.message("m_me2").unwrap().text,
             "seeded with its current body"
         );
@@ -1988,12 +2148,8 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let original = app.message("m_me1").unwrap().text.clone();
         app.begin_edit("m_me1".into());
-        app.on_key(&Key::Character("Z".into()), Modifiers::default(), &mut doc);
-        app.on_key(
-            &Key::Named(NamedKey::Escape),
-            Modifiers::default(),
-            &mut doc,
-        );
+        type_str(&mut app, &mut doc, "Z");
+        feed(&mut app, &mut doc, &key_named(NamedKey::Escape));
         assert!(app.editing.is_none(), "Escape closes the editor");
         let m = app.message("m_me1").unwrap();
         assert_eq!(m.text, original, "cancel leaves the message untouched");
@@ -2418,26 +2574,81 @@ mod tests {
         );
     }
 
-    // --- add-workspace "+" (was a dead button) --------------------------
+    // --- contextual channels + cross-workspace Inbox -------------------
 
     #[test]
-    fn add_workspace_button_creates_and_switches_to_it() {
+    fn inbox_opens_cross_workspace_conversation_without_losing_context() {
         let (mut app, mut doc) = app_with_doc();
-        let before = app.workspaces.len();
-        app.on_hit(Hit::AddWorkspace, &mut doc);
-        assert_eq!(
-            app.workspaces.len(),
-            before + 1,
-            "the rail '+' created a workspace"
+        let context = app.context_ws.clone();
+        let cross_workspace = app
+            .channels
+            .iter()
+            .find(|channel| channel.workspace != context && channel.kind == ChannelKind::Text)
+            .expect("demo data has a cross-workspace conversation")
+            .clone();
+
+        app.on_hit(Hit::Inbox, &mut doc);
+        app.on_hit(Hit::Channel(cross_workspace.id), &mut doc);
+        assert!(app.inbox_open);
+        assert_eq!(app.active_ws, cross_workspace.workspace);
+        assert_eq!(app.context_ws, context, "Inbox never rewrites OS context");
+
+        app.on_hit(Hit::CurrentContext, &mut doc);
+        assert!(!app.inbox_open);
+        assert_eq!(app.active_ws, context);
+    }
+
+    #[test]
+    fn tab_and_enter_activate_the_visible_inbox_control() {
+        let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+
+        let inbox_index = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
+            .expect("Inbox is in the visible keyboard inventory");
+        for _ in 0..=inbox_index {
+            feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        }
+        assert_eq!(app.keyboard_target, Some(inbox_index));
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+
+        assert!(app.inbox_open, "Enter follows the first visible Tab target");
+    }
+
+    #[test]
+    fn accessibility_names_contextual_navigation_and_conversation_content() {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        assert_eq!(root.role, ui::a11y::Role::Group);
+        assert_eq!(root.name.as_deref(), Some("Chat"));
+        assert!(root.children.iter().any(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Inbox"))
+        }));
+        assert!(
+            root.children.iter().any(|node| {
+                node.name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("current workspace"))
+            }),
+            "the OS context is explicitly named"
         );
-        // Switched to the new workspace and landed on a real text channel in it.
-        assert_ne!(app.active_ws, "ws_acme");
-        assert!(app.workspaces.iter().any(|w| w.id == app.active_ws));
-        let ch = app
-            .channel(&app.active_channel)
-            .expect("landed on a real channel");
-        assert_eq!(ch.workspace, app.active_ws);
-        assert_eq!(ch.kind, ChannelKind::Text);
+        assert!(
+            root.children
+                .iter()
+                .all(|node| node.name.as_deref() != Some("New Workspace")),
+            "Chat never exposes a second workspace creation concept"
+        );
+        let messages = root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Messages"))
+            .expect("conversation content is exposed as a list");
+        assert!(!messages.children.is_empty());
     }
 
     // --- members roster (right flap "members" half was unimplemented) ---
@@ -2470,6 +2681,40 @@ mod tests {
     }
 
     #[test]
+    fn workspace_people_do_not_leak_from_the_global_identity_directory() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(
+            app.users.iter().any(|user| user.id == "u_aria"),
+            "demo precondition: the first workspace has other known people"
+        );
+
+        // A fresh workspace owns empty text/voice channels but shares the
+        // document's identity directory. Its People/call chrome must stay
+        // quiet until someone actually participates in one of its channels.
+        let fresh = ChatDoc::create_workspace(&mut doc, "Private draft");
+        app.active_ws = fresh;
+        app.active_channel.clear();
+        app.thread_open = None;
+        app.reload(&doc);
+
+        assert!(
+            app.users.iter().all(|user| app.is_me(&user.id)),
+            "only the local identity is evidenced in the fresh workspace; got {:?}",
+            app.users.iter().map(|user| &user.id).collect::<Vec<_>>()
+        );
+        assert!(!app.has_other_collaborator());
+        render_frame(&mut app, 1280.0, 720.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::StartCall | Hit::ToggleRightFlap
+            )),
+            0,
+            "global directory entries must not surface People/call controls in a private workspace"
+        );
+    }
+
+    #[test]
     fn members_pill_reveals_the_roster_not_a_blank_column() {
         let (mut app, mut doc) = app_with_doc();
         app.thread_open = None; // no thread → the flap's other half is members
@@ -2491,6 +2736,50 @@ mod tests {
             count_hits(&app, |h| matches!(h, Hit::CloseThread)),
             0,
             "no thread panel is shown when no thread is open"
+        );
+    }
+
+    #[test]
+    fn private_workspace_keeps_collaboration_controls_out_of_the_header() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, model::ME, "You", "QD");
+        let mut app = ChatApp::new_ephemeral();
+        app.active_ws = "ws_home".into();
+        app.active_channel = "c_general".into();
+        app.thread_open = None;
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::StartCall | Hit::ToggleRightFlap)),
+            0,
+            "a private workspace has no People or call controls in its resting header"
+        );
+    }
+
+    #[test]
+    fn narrow_thread_is_a_full_detail_view_with_back_navigation() {
+        let (mut app, _doc) = app_with_doc();
+        app.thread_open = Some("m_concept".into());
+        app.right_mode = crate::responsive::FlapMode::Overlay;
+        app.right_flap.snap(true);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 390.0, 844.0);
+
+        assert_eq!(
+            app.thread_rect(),
+            app.rect,
+            "a phone-width thread fills the content view rather than floating at desktop width"
+        );
+        render_frame(&mut app, 390.0, 844.0);
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::CloseThread)),
+            1,
+            "the detail header supplies one Back control"
+        );
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::ToggleLeftFlap)),
+            0,
+            "the navigation drawer does not float over pushed thread content"
         );
     }
 
@@ -2660,6 +2949,63 @@ mod tests {
     }
 
     #[test]
+    fn restricted_peer_cannot_start_screen_share_but_can_stop_one_after_downgrade() {
+        use ui::permissions::{Actor, PermissionContext, Role};
+
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
+            node: 99,
+            width: 1280,
+            height: 720,
+        })));
+
+        // Model a permission downgrade during an already active call. The
+        // portal is deliberately ready, so only the workspace permission can
+        // be responsible for blocking a new transmission.
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Viewer), model::ME),
+                vec![],
+            ),
+        );
+        let (_, controls) = app.overlay_controls_layout();
+        let share = controls
+            .iter()
+            .find(|(_, _, _, _, hit, _)| matches!(hit, Hit::CallShareScreen))
+            .expect("expanded call has a share control");
+        assert!(!share.3, "a denied new share is visibly disabled");
+
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(
+            !app.sharing_screen(),
+            "restricted peer cannot start capture"
+        );
+        assert!(
+            !me_sharing(&doc, "c_huddle"),
+            "blocked capture publishes no sharing state"
+        );
+
+        // Stopping is deliberately allowed after a downgrade so a person can
+        // always end an already-running transmission.
+        app.call.sharing = true;
+        app.sync_local_sharing(&mut doc);
+        let (_, controls) = app.overlay_controls_layout();
+        let share = controls
+            .iter()
+            .find(|(_, _, _, _, hit, _)| matches!(hit, Hit::CallShareScreen))
+            .expect("expanded call retains Stop share");
+        assert!(share.3, "Stop share remains available after downgrade");
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen());
+        assert!(
+            !me_sharing(&doc, "c_huddle"),
+            "stopping clears the shared state after a downgrade"
+        );
+    }
+
+    #[test]
     fn a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage() {
         use crate::render_call::CallStage;
         use vello::kurbo::Rect;
@@ -2721,7 +3067,7 @@ mod tests {
         let (_, buttons) = app.overlay_controls_layout();
         let share = buttons
             .iter()
-            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen));
+            .find(|(_, _, _, _, h, _)| matches!(h, Hit::CallShareScreen));
         let (label, active, ..) =
             share.expect("the expanded controls include a screen-share button");
         assert_eq!(*label, "Share screen");
@@ -2738,7 +3084,7 @@ mod tests {
         let (_, buttons) = app.overlay_controls_layout();
         let (label, active, ..) = buttons
             .iter()
-            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen))
+            .find(|(_, _, _, _, h, _)| matches!(h, Hit::CallShareScreen))
             .expect("share button present");
         assert_eq!(
             *label, "Stop share",
@@ -2752,7 +3098,8 @@ mod tests {
     #[test]
     fn start_call_creates_a_voice_channel_when_the_workspace_has_none() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Workspace("ws_jam".into()), &mut doc);
+        app.on_hit_workspace("ws_jam".into());
+        app.reload(&doc);
         assert_eq!(app.active_ws, "ws_jam");
         assert!(
             !app.channels
@@ -2932,8 +3279,7 @@ mod tests {
             app.rename.is_some(),
             "a new category opens the inline rename editor"
         );
-        app.rename = None;
-        app.caret = 0;
+        app.cancel_rename();
         let collapsed_before = app.category("cat_acme_main").unwrap().collapsed;
         app.on_hit(Hit::CategoryToggle("cat_acme_main".into()), &mut doc);
         assert_ne!(
@@ -2985,11 +3331,12 @@ mod tests {
 
     #[test]
     fn workspace_switch_resets_view_state() {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, doc) = app_with_doc();
         app.thread_open = Some("m_concept".into());
         app.scroll = -250.0;
         app.focus = Focus::Thread;
-        app.on_hit(Hit::Workspace("ws_qos".into()), &mut doc);
+        app.on_hit_workspace("ws_qos".into());
+        app.reload(&doc);
         assert_eq!(app.active_ws, "ws_qos");
         assert!(
             app.thread_open.is_none(),
@@ -3332,6 +3679,15 @@ mod tests {
             !app.can_participate(),
             "a member without admin can't write to the workspace"
         );
+        render_frame(&mut app, 1280.0, 720.0);
+        assert_eq!(
+            count_hits(&app, |h| matches!(
+                h,
+                Hit::FocusMain | Hit::Send | Hit::Attach
+            )),
+            0,
+            "a viewer sees an honest non-interactive composer, not controls that fail silently"
+        );
         assert!(
             !app.embed_allowed("/var/workspace/secret.png"),
             "an ungranted embed is gated"
@@ -3341,6 +3697,11 @@ mod tests {
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
         app.insert_text(&mut doc, "should not post");
         app.send_focused(&mut doc);
+        app.begin_edit("m_me1".into());
+        assert!(
+            app.editing.is_none(),
+            "a viewer cannot open an editor for an existing message"
+        );
         assert_eq!(
             ChatDoc::list_messages(&doc, "c_crit").len(),
             before,

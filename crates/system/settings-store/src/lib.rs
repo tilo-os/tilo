@@ -196,6 +196,7 @@ pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<boo
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use serde_json::json;

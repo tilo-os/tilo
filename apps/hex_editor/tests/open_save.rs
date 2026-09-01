@@ -15,9 +15,9 @@
 
 use automerge::AutoCommit;
 use hex_editor::HexView;
-use hex_editor::portal::PortalOutcome;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::Widget;
+use ui::portal::PortalOutcome;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 

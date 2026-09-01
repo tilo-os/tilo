@@ -3,7 +3,7 @@
 //! joiner adopts a full snapshot, then an incremental text edit ("typing")
 //! propagates. This is the transport+CRDT half of "type in one window, see
 //! it in the other" — the App layer drives exactly these calls
-//! (`broadcast_doc_delta` -> `SyncIncremental`; poll -> `load_incremental`).
+//! (`broadcast_doc_delta` -> `DocumentIncremental`; poll -> `load_incremental`).
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +21,7 @@ use std::time::Duration;
 use crate::support::typed_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use ui::collaboration::{CollabEvent, CollabRequest};
+use ui::collaboration::CollabRequest;
 
 fn text_of(doc: &AutoCommit) -> String {
     let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "text") else {
@@ -45,7 +45,7 @@ fn live_text_edit_propagates_through_broker() {
     a_doc.splice_text(&t, 0, 0, "hello").unwrap();
 
     // Late-join handshake: alice ships a full snapshot; bob adopts it.
-    a.send(CollabRequest::SyncCRDT { data: a_doc.save() });
+    a.send(CollabRequest::DocumentSnapshot { data: a_doc.save() });
     let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
     let mut b_doc = AutoCommit::new();
@@ -54,7 +54,8 @@ fn live_text_edit_propagates_through_broker() {
     for _ in 0..40 {
         thread::sleep(Duration::from_millis(50));
         for e in b.poll() {
-            if let CollabEvent::CRDTUpdate { data } = e {
+            if let Some(Ok(collab_types::DocumentMutation::Snapshot(data))) = e.document_mutation()
+            {
                 let mut incoming = AutoCommit::load(&data).unwrap();
                 b_doc.merge(&mut incoming).unwrap();
                 adopted = true;
@@ -71,13 +72,15 @@ fn live_text_edit_propagates_through_broker() {
     a_doc.splice_text(&t, 5, 0, " world").unwrap();
     let delta = a_doc.save_incremental();
     assert!(!delta.is_empty(), "the edit must produce a delta");
-    a.send(CollabRequest::SyncIncremental { data: delta });
+    a.send(CollabRequest::DocumentIncremental { data: delta });
 
     let mut got_edit = false;
     for _ in 0..40 {
         thread::sleep(Duration::from_millis(50));
         for e in b.poll() {
-            if let CollabEvent::CRDTIncremental { data } = e {
+            if let Some(Ok(collab_types::DocumentMutation::Incremental(data))) =
+                e.document_mutation()
+            {
                 b_doc.load_incremental(&data).unwrap();
                 got_edit = true;
             }

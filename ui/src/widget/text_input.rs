@@ -5,6 +5,7 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,19 +28,90 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transac
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+use zeroize::Zeroize;
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum CtxAction {
     Cut,
     Copy,
     Paste,
     SelectAll,
+    ApplySpelling {
+        start: usize,
+        end: usize,
+        replacement: String,
+    },
+    AddToDictionary(String),
+    IgnoreInField(String),
+    UndoAutocorrection,
+    TextAction(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RegisteredTextAction {
+    id: String,
+    label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Autocorrection {
+    start: usize,
+    end: usize,
+    boundary_end: usize,
+    original: String,
+    replacement: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutocorrectionPreview {
+    language: String,
+    start: usize,
+    end: usize,
+    original: String,
+    replacement: String,
+}
+
+/// A selected-text command requested from a field's context menu. The host can
+/// execute this asynchronously (translate, rewrite, explain, grammar review)
+/// without putting model or network work in the widget's input path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextActionRequest {
+    pub id: String,
+    pub text: String,
+    pub range: (usize, usize),
+}
+
+/// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
+/// Prose, so apps opt out only for the smaller set of structured fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextInputKind {
+    #[default]
+    Prose,
+    Name,
+    Search,
+    Username,
+    Email,
+    Url,
+    Path,
+    Code,
+    Number,
+    Password,
+}
+
+impl TextInputKind {
+    fn checks_spelling(self) -> bool {
+        matches!(self, Self::Prose)
+    }
+}
+
+fn is_autocorrect_boundary(character: char) -> bool {
+    character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
 const FONT_SIZE: f32 = 16.0;
@@ -49,6 +121,13 @@ const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// 400 ms matches the GTK / Qt default.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_RADIUS: f64 = 4.0;
+/// Spellcheck runs immediately, but the word containing the caret stays
+/// visually quiet for this long after an edit so its underline does not
+/// flicker while the user is still forming it.
+const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
+/// External Hunspell sessions are persistent but still use IPC. Coalesce the
+/// prefixes of a rapidly typed non-English word while preserving prior spans.
+const EXTERNAL_SPELLCHECK_DELAY: Duration = Duration::from_millis(100);
 const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
 /// Approximate glyph advance; used identically for gutter geometry and
@@ -65,6 +144,8 @@ enum DragUnit {
     All,
 }
 
+type TextChangeCallback = Box<dyn FnMut(&str)>;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -76,6 +157,10 @@ pub struct TextInput {
     is_hovered: bool,
     is_focused: bool,
     text: String,
+    /// Optional per-character admission rule for domain-specific single-line
+    /// fields (for example a spreadsheet cell-reference box). Applied to
+    /// keyboard, IME, paste, accessibility, and programmatic insertion alike.
+    char_filter: Option<fn(char) -> bool>,
     /// Always on a char boundary.
     cursor_pos: usize,
     /// Visual side of `cursor_pos` when a `BiDi` boundary or soft wrap has two.
@@ -94,9 +179,22 @@ pub struct TextInput {
     click_count: u32,
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
-    /// Gates whether edits splice into `state`; false even with a path string
-    /// set if it doesn't resolve to a real CRDT object.
+    /// App-local notification hook. The comparison value prevents cursor,
+    /// selection, and IME-preedit events from repeating the last edit.
+    on_change: Option<TextChangeCallback>,
+    last_notified_text: String,
+    /// Typed process-local model mirrored in both directions during the
+    /// ordinary widget sync/event lifecycle.
+    local_state: Option<crate::local_state::LocalBinding<String>>,
+    /// A programmatic/model change can alter multiline measurement without
+    /// pretending to be a user edit through `take_dirty`.
+    model_layout_dirty: bool,
+    /// Gates whether edits splice into `state`, materialising a missing path
+    /// lazily on the first effective edit.
     crdt_bound: bool,
+    /// Distinguishes an uninitialised binding (where a local initial value may
+    /// remain visible) from a path removed by undo or a remote model change.
+    path_was_present: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
@@ -128,10 +226,37 @@ pub struct TextInput {
     /// `self.text` stays the real value; only the render substitutes bullets.
     secret: bool,
     disabled: bool,
+    kind: TextInputKind,
+    /// Prose fields check spelling by default. Purpose-specific wrappers such
+    /// as search/code/number inputs opt out explicitly.
+    /// `None` follows semantic intent; `Some` is the app author's explicit
+    /// opt-in/out. The user's global off switch still wins.
+    spellcheck: Option<bool>,
+    /// Per-field override for automatic replacement. `None` follows Settings.
+    autocorrect: Option<bool>,
+    /// Untouched form fields do no dictionary work. Focus/edit/right-click
+    /// activates checking for the rest of the widget's lifetime.
+    spell_active: bool,
+    /// Hunspell dictionary name / BCP-47-ish language tag.
+    spell_language: String,
+    /// Cached by (language, text), so drawing idle fields never starts work.
+    spell_cache_key: Option<(String, String)>,
+    spell_spans: Vec<(usize, usize)>,
+    /// Per-user vocabulary layered over every installed language.
+    spell_dictionary: Option<spellcheck::Dictionary>,
+    ignored_spellings: HashSet<String>,
+    /// Caches both preview hits and misses so idle redraws never re-query a
+    /// dictionary for the same caret word.
+    autocorrection_preview_key: Option<(String, String, usize, usize)>,
+    autocorrection_preview: Option<AutocorrectionPreview>,
+    last_autocorrection: Option<Autocorrection>,
+    text_actions: Vec<RegisteredTextAction>,
+    pending_text_action: Option<TextActionRequest>,
     /// Reuses [`ContextMenu`]; rendered via the overlay pass so it floats above the field.
     context_menu: ContextMenu,
     /// Per-row action parallel to `context_menu`'s items (separators → `None`).
     context_actions: Vec<Option<CtxAction>>,
+    accessible_name: String,
     placeholder: String,
     /// Measurement switches with this so the caret/selection stay aligned with the draw.
     mono: bool,
@@ -167,6 +292,7 @@ pub struct TextInput {
     /// Last configured caret width, retained for the platform IME anchor whose
     /// trait hook does not receive a theme.
     last_caret_width: f64,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 /// One on-screen row: a whole short logical line, or one soft-wrapped
@@ -202,6 +328,8 @@ type GutterNums = Vec<(f64, String, bool)>;
 impl TextInput {
     /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
+        let spell_language = spellcheck::default_language();
+        spellcheck::warm_up_language(&spell_language);
         Self {
             id: String::new(),
             path,
@@ -209,6 +337,7 @@ impl TextInput {
             is_hovered: false,
             is_focused: false,
             text: String::new(),
+            char_filter: None,
             cursor_pos: 0,
             caret_affinity: TextAffinity::Before,
             selection_anchor: None,
@@ -229,7 +358,12 @@ impl TextInput {
             scroll_x: 0.0,
             last_edit_time: None,
             dirty: false,
+            on_change: None,
+            last_notified_text: String::new(),
+            local_state: None,
+            model_layout_dirty: false,
             crdt_bound: false,
+            path_was_present: false,
             external_buffer: None,
             font_size_override: None,
             plain: false,
@@ -237,8 +371,23 @@ impl TextInput {
             local_author: None,
             secret: false,
             disabled: false,
+            kind: TextInputKind::Prose,
+            spellcheck: None,
+            autocorrect: None,
+            spell_active: false,
+            spell_language,
+            spell_cache_key: None,
+            spell_spans: Vec::new(),
+            spell_dictionary: None,
+            ignored_spellings: HashSet::new(),
+            autocorrection_preview_key: None,
+            autocorrection_preview: None,
+            last_autocorrection: None,
+            text_actions: Vec::new(),
+            pending_text_action: None,
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
+            accessible_name: String::new(),
             placeholder: String::new(),
             mono: false,
             family: None,
@@ -259,6 +408,7 @@ impl TextInput {
             hl_sig: u64::MAX,
             last_scroll_caret: None,
             last_caret_width: 2.0,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -269,6 +419,7 @@ impl TextInput {
 
     /// After binding, [`sync`] reads from `obj` regardless of the string-path mode.
     pub fn bind_text(&mut self, obj: ObjId) {
+        self.local_state = None;
         self.bound_text = Some(obj);
         self.crdt_bound = true;
     }
@@ -289,6 +440,29 @@ impl TextInput {
             return Some(id);
         }
         None
+    }
+
+    /// Materialise a path-bound text object after the first effective edit.
+    ///
+    /// Path bindings deliberately stay absent while the user only focuses or
+    /// navigates the field. When an edit was applied locally without an
+    /// existing Automerge text object, publish the complete resulting value as
+    /// one text object so sibling document readers observe that first edit.
+    fn persist_first_path_edit(&self, previous_text: &str, state: &mut AutoCommit, root: &ObjId) {
+        if !self.crdt_bound
+            || self.bound_text.is_some()
+            || self.on_change_path.is_empty()
+            || self.text == previous_text
+            || self.resolve_text_obj(state, root).is_some()
+        {
+            return;
+        }
+        let Ok(obj) = state.put_object(root, self.on_change_path.as_str(), ObjType::Text) else {
+            return;
+        };
+        if !self.text.is_empty() {
+            let _ = state.splice_text(&obj, 0, 0, self.text.as_str());
+        }
     }
 
     #[must_use]
@@ -314,15 +488,122 @@ impl TextInput {
     #[must_use]
     pub fn with_mono(mut self) -> Self {
         self.mono = true;
+        self.kind = TextInputKind::Code;
         self
     }
 
     pub fn set_mono(&mut self, mono: bool) {
         self.mono = mono;
+        if mono {
+            self.set_kind(TextInputKind::Code);
+        }
     }
 
     pub fn is_mono(&self) -> bool {
         self.mono
+    }
+
+    /// Declare the exceptional structured intent of a field. Natural-language
+    /// prose is already the default and never needs an annotation.
+    #[must_use]
+    pub fn with_kind(mut self, kind: TextInputKind) -> Self {
+        self.set_kind(kind);
+        self
+    }
+
+    pub fn set_kind(&mut self, kind: TextInputKind) {
+        self.kind = kind;
+        self.spell_cache_key = None;
+        self.spell_spans.clear();
+    }
+
+    pub fn kind(&self) -> TextInputKind {
+        self.kind
+    }
+
+    /// Enable or disable spelling assistance for this field. It defaults on
+    /// for ordinary text and is automatically suppressed for secret and
+    /// code-like fields.
+    #[must_use]
+    pub fn with_spellcheck(mut self, on: bool) -> Self {
+        self.spellcheck = Some(on);
+        self.spell_cache_key = None;
+        self
+    }
+
+    pub fn set_spellcheck(&mut self, on: bool) {
+        self.spellcheck = Some(on);
+        self.spell_cache_key = None;
+    }
+
+    pub fn spellcheck_enabled(&self) -> bool {
+        self.checks_spelling()
+    }
+
+    /// Override automatic correction for this field. Without an override the
+    /// user-wide Spell checker setting applies.
+    #[must_use]
+    pub fn with_autocorrect(mut self, on: bool) -> Self {
+        self.autocorrect = Some(on);
+        self
+    }
+
+    pub fn set_autocorrect(&mut self, on: bool) {
+        self.autocorrect = Some(on);
+    }
+
+    pub fn autocorrect_enabled(&self) -> bool {
+        self.field_allows_spelling()
+            && self
+                .autocorrect
+                .unwrap_or_else(|| crate::text_assistance::preferences().auto_correct)
+    }
+
+    /// Select a language dictionary, accepting both en-US and `en_US` style
+    /// tags. If that Hunspell dictionary is unavailable, non-English checking
+    /// quietly disables itself; English retains the embedded fallback.
+    #[must_use]
+    pub fn with_spell_language(mut self, language: &str) -> Self {
+        self.set_spell_language(language);
+        self
+    }
+
+    pub fn set_spell_language(&mut self, language: &str) {
+        self.spell_language = language.to_string();
+        self.spell_cache_key = None;
+        self.autocorrection_preview_key = None;
+        self.autocorrection_preview = None;
+    }
+
+    pub fn spell_language(&self) -> &str {
+        &self.spell_language
+    }
+
+    /// Add a host-owned action to the selection context menu. Activating it
+    /// produces a request drained by `take_text_action_request`; the widget
+    /// never blocks on the action itself.
+    #[must_use]
+    pub fn with_text_action(mut self, id: &str, label: &str) -> Self {
+        self.add_text_action(id, label);
+        self
+    }
+
+    pub fn add_text_action(&mut self, id: &str, label: &str) {
+        if id.is_empty() || label.is_empty() {
+            return;
+        }
+        self.text_actions.push(RegisteredTextAction {
+            id: id.to_string(),
+            label: label.to_string(),
+        });
+    }
+
+    pub fn clear_text_actions(&mut self) {
+        self.text_actions.clear();
+    }
+
+    pub fn take_text_action_request(&mut self) -> Option<TextActionRequest> {
+        self.pending_text_action.take()
     }
 
     /// Wins over the mono flag.
@@ -494,6 +775,52 @@ impl TextInput {
         s
     }
 
+    /// Create a true two-way binding to typed process-local text state.
+    ///
+    /// User edits update `state`; mutations through any clone of `state`
+    /// update this input on the next synchronization pass. Several inputs and
+    /// read-only [`Text`](super::Text) views can therefore share one value
+    /// without initial-value snapshots, callbacks, or app-owned fan-out.
+    /// Selecting a document or external-buffer binding later replaces this
+    /// process-local binding explicitly.
+    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let mut input = Self::local().with_initial_value(&value);
+        input.local_state = Some(binding);
+        input
+    }
+
+    /// Create an input bound to one root-level document string.
+    ///
+    /// The path may contain either an Automerge string scalar or `Text`
+    /// object. The first effective edit upgrades a missing path (or scalar)
+    /// to collaborative `Text`; focus and selection alone do not materialise
+    /// model state. Pair with
+    /// [`Text::from_document_string`](super::Text::from_document_string) for a
+    /// synchronized read-only view without app-owned callbacks.
+    pub fn from_document_string(path: impl Into<String>) -> Self {
+        let path = path.into();
+        let mut input = Self::local();
+        input.crdt_bound = !path.is_empty();
+        input.on_change_path = path;
+        input
+    }
+
+    /// Admit only characters accepted by `filter` on every insertion path.
+    ///
+    /// This is deliberately a character predicate, not a validator for the
+    /// whole value: callers still own domain parsing and error reporting when
+    /// the field is submitted.
+    #[must_use]
+    pub fn with_char_filter(mut self, filter: fn(char) -> bool) -> Self {
+        self.char_filter = Some(filter);
+        self.text.retain(filter);
+        self.clamp_to_text();
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
+        self
+    }
+
     /// Cursor parks at the end; dirty stays false (programmatic seed).
     #[must_use]
     pub fn with_initial_value(mut self, s: &str) -> Self {
@@ -501,6 +828,8 @@ impl TextInput {
         self.cursor_pos = self.text.len();
         self.caret_affinity = TextAffinity::Before;
         self.dirty = false;
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
         self
     }
 
@@ -508,15 +837,50 @@ impl TextInput {
         if self.text == s {
             return;
         }
+        if self.secret {
+            self.text.zeroize();
+        }
         self.text = s.to_string();
         self.selection_anchor = None;
         self.clamp_to_text();
         self.dirty = false;
+        self.model_layout_dirty = self.multiline;
         self.last_edit_time = None;
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
     }
 
     pub fn value(&self) -> &str {
         &self.text
+    }
+
+    /// Register an app-local callback for committed user edits.
+    ///
+    /// Keyboard input, paste, accessibility edits, and committed IME text
+    /// notify once with the complete new value. IME preedit, cursor movement,
+    /// selection changes, [`Self::set_text`], and CRDT synchronization do not.
+    #[must_use]
+    pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self.last_notified_text.clone_from(&self.text);
+        self
+    }
+
+    fn notify_user_change(&mut self) {
+        if !self.dirty || self.last_notified_text == self.text {
+            return;
+        }
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(&self.text);
+        }
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.text);
+        }
     }
 
     /// Local-mode only. In CRDT-bound mode prefer a real key event instead,
@@ -525,6 +889,8 @@ impl TextInput {
         // `insert_str` only touches the CRDT when given an object id.
         let mut sink = AutoCommit::new();
         self.insert_str(s, &mut sink, None);
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
     }
 
     pub fn cursor_pos(&self) -> usize {
@@ -1388,9 +1754,10 @@ impl TextInput {
         let text_transform =
             transform * Affine::translate((self.single_origin.x, self.single_origin.y));
         if self.shows_placeholder() {
+            let placeholder = crate::i18n!(&self.placeholder);
             tr.draw_text(
                 scene,
-                &self.placeholder,
+                &placeholder,
                 size,
                 theme.text_dim,
                 text_transform,
@@ -1648,13 +2015,14 @@ impl TextInput {
         }
 
         if self.shows_placeholder() {
+            let placeholder = crate::i18n!(&self.placeholder);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let origin = transform
                 * Affine::translate((self.rect.x0 + left, self.rect.y0 + ML_PAD_Y - self.scroll_y));
-            tr.draw_text(scene, &self.placeholder, size, theme.text_dim, origin, None);
+            tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
         }
 
         let text_color = if self.disabled {
@@ -1791,8 +2159,14 @@ impl TextInput {
         self
     }
 
+    /// Bind this input to one root-level document string.
+    ///
+    /// Prefer [`Self::from_document_string`] when constructing a new field;
+    /// this builder remains useful when the rest of the input is assembled
+    /// dynamically first.
     #[must_use]
     pub fn with_on_change_path(mut self, path: &str) -> Self {
+        self.local_state = None;
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
         self
@@ -1802,6 +2176,7 @@ impl TextInput {
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
+        self.local_state = None;
         self.external_buffer = Some(buffer);
         self.crdt_bound = false;
         self
@@ -1810,11 +2185,17 @@ impl TextInput {
     #[must_use]
     pub fn with_secret(mut self, on: bool) -> Self {
         self.secret = on;
+        if on {
+            self.kind = TextInputKind::Password;
+        }
         self
     }
 
     pub fn set_secret(&mut self, on: bool) {
         self.secret = on;
+        if on {
+            self.set_kind(TextInputKind::Password);
+        }
     }
 
     pub fn is_secret(&self) -> bool {
@@ -2006,6 +2387,15 @@ impl TextInput {
         self
     }
 
+    /// Set the stable label announced for this field by assistive technology.
+    /// Placeholder text is intentionally not used as the label because it
+    /// disappears after entry and often describes format rather than purpose.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = name.into();
+        self
+    }
+
     pub fn set_placeholder(&mut self, hint: &str) {
         self.placeholder = hint.to_string();
     }
@@ -2181,6 +2571,17 @@ impl TextInput {
     }
 
     fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        let filtered;
+        let s = if let Some(filter) = self.char_filter {
+            filtered = s.chars().filter(|ch| filter(*ch)).collect::<String>();
+            filtered.as_str()
+        } else {
+            s
+        };
+        if s.is_empty() {
+            return;
+        }
+        self.last_autocorrection = None;
         // Char index the inserted text lands at, to stamp the authorship mark over it.
         let insert_char_at;
         if let Some((start, end)) = self.selection_range() {
@@ -2349,9 +2750,367 @@ impl TextInput {
         self.do_select_all();
     }
 
+    fn field_allows_spelling(&self) -> bool {
+        !self.secret
+            && self.kind != TextInputKind::Password
+            && self.spellcheck.unwrap_or_else(|| {
+                self.kind.checks_spelling()
+                    && !self.mono
+                    && self.highlighter.is_none()
+                    && self.tab_spaces.is_none()
+            })
+    }
+
+    fn checks_spelling(&self) -> bool {
+        self.field_allows_spelling() && crate::text_assistance::preferences().check_spelling
+    }
+
+    fn autocorrect_previous_word(
+        &mut self,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) -> Option<Autocorrection> {
+        if !self.autocorrect_enabled() || self.has_selection() || self.cursor_pos == 0 {
+            return None;
+        }
+        self.refresh_autocorrection_preview();
+        // The visual preview is deliberately debounced (and only painted for a
+        // focused field), but committing a boundary must not depend on whether
+        // that preview has already had a frame in which to appear. This also
+        // keeps fast typists from outrunning an external-language checker.
+        let preview = self
+            .autocorrection_preview
+            .clone()
+            .or_else(|| self.autocorrection_candidate())?;
+        let (start, end) = (preview.start, preview.end);
+        let (original, replacement) = (preview.original, preview.replacement);
+        self.selection_anchor = Some(start);
+        self.cursor_pos = end;
+        self.insert_str(&replacement, state, obj_id);
+        let replacement_end = start.saturating_add(replacement.len());
+        Some(Autocorrection {
+            start,
+            end: replacement_end,
+            boundary_end: replacement_end,
+            original,
+            replacement,
+        })
+    }
+
+    fn word_ending_at_caret(&self) -> Option<(usize, usize)> {
+        if self.has_selection() || self.cursor_pos == 0 {
+            return None;
+        }
+        let probe = prev_char_boundary(&self.text, self.cursor_pos);
+        let (start, end) = word_boundaries(&self.text, probe);
+        (start < end && end == self.cursor_pos).then_some((start, end))
+    }
+
+    fn refresh_autocorrection_preview(&mut self) {
+        if !self.autocorrect_enabled() || !self.is_focused || !self.preedit.is_empty() {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        }
+        if !spellcheck::checks_in_process(&self.spell_language)
+            && self
+                .last_edit_time
+                .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
+        {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        }
+        let Some((start, end)) = self.word_ending_at_caret() else {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        };
+        let Some(original) = self.text.get(start..end) else {
+            self.autocorrection_preview_key = None;
+            self.autocorrection_preview = None;
+            return;
+        };
+        let key = (
+            self.spell_language.clone(),
+            original.to_string(),
+            start,
+            end,
+        );
+        if self.autocorrection_preview_key.as_ref() == Some(&key) {
+            return;
+        }
+        let preview = self.autocorrection_candidate();
+        self.autocorrection_preview_key = Some(key);
+        self.autocorrection_preview = preview;
+    }
+
+    fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
+        let (start, end) = self.word_ending_at_caret()?;
+        let original = self.text.get(start..end)?.to_string();
+        let dictionary = self
+            .spell_dictionary
+            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+        if dictionary.contains(&original) {
+            return None;
+        }
+        let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
+        (replacement != original).then(|| AutocorrectionPreview {
+            language: self.spell_language.clone(),
+            start,
+            end,
+            original,
+            replacement,
+        })
+    }
+
+    fn insert_word_boundary(
+        &mut self,
+        boundary: &str,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) {
+        let correction = self.autocorrect_previous_word(state, obj_id);
+        self.insert_str(boundary, state, obj_id);
+        if let Some(mut correction) = correction {
+            correction.boundary_end = self.cursor_pos;
+            self.last_autocorrection = Some(correction);
+        }
+    }
+
+    fn undo_last_autocorrection(
+        &mut self,
+        remove_boundary: bool,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) -> bool {
+        let Some(correction) = self.last_autocorrection.clone() else {
+            return false;
+        };
+        if self.text.get(correction.start..correction.end) != Some(&correction.replacement) {
+            self.last_autocorrection = None;
+            return false;
+        }
+        let replace_end = if remove_boundary {
+            if self.cursor_pos != correction.boundary_end {
+                return false;
+            }
+            let Some(boundary) = self.text.get(correction.end..correction.boundary_end) else {
+                return false;
+            };
+            if boundary.chars().count() > 1 || boundary.chars().any(char::is_alphanumeric) {
+                return false;
+            }
+            correction.boundary_end
+        } else {
+            correction.end
+        };
+        self.selection_anchor = Some(correction.start);
+        self.cursor_pos = replace_end;
+        self.insert_str(&correction.original, state, obj_id);
+        true
+    }
+
+    fn refresh_spelling(&mut self) {
+        if !self.checks_spelling() || self.text.is_empty() {
+            self.spell_spans.clear();
+            self.spell_cache_key = None;
+            return;
+        }
+        if !self.spell_active {
+            self.spell_spans.clear();
+            return;
+        }
+        if !spellcheck::checks_in_process(&self.spell_language)
+            && self.is_focused
+            && self
+                .last_edit_time
+                .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
+        {
+            return;
+        }
+        let key = (self.spell_language.clone(), self.text.clone());
+        if self.spell_cache_key.as_ref() == Some(&key) {
+            return;
+        }
+
+        let mut spans = spellcheck::spans_for_language(&self.spell_language, &self.text);
+        let dictionary = self
+            .spell_dictionary
+            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+        spans.retain(|&(start, end)| {
+            self.text.get(start..end).is_some_and(|word| {
+                !dictionary.contains(word) && !self.ignored_spellings.contains(&word.to_lowercase())
+            })
+        });
+        self.spell_spans = spans;
+        self.spell_cache_key = Some(key);
+    }
+
+    /// The word currently being formed. Checking is immediate, but its result
+    /// is hidden briefly; all completed words remain visible during typing.
+    fn actively_edited_word(&self) -> Option<(usize, usize)> {
+        if !self.is_focused
+            || self.has_selection()
+            || self
+                .last_edit_time
+                .is_none_or(|edited| edited.elapsed() >= SPELL_EDIT_SETTLE)
+        {
+            return None;
+        }
+
+        let is_word_char =
+            |character: char| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}');
+        let at_caret = self
+            .text
+            .get(self.cursor_pos..)
+            .and_then(|tail| tail.chars().next())
+            .filter(|character| is_word_char(*character))
+            .map(|_| self.cursor_pos);
+        let before_caret = self
+            .text
+            .get(..self.cursor_pos)
+            .and_then(|head| head.char_indices().next_back())
+            .filter(|(_, character)| is_word_char(*character))
+            .map(|(byte, _)| byte);
+        let probe = at_caret.or(before_caret)?;
+        let range = word_boundaries(&self.text, probe);
+        (range.0 < range.1).then_some(range)
+    }
+
+    fn spelling_span_is_visible(&self, start: usize, end: usize) -> bool {
+        if self
+            .autocorrection_preview
+            .as_ref()
+            .is_some_and(|preview| end > preview.start && start < preview.end)
+        {
+            return false;
+        }
+        self.actively_edited_word()
+            .is_none_or(|(active_start, active_end)| end <= active_start || start >= active_end)
+    }
+
+    /// Draw a theme-aware wavy underline using the same range geometry as
+    /// selection, so it follows shaping, `BiDi`, and soft wrapping.
+    #[allow(
+        clippy::while_float,
+        reason = "x advances by a fixed positive 2px and is clamped to x1"
+    )]
+    fn draw_spelling(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.refresh_autocorrection_preview();
+        self.refresh_spelling();
+        let color = theme.tokens.colors.semantic.danger;
+        for &(start, end) in &self.spell_spans {
+            if !self.spelling_span_is_visible(start, end) {
+                continue;
+            }
+            for rect in self.selection_rects(theme, start, end) {
+                let x0 = rect.x0.max(self.rect.x0);
+                let x1 = rect.x1.min(self.rect.x1);
+                if x1 <= x0 || rect.y1 < self.rect.y0 || rect.y1 > self.rect.y1 {
+                    continue;
+                }
+                let y = rect.y1 - 1.0;
+                let mut path = vello::kurbo::BezPath::new();
+                path.move_to((x0, y));
+                let mut x = x0;
+                let mut up = false;
+                while x < x1 {
+                    x = (x + 2.0).min(x1);
+                    path.line_to((x, y + if up { -1.0 } else { 1.0 }));
+                    up = !up;
+                }
+                scene.stroke(&Stroke::new(1.0), transform, color, None, &path);
+            }
+        }
+    }
+
+    /// A quiet solid underline marks the most recent automatic replacement.
+    /// It disappears on the next edit, but remains long enough to explain what
+    /// changed and to invite Backspace or the context-menu undo action.
+    fn draw_autocorrection(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let Some(correction) = self.last_autocorrection.as_ref() else {
+            return;
+        };
+        if self.text.get(correction.start..correction.end) != Some(&correction.replacement) {
+            return;
+        }
+        let (start, end) = (correction.start, correction.end);
+        for rect in self.selection_rects(theme, start, end) {
+            let line = vello::kurbo::Line::new(
+                (rect.x0.max(self.rect.x0), rect.y1 - 0.5),
+                (rect.x1.min(self.rect.x1), rect.y1 - 0.5),
+            );
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                theme.accent_primary,
+                None,
+                &line,
+            );
+        }
+    }
+
+    /// Show the exact high-confidence replacement before Space/punctuation
+    /// applies it. The compact chip floats above the field like an IME
+    /// candidate, leaving the text and caret unobscured.
+    fn draw_autocorrection_preview(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.refresh_autocorrection_preview();
+        let Some(preview) = self.autocorrection_preview.as_ref() else {
+            return;
+        };
+        let label = format!("Space → {}", preview.replacement);
+        let size = theme.tokens.typography.scale.sm;
+        let (text_width, text_height) = text_renderer.measure(&label, size, None);
+        let pad_x = 8.0_f64;
+        let pad_y = 4.0_f64;
+        let width = f64::from(text_width) + pad_x * 2.0;
+        let height = f64::from(text_height) + pad_y * 2.0;
+        let caret = self.ime_cursor_rect().unwrap_or(self.rect);
+        let max_x = (self.rect.x1 - width).max(self.rect.x0);
+        let x = caret.x0.clamp(self.rect.x0, max_x);
+        let below = caret.y1 + 4.0;
+        let y = if below + height <= self.rect.y1 - 4.0 {
+            below
+        } else {
+            self.rect.y0 - height - 4.0
+        };
+        let rect = Rect::new(x, y, x + width, y + height);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.overlay,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.accent_primary,
+            None,
+            &shape,
+        );
+        text_renderer.draw_text(
+            scene,
+            &label,
+            size,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(Vec2::new(rect.x0 + pad_x, rect.y0 + pad_y)),
+            None,
+        );
+    }
+
     /// If nothing is selected, the word under the click is selected first
     /// (matches every native editor's right-click-on-a-word behaviour).
     fn open_context_menu(&mut self, pos: [f32; 2]) {
+        self.spell_active = true;
         if !self.has_selection() {
             let byte = self.resolve_cursor(Point::new(f64::from(pos[0]), f64::from(pos[1])));
             let (start, end) = word_boundaries(&self.text, byte);
@@ -2369,6 +3128,52 @@ impl TextInput {
 
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
+        self.refresh_spelling();
+        if let (Some((start, end)), Some(correction)) =
+            (self.selection_range(), self.last_autocorrection.as_ref())
+            && start == correction.start
+            && end == correction.end
+        {
+            menu.push(MenuItem::action(
+                format!("Undo autocorrection to ‘{}’", correction.original),
+                || {},
+            ));
+            actions.push(Some(CtxAction::UndoAutocorrection));
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
+        if let Some((start, end)) = self.selection_range()
+            && self.spell_spans.contains(&(start, end))
+            && let Some(word) = self.text.get(start..end)
+        {
+            let word = word.to_string();
+            for replacement in spellcheck::suggestions_for_language(&self.spell_language, &word, 3)
+            {
+                menu.push(MenuItem::action(replacement.clone(), || {}));
+                actions.push(Some(CtxAction::ApplySpelling {
+                    start,
+                    end,
+                    replacement,
+                }));
+            }
+            menu.push(MenuItem::action(
+                format!("Add ‘{word}’ to dictionary"),
+                || {},
+            ));
+            actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            menu.push(MenuItem::action("Ignore in this field", || {}));
+            actions.push(Some(CtxAction::IgnoreInField(word)));
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
+        if has_sel && !self.text_actions.is_empty() {
+            for (index, action) in self.text_actions.iter().enumerate() {
+                menu.push(MenuItem::action(action.label.clone(), || {}));
+                actions.push(Some(CtxAction::TextAction(index)));
+            }
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
         if has_sel {
             menu.push(MenuItem::action("Cut", || {}));
             actions.push(Some(CtxAction::Cut));
@@ -2391,6 +3196,13 @@ impl TextInput {
         self.context_actions = actions;
     }
 
+    /// Open the native text menu at a logical-pixel position. Hosts use this
+    /// for keyboard menu keys, accessibility actions, and deterministic UI
+    /// previews; pointer right-clicks route here automatically.
+    pub fn open_text_menu_at(&mut self, pos: [f32; 2]) {
+        self.open_context_menu(pos);
+    }
+
     /// Out-of-range / separator rows are ignored.
     fn dispatch_context_action(
         &mut self,
@@ -2398,7 +3210,7 @@ impl TextInput {
         state: &mut AutoCommit,
         obj_id: Option<&ObjId>,
     ) -> bool {
-        let Some(Some(action)) = self.context_actions.get(idx).copied() else {
+        let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
         match action {
@@ -2406,6 +3218,46 @@ impl TextInput {
             CtxAction::Copy => self.do_copy(),
             CtxAction::Paste => self.do_paste(state, obj_id),
             CtxAction::SelectAll => self.do_select_all(),
+            CtxAction::ApplySpelling {
+                start,
+                end,
+                replacement,
+            } => {
+                self.selection_anchor = Some(start);
+                self.cursor_pos = end;
+                self.insert_str(&replacement, state, obj_id);
+                self.spell_cache_key = None;
+            }
+            CtxAction::AddToDictionary(word) => {
+                let dictionary = self
+                    .spell_dictionary
+                    .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+                if dictionary.add_word(&word) {
+                    let _ = dictionary.save_user_dict();
+                }
+                self.spell_cache_key = None;
+                self.refresh_spelling();
+            }
+            CtxAction::IgnoreInField(word) => {
+                self.ignored_spellings.insert(word.to_lowercase());
+                self.spell_cache_key = None;
+                self.refresh_spelling();
+            }
+            CtxAction::UndoAutocorrection => {
+                let _ = self.undo_last_autocorrection(false, state, obj_id);
+            }
+            CtxAction::TextAction(index) => {
+                if let (Some(action), Some((start, end))) =
+                    (self.text_actions.get(index), self.selection_range())
+                    && let Some(selected) = self.text.get(start..end)
+                {
+                    self.pending_text_action = Some(TextActionRequest {
+                        id: action.id.clone(),
+                        text: selected.to_string(),
+                        range: (start, end),
+                    });
+                }
+            }
         }
         self.context_menu.close();
         true
@@ -2489,13 +3341,37 @@ impl TextInput {
     }
 }
 
+impl Drop for TextInput {
+    fn drop(&mut self) {
+        if self.secret {
+            self.text.zeroize();
+            self.preedit.zeroize();
+        }
+    }
+}
+
 impl Widget for TextInput {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let local_value = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll);
+        if let Some(value) = local_value {
+            self.set_text(&value);
+        }
         if self.dirty
             && let Some(buffer) = &self.external_buffer
             && let Ok(mut value) = buffer.lock()
         {
-            value.clear();
+            value.zeroize();
             value.push_str(&self.text);
         }
         // Directly-bound Text wins over the string-path mode entirely.
@@ -2504,27 +3380,43 @@ impl Widget for TextInput {
                 self.text = text;
             }
             self.clamp_to_text();
+            self.last_notified_text.clone_from(&self.text);
             return;
         }
         if !self.crdt_bound {
             return;
         }
-        if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
-            match val {
-                Value::Scalar(s) => {
-                    if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                        self.text = text.to_string();
+        match state.get(root, self.on_change_path.as_str()) {
+            Ok(Some((val, obj_id))) => {
+                self.path_was_present = true;
+                match val {
+                    Value::Scalar(s) => {
+                        if let automerge::ScalarValue::Str(text) = s.as_ref() {
+                            self.text = text.to_string();
+                        }
                     }
-                }
-                Value::Object(ObjType::Text) => {
-                    if let Ok(text) = state.text(&obj_id) {
-                        self.text = text;
+                    Value::Object(ObjType::Text) => {
+                        if let Ok(text) = state.text(&obj_id) {
+                            self.text = text;
+                        }
                     }
+                    Value::Object(_) => {}
                 }
-                Value::Object(_) => {}
+            }
+            Ok(None) if self.path_was_present => {
+                self.path_was_present = false;
+                self.text.clear();
+                self.cursor_pos = 0;
+                self.selection_anchor = None;
+                self.goal_x = None;
+            }
+            Ok(None) | Err(_) => {
+                // Keep an app-provided initial value until the binding has
+                // existed. An error is likewise not evidence of deletion.
             }
         }
         self.clamp_to_text();
+        self.last_notified_text.clone_from(&self.text);
     }
 
     fn build_layout(
@@ -2537,7 +3429,7 @@ impl Widget for TextInput {
         let height = if self.multiline {
             Dimension::auto()
         } else {
-            Dimension::length(40.0)
+            Dimension::length(40.0_f32.max(self.interaction.minimum_target()))
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -2569,6 +3461,7 @@ impl Widget for TextInput {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         if !self.multiline {
+            self.model_layout_dirty = false;
             return taffy::Size::ZERO;
         }
         let width = known.width.unwrap_or(match available.width {
@@ -2582,6 +3475,7 @@ impl Widget for TextInput {
             reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
         )]
         let height = self.content_height() as f32;
+        self.model_layout_dirty = false;
         taffy::Size { width, height }
     }
 
@@ -2607,6 +3501,9 @@ impl Widget for TextInput {
             } else {
                 self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape);
             }
+            self.draw_spelling(scene, transform, theme);
+            self.draw_autocorrection(scene, transform, theme);
+            self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             return;
         }
         self.multiline_shaped = false;
@@ -2664,6 +3561,9 @@ impl Widget for TextInput {
         }
 
         scene.pop_layer();
+        self.draw_spelling(scene, transform, theme);
+        self.draw_autocorrection(scene, transform, theme);
+        self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -2744,6 +3644,7 @@ impl Widget for TextInput {
             }
             _ => {}
         }
+        self.notify_user_change();
     }
 
     fn name(&self) -> &'static str {
@@ -2766,7 +3667,7 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
     /// A disabled input claims no cursor and defers to the host default.
@@ -2783,6 +3684,9 @@ impl Widget for TextInput {
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
+        if focused {
+            self.spell_active = true;
+        }
         if !focused {
             self.preedit.clear();
             self.preedit_cursor = None;
@@ -2862,6 +3766,9 @@ impl Widget for TextInput {
                 self.cursor_pos,
             );
         }
+        if !self.accessible_name.is_empty() {
+            node = node.with_name(crate::i18n!(&self.accessible_name));
+        }
         Some(node)
     }
 
@@ -2878,6 +3785,7 @@ impl Widget for TextInput {
         }
         match action {
             Action::SetValue(value) => {
+                let previous_text = self.text.clone();
                 let cleaned = if self.multiline {
                     value
                         .replace("\r\n", "\n")
@@ -2892,6 +3800,10 @@ impl Widget for TextInput {
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
                 self.insert_str(&cleaned, state, obj.as_ref());
+                if obj.is_none() {
+                    self.persist_first_path_edit(&previous_text, state, root);
+                }
+                self.notify_user_change();
                 true
             }
             Action::SetSelection { anchor, focus } => {
@@ -2918,6 +3830,15 @@ impl Widget for TextInput {
     /// into a sibling widget.
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.checks_spelling()
+            && self.spell_active
+            && self.is_focused
+            && self
+                .last_edit_time
+                .is_some_and(|edited| edited.elapsed() < SPELL_EDIT_SETTLE)
     }
 
     fn needs_commit(&self) -> bool {
@@ -3256,6 +4177,7 @@ impl TextInput {
         text_color: vello::peniko::Color,
     ) {
         if self.shows_placeholder() {
+            let placeholder = crate::i18n!(&self.placeholder);
             // `Affine * Affine` composes two geometric transforms over f64
             // coordinates; it has no integer overflow/wrap semantics.
             #[allow(
@@ -3266,7 +4188,7 @@ impl TextInput {
                 transform * Affine::translate((self.rect.x0 + padding_x, text_y));
             text_renderer.draw_text(
                 scene,
-                &self.placeholder,
+                &placeholder,
                 text_size,
                 theme.text_dim,
                 placeholder_origin,
@@ -3502,8 +4424,12 @@ impl TextInput {
             if element_state == ElementState::Pressed {
                 let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
                 if let Some(idx) = self.context_menu.item_at(point) {
+                    let previous_text = self.text.clone();
                     let obj_id_opt = self.resolve_text_obj(state, root);
                     self.dispatch_context_action(idx, state, obj_id_opt.as_ref());
+                    if obj_id_opt.is_none() {
+                        self.persist_first_path_edit(&previous_text, state, root);
+                    }
                 } else {
                     self.context_menu.close();
                 }
@@ -3622,12 +4548,19 @@ impl TextInput {
         obj_id: Option<&ObjId>,
         handled: &mut bool,
     ) {
+        let correction = (self.enter_submits || self.multiline)
+            .then(|| self.autocorrect_previous_word(state, obj_id))
+            .flatten();
         if self.enter_submits && !shift {
             self.submit_requested = true;
             *handled = true;
         } else if self.multiline {
             self.insert_str("\n", state, obj_id);
             *handled = true;
+        }
+        if let Some(mut correction) = correction {
+            correction.boundary_end = self.cursor_pos;
+            self.last_autocorrection = Some(correction);
         }
     }
 
@@ -3658,6 +4591,11 @@ impl TextInput {
         obj_id: Option<&ObjId>,
         handled: &mut bool,
     ) {
+        if !ctrl && self.undo_last_autocorrection(true, state, obj_id) {
+            *handled = true;
+            return;
+        }
+        self.last_autocorrection = None;
         if self.has_selection() {
             self.delete_selection(state, obj_id);
         } else if self.cursor_pos > 0 {
@@ -3771,6 +4709,7 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
+        let previous_text = self.text.clone();
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         let obj_id = obj_id_opt.as_ref();
         let shift = modifiers.state().shift_key();
@@ -3798,7 +4737,7 @@ impl TextInput {
             }
             Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, state, obj_id, handled),
             Key::Named(NamedKey::Space) => {
-                self.insert_str(" ", state, obj_id);
+                self.insert_word_boundary(" ", state, obj_id);
                 *handled = true;
             }
             Key::Character(c) if ctrl => {
@@ -3808,10 +4747,17 @@ impl TextInput {
                 if let Some(t) = text
                     && !t.chars().all(char::is_control)
                 {
-                    self.insert_str(t, state, obj_id);
+                    if t.chars().next().is_some_and(is_autocorrect_boundary) {
+                        self.insert_word_boundary(t, state, obj_id);
+                    } else {
+                        self.insert_str(t, state, obj_id);
+                    }
                     *handled = true;
                 }
             }
+        }
+        if obj_id_opt.is_none() {
+            self.persist_first_path_edit(&previous_text, state, root);
         }
     }
 
@@ -3827,10 +4773,30 @@ impl TextInput {
         }
         self.preedit.clear();
         self.preedit_cursor = None;
+        let previous_text = self.text.clone();
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         if !t.chars().all(char::is_control) {
-            self.insert_str(t, state, obj_id_opt.as_ref());
+            if let Some((boundary_at, boundary)) = t.char_indices().next_back()
+                && is_autocorrect_boundary(boundary)
+            {
+                if let Some(prefix) = t.get(..boundary_at)
+                    && !prefix.is_empty()
+                {
+                    self.insert_str(prefix, state, obj_id_opt.as_ref());
+                }
+                let mut encoded = [0; 4];
+                self.insert_word_boundary(
+                    boundary.encode_utf8(&mut encoded),
+                    state,
+                    obj_id_opt.as_ref(),
+                );
+            } else {
+                self.insert_str(t, state, obj_id_opt.as_ref());
+            }
             *handled = true;
+        }
+        if obj_id_opt.is_none() {
+            self.persist_first_path_edit(&previous_text, state, root);
         }
     }
 
@@ -3838,8 +4804,14 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        t.clone_into(&mut self.preedit);
-        self.preedit_cursor = cursor;
+        if let Some(filter) = self.char_filter {
+            let filtered = t.chars().filter(|ch| filter(*ch)).collect::<String>();
+            self.preedit_cursor = if filtered == t { cursor } else { None };
+            self.preedit = filtered;
+        } else {
+            t.clone_into(&mut self.preedit);
+            self.preedit_cursor = cursor;
+        }
         *handled = true;
     }
 }
@@ -4238,6 +5210,132 @@ mod tests {
         assert!(Widget::ime_cursor_rect(&ti).is_none());
     }
 
+    #[test]
+    fn on_change_reports_committed_user_edits_once() {
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut ti = TextInput::local()
+            .with_initial_value("a")
+            .on_change(move |value| captured.borrow_mut().push(value.to_string()));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &char_key_event("b"),
+            mods(false, false),
+        ));
+        assert_eq!(&*changes.borrow(), &["ab"]);
+
+        // A non-edit event must not repeat the prior notification even though
+        // the legacy dirty flag remains set until its owner drains it.
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            mods(false, false),
+        );
+        assert_eq!(&*changes.borrow(), &["ab"]);
+
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "漢".into(),
+                Some(("漢".len(), "漢".len())),
+            )),
+            mods(false, false),
+        ));
+        assert_eq!(&*changes.borrow(), &["ab"]);
+
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+            mods(false, false),
+        ));
+        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+
+        ti.set_text("programmatic");
+        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+        ti.insert_at_cursor(" helper");
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            mods(false, false),
+        );
+        assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_multiple_inputs() {
+        let state = crate::LocalState::new(String::from("Ada"));
+        let mut first = TextInput::from_state(&state);
+        let mut second = TextInput::from_state(&state);
+        let mut document = AutoCommit::new();
+
+        state.set(String::from("Grace"));
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), "Grace");
+        assert_eq!(second.value(), "Grace");
+        assert_eq!(first.take_dirty(), None, "model updates are not user edits");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &crate::a11y::Action::SetValue("Lin".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "Lin", "user edits publish typed state");
+
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), "Lin", "sibling input follows the model");
+        assert_eq!(second.take_dirty(), None);
+
+        first.set_text("programmatic");
+        assert_eq!(state.get(), "programmatic");
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), "programmatic");
+        assert_eq!(first.take_dirty(), None);
+    }
+
+    #[test]
+    fn local_state_binding_coexists_with_an_app_callback() {
+        let state = crate::LocalState::new(String::from("before"));
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut input = TextInput::from_state(&state)
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("after".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "after");
+        assert_eq!(&*changes.borrow(), &["after"]);
+    }
+
+    #[test]
+    fn local_state_model_update_invalidates_multiline_measurement_only() {
+        let state = crate::LocalState::new(String::from("short"));
+        let mut input = TextInput::from_state(&state).multiline(true);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 80.0));
+        assert!(!Widget::layout_needs_measure(&input));
+
+        state.set(String::from("a much longer line\nwith another row"));
+        let mut document = AutoCommit::new();
+        Widget::sync(&mut input, &mut document, &automerge::ROOT);
+
+        assert!(Widget::layout_needs_measure(&input));
+        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
+    }
+
     /// Otherwise caret-following scroll hides the first characters.
     #[test]
     fn unfocused_input_renders_from_start_not_caret() {
@@ -4487,6 +5585,291 @@ mod tests {
     }
 
     #[test]
+    fn spelling_defaults_on_and_can_be_disabled_per_field() {
+        let mut prose = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        prose.set_focus(true);
+        prose.refresh_spelling();
+        assert!(prose.spellcheck_enabled());
+        assert_eq!(prose.spell_spans, vec![(0, 3)]);
+
+        let mut search_or_identifier = TextInput::local()
+            .with_kind(TextInputKind::Search)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        search_or_identifier.set_focus(true);
+        search_or_identifier.refresh_spelling();
+        assert!(search_or_identifier.spell_spans.is_empty());
+
+        for kind in [
+            TextInputKind::Name,
+            TextInputKind::Search,
+            TextInputKind::Username,
+            TextInputKind::Email,
+            TextInputKind::Url,
+            TextInputKind::Path,
+            TextInputKind::Code,
+            TextInputKind::Number,
+            TextInputKind::Password,
+        ] {
+            let mut structured = TextInput::local()
+                .with_kind(kind)
+                .with_spell_language("en_US")
+                .with_initial_value("teh");
+            structured.set_focus(true);
+            structured.refresh_spelling();
+            assert!(structured.spell_spans.is_empty(), "kind {kind:?}");
+        }
+
+        let mut opted_in = TextInput::local()
+            .with_kind(TextInputKind::Search)
+            .with_spellcheck(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        opted_in.set_focus(true);
+        opted_in.refresh_spelling();
+        assert_eq!(opted_in.spell_spans, vec![(0, 3)]);
+
+        let mut secret = TextInput::local()
+            .with_secret(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        secret.refresh_spelling();
+        assert!(
+            secret.spell_spans.is_empty(),
+            "secret contents must never reach a checker"
+        );
+    }
+
+    #[test]
+    fn custom_vocabulary_suppresses_a_squiggle() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("qwordz");
+        ti.set_focus(true);
+        ti.spell_dictionary = Some(spellcheck::Dictionary::from_words(["qwordz"]));
+        ti.refresh_spelling();
+        assert!(ti.spell_spans.is_empty());
+    }
+
+    #[test]
+    fn spelling_checks_immediately_but_only_hides_the_word_being_typed() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh wrold");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.last_edit_time = Some(Instant::now());
+
+        ti.refresh_spelling();
+        // Dictionary warm-up can dominate this unit test in an unoptimised
+        // build. Model a fresh edit after checking to test presentation timing.
+        ti.last_edit_time = Some(Instant::now());
+
+        assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
+        assert!(ti.spelling_span_is_visible(0, 3));
+        assert!(!ti.spelling_span_is_visible(4, 9));
+        assert!(Widget::needs_animation_frame(&ti));
+    }
+
+    #[test]
+    fn a_word_becomes_visible_immediately_when_a_boundary_is_typed() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("wrold ");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.last_edit_time = Some(Instant::now());
+
+        ti.refresh_spelling();
+
+        assert_eq!(ti.spell_spans, vec![(0, 5)]);
+        assert!(ti.actively_edited_word().is_none());
+        assert!(ti.spelling_span_is_visible(0, 5));
+    }
+
+    #[test]
+    fn active_word_is_revealed_after_the_short_settle_period() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("wrold");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.last_edit_time = Instant::now()
+            .checked_sub(SPELL_EDIT_SETTLE)
+            .and_then(|t| t.checked_sub(Duration::from_millis(1)));
+
+        ti.refresh_spelling();
+
+        assert_eq!(ti.spell_spans, vec![(0, 5)]);
+        assert!(ti.spelling_span_is_visible(0, 5));
+        assert!(!Widget::needs_animation_frame(&ti));
+    }
+
+    #[test]
+    fn external_language_check_coalesces_rapid_prefixes_without_dropping_old_spans() {
+        let mut ti = TextInput::local()
+            .with_spellcheck(true)
+            .with_spell_language("de_DE")
+            .with_initial_value("alt neu");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+        ti.spell_spans = vec![(0, 3)];
+        ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
+        ti.last_edit_time = Some(Instant::now());
+
+        ti.refresh_spelling();
+
+        assert_eq!(ti.spell_spans, vec![(0, 3)]);
+        assert_eq!(
+            ti.spell_cache_key,
+            Some(("de_DE".to_string(), "alt".to_string()))
+        );
+        assert!(Widget::needs_animation_frame(&ti));
+    }
+
+    #[test]
+    fn field_language_override_is_independent_of_session_default() {
+        let english = TextInput::local().with_spell_language("en-US");
+        let german = TextInput::local().with_spell_language("de-DE");
+        assert_eq!(english.spell_language(), "en-US");
+        assert_eq!(german.spell_language(), "de-DE");
+    }
+
+    #[test]
+    fn obvious_typo_autocorrects_at_boundary_and_backspace_restores_it() {
+        let mut ti = TextInput::local()
+            .with_spellcheck(true)
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        ti.cursor_pos = ti.text.len();
+        let mut doc = AutoCommit::new();
+        ti.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(ti.value(), "the ");
+        assert!(ti.last_autocorrection.is_some());
+
+        let mut handled = false;
+        ti.handle_backspace_key(false, &mut doc, None, &mut handled);
+        assert!(handled);
+        assert_eq!(ti.value(), "teh");
+        assert!(ti.last_autocorrection.is_none());
+    }
+
+    #[test]
+    fn autocorrection_is_previewed_before_the_boundary_applies_it() {
+        let mut ti = TextInput::local()
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value("adress");
+        ti.set_focus(true);
+        ti.cursor_pos = ti.text.len();
+
+        ti.refresh_autocorrection_preview();
+        ti.refresh_spelling();
+
+        let preview = ti
+            .autocorrection_preview
+            .as_ref()
+            .expect("a high-confidence correction is previewed");
+        assert_eq!(preview.original, "adress");
+        assert_eq!(preview.replacement, "address");
+        assert!(!ti.spelling_span_is_visible(0, 6));
+
+        let mut doc = AutoCommit::new();
+        ti.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(ti.value(), "address ");
+    }
+
+    #[test]
+    fn autocorrect_respects_field_opt_out_and_personal_vocabulary() {
+        let mut off = TextInput::local()
+            .with_autocorrect(false)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        off.cursor_pos = off.text.len();
+        let mut doc = AutoCommit::new();
+        off.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(off.value(), "teh ");
+
+        let mut known = TextInput::local()
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        known.cursor_pos = known.text.len();
+        known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
+        known.insert_word_boundary(" ", &mut doc, None);
+        assert_eq!(known.value(), "teh ");
+    }
+
+    #[test]
+    fn untouched_inactive_field_does_no_spellcheck_work() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        ti.refresh_spelling();
+        assert!(ti.spell_spans.is_empty());
+        assert!(
+            ti.spell_cache_key.is_none(),
+            "inactive initial values must not populate the checker cache"
+        );
+    }
+
+    #[test]
+    fn misspelling_context_action_replaces_the_selected_word() {
+        let mut ti = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value("teh");
+        ti.selection_anchor = Some(0);
+        ti.cursor_pos = 3;
+        ti.open_context_menu([10.0, 10.0]);
+
+        let item_idx = ti
+            .context_actions
+            .iter()
+            .position(|action| {
+                matches!(
+                    action,
+                    Some(CtxAction::ApplySpelling { replacement, .. })
+                        if replacement == "the"
+                )
+            })
+            .expect("the correction is offered");
+        let mut doc = AutoCommit::new();
+        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
+        assert_eq!(ti.value(), "the");
+    }
+
+    #[test]
+    fn selected_text_action_is_reported_without_blocking_the_widget() {
+        let mut ti = TextInput::local()
+            .with_spellcheck(false)
+            .with_text_action("translate", "Translate")
+            .with_initial_value("hello world");
+        ti.selection_anchor = Some(0);
+        ti.cursor_pos = 5;
+        ti.open_context_menu([10.0, 10.0]);
+        let item_idx = ti
+            .context_actions
+            .iter()
+            .position(|action| matches!(action, Some(CtxAction::TextAction(0))))
+            .expect("registered action is in the context menu");
+
+        let mut doc = AutoCommit::new();
+        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
+        assert_eq!(
+            ti.take_text_action_request(),
+            Some(TextActionRequest {
+                id: "translate".to_string(),
+                text: "hello".to_string(),
+                range: (0, 5),
+            })
+        );
+        assert_eq!(ti.value(), "hello world", "dispatch itself is read-only");
+    }
+
+    #[test]
     fn context_menu_dispatch_maps_index_to_copy() {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -4730,6 +6113,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn character_filter_applies_before_replacing_the_selection() {
+        let mut ti = TextInput::local()
+            .with_initial_value("A1")
+            .with_char_filter(|ch| !ch.is_whitespace());
+        ti.select_all();
+        ti.insert_at_cursor(" B 2 : D 4 ");
+        assert_eq!(ti.value(), "B2:D4");
+        assert_eq!(ti.cursor_pos(), "B2:D4".len());
+        assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
+    }
+
     /// The path Ctrl+V uses when pasting over selected text.
     #[test]
     fn insert_str_replaces_selection() {
@@ -4812,6 +6207,16 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_uses_explicit_name_not_placeholder() {
+        let input = TextInput::local()
+            .with_placeholder("name@example.com")
+            .with_accessible_name("Email address");
+        let node = Widget::accessibility(&input).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Email address"));
+        assert_ne!(node.name.as_deref(), Some(input.placeholder()));
+    }
+
+    #[test]
     fn accessibility_actions_use_extended_grapheme_indices_and_update_crdt() {
         use crate::a11y::Action;
 
@@ -4848,6 +6253,50 @@ mod tests {
         ));
         assert_eq!(ti.value(), "new value");
         assert_eq!(doc.text(&obj).unwrap(), "new value");
+    }
+
+    #[test]
+    fn first_path_bound_edit_materialises_shared_text() {
+        use crate::a11y::Action;
+
+        let mut input = TextInput::local().with_on_change_path("title");
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &Action::SetValue("Project Atlas".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+
+        let Some((Value::Object(ObjType::Text), object)) =
+            document.get(&automerge::ROOT, "title").unwrap()
+        else {
+            panic!("the first effective edit must create a document text object");
+        };
+        assert_eq!(document.text(&object).unwrap(), "Project Atlas");
+    }
+
+    #[test]
+    fn path_bound_selection_does_not_materialise_shared_text() {
+        use crate::a11y::Action;
+
+        let mut input = TextInput::local().with_on_change_path("title");
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &Action::SetSelection {
+                anchor: 0,
+                focus: 0,
+            },
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert!(
+            document.get(&automerge::ROOT, "title").unwrap().is_none(),
+            "selection and navigation must not create document history"
+        );
     }
 
     #[test]

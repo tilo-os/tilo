@@ -168,7 +168,7 @@ mod tests {
                 pair: KeyPair::F6F7,
                 scan: Some(Duration::from_secs(1)),
             },
-            next_reload: now + Duration::from_mins(1),
+            next_reload: now + Duration::from_secs(60),
             next_scan: None,
         };
         assert_eq!(runtime.tick(now + Duration::from_secs(2)), None);
@@ -183,7 +183,7 @@ mod tests {
                 pair: KeyPair::F6F7,
                 scan: Some(Duration::from_secs(2)),
             },
-            next_reload: now + Duration::from_mins(1),
+            next_reload: now + Duration::from_secs(60),
             next_scan: Some(now + Duration::from_secs(2)),
         };
         assert_eq!(runtime.tick(now + Duration::from_secs(1)), None);
@@ -207,7 +207,7 @@ mod tests {
                 pair: KeyPair::F9F10,
                 scan: None,
             },
-            next_reload: now + Duration::from_mins(1),
+            next_reload: now + Duration::from_secs(60),
             next_scan: None,
         };
         assert_eq!(
@@ -233,7 +233,7 @@ mod tests {
                 pair: KeyPair::F6F7,
                 scan: None,
             },
-            next_reload: now + Duration::from_mins(1),
+            next_reload: now + Duration::from_secs(60),
             next_scan: None,
         };
         assert_eq!(

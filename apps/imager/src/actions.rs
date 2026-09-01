@@ -19,12 +19,15 @@
 //! - **Presentation / transient — never actions.** The selected source, the
 //!   chosen drive, the wizard step, the flash/install mode, the typed
 //!   device-name confirmation, and the status line are per-instance view state.
+//!   Confirmation is additionally peer-local so remote document changes can
+//!   never arm a destructive write.
 //!   The recent-sources list is auto-accumulated MRU bookkeeping written as a
 //!   side effect of selecting a source (itself presentation) with no discrete
 //!   affordance, and the saved-profiles list has no save/delete affordance at
 //!   all — so neither is a user-authored action either. The imager persists
-//!   these in the document for instant-on and replication, but their *nature* is
-//!   view state, so dispatching them as actions would be wrong.
+//!   the non-sensitive view state in the document for instant-on and
+//!   replication, but its *nature* means dispatching it as actions would be
+//!   wrong.
 //!
 //! ## What genuinely lives in the shared document as authored config
 //!
@@ -51,8 +54,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::ImagerDoc;
@@ -166,13 +169,13 @@ pub fn toggled_install_mode(current: InstallMode) -> InstallMode {
 /// `# Panics` note. `ImagerAction`'s fields are plain strings/bools, so this
 /// fallback path is never actually exercised.
 fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, IMAGER_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        input: ActionInput::Immediate(encode(action)),
-    })
+    ActionSpec::immediate(id, label, IMAGER_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Add the identity/region prompted fields — hostname, full name, username,

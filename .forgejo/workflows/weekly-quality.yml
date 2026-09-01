@@ -25,9 +25,12 @@ jobs:
       CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
+      # CI consumes diagnostics from rustc, not debugger symbols. Keeping the
+      # dev profile aligned with check/nightly also lets sccache share their
+      # objects instead of maintaining a second full-debuginfo namespace.
+      CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-      SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
     steps:
       - name: Checkout
         uses: actions/checkout@v4

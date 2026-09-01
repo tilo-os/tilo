@@ -46,8 +46,9 @@
 
 mod base64;
 
+use qdoc::export::{BlockKind, ExportBlock, TablePlan, detect_image_media};
 use qdoc::snapshot::AttrVal;
-use qdoc::{BlockView, DocSnapshot, MarkSpan};
+use qdoc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 use std::fmt::Write as _;
 
 /// Options controlling the shape of the emitted HTML.
@@ -77,6 +78,12 @@ impl Default for HtmlOptions {
 /// Render a materialized qdoc snapshot to an HTML string. Always
 /// succeeds: unknown block kinds degrade to a `<p>`, and image blocks
 /// with a missing blob render an empty `<img>` with an `alt` note.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "HtmlOptions is a small public options struct passed by value at every call site \
+              across other crates (the qOS-wide builder-options idiom); switching to a reference \
+              would only move the & to each of those callers for no behavioural gain"
+)]
 pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {
     let mut body = String::new();
     render_blocks(&mut body, snap, &snap.blocks, &opts, 0);
@@ -133,27 +140,21 @@ fn render_styles(snap: &DocSnapshot) -> String {
 /// to keep the `<style>` block well-formed.
 fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
     let css = match prop {
-        // `name` is metadata, not a visual property.
-        "name" => return None,
         "color" => format!("color: {};", css_value(&attr_as_str(val))),
         "background" | "bg" => format!("background-color: {};", css_value(&attr_as_str(val))),
         "font" | "fontFamily" => format!("font-family: {};", css_font_family(&attr_as_str(val))),
         "size" | "fontSize" => format!("font-size: {};", css_size(val)),
         "align" => format!("text-align: {};", css_value(&attr_as_str(val))),
-        "bold" | "strong" => {
-            if matches!(val, AttrVal::Bool(true)) {
-                "font-weight: bold;".to_string()
-            } else {
+        "bold" | "strong" | "italic" | "em" => {
+            if !matches!(val, AttrVal::Bool(true)) {
                 return None;
             }
-        }
-        "italic" | "em" => {
-            if matches!(val, AttrVal::Bool(true)) {
-                "font-style: italic;".to_string()
-            } else {
-                return None;
+            match prop {
+                "bold" | "strong" => "font-weight: bold;".to_string(),
+                _ => "font-style: italic;".to_string(),
             }
         }
+        // `name` is metadata, not a visual property; anything else is unrecognised.
         _ => return None,
     };
     Some(css)
@@ -190,19 +191,25 @@ fn render_blocks(
     depth: usize,
 ) {
     let mut i = 0;
-    while i < blocks.len() {
-        if blocks[i].kind == "list_item" {
+    while let Some(block) = blocks.get(i) {
+        if ExportBlock::new(block).kind() == BlockKind::ListItem {
             // Consume the maximal run of consecutive list items and render it
             // as one (possibly nested) list.
             let mut j = i;
-            while j < blocks.len() && blocks[j].kind == "list_item" {
-                j += 1;
+            while blocks
+                .get(j)
+                .is_some_and(|block| ExportBlock::new(block).kind() == BlockKind::ListItem)
+            {
+                j = j.saturating_add(1);
             }
-            render_list(out, &blocks[i..j], opts, depth);
+            // `get(..)` degrades an inverted/out-of-range slice to empty
+            // rather than panicking; `i..j` is always ascending and
+            // in-bounds by construction, so this never actually triggers.
+            render_list(out, blocks.get(i..j).unwrap_or(&[]), opts, depth);
             i = j;
         } else {
-            render_block(out, snap, &blocks[i], opts, depth);
-            i += 1;
+            render_block(out, snap, block, opts, depth);
+            i = i.saturating_add(1);
         }
     }
 }
@@ -214,27 +221,18 @@ fn render_block(
     opts: &HtmlOptions,
     depth: usize,
 ) {
-    match block.kind.as_str() {
-        "heading" => render_heading(out, block, opts, depth),
-        "quote" | "blockquote" => render_quote(out, snap, block, opts, depth),
-        "image" => render_image(out, snap, block, opts, depth),
-        "table" => render_table(out, snap, block, opts, depth),
-        "code" | "code_block" => render_code(out, block, opts, depth),
-        // paragraph + any unknown text-bearing kind → a paragraph.
-        _ => render_paragraph(out, block, opts, depth),
-    }
-}
-
-/// Heading level (1..=6), defaulting to 1 if absent/out of range.
-fn heading_level(block: &BlockView) -> u8 {
-    match block.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6) as u8,
-        _ => 1,
+    match ExportBlock::new(block).kind() {
+        BlockKind::Heading => render_heading(out, block, opts, depth),
+        BlockKind::Quote => render_quote(out, snap, block, opts, depth),
+        BlockKind::Image => render_image(out, snap, block, opts, depth),
+        BlockKind::Table => render_table(out, snap, block, opts, depth),
+        BlockKind::Code => render_code(out, block, opts, depth),
+        BlockKind::Paragraph | BlockKind::ListItem => render_paragraph(out, block, opts, depth),
     }
 }
 
 fn render_heading(out: &mut String, block: &BlockView, opts: &HtmlOptions, depth: usize) {
-    let level = heading_level(block);
+    let level = ExportBlock::new(block).heading_level();
     let pad = indent_for(opts, depth);
     let attrs = block_attrs(block);
     let _ = write!(out, "{pad}<h{level}{attrs}>");
@@ -267,13 +265,13 @@ fn render_quote(
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<blockquote{attrs}>");
     if !block.text.is_empty() {
-        let inner = indent_for(opts, depth + 1);
+        let inner = indent_for(opts, depth.saturating_add(1));
         let _ = write!(out, "{inner}<p>");
         out.push_str(&render_inline(&block.text, &block.marks));
         out.push_str("</p>\n");
     }
     // Child blocks (multi-paragraph quotes) render inside the blockquote.
-    render_blocks(out, snap, &block.children, opts, depth + 1);
+    render_blocks(out, snap, &block.children, opts, depth.saturating_add(1));
     let _ = writeln!(out, "{pad}</blockquote>");
 }
 
@@ -306,8 +304,11 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
     // Stack of currently-open lists: (level, ordered) — for closing correctly.
     let mut open: Vec<(i64, bool)> = Vec::new();
 
+    // `level` comes from the document; clamp to a nesting depth no real
+    // list reaches, so a corrupt/hostile attribute can't turn the
+    // indent-string repeats below into an unbounded allocation.
     let item_level = |b: &BlockView| match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).max(0),
+        Some(AttrVal::Int(n)) => (*n).clamp(0, 64),
         _ => 0,
     };
     let item_ordered = |b: &BlockView| matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
@@ -329,13 +330,19 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
 
         // Open lists until we reach this item's level.
         while open.last().map_or(-1, |&(l, _)| l) < level {
-            let new_level = open.last().map_or(0, |&(l, _)| l + 1).max(0);
+            let new_level = open.last().map_or(0, |&(l, _)| l.saturating_add(1)).max(0);
             open.push((new_level, ordered));
             open_list(out, item, new_level, ordered, opts, depth);
         }
 
-        // Emit the item.
-        let pad = indent_for(opts, depth + level as usize + 1);
+        // Emit the item. `level` is clamped to 0..=64 above, so this cast
+        // never loses the sign or truncates.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "level is clamped to 0..=64 above, so it is always non-negative and small"
+        )]
+        let pad = indent_for(opts, depth.saturating_add(level as usize).saturating_add(1));
         let attrs = block_attrs(item);
         let _ = write!(out, "{pad}<li{attrs}>");
         out.push_str(&render_inline(&item.text, &item.marks));
@@ -356,7 +363,13 @@ fn open_list(
     opts: &HtmlOptions,
     depth: usize,
 ) {
-    let pad = indent_for(opts, depth + level as usize);
+    // `level` is always a value `render_list` already clamped to 0..=64.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "render_list, this function's only caller, clamps level to 0..=64 before passing it"
+    )]
+    let pad = indent_for(opts, depth.saturating_add(level as usize));
     if ordered {
         let fmt = match item.attrs.get("num_format") {
             Some(AttrVal::Str(s)) => s.as_str(),
@@ -378,7 +391,13 @@ fn open_list(
 }
 
 fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, depth: usize) {
-    let pad = indent_for(opts, depth + level as usize);
+    // `level` is always a value `render_list` already clamped to 0..=64.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "render_list, this function's only caller, clamps level to 0..=64 before passing it"
+    )]
+    let pad = indent_for(opts, depth.saturating_add(level as usize));
     let tag = if ordered { "</ol>" } else { "</ul>" };
     let _ = writeln!(out, "{pad}{tag}");
 }
@@ -394,32 +413,14 @@ fn render_table(
 ) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the flat shape (cells directly under the table with a `cols` attr).
-    let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block
-            .children
-            .iter()
-            .map(|row| row.children.iter().collect())
-            .collect()
-    } else if !block.children.is_empty() {
-        let cols = match block.attrs.get("cols") {
-            Some(AttrVal::Int(n)) => (*n).max(1) as usize,
-            _ => block.children.len().max(1),
-        };
-        block
-            .children
-            .chunks(cols)
-            .map(|c| c.iter().collect())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let plan = TablePlan::new(block);
 
     let pad = indent_for(opts, depth);
-    let row_pad = indent_for(opts, depth + 1);
-    let cell_pad = indent_for(opts, depth + 2);
+    let row_pad = indent_for(opts, depth.saturating_add(1));
+    let cell_pad = indent_for(opts, depth.saturating_add(2));
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<table{attrs}>");
-    for row in &rows {
+    for row in plan.rows() {
         let _ = writeln!(out, "{row_pad}<tr>");
         for cell in row {
             let _ = write!(out, "{cell_pad}<td>");
@@ -428,7 +429,7 @@ fn render_table(
                 out.push_str(&render_inline(&cell.text, &cell.marks));
             } else {
                 out.push('\n');
-                render_blocks(out, snap, &cell.children, opts, depth + 3);
+                render_blocks(out, snap, &cell.children, opts, depth.saturating_add(3));
                 out.push_str(&cell_pad);
             }
             out.push_str("</td>\n");
@@ -464,7 +465,7 @@ fn render_image(
     };
     match hash.as_ref().and_then(|h| snap.blobs.get(h)) {
         Some(bytes) => {
-            let mime = sniff_mime(bytes);
+            let mime = detect_image_media(bytes).map_or("image/png", |media| media.mime);
             let data = base64::encode(bytes);
             // The data URI is self-contained; no escaping needed beyond the
             // base64 alphabet (no `"` in b64).
@@ -478,24 +479,6 @@ fn render_image(
             // structure stays preserved and well-formed.
             let _ = writeln!(out, "{pad}<img src=\"\"{alt_attr}>");
         }
-    }
-}
-
-/// Sniff a handful of image magic numbers to pick a `data:` MIME type.
-/// Defaults to `image/png` for unrecognized bytes.
-fn sniff_mime(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        "image/png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        "image/webp"
-    } else if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
-        "image/svg+xml"
-    } else {
-        "image/png"
     }
 }
 
@@ -525,45 +508,20 @@ fn block_attrs(block: &BlockView) -> String {
 
 // ---- inline marks -----------------------------------------------------------
 
-/// Render `text` with `marks` applied as inline HTML over the correct
-/// byte-offset ranges (matching how qdoc materializes them) — cut at
-/// every mark boundary, then open the active mark set per segment.
+/// Render `text` with qdoc's canonical character-offset mark traversal.
 fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
-    if marks.is_empty() {
-        return escape_text(text);
-    }
     if text.is_empty() {
         return String::new();
     }
 
-    // Collect all boundary byte-offsets (clamped) so we split into
-    // segments over which the active mark-set is constant.
-    let mut bounds: Vec<usize> = vec![0, text.len()];
-    for m in marks {
-        for b in [m.start, m.end] {
-            if b <= text.len() && text.is_char_boundary(b) {
-                bounds.push(b);
-            }
-        }
-    }
-    bounds.sort_unstable();
-    bounds.dedup();
-
     let mut out = String::new();
-    for w in bounds.windows(2) {
-        let (seg_start, seg_end) = (w[0], w[1]);
-        if seg_start >= seg_end {
+    for point in InlinePlan::new(text, marks).points() {
+        let Some(run) = &point.run else {
             continue;
-        }
-        let segment = &text[seg_start..seg_end];
-        // Marks active over this whole segment (a mark covers [start, end)).
-        let active: Vec<&MarkSpan> = marks
-            .iter()
-            .filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end)
-            .collect();
-        let (open, close) = mark_tags(&active);
+        };
+        let (open, close) = mark_tags(&run.marks);
         out.push_str(&open);
-        out.push_str(&escape_text(segment));
+        out.push_str(&escape_text(run.text));
         out.push_str(&close);
     }
     out

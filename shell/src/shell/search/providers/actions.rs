@@ -8,6 +8,7 @@
 //! from the chrome and has to be supplied and declared, so enumeration
 //! tells a caller what to pass rather than leaving it to be inferred.
 
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -69,6 +70,12 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
+              there is nothing after it to hoist the drop past without cloning the \
+              workspace out for no real gain"
+)]
 fn active_identity(
     state: &ChromeState,
 ) -> Result<
@@ -101,6 +108,64 @@ fn active_identity(
     Ok((room, profile))
 }
 
+/// The active workspace's id, room and the caller's own actor id, refusing
+/// up front if the caller may not administer it — shared by `identity.connect`
+/// and `identity.select`, which otherwise change identity via identical
+/// pre-checks. One lock scope reads and destructures the workspace
+/// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
+/// tree's read guard is already gone before the caller does anything else.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
+              there is nothing after it to hoist the drop past without cloning the \
+              workspace out for no real gain"
+)]
+fn active_admin_workspace(
+    state: &ChromeState,
+) -> Result<
+    (
+        crate::shell::state::WorkspaceId,
+        crate::shell::state::RoomId,
+        String,
+    ),
+    ActionError,
+> {
+    let (workspace_id, room, actor, may_administer) = {
+        let tree = state.tree();
+        let Some(workspace) = tree.active_workspace() else {
+            return Err(ActionError::Refused("no active workspace".into()));
+        };
+        let actor = state.local_user_for_room(&workspace.room);
+        (
+            workspace.id,
+            workspace.room,
+            actor.clone(),
+            workspace.may_administer(&actor),
+        )
+    };
+    if !may_administer {
+        return Err(ActionError::Refused(format!(
+            "{actor} may not change this workspace's identity"
+        )));
+    }
+    Ok((workspace_id, room, actor))
+}
+
+/// Current wall-clock time as nanoseconds since the epoch, clamped to
+/// `u64::MAX` rather than truncated — a value that large is centuries past
+/// any real expiry/enrollment window this crate computes against.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
+)]
+fn now_ns_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
     let value = value.trim();
     if value.len() != 64 {
@@ -110,7 +175,12 @@ fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
     }
     let mut key = [0_u8; 32];
     for (index, slot) in key.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+        let start = index.saturating_mul(2);
+        let end = start.saturating_add(2);
+        let chunk = value
+            .get(start..end)
+            .ok_or_else(|| ActionError::Refused("device fingerprint is not hex".into()))?;
+        *slot = u8::from_str_radix(chunk, 16)
             .map_err(|_| ActionError::Refused("device fingerprint is not hex".into()))?;
     }
     Ok(key)
@@ -119,15 +189,11 @@ fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
 /// What `peer.invite.named` must be told. Both required — an invite to
 /// nobody in particular is [`peer.invite`].
 const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "peer",
-        ParamType::Text,
-        "The invitee's Iroh `EndpointId` — the device identity the name is attached to.",
-    ),
+    ActionParam::required("peer", ParamType::Text, "The invitee's device identity."),
     ActionParam::required(
         "name",
         ParamType::Text,
-        "What to call them in this room. Shown beside their cursor and caret.",
+        "What to call them in this workspace. Shown beside their cursor and caret.",
     ),
 ];
 
@@ -183,7 +249,7 @@ impl Action {
         ),
         chrome(
             "settings.members.open",
-            "Open workspace members",
+            "Open workspace people",
             "People, roles and invitations in this workspace",
             |st, _| {
                 st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
@@ -218,24 +284,7 @@ impl Action {
                 if path.is_empty() {
                     return Err(ActionError::Refused("identity path is required".into()));
                 }
-                let (workspace_id, room, actor, may_administer) = {
-                    let tree = st.tree();
-                    let Some(workspace) = tree.active_workspace() else {
-                        return Err(ActionError::Refused("no active workspace".into()));
-                    };
-                    let actor = st.local_user_for_room(&workspace.room);
-                    (
-                        workspace.id,
-                        workspace.room,
-                        actor.clone(),
-                        workspace.may_administer(&actor),
-                    )
-                };
-                if !may_administer {
-                    return Err(ActionError::Refused(format!(
-                        "{actor} may not change this workspace's identity"
-                    )));
-                }
+                let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let profile = store
@@ -250,9 +299,9 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                {
+                let delegated = {
                     let mut tree = st.tree_mut();
-                    let delegated = tree.grant_in_workspace(
+                    tree.grant_in_workspace(
                         workspace_id,
                         &actor,
                         crate::shell::state::CapOverride::grant(
@@ -260,13 +309,13 @@ impl Action {
                             crate::shell::state::Scope::Workspace,
                             crate::shell::state::Verb::Admin,
                         ),
-                    );
-                    if delegated.is_none() {
-                        return Err(ActionError::Refused(
-                            "could not delegate workspace administration to the imported identity"
-                                .into(),
-                        ));
-                    }
+                    )
+                };
+                if delegated.is_none() {
+                    return Err(ActionError::Refused(
+                        "could not delegate workspace administration to the imported identity"
+                            .into(),
+                    ));
                 }
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
@@ -283,24 +332,7 @@ impl Action {
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
                 let identity_id = args.text("id").unwrap_or_default().trim();
-                let (workspace_id, room, actor, may_administer) = {
-                    let tree = st.tree();
-                    let Some(workspace) = tree.active_workspace() else {
-                        return Err(ActionError::Refused("no active workspace".into()));
-                    };
-                    let actor = st.local_user_for_room(&workspace.room);
-                    (
-                        workspace.id,
-                        workspace.room,
-                        actor.clone(),
-                        workspace.may_administer(&actor),
-                    )
-                };
-                if !may_administer {
-                    return Err(ActionError::Refused(format!(
-                        "{actor} may not change this workspace's identity"
-                    )));
-                }
+                let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let registry = store
@@ -349,11 +381,13 @@ impl Action {
                     .certificates
                     .iter()
                     .map(|cert| {
-                        let fingerprint = cert
-                            .device_public_key
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect::<String>();
+                        let fingerprint = cert.device_public_key.iter().fold(
+                            String::new(),
+                            |mut fingerprint, byte| {
+                                let _ = write!(fingerprint, "{byte:02x}");
+                                fingerprint
+                            },
+                        );
                         format!(
                             "{}  {}  {}",
                             cert.device_label,
@@ -378,14 +412,10 @@ impl Action {
         chrome(
             "identity.device.enroll",
             "Enroll another device",
-            "Copy a five-minute enrollment token for a member device",
+            "Copy a device setup code that is valid for five minutes",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .min(u128::from(u64::MAX)) as u64;
+                let now = now_ns_u64();
                 let expires = now.saturating_add(5 * 60 * 1_000_000_000);
                 let token = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| {
@@ -429,11 +459,7 @@ impl Action {
                         ));
                     }
                 };
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .min(u128::from(u64::MAX)) as u64;
+                let now = now_ns_u64();
                 crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.revoke(&profile.id, key, reason, now))
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
@@ -477,7 +503,7 @@ impl Action {
         chrome(
             "collaborators.open",
             "Show collaborators",
-            "Peers currently editing this workspace",
+            "Collaborators currently in this workspace",
             |st, _| {
                 st.overlays.collaborators = true;
                 Ok(())
@@ -485,7 +511,7 @@ impl Action {
         ),
         chrome(
             "room.activity.open",
-            "Show room activity",
+            "Show workspace activity",
             "History of this workspace: changes, permissions, who did what and when",
             |st, _| {
                 st.overlays.room_activity = true;
@@ -498,8 +524,8 @@ impl Action {
         // un-ranked row would lose "invite" to a file with the word in its name.
         chrome(
             "peer.invite",
-            "Invite peer to workspace",
-            "Mint a signed invite token for this room",
+            "Invite a collaborator",
+            "Create an invite to this workspace",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
                 Ok(())
@@ -507,8 +533,8 @@ impl Action {
         ),
         chrome(
             "peer.connect",
-            "Connect to peer workspace",
-            "Join a room from an invite token",
+            "Join a workspace",
+            "Use an invite from a collaborator",
             |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::PromptConnect,
@@ -523,15 +549,15 @@ impl Action {
         // live; the peer id stays the identity, the name is just a label.
         Action {
             id: "peer.invite.named",
-            label: "Invite peer to workspace as",
-            subtitle: "Name the peer you are inviting, then mint their invite token",
+            label: "Invite a named collaborator",
+            subtitle: "Choose the name shown beside their cursor, then create an invite",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
                 let peer = args.text("peer").unwrap_or_default().trim().to_string();
                 let name = args.text("name").unwrap_or_default().trim().to_string();
                 if peer.is_empty() {
                     return Err(ActionError::Refused(
-                        "an invite has to name the peer it is for".into(),
+                        "this invite needs the collaborator's device identity".into(),
                     ));
                 }
                 if name.is_empty() {
@@ -539,21 +565,21 @@ impl Action {
                         "an invite has to say what to call them".into(),
                     ));
                 }
-                let user = st.local_user_id.clone();
+                let user = st.active_local_user();
                 // Scoped so the write lock releases before anything else is touched.
                 let named = {
                     let mut tree = st.tree_mut();
                     let Some(room) = tree.active_workspace().map(|w| w.room) else {
                         return Err(ActionError::Refused(
-                            "there is no room here to invite anyone into".into(),
+                            "there is no workspace here to invite anyone into".into(),
                         ));
                     };
                     tree.name_peer(room, &user, &peer, &name)
                 };
                 if !named {
                     return Err(ActionError::Refused(format!(
-                        "{user} cannot name a peer in this room — either it is not \
-                         administered here, or `{peer}` is not a peer id"
+                        "{user} cannot name this collaborator in the current workspace — either \
+                         this device does not administer it, or `{peer}` is not a device identity"
                     )));
                 }
                 // Mint the token too, so naming and inviting are one
@@ -574,7 +600,7 @@ impl Action {
         Action {
             id: "agent.invite",
             label: "Invite agent to workspace",
-            subtitle: "Admit an agent to this room as a member, revocable like any other",
+            subtitle: "Add an agent as a collaborator you can remove later",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use crate::shell::state::{CapOverride, Subject, Verb};
@@ -587,14 +613,14 @@ impl Action {
                 // Case-folded: `Scribe` and `scribe` are otherwise two
                 // different subjects, half-admitting the agent.
                 let agent = name.to_lowercase();
-                let user = st.local_user_id.clone();
+                let user = st.active_local_user();
                 let granted = {
                     let mut tree = st.tree_mut();
                     let Some((ws_id, room)) =
                         tree.active_workspace().map(|w| (w.id, w.room.to_string()))
                     else {
                         return Err(ActionError::Refused(
-                            "there is no room here to admit an agent to".into(),
+                            "there is no workspace here to add an agent to".into(),
                         ));
                     };
                     // An ordinary grant on the room, through the tree so it
@@ -606,7 +632,7 @@ impl Action {
                 };
                 if granted.is_none() {
                     return Err(ActionError::Refused(format!(
-                        "{user} does not administer this room, so {agent} was not admitted"
+                        "{user} does not administer this workspace, so {agent} was not added"
                     )));
                 }
                 // The roster is where a person reads "they're in the room" —
@@ -672,8 +698,8 @@ impl Action {
         // address for a caller that names a record itself.
         Action {
             id: "record.bring",
-            label: "Bring a record into this room",
-            subtitle: "Add a reference to this room's index. Moves no bytes.",
+            label: "Add an item to this workspace",
+            subtitle: "Make it available here without moving the original",
             params: RECORD_BRING_PARAMS,
             apply: |st, args| {
                 let id = args.text("id").unwrap_or_default();
@@ -746,7 +772,7 @@ impl SearchProvider for ActionsProvider {
             }
             let label_lower = action.label.to_lowercase();
             let subtitle_lower = action.subtitle.to_lowercase();
-            let score = match_score(&needle_lower, &label_lower, &subtitle_lower);
+            let score = match_score(&needle_lower, &label_lower, &subtitle_lower, action.id);
             if let Some(score) = score {
                 let apply = action.apply;
                 out.push(SearchResult {
@@ -776,10 +802,12 @@ impl SearchProvider for ActionsProvider {
 /// Case-insensitive scoring:
 /// - Prefix match on label → 100
 /// - Substring match on label → 50
-/// - Substring match on subtitle → 25
+/// - Exact action id → 90
+/// - Substring match on subtitle or id → 25
+/// - Multi-word terms spanning label/subtitle/id → 20
 /// - Fuzzy subsequence on label → 10
 /// - Empty needle → 0 (matches everything, sort by kind order)
-fn match_score(needle: &str, label: &str, subtitle: &str) -> Option<i32> {
+fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -789,8 +817,19 @@ fn match_score(needle: &str, label: &str, subtitle: &str) -> Option<i32> {
     if label.contains(needle) {
         return Some(50);
     }
-    if subtitle.contains(needle) {
+    if id == needle {
+        return Some(90);
+    }
+    if subtitle.contains(needle) || id.contains(needle) {
         return Some(25);
+    }
+    let terms: Vec<&str> = needle.split_whitespace().collect();
+    if terms.len() > 1
+        && terms
+            .iter()
+            .all(|term| label.contains(term) || subtitle.contains(term) || id.contains(term))
+    {
+        return Some(20);
     }
     if fuzzy_subsequence(needle, label) {
         return Some(10);
@@ -855,6 +894,28 @@ mod tests {
     }
 
     #[test]
+    fn action_ids_and_out_of_order_terms_are_searchable() {
+        assert_eq!(
+            match_score(
+                "settings.privacy.open",
+                "open workspace privacy & security",
+                "app grants and enforced access for this workspace",
+                "settings.privacy.open",
+            ),
+            Some(90),
+        );
+        assert_eq!(
+            match_score(
+                "security workspace",
+                "open workspace privacy & security",
+                "app grants and enforced access for this workspace",
+                "settings.privacy.open",
+            ),
+            Some(20),
+        );
+    }
+
+    #[test]
     fn workspace_privacy_search_result_deep_links_to_exact_lens_tab() {
         let p = ActionsProvider::new();
         let c = chrome_with_room();
@@ -906,7 +967,7 @@ mod tests {
     /// Offered only by a session running peer sync, and when offered,
     /// naming one selects it: a label-prefix match outranks other providers.
     #[test]
-    fn peer_sync_rows_appear_only_with_peer_sync_and_lead_when_named() {
+    fn collaboration_rows_appear_only_with_sync_and_lead_when_named() {
         let p = ActionsProvider::new();
         let doc = AutoCommit::new();
         let query = |chrome: &ChromeState, needle: &str| {
@@ -944,9 +1005,9 @@ mod tests {
             "a label-prefix match is the top of this provider's scale, which \
              is what puts the row above hits from other providers",
         );
-        let mut connect = query(&cs, "connect");
-        connect.sort_by_key(|r| -r.score);
-        assert_eq!(connect.first().map(|r| r.id.as_str()), Some("peer.connect"),);
+        let mut join = query(&cs, "join");
+        join.sort_by_key(|r| -r.score);
+        assert_eq!(join.first().map(|r| r.id.as_str()), Some("peer.connect"),);
     }
 
     #[test]
@@ -1014,7 +1075,7 @@ mod tests {
             .iter()
             .find(|r| r.id == "room.activity.open")
             .expect("typing 'activity' must surface the room-activity action");
-        assert_eq!(action.title, "Show room activity");
+        assert_eq!(action.title, "Show workspace activity");
         assert!(!c.borrow().overlays.room_activity, "starts closed");
         (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
             .expect("a nullary chrome action must run");

@@ -622,7 +622,7 @@ impl YtBackend for YtDlpBackend {
                 &end,
                 &url,
             ],
-            Duration::from_mins(1),
+            Duration::from_secs(60),
         )?;
         let videos = videos_from_entries(&v, "Playlist");
         let pl_id = {

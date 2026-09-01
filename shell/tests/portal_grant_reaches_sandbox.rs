@@ -82,7 +82,7 @@ fn an_opened_file_is_bound_read_only_at_the_next_launch() {
     // Exactly what `pick_and_grant` records for a confirmed OpenFile dialog.
     store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: picked.clone(),
             mode: FsMode::Read,
             scope: GRANT_SESSION,
@@ -113,7 +113,7 @@ fn a_saved_file_is_bound_writable_at_the_next_launch() {
 
     store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: picked.clone(),
             mode: FsMode::ReadWrite,
             scope: GRANT_SESSION,
@@ -142,7 +142,7 @@ fn the_launcher_refuses_to_bind_the_filesystem_root() {
     // The exact capability the removed sentinel produced.
     store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: PathBuf::from("/"),
             mode: FsMode::Read,
             scope: GRANT_SESSION,
@@ -176,7 +176,7 @@ fn a_root_grant_makes_every_path_read_as_already_granted() {
 
     store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: PathBuf::from("/"),
             mode: FsMode::Read,
             scope: GRANT_SESSION,
@@ -198,7 +198,7 @@ fn a_grant_covers_the_named_path_and_nothing_beside_it() {
     let picked = PathBuf::from("/home/someone/Documents/report.odt");
     store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: picked.clone(),
             mode: FsMode::Read,
             scope: GRANT_SESSION,
@@ -229,7 +229,7 @@ fn a_grant_is_scoped_to_the_app_that_asked() {
     let picked = PathBuf::from("/home/someone/Documents/private.odt");
     store.insert(
         &PortalCaller::new(ws, APP),
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: picked.clone(),
             mode: FsMode::Read,
             scope: GRANT_SESSION,

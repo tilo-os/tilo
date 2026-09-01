@@ -47,9 +47,12 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     }
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.slides", slides::app_root)
+        &LaunchSpec::new("dev.qos.slides", slides::app_root)
             .shot_root(shot_root)
             .shot_viewport(shot_viewport)
             .scenarios(&[

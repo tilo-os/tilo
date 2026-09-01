@@ -51,9 +51,12 @@ fn configure(app: &mut ui::App) {
     app.appearance_reconcile = true;
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new(APP_ID, root)
+        &LaunchSpec::new(APP_ID, root)
             .shot_handler(render_shot)
             .configure_app(configure),
     );

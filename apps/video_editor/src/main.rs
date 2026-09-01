@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -51,194 +52,111 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// can exercise the overlay-flap layout. Pass `--narrow` to select it.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 
-/// Video Editor binary entry point: dispatches to the live event loop, the
-/// offscreen `--shots` renderer, or a headless click/keystroke drive,
-/// depending on the process's command-line arguments.
-///
-/// # Errors
-///
-/// Returns an error if the requested render mode fails — e.g. an offscreen
-/// `--shots` capture can't be encoded or written to the given output path.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one flat if/else-if branch per CLI mode (--shots scenario select, --import, \
-              headless drive, live app); each branch is a few lines and splitting it would \
-              just rename the same dispatch, not simplify it"
-)]
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        // Point the FUSE-media seam at the bundled sample-media/ dir so the
-        // capture resolves the demo project's media to local (hydrated)
-        // sources — exercising the hydration branch without a live mount.
-        // Honour an existing override if the caller already set one.
-        if std::env::var_os("QOS_VE_MEDIA_DIR").is_none() {
-            let bundled = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media");
-            if bundled.exists() {
-                // Safety: set before any threads spawn for the one-shot render.
-                unsafe {
-                    std::env::set_var("QOS_VE_MEDIA_DIR", bundled);
-                }
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new("dev.qos.video-editor", video_editor::app_root)
+            .shot_handler(shot_handler)
+            .allowed_flags(&["--empty", "--narrow"])
+            .allowed_options(&["--import"])
+            .scenarios(video_editor::app::ShotScenario::ALL_NAMES)
+            .configure_app(|app| video_editor::actions::register(app.action_registry_mut())),
+    );
+}
+
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    render_shot(args).map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let out = args.shots.as_deref().ok_or("missing screenshot output")?;
+    // Point the FUSE-media seam at the bundled sample-media/ dir so the
+    // capture resolves the demo project's media to local (hydrated)
+    // sources — exercising the hydration branch without a live mount.
+    // Honour an existing override if the caller already set one.
+    if std::env::var_os("QOS_VE_MEDIA_DIR").is_none() {
+        let bundled = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media");
+        if bundled.exists() {
+            // Safety: set before any threads spawn for the one-shot render.
+            unsafe {
+                std::env::set_var("QOS_VE_MEDIA_DIR", bundled);
             }
         }
-        // Scenario selectors (deterministic single-frame captures):
-        //   --narrow             collapsed-bin overlay layout
-        //   --scenario filters   clip selected with colour filters + fades
-        //   --scenario split     timeline just after a split at the playhead
-        //   (none)               the full live editor
-        let scenario = parse_scenario_arg(&args);
-        // `--empty` renders the real live app (a blank project on a fresh
-        // machine) so the first-run empty state can be screenshotted; every
-        // other shot uses the seeded demo build.
-        let empty = args.iter().any(|a| a == "--empty");
-        // `--import PATH` seeds a real imported clip (probed for real metadata)
-        // and, under `--features decode`, warms the pipeline so the capture
-        // shows the clip's true decoded frame — not the representative gradient.
-        if let Some(path) = parse_value_arg(&args, "--import") {
-            let mut app =
-                video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(
-                    path,
-                )]);
-            // Warm up on ONE state so the import + the async-prerolled decoded
-            // frame persist into the same document the render then draws from.
-            let mut state = ui::State::new();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
-            loop {
-                app.sync(&mut state.doc, &state.root);
-                if app.has_preview_frame() || std::time::Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    // Scenario selectors (deterministic single-frame captures):
+    //   --narrow             collapsed-bin overlay layout
+    //   --scenario filters   clip selected with colour filters + fades
+    //   --scenario split     timeline just after a split at the playhead
+    //   (none)               the full live editor
+    let scenario = args.scenario.as_deref();
+    // `--empty` renders the real live app (a blank project on a fresh
+    // machine) so the first-run empty state can be screenshotted; every
+    // other shot uses the seeded demo build.
+    let empty = args.has("--empty");
+    // `--import PATH` seeds a real imported clip (probed for real metadata)
+    // and, under `--features decode`, warms the pipeline so the capture
+    // shows the clip's true decoded frame — not the representative gradient.
+    if let Some(path) = args.value("--import") {
+        let mut app =
+            video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(path)]);
+        // Warm up on ONE state so the import + the async-prerolled decoded
+        // frame persist into the same document the render then draws from.
+        let mut state = ui::State::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        loop {
+            app.sync(&mut state.doc, &state.root);
+            if app.has_preview_frame() || std::time::Instant::now() >= deadline {
+                break;
             }
-            render_shot_to_png(Box::new(app), DEFAULT_SHOTS_VIEWPORT, &out, state)?;
-            return Ok(());
+            std::thread::sleep(std::time::Duration::from_millis(40));
         }
-        if empty {
-            render_shot_to_png(
-                video_editor::app_root(),
-                DEFAULT_SHOTS_VIEWPORT,
-                &out,
-                ui::State::new(),
-            )?;
-        } else if args.iter().any(|a| a == "--narrow") {
-            render_shot_to_png(
-                video_editor::app_root_narrow(),
-                NARROW_SHOTS_VIEWPORT,
-                &out,
-                ui::State::new(),
-            )?;
-        } else {
-            match scenario.as_deref() {
-                Some("filters") => render_shot_to_png(
-                    video_editor::app_root_filters(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-                Some("split") => render_shot_to_png(
-                    video_editor::app_root_split(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-                Some("menu") => render_shot_to_png(
-                    video_editor::app_root_menu(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-                Some("rename") => render_shot_to_png(
-                    video_editor::app_root_rename(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-                Some("drag") => render_shot_to_png(
-                    video_editor::app_root_drag(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-                Some("effects") => render_shot_to_png(
-                    video_editor::app_root_effects(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-                _ => render_shot_to_png(
-                    video_editor::app_root_demo(),
-                    DEFAULT_SHOTS_VIEWPORT,
-                    &out,
-                    ui::State::new(),
-                )?,
-            }
-        }
+        render_shot_to_png(
+            Box::new(app),
+            args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+            out,
+            state,
+        )?;
         return Ok(());
     }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
+    if empty {
+        render_shot_to_png(
             video_editor::app_root(),
-            "dev.qos.video-editor",
-        ));
+            args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+            out,
+            ui::State::new(),
+        )?;
+    } else if args.has("--narrow") {
+        render_shot_to_png(
+            video_editor::app_root_narrow(),
+            args.viewport.unwrap_or(NARROW_SHOTS_VIEWPORT),
+            out,
+            ui::State::new(),
+        )?;
+    } else {
+        let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        // Every scenario resolves through the same `ShotScenario` selector the
+        // app itself defines, so adding one there is enough to make it
+        // capturable — there is no second list here to keep in step.
+        match scenario.and_then(video_editor::app::ShotScenario::from_arg) {
+            Some(s) => render_shot_to_png(
+                Box::new(video_editor::VideoEditorApp::new_for_shot(s)),
+                viewport,
+                out,
+                ui::State::new(),
+            )?,
+            None => {
+                render_shot_to_png(
+                    video_editor::app_root_demo(),
+                    viewport,
+                    out,
+                    ui::State::new(),
+                )?;
+            }
+        }
     }
-
-    let (state, autosave) = ui::persist::open("dev.qos.video-editor");
-    let mut app = ui::App::new(state, video_editor::app_root()).with_autosave(autosave);
-    // Register the editor's actions so the shell's Ctrl+K palette can decode +
-    // replay the same timeline actions the on-screen affordances dispatch.
-    video_editor::actions::register(app.action_registry_mut());
-    app.run();
     Ok(())
-}
-
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
-/// Generic `--flag VALUE` / `--flag=VALUE` reader.
-fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
-/// `--scenario <name>` (or `--scenario=<name>`) selects a deterministic
-/// capture scenario. Returns the lowercased name if present.
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().map(|s| s.to_lowercase());
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_lowercase());
-        }
-    }
-    None
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

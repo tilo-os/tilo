@@ -844,7 +844,7 @@ impl Core {
     /// The rail's expand chip + the separator beneath it. Returns the y the
     /// scrolling city column starts at.
     fn draw_rail_header(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         theme: &Theme,
@@ -1446,7 +1446,7 @@ impl Core {
         if let Some(consumed) = self.route_overview_search_field(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             focus_target,
@@ -1477,7 +1477,7 @@ impl Core {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -1508,7 +1508,7 @@ impl Core {
         self.search.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut ac_handled,
@@ -2009,8 +2009,9 @@ impl Core {
     /// The hero card: condition glyph, big temperature, condition label,
     /// "feels like", and the sunrise/sunset arc (or a compact fallback on a
     /// narrow pane). Returns the y cursor for the next section.
+    #[allow(clippy::too_many_arguments)]
     fn draw_detail_hero(
-        &mut self,
+        &self,
         rect: Rect,
         scene: &mut Scene,
         t: Affine,
@@ -2088,7 +2089,7 @@ impl Core {
         );
 
         if let Some(today) = snap.daily.first() {
-            self.draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
+            Self::draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
         }
 
         y + HERO_H + SECTION_GAP
@@ -2101,7 +2102,6 @@ impl Core {
         reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus hero/mw/cur/today identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
     )]
     fn draw_hero_sun(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2283,6 +2283,7 @@ impl Core {
 
     /// The 24-hour scrollable strip card. Returns the y cursor for the
     /// next section.
+    #[allow(clippy::too_many_arguments)]
     fn draw_detail_hourly(
         &mut self,
         rect: Rect,

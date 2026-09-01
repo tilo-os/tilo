@@ -317,6 +317,11 @@ fn drop_over_empty_desktop_space_is_a_graceful_noop() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(), read through to the end of the \
+              function via ws/view/editor_caps; nothing to drop earlier"
+)]
 fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     let (tree, strip_id, _g_left, _g_right) = two_group_one_strip_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -360,6 +365,11 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
 /// The second drop must see the path is already granted and skip the
 /// insert rather than stacking a duplicate capability.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(), read through to the end of the \
+              function via view/editor_caps/count; nothing to drop earlier"
+)]
 fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
     let (tree, strip_id, _g_left, _g_right) = two_group_one_strip_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);

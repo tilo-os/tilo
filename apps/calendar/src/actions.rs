@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::CalDoc;
@@ -202,6 +202,31 @@ pub enum CalendarAction {
     /// Delete a task and each of its listed subtasks (resolved at authoring
     /// time from the model, carried here so `apply` needs no lookup).
     DeleteTask { id: String, subtasks: Vec<String> },
+}
+
+/// Durable, browseable history metadata for a calendar mutation.
+pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
+    let mut context =
+        qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
+    let (label, id, kind, title) = match action {
+        CalendarAction::UpsertEvent(event) => {
+            ("Update event", &event.id, "calendar.event", &event.title)
+        }
+        CalendarAction::SetEventCalendar { event, .. } => {
+            ("Move event", &event.id, "calendar.event", &event.title)
+        }
+        CalendarAction::DeleteEvent { id, .. } => ("Delete event", id, "calendar.event", id),
+        CalendarAction::UpsertTask(task) => ("Update task", &task.id, "calendar.task", &task.title),
+        CalendarAction::ToggleTask { id } => ("Toggle task", id, "calendar.task", id),
+        CalendarAction::DeleteTask { id, .. } => ("Delete task", id, "calendar.task", id),
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("{kind}:{id}"),
+        kind: kind.to_string(),
+        label: title.clone(),
+    });
+    context
 }
 
 impl Action for CalendarAction {
@@ -382,13 +407,13 @@ fn task_label(data: &TaskData) -> String {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CALENDAR_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        input: ActionInput::Immediate(encode(action)),
-    })
+    ActionSpec::immediate(id, label, CALENDAR_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Build the resource tree the calendar currently has open: the calendar itself

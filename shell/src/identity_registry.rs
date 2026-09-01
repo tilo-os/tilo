@@ -5,17 +5,18 @@
 //! there; workspace ownership remains a shared cryptographic principal.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use serde::{Deserialize, Serialize};
 
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
 const REGISTRY_FILE: &str = "registry.json";
+const MAX_IMPORTED_IDENTITY_BYTES: u64 = 1024 * 1024;
 #[cfg(test)]
 const LEGACY_PRIMARY_FILE: &str = "primary.json";
 
@@ -112,14 +113,14 @@ impl IdentityRegistry {
         source: &Path,
         identity_dir: &Path,
     ) -> io::Result<&IdentityProfile> {
-        let bytes = fs::read(source)?;
+        let bytes = read_import_record(source)?;
         let record = runtime_identity::load_from_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let id = hex_encode(&record.group_public_key());
         // Runtime store ids are capped at 64 characters and must begin with a
         // letter. Keep 220 fingerprint bits; the full key remains the registry
         // id and is rechecked before accepting an existing destination.
-        let store_id = format!("identity-{}", &id[..55]);
+        let store_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
         fs::create_dir_all(identity_dir)?;
         set_private_dir_mode(identity_dir)?;
         if let Some(existing) = runtime_identity::list_identities(identity_dir)?
@@ -149,7 +150,7 @@ impl IdentityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the identity_id is not registered.
+    /// Returns an error if the `identity_id` is not registered.
     pub fn bind_workspace(&mut self, room: impl Into<String>, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -178,7 +179,7 @@ impl IdentityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the identity_id is not registered.
+    /// Returns an error if the `identity_id` is not registered.
     pub fn set_default(&mut self, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -191,6 +192,32 @@ impl IdentityRegistry {
     }
 }
 
+fn read_import_record(source: &Path) -> io::Result<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let mut file = options.open(source)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_IMPORTED_IDENTITY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity import must be a regular file no larger than 1 MiB",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    (&mut file)
+        .take(MAX_IMPORTED_IDENTITY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORTED_IDENTITY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity import exceeds the 1 MiB limit",
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Disk owner for the registry.
 #[derive(Clone, Debug)]
 pub struct IdentityRegistryStore {
@@ -199,6 +226,12 @@ pub struct IdentityRegistryStore {
 }
 
 impl IdentityRegistryStore {
+    /// Open the identity registry rooted at the environment's identity
+    /// directory (`XDG_CONFIG_HOME` or `HOME`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
     pub fn from_env() -> io::Result<Self> {
         Ok(Self::at(resolve_identity_dir()?))
     }
@@ -319,6 +352,39 @@ impl IdentityRegistryStore {
         Ok(profile)
     }
 
+    /// Restore an encrypted portable backup into the managed identity store.
+    ///
+    /// Decryption remains inside `runtime-identity`; this registry only sees
+    /// the public fingerprint and the final secured metadata path. Re-importing
+    /// a backup already present on this login is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if backup verification, migration, import, registration,
+    /// or registry persistence fails.
+    pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
+        let info = runtime_identity::verify_portable_backup(source, passphrase)?;
+        let id = hex_encode(&info.group_public_key);
+        let mut registry = self.migrate_legacy_primary()?;
+        if let Some(existing) = registry.identities.get(&id) {
+            return Ok(existing.clone());
+        }
+
+        // Runtime ids are capped at 64 characters and must start with a
+        // letter. The full fingerprint remains the registry's stable id.
+        let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
+        let destination = runtime_identity::import_portable_backup_matching(
+            source,
+            passphrase,
+            &self.identity_dir,
+            &runtime_id,
+            info.group_public_key,
+        )?;
+        let profile = registry.register_record(&destination)?.clone();
+        self.save(&registry)?;
+        Ok(profile)
+    }
+
     /// Bind an identity to a workspace in the registry.
     ///
     /// # Errors
@@ -388,8 +454,12 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
         .map(|profile| profile.id.as_str());
     let next_index = current
         .and_then(|id| ids.iter().position(|candidate| candidate == id))
-        .map_or(0, |index| (index + 1) % ids.len());
-    let next_id = &ids[next_index];
+        .map_or(0, |index| {
+            index.wrapping_add(1).checked_rem(ids.len()).unwrap_or(0)
+        });
+    let Some(next_id) = ids.get(next_index) else {
+        return Ok(None);
+    };
     registry.bind_workspace(room.to_string(), next_id)?;
     let profile = registry.identities.get(next_id).cloned();
     store.save(&registry)?;
@@ -400,7 +470,7 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
 ///
 /// # Errors
 ///
-/// Returns an error if neither XDG_CONFIG_HOME nor HOME is set.
+/// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
         && !xdg.is_empty()
@@ -449,11 +519,10 @@ fn short_fingerprint(hex: &str) -> String {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
+        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
     }
     out
 }
@@ -544,6 +613,34 @@ mod tests {
             .bind_workspace("room-a", "missing")
             .expect_err("must reject unknown identity");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn legacy_import_rejects_oversized_records_before_parsing() {
+        let dir = temp_dir("oversized-import");
+        let source = dir.join("oversized.json");
+        let file = fs::File::create(&source).expect("source");
+        file.set_len(MAX_IMPORTED_IDENTITY_BYTES + 1)
+            .expect("sparse oversized record");
+        let store = IdentityRegistryStore::at(dir.join("managed"));
+        let error = store.import(&source).expect_err("oversized import");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_import_refuses_symlink_sources() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("symlink-import");
+        let source = dir.join("source.json");
+        write_record(&source, &record("Alice", 41));
+        let link = dir.join("identity.json");
+        symlink(&source, &link).expect("source symlink");
+        let store = IdentityRegistryStore::at(dir.join("managed"));
+        assert!(store.import(&link).is_err());
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]

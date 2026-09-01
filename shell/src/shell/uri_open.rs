@@ -65,17 +65,20 @@ pub fn resolve_for(
 /// [`UriOpenError::NoHandler`] if no app claims (or still claims) the
 /// scheme, [`UriOpenError::NoWorkspace`] if there is no active workspace
 /// to open into, or [`UriOpenError::Launch`] if starting the app failed.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "both guards below already end at the block that binds them, right where the \
+              value(s) built from them are handed back — the first's only use is the \
+              borrow fed into app_for_resource_with_policy, the second's last use is the \
+              room/capabilities tuple it's cloned into; nothing to tighten without cloning \
+              the workspace policy out for no real gain"
+)]
 pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, UriOpenError> {
     let resource = resource_for_uri(uri)?;
     // The guard's only use is the borrow passed into
     // `app_for_resource_with_policy`, released the moment that call
     // returns; cloning the workspace policy out just to drop the guard a
     // statement earlier would cost more than the lookup it's guarding.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "guard feeds one immediate borrow into app_for_resource_with_policy and is \
-                  released right after; nothing to tighten without cloning workspace policy"
-    )]
     let app = {
         let state = chrome.borrow();
         let tree = state.tree();

@@ -52,7 +52,7 @@ const MEM_CACHE_CAP: usize = 512;
 const FAIL_BACKOFF_MIN: Duration = Duration::from_secs(2);
 /// Ceiling for the failed-tile backoff. A tile server that is persistently
 /// unreachable is retried at most this often, never per-frame.
-const FAIL_BACKOFF_MAX: Duration = Duration::from_mins(5);
+const FAIL_BACKOFF_MAX: Duration = Duration::from_secs(300);
 /// Cap on the negative-cache size so a long pan across an unreachable region
 /// can't grow it without bound.
 const FAIL_CACHE_CAP: usize = 4096;

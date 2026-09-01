@@ -55,6 +55,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -66,6 +67,9 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
 /// # Errors
 ///
@@ -143,60 +147,39 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_bench_scroll(frames, watch, loaded);
     }
 
-    if let Some(out) = parse_shots_arg(&args) {
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let (vw, vh) = viewport;
-        let narrow = args.iter().any(|a| a == "--narrow");
-        let palette = args.iter().any(|a| a == "--palette");
-        // `--play-demo`: open a watch page with the shared `VideoPlayer` already
-        // playing (a synthesized frame + revealed controls), so the still
-        // captures the real player surface + transport — a visual companion to
-        // `--probe-engine` (which proves the *decode*) for eyeballing the on-screen
-        // player without a network or a live decoder.
-        let play_demo = args.iter().any(|a| a == "--play-demo");
-        // `--empty`: the cold-start loading skeleton (no fabricated sample).
-        let empty_loading = args.iter().any(|a| a == "--empty");
-        // Seed the app with the render viewport so the single offscreen frame
-        // resolves the responsive layout (rail default, grid columns, watch
-        // player size) from the true width instead of the unknown-width
-        // fallback. Shots-only — the live event loop below is untouched.
-        let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
-        if empty_loading {
-            app = app.with_loading_home_shot();
-        } else if palette {
-            // Open the command palette pre-seeded so the still captures the
-            // Ctrl+K overlay with live results.
-            let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
-            app = app.with_palette_open_for_test(&q);
-        } else if play_demo {
-            app = app.with_playing_demo_for_test();
-        } else if narrow {
-            app = app.with_open_sidebar_shot();
-        } else if let Some(route) = parse_route_arg(&args) {
-            app = app.with_route_shot(route);
-        }
-        render_shot_to_png(Box::new(app) as Box<dyn Widget>, viewport, &out)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            Box::new(tube::TubeApp::new().online()),
-            "dev.qos.tube",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.tube");
-    // The live binary is `online()`: it reaches out to the real backend and
-    // auto-falls-back to the sample if the network is down. (`app_root()`, used
-    // by `--shots`, stays offline for hermetic screenshots.)
-    let app = ui::App::new(state, Box::new(tube::TubeApp::new().online())).with_autosave(autosave);
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.tube", live_root)
+            .shot_root(shot_root)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .allowed_flags(&["--narrow", "--palette", "--play-demo", "--empty"])
+            .allowed_options(&["--route", "--palette-query"]),
+    )?;
     Ok(())
+}
+
+fn live_root() -> Box<dyn Widget> {
+    Box::new(tube::TubeApp::new().online())
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let (vw, vh) = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
+    if args.has("--empty") {
+        app = app.with_loading_home_shot();
+    } else if args.has("--palette") {
+        app = app.with_palette_open_for_test(args.value("--palette-query").unwrap_or("rust"));
+    } else if args.has("--play-demo") {
+        app = app.with_playing_demo_for_test();
+    } else if args.has("--narrow") {
+        app = app.with_open_sidebar_shot();
+    } else if let Some(route) = args.value("--route") {
+        app = app.with_route_shot(route_from_spec(route));
+    }
+    Ok(Box::new(app))
 }
 
 /// Parse `--probe` / `--probe=<query>` / `--probe <query>`. Returns the query
@@ -1592,37 +1575,14 @@ fn run_bench_scroll(
     Ok(())
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
-/// Parse `--route NAME` (or `--route=NAME`) into a starting [`tube::model::Route`]
-/// for a screen-specific shot. Recognises `home`, `trending`, `subs`/
+/// Parse a route specification into a starting [`tube::model::Route`] for a
+/// screen-specific shot. Recognises `home`, `trending`, `subs`/
 /// `subscriptions`, `history`, `settings`, `watch:<video_id>`, and
 /// `search:<query>`.
-fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
+fn route_from_spec(spec: &str) -> tube::model::Route {
     use tube::model::Route;
-    let mut iter = args.iter().skip(1);
-    let spec = loop {
-        let arg = iter.next()?;
-        if arg == "--route" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--route=") {
-            break rest.to_string();
-        }
-    };
     let lower = spec.to_ascii_lowercase();
-    Some(match lower.as_str() {
+    match lower.as_str() {
         "home" => Route::Home,
         "trending" => Route::Trending,
         "subs" | "subscriptions" => Route::Subscriptions,
@@ -1634,42 +1594,10 @@ fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
             } else if let Some(q) = spec.strip_prefix("search:") {
                 Route::Search(q.to_string())
             } else {
-                Route::Search(spec)
+                Route::Search(spec.to_string())
             }
         }
-    })
-}
-
-/// Parse `--palette-query <q>` (or `--palette-query=<q>`) — the query to seed
-/// the command-palette shot with.
-fn parse_palette_query_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--palette-query" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--palette-query=") {
-            return Some(rest.to_string());
-        }
     }
-    None
-}
-
-/// Parse `--viewport WxH` (or `--viewport=WxH`) into a (width, height) pair.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let spec = if arg == "--viewport" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--viewport=")
-        };
-        if let Some(spec) = spec {
-            let (w, h) = spec.split_once(['x', 'X'])?;
-            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

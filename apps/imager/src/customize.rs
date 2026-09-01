@@ -661,7 +661,7 @@ impl CustomizePanel {
         let g = Self::geom(content);
         match event {
             WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(
-                event, position.x, position.y, scale, modifiers, doc, path, &g, node_id, taffy,
+                event, position.x, position.y, scale, *modifiers, doc, path, &g, node_id, taffy,
             ),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -670,7 +670,7 @@ impl CustomizePanel {
             } => self.handle_left_click(
                 event,
                 scale,
-                modifiers,
+                *modifiers,
                 doc,
                 path,
                 host,
@@ -684,7 +684,7 @@ impl CustomizePanel {
                 if key_ev.state == ElementState::Pressed =>
             {
                 self.handle_key_event(
-                    event, key_ev, scale, modifiers, doc, path, host, &g, node_id, taffy,
+                    event, key_ev, scale, *modifiers, doc, path, host, &g, node_id, taffy,
                 )
             }
             _ => CzResponse {
@@ -703,7 +703,7 @@ impl CustomizePanel {
         px: f64,
         py: f64,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
         g: &CzGeom,
@@ -722,7 +722,7 @@ impl CustomizePanel {
             input.apply_layout_external(inner);
             let (mut h, mut ft) = (false, None);
             input.handle_event(
-                event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
             );
         }
         CzResponse {
@@ -738,7 +738,7 @@ impl CustomizePanel {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
         host: &mut ui::ActionHost,
@@ -756,7 +756,7 @@ impl CustomizePanel {
                     g.field(f),
                     event,
                     scale,
-                    *modifiers,
+                    modifiers,
                     doc,
                     path,
                     node_id,
@@ -830,7 +830,7 @@ impl CustomizePanel {
         event: &WindowEvent,
         key_ev: &winit::event::KeyEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
         host: &mut ui::ActionHost,
@@ -865,7 +865,7 @@ impl CustomizePanel {
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
         input.handle_event(
-            event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
         );
         let value = self.input(f).value().to_string();
         Self::dispatch(doc, host, &Self::field_action(f, value));
@@ -912,7 +912,12 @@ impl CustomizePanel {
     }
 
     fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
-        host.dispatch(doc, IMAGER_ACTION_TYPE, action);
+        host.dispatch_with_context(
+            doc,
+            IMAGER_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", action),
+        );
     }
 
     /// The password field itself, for the never-leak-the-secret a11y test.

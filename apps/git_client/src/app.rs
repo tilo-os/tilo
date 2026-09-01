@@ -23,7 +23,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, TextInput, Widget};
+use ui::widget::{FlapState, SplitLayout, TextInput, TextInputKind, Widget};
 
 use crate::changes::{ChangesColumn, ChangesHit};
 use crate::diffview::{self, DiffView};
@@ -287,9 +287,11 @@ impl GitClientApp {
             .with_placeholder("Summary of changes…")
             .with_font_size(13.0);
         let branch_input = TextInput::local()
+            .with_kind(TextInputKind::Name)
             .with_placeholder("new branch name…")
             .with_font_size(12.5);
         let open_input = TextInput::local()
+            .with_kind(TextInputKind::Path)
             .with_placeholder("/path/to/repository")
             .with_font_size(14.0)
             .with_mono();
@@ -789,22 +791,26 @@ impl GitClientApp {
     fn toggle_diff_layout(&mut self, doc: &mut AutoCommit) {
         self.settings.toggle_layout();
         self.diff_scroll = 0.0;
-        self.actions.dispatch(
+        let action = crate::actions::set_diff_layout_action(self.settings.diff_layout);
+        self.actions.dispatch_with_context(
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &crate::actions::set_diff_layout_action(self.settings.diff_layout),
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Git", "Git", &action),
         );
     }
 
     /// Flip diff syntax highlighting. Routed to by the app-bar `</>` pill.
     fn toggle_syntax_highlight(&mut self, doc: &mut AutoCommit) {
         self.settings.syntax_highlight = !self.settings.syntax_highlight;
-        self.actions.dispatch(
+        let action = crate::actions::GitClientAction::SetSyntaxHighlight {
+            on: self.settings.syntax_highlight,
+        };
+        self.actions.dispatch_with_context(
             doc,
             crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &crate::actions::GitClientAction::SetSyntaxHighlight {
-                on: self.settings.syntax_highlight,
-            },
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Git", "Git", &action),
         );
     }
 
@@ -855,7 +861,11 @@ impl GitClientApp {
         // group first so the title can be clamped to stop before it on a
         // narrow window instead of running underneath.
         self.tab_rects.clear();
-        let settings_w = 220.0;
+        // Keep the settings cluster wide enough for the full "Syntax" label.
+        // The old 46px icon-sized control left only "Syn" visible in the
+        // shipped shot, which made a presentation preference look like a
+        // truncated status label.
+        let settings_w = 230.0;
         let (widths, total) = Self::measure_appbar_tabs(tr);
         let tx_start = bar.x1 - settings_w - total - 20.0;
         let tab_group_left = tx_start - 6.0;
@@ -887,6 +897,10 @@ impl GitClientApp {
 
     /// Draw the repo name, branch pill and pending-changes/error subtitle,
     /// clamped so a long name ellipsises before the tab group.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn draw_appbar_title(
         &self,
         scene: &mut Scene,
@@ -963,6 +977,10 @@ impl GitClientApp {
 
     /// Draw the tab-group pill background and each tab, recording its hit
     /// rect in `self.tab_rects`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn draw_appbar_tab_group(
         &mut self,
         scene: &mut Scene,
@@ -1054,10 +1072,11 @@ impl GitClientApp {
         // seg; the click handler flips the layout.
         self.settings_seg = seg;
 
-        // Syntax-highlight pill toggle. Labelled with the universal `</>`
-        // code glyph rather than a cryptic word-fragment, centred in the pill.
+        // Syntax-highlight toggle. Keep the visible label explicit: this is a
+        // preference, not a repository status, and "Syn" is ambiguous when a
+        // control is viewed without its tooltip or action palette.
         let hx = seg.x1 + 10.0;
-        let hl = Rect::new(hx, y, hx + 46.0, y + 32.0);
+        let hl = Rect::new(hx, y, hx + 64.0, y + 32.0);
         let on = self.settings.syntax_highlight;
         draw::fill_round(
             scene,
@@ -1071,16 +1090,16 @@ impl GitClientApp {
             },
         );
         let hlfg = if on { Color::WHITE } else { c.text_dim };
-        let glyph = "</>";
-        let gw = f64::from(tr.measure_weighted(glyph, 12.5, None, TextWeight::Medium).0);
+        let label = "Syntax";
+        let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
         draw::text_weighted(
             scene,
             tr,
             t,
-            glyph,
-            12.5,
+            label,
+            12.0,
             hlfg,
-            hl.x0 + (hl.width() - gw) / 2.0,
+            hl.x0 + (hl.width() - lw) / 2.0,
             y + 8.0,
             None,
             TextWeight::Medium,
@@ -1232,7 +1251,16 @@ impl GitClientApp {
 
         if let Some((old_path, path, adds, dels)) = info {
             self.draw_diff_header_file(
-                scene, tr, t, theme, header, &old_path, path, adds, dels, staged,
+                scene,
+                tr,
+                t,
+                theme,
+                header,
+                old_path.as_deref(),
+                path,
+                adds,
+                dels,
+                staged,
             );
         } else {
             draw::text(
@@ -1248,7 +1276,7 @@ impl GitClientApp {
             );
         }
 
-        self.draw_diff_body(scene, tr, t, theme, pane, header, &key, staged);
+        self.draw_diff_body(scene, tr, t, theme, pane, header, key.as_ref(), staged);
     }
 
     /// Draw the diff-pane header for the selected file: title, +/− summary,
@@ -1265,14 +1293,14 @@ impl GitClientApp {
         t: Affine,
         theme: &Theme,
         header: Rect,
-        old_path: &Option<String>,
+        old_path: Option<&str>,
         path: String,
         adds: u32,
         dels: u32,
         staged: bool,
     ) {
         let c = &theme.tokens.colors;
-        let title = match &old_path {
+        let title = match old_path {
             Some(old) => format!("{old}  →  {path}"),
             None => path,
         };
@@ -1374,7 +1402,7 @@ impl GitClientApp {
         theme: &Theme,
         pane: Rect,
         header: Rect,
-        key: &Option<DiffKey>,
+        key: Option<&DiffKey>,
         staged: bool,
     ) {
         let c = &theme.tokens.colors;
@@ -1383,7 +1411,7 @@ impl GitClientApp {
             Some(DiscardTarget::Hunk(h)) => Some(h),
             _ => None,
         };
-        if let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) {
+        if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
             self.diff_hunk_buttons = DiffView::draw(
                 scene,
                 tr,
@@ -1623,14 +1651,13 @@ impl GitClientApp {
         let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
         let cy = self.rect.y0 + (self.rect.height() * 0.30).max(80.0);
 
-        let y = self.draw_open_intro(scene, tr, t, theme, cx, cw, cy);
+        let y = Self::draw_open_intro(scene, tr, t, theme, cx, cw, cy);
         self.draw_open_path_field(scene, tr, t, theme, presence, cx, cw, y);
     }
 
     /// Draw the branch-glyph mark, title and subtitle above the path field.
     /// Returns the y position the path field should start at.
     fn draw_open_intro(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -2021,6 +2048,126 @@ impl GitClientApp {
             Screen::Panels => {}
         }
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single derived semantic inventory for the app's three mutually exclusive screens"
+    )]
+    fn accessibility_targets(&self) -> Vec<(Rect, ui::a11y::AccessNode)> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let button = |rect: Rect, label: String| {
+            (
+                rect,
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(rect),
+            )
+        };
+        if self.awaiting_repo {
+            let mut targets = Vec::new();
+            if self.open_input_rect.area() > 0.0 {
+                targets.push((
+                    self.open_input_rect,
+                    self.open_input
+                        .accessibility()
+                        .unwrap_or_else(|| {
+                            AccessNode::new(Role::TextInput).with_name("Repository path")
+                        })
+                        .with_bounds(self.open_input_rect),
+                ));
+            }
+            if self.open_button_rect.area() > 0.0 {
+                targets.push(button(self.open_button_rect, "Open repository".into()));
+            }
+            return targets;
+        }
+
+        let mut targets = Vec::new();
+        if self.hamburger_rect.area() > 0.0 {
+            targets.push(button(
+                self.hamburger_rect,
+                "Show repository navigation".into(),
+            ));
+        }
+        targets.extend(self.tab_rects.iter().map(|(screen, rect)| {
+            let label = TABS
+                .iter()
+                .find(|(candidate, _)| candidate == screen)
+                .map_or("Repository view", |(_, label)| *label);
+            (
+                *rect,
+                AccessNode::new(Role::Tab)
+                    .with_name(label)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(*screen == self.screen),
+                    )
+                    .with_bounds(*rect),
+            )
+        }));
+        if self.settings_seg.area() > 0.0 {
+            targets.push(button(self.settings_seg, "Diff layout".into()));
+        }
+        if self.settings_syn.area() > 0.0 {
+            targets.push(button(self.settings_syn, "Syntax highlighting".into()));
+        }
+        match self.screen {
+            Screen::Changes if self.commit_input.get_rect().area() > 0.0 => targets.push((
+                self.commit_input.get_rect(),
+                self.commit_input
+                    .accessibility()
+                    .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name("Commit message"))
+                    .with_bounds(self.commit_input.get_rect()),
+            )),
+            Screen::History => {
+                for (index, rect) in self.history_rows.iter().enumerate() {
+                    if let Some(commit) = self.model.commits.get(index) {
+                        targets.push((
+                            *rect,
+                            AccessNode::new(Role::ListItem)
+                                .with_name(format!(
+                                    "{} by {}, {}",
+                                    commit.summary, commit.author_name, commit.when
+                                ))
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .selected(index == self.selected_commit),
+                                )
+                                .with_bounds(*rect),
+                        ));
+                    }
+                }
+            }
+            Screen::Panels => {
+                if self.new_branch_input.area() > 0.0 {
+                    targets.push((
+                        self.new_branch_input,
+                        self.branch_input
+                            .accessibility()
+                            .unwrap_or_else(|| {
+                                AccessNode::new(Role::TextInput).with_name("New branch name")
+                            })
+                            .with_bounds(self.new_branch_input),
+                    ));
+                }
+                if self.new_branch_button.area() > 0.0 {
+                    targets.push(button(self.new_branch_button, "Create branch".into()));
+                }
+            }
+            Screen::Changes => {}
+        }
+        if self.discard_file_rect.area() > 0.0 {
+            targets.push(button(
+                self.discard_file_rect,
+                "Discard file changes".into(),
+            ));
+        }
+        targets
+    }
 }
 
 /// Whether `p` falls inside a non-empty `rect` (a zero-size rect never hits).
@@ -2209,6 +2356,41 @@ impl Widget for GitClientApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let children = self
+            .accessibility_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, node))| {
+                // Synthetic children need an opaque action target before the
+                // bridge advertises them as operable. The ordinal remains the
+                // geometry lookup key, so it must stay in lock-step with
+                // `synthetic_accessibility_rect` below.
+                node.with_key(index as u64)
+                    .with_action_target(format!("git-target:{index}"))
+            })
+            .collect();
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Git Client")
+                .with_description(if self.awaiting_repo {
+                    "Open a repository"
+                } else {
+                    "Repository changes, history, branches and remotes"
+                })
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, _)| *rect)
     }
 
     /// Publish the open repository and its view-preference actions to the
@@ -2651,7 +2833,9 @@ mod tests {
             .unwrap();
         let palette_action = match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("diff-layout is an immediate action"),
+            qos_actions::ActionInput::Prompted { .. } => {
+                panic!("diff-layout is an immediate action")
+            }
         };
 
         // Drive the real app-bar segmented control.
@@ -2677,5 +2861,33 @@ mod tests {
             dispatched, &palette_action,
             "the app-bar control and the Ctrl+K entry build one and the same action"
         );
+    }
+
+    #[test]
+    fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
+        let mut app = app_at(1_280.0, Screen::Changes);
+        app.tab_rects = vec![
+            (Screen::Changes, Rect::new(20.0, 8.0, 120.0, 40.0)),
+            (Screen::History, Rect::new(124.0, 8.0, 224.0, 40.0)),
+        ];
+        app.settings_seg = Rect::new(1_000.0, 8.0, 1_080.0, 40.0);
+        app.settings_syn = Rect::new(1_084.0, 8.0, 1_160.0, 40.0);
+        app.commit_input
+            .apply_layout_external(Rect::new(360.0, 700.0, 700.0, 736.0));
+
+        let node = Widget::accessibility(&app).expect("git client is semantic");
+        assert!(!node.children.is_empty());
+        for (index, child) in node.children.iter().enumerate() {
+            let expected_target = format!("git-target:{index}");
+            assert_eq!(
+                child.action_target.as_deref(),
+                Some(expected_target.as_str())
+            );
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&app, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "semantic control {index} must activate inside the visible control"
+            );
+        }
     }
 }

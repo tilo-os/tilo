@@ -41,11 +41,25 @@ fn cfg() -> FlatpakShareConfig {
 }
 
 fn gradient(width: u32, height: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
     for y in 0..height {
         for x in 0..width {
-            out.push(((x * 255) / width.max(1)) as u8);
-            out.push(((y * 255) / height.max(1)) as u8);
+            // `checked_div`, not `saturating_div`: saturation only covers
+            // overflow, not the zero-divisor case, and `saturating_div`
+            // still panics on that — `width`/`height` are floored to 1
+            // below, so the `None` branch never triggers.
+            out.push(
+                u8::try_from(x.saturating_mul(255).checked_div(width.max(1)).unwrap_or(0))
+                    .unwrap_or(255),
+            );
+            out.push(
+                u8::try_from(
+                    y.saturating_mul(255)
+                        .checked_div(height.max(1))
+                        .unwrap_or(0),
+                )
+                .unwrap_or(255),
+            );
             out.push(0x80);
             out.push(0xFF);
         }
@@ -59,7 +73,7 @@ fn substream_carries_frames_gossip_carries_announcements() {
     const W: u32 = 128;
     const H: u32 = 128;
     let session =
-        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
     match session.stream_start_msg() {
@@ -76,9 +90,13 @@ fn substream_carries_frames_gossip_carries_announcements() {
 
     // Advance past the 33ms (30fps) throttle each tick so every encode accepts.
     let base = Instant::now();
-    for i in 0..3 {
+    for i in 0..3u64 {
         session.deposit_captured_rgba(gradient(W, H));
-        let now = base + std::time::Duration::from_millis(100 * (i + 1));
+        let now = base
+            .checked_add(std::time::Duration::from_millis(
+                100u64.saturating_mul(i.saturating_add(1)),
+            ))
+            .expect("100ms ticks from base must not overflow Instant");
         let frame = session.encode_next_frame(now);
         assert!(frame.is_some(), "encoder should accept tick {i}");
     }
@@ -103,7 +121,9 @@ fn substream_carries_frames_gossip_carries_announcements() {
     for (i, ev) in events.iter().enumerate() {
         match ev {
             ReceiverEvent::Frame(f) => assert_eq!(f.sequence, i as u64),
-            other => panic!("expected Frame, got {other:?}"),
+            other @ ReceiverEvent::SequenceGap { .. } => {
+                panic!("expected Frame, got {other:?}")
+            }
         }
     }
 
@@ -125,14 +145,18 @@ fn stalled_viewer_drops_old_frames_via_bounded_queue() {
     const W: u32 = 64;
     const H: u32 = 64;
     let session =
-        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
     // Deposit + encode 6 frames without polling — cap is 3, so 3 drops expected.
     let base = Instant::now();
-    for i in 0..6 {
+    for i in 0..6u64 {
         session.deposit_captured_rgba(gradient(W, H));
-        let now = base + std::time::Duration::from_millis(50 * (i + 1));
+        let now = base
+            .checked_add(std::time::Duration::from_millis(
+                50u64.saturating_mul(i.saturating_add(1)),
+            ))
+            .expect("50ms ticks from base must not overflow Instant");
         session.encode_next_frame(now);
     }
 
@@ -153,15 +177,19 @@ fn per_subscriber_independent_backpressure() {
     const W: u32 = 64;
     const H: u32 = 64;
     let session =
-        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
     session.add_viewer(VIEWER_B, false);
 
     // 6 encoded frames; both queues cap at 3.
     let base = Instant::now();
-    for i in 0..6 {
+    for i in 0..6u64 {
         session.deposit_captured_rgba(gradient(W, H));
-        let now = base + std::time::Duration::from_millis(50 * (i + 1));
+        let now = base
+            .checked_add(std::time::Duration::from_millis(
+                50u64.saturating_mul(i.saturating_add(1)),
+            ))
+            .expect("50ms ticks from base must not overflow Instant");
         session.encode_next_frame(now);
     }
 
@@ -180,7 +208,7 @@ fn per_subscriber_independent_backpressure() {
 fn drop_viewer_closes_substream_subscription() {
     const W: u32 = 32;
     const H: u32 = 32;
-    let session = SharedFlatpakSession::start(HOST, "x", SURFACE, W, H, cfg()).expect("session");
+    let session = SharedFlatpakSession::start(HOST, "x", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
     session.deposit_captured_rgba(gradient(W, H));
     session.encode_next_frame(Instant::now());
@@ -191,6 +219,10 @@ fn drop_viewer_closes_substream_subscription() {
     assert_eq!(session.stream_pending_for(VIEWER_A), 0);
     // Frame published post-drop lands on nobody — total_drops still 0.
     session.deposit_captured_rgba(gradient(W, H));
-    session.encode_next_frame(Instant::now() + std::time::Duration::from_millis(200));
+    session.encode_next_frame(
+        Instant::now()
+            .checked_add(std::time::Duration::from_millis(200))
+            .expect("200ms from now must not overflow Instant"),
+    );
     assert_eq!(session.stream_total_drops(), 0);
 }

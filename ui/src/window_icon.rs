@@ -63,6 +63,11 @@ pub(crate) fn default_icon() -> Option<Icon> {
 
 /// Anti-aliased rounded square filled with a vertical accent gradient.
 /// Pure CPU raster — no GPU, no asset — so it works headless too.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "s is the pixel scale, x/y are pixel coordinates, and r/g/b are colour \
+              channels — the conventional names for a per-pixel raster loop"
+)]
 fn render_default(size: u32) -> Vec<u8> {
     // qOS accent, top-to-bottom: indigo -> violet.
     let top = [0x4Cu8, 0x6Eu8, 0xF5u8];

@@ -11,36 +11,36 @@
 
 use vello::kurbo::Point;
 
-/// The one navigation intent a back-gesture / Escape / Alt-Left / a Back button
-/// all resolve to. Kept as an enum (rather than a bare "go back") so future
-/// intents (forward, home, jump-to-root) slot in without changing call sites.
+/// Navigation history intents shared by gestures, keys, and buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavAction {
     Back,
+    Forward,
 }
 
 /// A generic navigation history. `T` names a view (an app's route/screen
-/// descriptor); the stack owns the ordered history with the current view last.
-///
-/// Invariant: the stack is never empty once seeded — [`NavStack::new`] takes a
-/// root view, and [`NavStack::back`] never pops below it.
-#[derive(Clone, Debug)]
+/// descriptor). Back and forward keep browser-style history; pushing after a
+/// Back clears the abandoned forward branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavStack<T> {
-    entries: Vec<T>,
+    past: Vec<T>,
+    current: T,
+    future: Vec<T>,
 }
 
 impl<T: Clone + PartialEq> NavStack<T> {
     /// A stack rooted at `root` (the first, un-poppable view).
     pub fn new(root: T) -> Self {
         Self {
-            entries: vec![root],
+            past: Vec::new(),
+            current: root,
+            future: Vec::new(),
         }
     }
 
-    /// The view currently on screen (the top of the stack). Never `None` — the
-    /// stack is seeded with a root and never emptied.
+    /// The view currently on screen (the top of the stack).
     pub fn current(&self) -> &T {
-        self.entries.last().expect("nav stack is never empty")
+        &self.current
     }
 
     /// Push `view` as the new current view. A push equal to the current view is
@@ -48,7 +48,9 @@ impl<T: Clone + PartialEq> NavStack<T> {
     /// repeated identical navigations don't stack up and Back stays meaningful.
     pub fn push(&mut self, view: T) {
         if self.current() != &view {
-            self.entries.push(view);
+            let previous = std::mem::replace(&mut self.current, view);
+            self.past.push(previous);
+            self.future.clear();
         }
     }
 
@@ -56,43 +58,66 @@ impl<T: Clone + PartialEq> NavStack<T> {
     /// view mutates into a variant of itself (e.g. a query refining) that a
     /// Back should skip over rather than replay.
     pub fn replace_current(&mut self, view: T) {
-        if let Some(last) = self.entries.last_mut() {
-            *last = view;
-        } else {
-            self.entries.push(view);
+        if self.past.last() == Some(&view) {
+            self.past.pop();
         }
+        self.current = view;
     }
 
     pub fn can_go_back(&self) -> bool {
-        self.entries.len() > 1
+        !self.past.is_empty()
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        !self.future.is_empty()
     }
 
     /// Pop the current view and return a reference to the view now on screen,
     /// or `None` when already at the root (nothing to pop).
     pub fn back(&mut self) -> Option<&T> {
-        if self.entries.len() > 1 {
-            self.entries.pop();
-            Some(self.current())
-        } else {
-            None
-        }
+        let previous = self.past.pop()?;
+        let current = std::mem::replace(&mut self.current, previous);
+        self.future.push(current);
+        Some(self.current())
+    }
+
+    /// Move forward after a Back, or return `None` at the newest entry.
+    pub fn forward(&mut self) -> Option<&T> {
+        let next = self.future.pop()?;
+        let current = std::mem::replace(&mut self.current, next);
+        self.past.push(current);
+        Some(self.current())
     }
 
     /// Apply a [`NavAction`], returning the view now on screen if it changed.
     pub fn apply(&mut self, action: NavAction) -> Option<&T> {
         match action {
             NavAction::Back => self.back(),
+            NavAction::Forward => self.forward(),
         }
     }
 
     /// Number of views in the history (>= 1).
     pub fn depth(&self) -> usize {
-        self.entries.len()
+        // Current plus past; bounded by however many views an app ever pushed,
+        // nowhere near `usize::MAX`.
+        self.past.len().saturating_add(1)
     }
 
     pub fn reset(&mut self, root: T) {
-        self.entries.clear();
-        self.entries.push(root);
+        self.past.clear();
+        self.current = root;
+        self.future.clear();
+    }
+
+    /// Entries older than the current view, oldest first.
+    pub fn past(&self) -> &[T] {
+        &self.past
+    }
+
+    /// Entries reachable with Forward, nearest entry last.
+    pub fn future(&self) -> &[T] {
+        &self.future
     }
 }
 
@@ -234,6 +259,27 @@ mod tests {
         s.push(2);
         assert_eq!(s.apply(NavAction::Back), Some(&1));
         assert_eq!(s.apply(NavAction::Back), None);
+    }
+
+    #[test]
+    fn back_then_forward_restores_the_newer_entry() {
+        let mut s = NavStack::new("home");
+        s.push("settings");
+        assert_eq!(s.back(), Some(&"home"));
+        assert!(s.can_go_forward());
+        assert_eq!(s.apply(NavAction::Forward), Some(&"settings"));
+        assert!(!s.can_go_forward());
+    }
+
+    #[test]
+    fn push_after_back_discards_forward_history() {
+        let mut s = NavStack::new("home");
+        s.push("settings");
+        s.push("about");
+        assert_eq!(s.back(), Some(&"settings"));
+        s.push("search");
+        assert_eq!(s.future(), &[] as &[&str]);
+        assert_eq!(s.forward(), None);
     }
 
     #[test]

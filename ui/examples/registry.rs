@@ -66,12 +66,11 @@ macro_rules! scenario_modules {
         #[cfg(test)]
         mod scenario_registry_tests {
             #[test]
-            fn registry_is_unique_and_complete() {
+            fn registry_is_unique_and_complete() -> Result<(), String> {
                 $crate::registry::validate(
                     $crate::registry::Surface::$surface,
                     super::SCENARIOS,
                 )
-                .unwrap();
             }
         }
     };
@@ -92,6 +91,7 @@ const LAB_SOURCES: &[&str] = &[
 const SHOT_SOURCES: &[&str] = &[
     "ctrl_k_palette.rs",
     "data_table.rs",
+    "denied_state_shots.rs",
     "fractional_scale_shots.rs",
     "floating_surface_shots.rs",
     "gallery_shots.rs",
@@ -105,6 +105,7 @@ const SHOT_SOURCES: &[&str] = &[
     "table_shots.rs",
     "text_shots.rs",
     "textinput_ext_shots.rs",
+    "undo_controls_shots.rs",
     "widget_showcase_snapshot.rs",
     "widget_snapshot.rs",
 ];
@@ -144,16 +145,13 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
         if scenario.name.is_empty() || scenario.summary.is_empty() {
             return Err(format!("registry entry {index} has empty metadata"));
         }
-        if scenarios[..index]
-            .iter()
-            .any(|other| other.name == scenario.name)
-        {
+        // `index` comes from `enumerate()` over this same slice, so it is
+        // always in bounds.
+        let seen = scenarios.get(..index).unwrap_or_default();
+        if seen.iter().any(|other| other.name == scenario.name) {
             return Err(format!("duplicate scenario name {:?}", scenario.name));
         }
-        if scenarios[..index]
-            .iter()
-            .any(|other| other.source == scenario.source)
-        {
+        if seen.iter().any(|other| other.source == scenario.source) {
             return Err(format!("duplicate scenario source {:?}", scenario.source));
         }
         if !expected.contains(&scenario.source) {
@@ -170,6 +168,16 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
         }
     }
     Ok(())
+}
+
+/// Report a scenario setup/rendering failure to its command-line caller.
+#[allow(
+    clippy::exit,
+    reason = "scenario runners are CLI binaries and must return a failing status when rendering fails"
+)]
+pub fn fatal(message: impl std::fmt::Display) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
 }
 
 #[allow(
@@ -262,10 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn every_implementation_file_is_catalogued() {
+    fn every_implementation_file_is_catalogued() -> std::io::Result<()> {
         let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-        let actual: BTreeSet<String> = std::fs::read_dir(examples)
-            .unwrap()
+        let actual: BTreeSet<String> = std::fs::read_dir(examples)?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
@@ -280,5 +287,6 @@ mod tests {
             .map(|source| (*source).to_owned())
             .collect();
         assert_eq!(actual, catalogued);
+        Ok(())
     }
 }

@@ -303,8 +303,8 @@ impl ThemeSpec {
     /// free instead of inheriting the default's.
     pub fn to_theme(&self) -> Theme {
         if let Some(mut t) = builtin_theme(&self.id) {
-            t.name = self.name.clone();
-            t.tokens.typography.sans_family = self.font.clone();
+            t.name.clone_from(&self.name);
+            t.tokens.typography.sans_family.clone_from(&self.font);
             return t;
         }
 
@@ -316,7 +316,7 @@ impl ThemeSpec {
         // shared document panic the previewer.
         Theme::from_custom_spec(&self.to_custom_spec()).unwrap_or_else(|| {
             let mut fallback = Theme::dark();
-            fallback.name = self.name.clone();
+            fallback.name.clone_from(&self.name);
             fallback
         })
     }

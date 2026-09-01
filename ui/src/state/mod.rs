@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 pub mod collab;
 pub use collab::{CollaborationState, RemoteCursor};
+pub mod revision;
+pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
 /// One reversible action on the undo/redo stacks.
 ///
@@ -32,6 +34,11 @@ pub struct UndoLog {
     redo_stack: Vec<UndoEntry>,
     /// Heads as of the last commit boundary — the `before` for the next action.
     last_heads: Vec<ChangeHash>,
+    /// Bumped every time a stack changes. Lets a host tell "the history moved"
+    /// from "same as last frame" without reading the document — which matters
+    /// because describing an entry reads `AutoCommit::diff`, and that closes
+    /// the open transaction. See [`Self::revision`].
+    revision: u64,
 }
 
 impl UndoLog {
@@ -43,7 +50,25 @@ impl UndoLog {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_heads: doc.get_heads(),
+            revision: 0,
         }
+    }
+
+    /// A counter that changes whenever the undo or redo stack does, and never
+    /// otherwise.
+    ///
+    /// The cheap "has anything to undo changed?" test. A caller that renders
+    /// the history — an Undo button's enabled state, a description of the next
+    /// undo — recomputes only when this moves, instead of interrogating the
+    /// document every frame.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Record that a stack changed. Called from every mutation below; if a new
+    /// one forgets, a control renders stale.
+    fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Re-baseline against the document's current heads, without touching
@@ -59,6 +84,65 @@ impl UndoLog {
         self.undo_stack.last()
     }
 
+    /// Index of the entry [`undo_as`](Self::undo_as) would pop for `author`.
+    ///
+    /// The *one* place the author-scoping rule lives. Both the query half
+    /// ([`next_undo_as`](Self::next_undo_as), which decides whether an Undo
+    /// control paints enabled) and the acting half
+    /// ([`undo_for_author`](Self::undo_for_author)) read it, so a control can
+    /// never offer an undo the shortcut would decline.
+    fn undo_index_for(&self, author: Option<&UserId>) -> Option<usize> {
+        match author {
+            Some(a) => self
+                .undo_stack
+                .iter()
+                .rposition(|e| Self::claimable_by(e, a)),
+            None => self.undo_stack.len().checked_sub(1),
+        }
+    }
+
+    /// Index of the entry [`redo_as`](Self::redo_as) would pop for `author`.
+    /// The redo mirror of [`undo_index_for`](Self::undo_index_for).
+    fn redo_index_for(&self, author: Option<&UserId>) -> Option<usize> {
+        match author {
+            Some(a) => self
+                .redo_stack
+                .iter()
+                .rposition(|e| Self::claimable_by(e, a)),
+            None => self.redo_stack.len().checked_sub(1),
+        }
+    }
+
+    /// The entry a Ctrl+Z by `author` would revert, without reverting it.
+    ///
+    /// Author-scoped for the same reason [`undo_as`](Self::undo_as) is: with an
+    /// identity, undo skips past other people's actions, so a plain
+    /// "is the stack non-empty?" would light up an Undo button in a session
+    /// where every entry belongs to a collaborator and Ctrl+Z would do nothing.
+    pub fn next_undo_as(&self, author: Option<&UserId>) -> Option<&UndoEntry> {
+        self.undo_index_for(author)
+            .and_then(|i| self.undo_stack.get(i))
+    }
+
+    /// The entry a Ctrl+Shift+Z by `author` would re-apply. See
+    /// [`next_undo_as`](Self::next_undo_as).
+    pub fn next_redo_as(&self, author: Option<&UserId>) -> Option<&UndoEntry> {
+        self.redo_index_for(author)
+            .and_then(|i| self.redo_stack.get(i))
+    }
+
+    /// Whether `author` has anything to undo — true exactly when
+    /// [`undo_as`](Self::undo_as) would return `Some`.
+    pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
+        self.undo_index_for(author).is_some()
+    }
+
+    /// Whether `author` has anything to redo — true exactly when
+    /// [`redo_as`](Self::redo_as) would return `Some`.
+    pub fn can_redo_as(&self, author: Option<&UserId>) -> bool {
+        self.redo_index_for(author).is_some()
+    }
+
     /// Commit `doc`'s open transaction and push an entry bracketing it.
     /// Returns `true` iff this actually committed a change (there were pending
     /// ops). `false` means the transaction was empty — the caller can then skip
@@ -72,12 +156,26 @@ impl UndoLog {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
+        self.commit_action_authored_with_message(doc, focused_node_idx, metadata, author, None)
+    }
+
+    /// As [`Self::commit_action_authored`], stamping semantic provenance onto
+    /// native CRDT edits that deliberately do not travel through an action
+    /// envelope (for example, co-edited flowing text).
+    pub fn commit_action_authored_with_message(
+        &mut self,
+        doc: &mut AutoCommit,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        message: Option<String>,
+    ) -> bool {
         let before = self.last_heads.clone();
         // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
         // automerge's advisory timestamp at zero, which is why a history pane
         // built over a document committed that way can show authorship but not
         // *when* — and why a date-range filter over it matches nothing.
-        if qdoc::history::commit_stamped(doc).is_some() {
+        if qdoc::history::commit_stamped_with_message(doc, message).is_some() {
             let after = doc.get_heads();
             self.undo_stack.push(UndoEntry {
                 before,
@@ -88,6 +186,7 @@ impl UndoLog {
             });
             self.redo_stack.clear();
             self.last_heads = doc.get_heads();
+            self.bump();
             true
         } else {
             // Nothing to undo, but the baseline still moves up: `last_heads` is
@@ -103,6 +202,12 @@ impl UndoLog {
     /// Record an action already committed into `doc` out-of-band, bracketed
     /// by the caller-supplied `before` heads. See
     /// [`State::record_committed_action`].
+    ///
+    /// The entry lands unattributed, which an author-scoped Ctrl+Z *claims*
+    /// rather than skips — see [`claimable_by`](Self::claimable_by). A caller
+    /// that knows the change came from someone else must name them through
+    /// [`record_committed_action_authored`](Self::record_committed_action_authored),
+    /// or the local user's undo will reach an edit that was never theirs.
     pub fn record_committed_action(
         &mut self,
         doc: &mut AutoCommit,
@@ -144,6 +249,7 @@ impl UndoLog {
         });
         self.redo_stack.clear();
         self.last_heads = after;
+        self.bump();
     }
 
     /// Apply the inverse of `[entry.before, entry.after]` as a NEW forward
@@ -171,6 +277,7 @@ impl UndoLog {
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
         let entry = self.undo_stack.pop()?;
+        self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.redo_stack.push(UndoEntry {
             before: inv_before,
@@ -207,11 +314,9 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let idx = self
-            .undo_stack
-            .iter()
-            .rposition(|e| Self::claimable_by(e, author))?;
+        let idx = self.undo_index_for(Some(author))?;
         let entry = self.undo_stack.remove(idx);
+        self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.redo_stack.push(UndoEntry {
             before: inv_before,
@@ -243,6 +348,7 @@ impl UndoLog {
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
         let entry = self.redo_stack.pop()?;
+        self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.undo_stack.push(UndoEntry {
             before: inv_before,
@@ -264,11 +370,9 @@ impl UndoLog {
         let Some(a) = author else {
             return self.redo(doc, current_focused_idx, current_metadata);
         };
-        let idx = self
-            .redo_stack
-            .iter()
-            .rposition(|e| Self::claimable_by(e, a))?;
+        let idx = self.redo_index_for(Some(a))?;
         let entry = self.redo_stack.remove(idx);
+        self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.undo_stack.push(UndoEntry {
             before: inv_before,
@@ -316,6 +420,7 @@ impl UndoLog {
             author,
         });
         self.redo_stack.clear();
+        self.bump();
         true
     }
 }
@@ -359,14 +464,49 @@ impl State {
     /// `collab` (remote cursors and presence) is kept: presence is about who
     /// else is here, which does not change because the document on screen did.
     pub fn adopt_doc(&mut self, doc: AutoCommit) {
+        let next = self.undo.revision().wrapping_add(1);
         self.doc = doc;
         self.root = automerge::ROOT;
         self.undo = UndoLog::new(&mut self.doc);
+        self.undo.revision = next;
     }
 
     /// This document's history, for a caller that drives undo itself.
     pub fn history_mut(&mut self) -> &mut UndoLog {
         &mut self.undo
+    }
+
+    /// A counter that changes whenever this document's history does. See
+    /// [`UndoLog::revision`].
+    pub fn history_revision(&self) -> u64 {
+        self.undo.revision()
+    }
+
+    /// Reconstruct the document's persistent causal history, including
+    /// branches and merges. No app-defined history schema is required.
+    pub fn revision_history(&mut self) -> RevisionHistory {
+        RevisionHistory::from_document(&mut self.doc)
+    }
+
+    /// Restore the content at one persistent revision as a new forward,
+    /// undoable change. The old branch remains in [`Self::revision_history`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownRevision`] when `revision` belongs to another
+    /// document or is otherwise absent from this document's change graph.
+    pub fn restore_revision(
+        &mut self,
+        revision: RevisionId,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) -> Result<bool, UnknownRevision> {
+        let hash = revision.as_hash();
+        if self.doc.get_change_by_hash(&hash).is_none() {
+            return Err(UnknownRevision(revision));
+        }
+        Ok(self.restore_to_heads(&[hash], focused_node_idx, metadata, author))
     }
 
     /// Commit the current transaction and push a change-based undo entry
@@ -388,9 +528,63 @@ impl State {
             .commit_action_authored(&mut self.doc, focused_node_idx, metadata, author)
     }
 
+    pub fn commit_action_authored_with_context(
+        &mut self,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        context: Option<qos_actions::ActionContext>,
+    ) -> bool {
+        self.undo.commit_action_authored_with_message(
+            &mut self.doc,
+            focused_node_idx,
+            metadata,
+            author,
+            context.and_then(|context| context.change_message()),
+        )
+    }
+
     /// Inspect the most recently pushed undo entry without popping it.
     pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
         self.undo.peek_last_undo()
+    }
+
+    /// Whether `author` has anything to undo / redo. See
+    /// [`UndoLog::can_undo_as`].
+    pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
+        self.undo.can_undo_as(author)
+    }
+
+    pub fn can_redo_as(&self, author: Option<&UserId>) -> bool {
+        self.undo.can_redo_as(author)
+    }
+
+    /// What the history can do for `author` right now, ready to hand to a
+    /// widget — see [`UndoStatus`](crate::undo::UndoStatus).
+    ///
+    /// The summaries are derived from the bracketed changes themselves through
+    /// [`history_source::change_summary`](crate::history_source::change_summary),
+    /// the same producer the history pane uses, so a control and the timeline
+    /// describe an action the same way. Both read "the action, as performed":
+    /// an undo entry brackets `before → after`, while a redo entry holds the
+    /// *inverse* change, so its summary reads `after → before`.
+    pub fn undo_status(&mut self, author: Option<&UserId>) -> crate::undo::UndoStatus {
+        let undo_span = self
+            .undo
+            .next_undo_as(author)
+            .map(|e| (e.before.clone(), e.after.clone()));
+        let redo_span = self
+            .undo
+            .next_redo_as(author)
+            .map(|e| (e.after.clone(), e.before.clone()));
+        crate::undo::UndoStatus {
+            can_undo: undo_span.is_some(),
+            can_redo: redo_span.is_some(),
+            undo_summary: undo_span
+                .map(|(from, to)| crate::history_source::change_summary(&mut self.doc, &from, &to)),
+            redo_summary: redo_span
+                .map(|(from, to)| crate::history_source::change_summary(&mut self.doc, &from, &to)),
+        }
     }
 
     /// Record an action that has *already* been committed into `doc`
@@ -573,7 +767,7 @@ impl State {
     /// `AutoCommit::save_incremental` on another peer) into this document.
     /// Returns the number of ops applied on success.
     ///
-    /// This is how `CollabEvent::CRDTIncremental` is actually merged on the
+    /// This is how an incremental `CollabEvent::Document` is merged on the
     /// receiver side — without it, incremental deltas broadcast by one peer
     /// would never reach another peer's CRDT.
     ///
@@ -921,6 +1115,32 @@ mod tests {
         assert_eq!(val(&state), "b", "redo restores the action");
     }
 
+    #[test]
+    fn native_commit_context_is_stamped_without_changing_undo() {
+        let mut state = State::new();
+        state.doc.put(&ROOT, "body", "hello").unwrap();
+        let context = qos_actions::ActionContext::for_resource(
+            "Edit document",
+            "document:1",
+            "document",
+            "Draft",
+        )
+        .with_app("org.qos.Writer", "Writer");
+        assert!(state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(UserId("ada".into())),
+            Some(context.clone()),
+        ));
+        let changes = state.doc.get_changes(&[]);
+        let change = changes.last().expect("native change");
+        let decoded = change
+            .message()
+            .and_then(|message| qos_actions::ActionContext::from_change_message(message));
+        assert_eq!(decoded.as_ref(), Some(&context));
+        assert!(state.peek_last_undo().is_some());
+    }
+
     /// Multiple actions undo in LIFO order, each reverting only its own change.
     #[test]
     fn multi_action_undo_order_is_lifo() {
@@ -1085,6 +1305,210 @@ mod tests {
             text_body(&state, &text),
             "XHello World",
             "deleted text restored at shifted position; remote survives"
+        );
+    }
+
+    // ================================================================
+    // What a widget is told about the history
+    // ================================================================
+
+    fn alice() -> crate::permissions::UserId {
+        crate::permissions::UserId("alice".into())
+    }
+
+    fn bob() -> crate::permissions::UserId {
+        crate::permissions::UserId("bob".into())
+    }
+
+    /// Type `text` into a fresh text field and commit it as one action by
+    /// `author` — a real edit through the real commit path, so the summary
+    /// under test describes a change that actually happened.
+    fn type_action(state: &mut State, key: &str, text: &str, author: &crate::permissions::UserId) {
+        let obj = state
+            .doc
+            .put_object(&automerge::ROOT, key, automerge::ObjType::Text)
+            .unwrap();
+        state.doc.splice_text(&obj, 0, 0, text).unwrap();
+        assert!(
+            state.commit_action_authored(None, None, Some(author.clone())),
+            "the edit must actually have committed"
+        );
+    }
+
+    /// The availability a control renders from must be the availability the
+    /// act has. Asserted by *doing* the undo and checking the query predicted
+    /// it — not by reading the stack length, which is what would let the two
+    /// drift.
+    #[test]
+    fn can_undo_predicts_exactly_what_undo_as_does() {
+        let mut state = State::new();
+        let a = alice();
+
+        assert!(
+            !state.can_undo_as(Some(&a)),
+            "a fresh document has no history"
+        );
+        assert!(!state.can_redo_as(Some(&a)));
+        assert!(
+            state.undo_as(Some(&a), None, None).is_none(),
+            "and undo agrees"
+        );
+
+        type_action(&mut state, "body", "hello", &a);
+        assert!(state.can_undo_as(Some(&a)));
+        assert!(!state.can_redo_as(Some(&a)));
+
+        assert!(
+            state.undo_as(Some(&a), None, None).is_some(),
+            "can_undo promised an undo; it has to be there"
+        );
+        assert!(!state.can_undo_as(Some(&a)), "the stack is empty again");
+        assert!(state.can_redo_as(Some(&a)), "and the action is redoable");
+
+        assert!(state.redo_as(Some(&a), None, None).is_some());
+        assert!(state.can_undo_as(Some(&a)));
+        assert!(!state.can_redo_as(Some(&a)));
+    }
+
+    /// A session where every entry belongs to a collaborator must report
+    /// nothing to undo. Without author scoping the control would light up and
+    /// then do nothing — or, worse, revert someone else's work.
+    #[test]
+    fn can_undo_is_author_scoped_like_the_shortcut() {
+        let mut state = State::new();
+        type_action(&mut state, "body", "hello", &alice());
+
+        assert!(state.can_undo_as(Some(&alice())));
+        assert!(
+            !state.can_undo_as(Some(&bob())),
+            "Bob has performed no action here"
+        );
+        assert!(
+            state.undo_as(Some(&bob()), None, None).is_none(),
+            "and undo declines for Bob — the query must match"
+        );
+        // With no identity at all the history is plain LIFO, and the query
+        // follows that too.
+        assert!(state.can_undo_as(None));
+    }
+
+    /// The status a widget receives describes the change that is really on the
+    /// stack, through the same producer the history pane uses.
+    #[test]
+    fn undo_status_describes_the_action_on_the_stack() {
+        let mut state = State::new();
+        let a = alice();
+
+        let empty = state.undo_status(Some(&a));
+        assert_eq!(empty, crate::undo::UndoStatus::empty());
+
+        type_action(&mut state, "body", "hello", &a);
+        let s = state.undo_status(Some(&a));
+        assert!(s.can_undo && !s.can_redo);
+        assert_eq!(
+            s.undo_summary.as_deref(),
+            Some("+5 -0 chars"),
+            "the summary counts the characters the action actually inserted"
+        );
+        assert_eq!(s.redo_summary, None, "nothing has been undone yet");
+    }
+
+    /// Redo's summary must read as the action being put *back*, not as the
+    /// reversal that is physically on the redo stack — otherwise "Redo" is
+    /// described to the user as deleting their text.
+    #[test]
+    fn redo_summary_describes_the_action_restored_not_the_reversal() {
+        let mut state = State::new();
+        let a = alice();
+        type_action(&mut state, "body", "hello", &a);
+        state.undo_as(Some(&a), None, None).unwrap();
+
+        let s = state.undo_status(Some(&a));
+        assert!(!s.can_undo && s.can_redo);
+        assert_eq!(
+            s.redo_summary.as_deref(),
+            Some("+5 -0 chars"),
+            "redo puts five characters back"
+        );
+    }
+
+    /// The status is only ever recomputed when the revision moves, so the
+    /// revision has to move on every stack change — a miss leaves a control
+    /// rendering a history that is no longer there.
+    #[test]
+    fn the_revision_moves_on_every_stack_change() {
+        let mut state = State::new();
+        let a = alice();
+
+        let start = state.history_revision();
+        type_action(&mut state, "body", "hi", &a);
+        let after_commit = state.history_revision();
+        assert_ne!(after_commit, start, "committing an action moves it");
+
+        state.undo_as(Some(&a), None, None).unwrap();
+        let after_undo = state.history_revision();
+        assert_ne!(after_undo, after_commit, "undo moves it");
+
+        state.redo_as(Some(&a), None, None).unwrap();
+        let after_redo = state.history_revision();
+        assert_ne!(after_redo, after_undo, "redo moves it");
+
+        // An event that changes nothing must NOT move it, or the host
+        // re-derives the summaries every frame — and each derivation closes
+        // the open transaction.
+        assert!(!state.commit_action_authored(None, None, Some(a.clone())));
+        assert_eq!(
+            state.history_revision(),
+            after_redo,
+            "an empty commit is not a history change"
+        );
+
+        // The author-less paths are separate methods with their own stack
+        // handling; walk them too, or a missing bump there ships unseen.
+        let mut anon = State::new();
+        anon.doc.put(&automerge::ROOT, "k", 1).unwrap();
+        anon.commit_action(None, None);
+        let anon_committed = anon.history_revision();
+        anon.undo(None, None).unwrap();
+        let anon_undone = anon.history_revision();
+        assert_ne!(anon_undone, anon_committed, "plain undo moves the revision");
+        anon.redo(None, None).unwrap();
+        assert_ne!(
+            anon.history_revision(),
+            anon_undone,
+            "plain redo moves the revision"
+        );
+
+        // Swapping the document resets the stacks; the revision must still
+        // move, so a status cached against the old document is not reused.
+        let mut other = automerge::AutoCommit::new();
+        other.put(&automerge::ROOT, "k", 1).unwrap();
+        state.adopt_doc(other);
+        assert_ne!(
+            state.history_revision(),
+            after_redo,
+            "adopting a document is a history change"
+        );
+        assert!(
+            !state.can_undo_as(Some(&a)),
+            "the new document has no history"
+        );
+    }
+
+    /// A restore from the history scrubber lands on the undo stack, so a
+    /// control must report it as undoable.
+    #[test]
+    fn a_restore_is_visible_to_a_control() {
+        let mut state = State::new();
+        let a = alice();
+        type_action(&mut state, "body", "hello", &a);
+        let version = state.doc.get_heads();
+        type_action(&mut state, "other", "more", &a);
+
+        assert!(state.restore_to_heads(&version, None, None, Some(a.clone())));
+        assert!(
+            state.can_undo_as(Some(&a)),
+            "the restore itself is undoable"
         );
     }
 }

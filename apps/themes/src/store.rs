@@ -86,8 +86,7 @@ pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
     };
 
     let active = crate::model::builtin_theme(&spec.id)
-        .map(|theme| theme.name)
-        .unwrap_or_else(|| format!("custom:{}", spec.id));
+        .map_or_else(|| format!("custom:{}", spec.id), |theme| theme.name);
     appearance.insert("theme".into(), serde_json::json!(active));
     if !spec.builtin {
         appearance.insert(
@@ -166,6 +165,7 @@ pub fn load_active_id() -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::{presets, seed_custom};

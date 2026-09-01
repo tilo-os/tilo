@@ -15,6 +15,7 @@
 //! [`AccessState::multiline`] + [`Role::TextInput`] →
 //! `accesskit::Role::MultilineTextInput`).
 
+use vello::kurbo::Rect;
 use vello::peniko::Color;
 
 use crate::color_compat::ColorCompat;
@@ -22,7 +23,7 @@ use crate::color_compat::ColorCompat;
 /// A thin subset of AccessKit's 182 roles covering the widgets the toolkit
 /// actually ships; unknown/rare cases fall back to [`Role::Generic`].
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Role {
     Window,
     Dialog,
@@ -93,13 +94,12 @@ pub enum Role {
 /// State is **derived, never stored**: a widget computes it from its
 /// existing fields at `accessibility()` time, so it can never drift from
 /// what `draw` paints.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[must_use]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each field mirrors one independent ARIA state attribute; they're set \
-              by name through builder methods below, never positionally, so there's \
-              no risk of two flags being swapped by accident"
+    reason = "this mirrors independent ARIA/AccessKit state flags; combining them into an enum would prevent valid simultaneous states"
 )]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AccessState {
     pub focused: bool,
     pub focusable: bool,
@@ -130,60 +130,48 @@ impl AccessState {
         Self::default()
     }
 
-    #[must_use]
-
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
         self
     }
-    #[must_use]
     pub fn focusable(mut self, v: bool) -> Self {
         self.focusable = v;
         self
     }
-    #[must_use]
     pub fn selected(mut self, v: bool) -> Self {
         self.selected = v;
         self
     }
     /// Sets [`checked`](Self::checked) to `Some(v)`.
-    #[must_use]
     pub fn checked(mut self, v: bool) -> Self {
         self.checked = Some(v);
         self
     }
     /// Sets [`expanded`](Self::expanded) to `Some(v)`.
-    #[must_use]
     pub fn expanded(mut self, v: bool) -> Self {
         self.expanded = Some(v);
         self
     }
-    #[must_use]
     pub fn disabled(mut self, v: bool) -> Self {
         self.disabled = v;
         self
     }
-    #[must_use]
     pub fn read_only(mut self, v: bool) -> Self {
         self.read_only = v;
         self
     }
-    #[must_use]
     pub fn multiline(mut self, v: bool) -> Self {
         self.multiline = v;
         self
     }
-    #[must_use]
     pub fn protected(mut self, v: bool) -> Self {
         self.protected = v;
         self
     }
-    #[must_use]
     pub fn modal(mut self, v: bool) -> Self {
         self.modal = v;
         self
     }
-    #[must_use]
     pub fn busy(mut self, v: bool) -> Self {
         self.busy = v;
         self
@@ -221,7 +209,7 @@ pub enum Action {
 
 /// How urgently a [live region](AccessNode::live) narrates its own update
 /// *without moving focus* — a toast appearing, a status line changing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Politeness {
     /// Wait for a natural pause before speaking.
     Polite,
@@ -234,9 +222,13 @@ pub enum Politeness {
 /// `name`/`description` must already be **FTL-resolved** strings (via
 /// [`i18n!`](crate::i18n)), not translation keys, since AccessKit/AT-SPI
 /// consume final text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct AccessNode {
     pub role: Role,
+    /// Opaque stable identity used to route actions on a synthetic child back
+    /// to the widget that produced it. It has meaning only to that widget.
+    pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
     pub description: Option<String>,
@@ -256,8 +248,38 @@ pub struct AccessNode {
     pub pos_in_set: Option<usize>,
     /// 1-based hierarchy depth, read out as "level N".
     pub level: Option<usize>,
+    /// Stable identity of THIS node within its parent's
+    /// [`children`](Self::children) list, for nodes that are **synthetic** (no
+    /// backing [`Widget`](crate::widget::Widget)).
+    ///
+    /// The export layer derives a synthetic node's assistive-technology id by
+    /// chaining these keys from the owning widget downwards, so an AT that
+    /// holds a reference to "the clip named `intro`" keeps pointing at that
+    /// clip across repaints — and the same key path is what comes back on
+    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// when the AT operates the node.
+    ///
+    /// `None` (the default) means "key me by my ordinal position among my
+    /// siblings". That is the right choice for **position-addressed**
+    /// structures — a table's rows and cells, where "row 3" is the identity the
+    /// user means even after a re-sort. Set an explicit key for
+    /// **identity-addressed** structures — a clip on a timeline, a layer, a
+    /// note — whose position moves but which stay the same object; use
+    /// [`with_hashed_key`](Self::with_hashed_key) to derive one from a string
+    /// id.
+    ///
+    /// Do not mix keyed and unkeyed siblings in one list: an explicit key of
+    /// `3` and an ordinal of `3` are indistinguishable downstream.
+    pub key: Option<u64>,
+    /// Absolute logical-pixel bounds for a synthetic node. Retained widgets
+    /// receive their bounds from [`Widget::get_rect`](crate::widget::Widget::get_rect);
+    /// virtual rows and cells use this field because they have no widget of
+    /// their own. The AccessKit bridge applies the window scale factor.
+    pub bounds: Option<AccessBounds>,
     /// Accessible children with no backing [`Widget`](crate::widget::Widget)
     /// of their own — a table's rows and cells, a virtualized list's items.
+    /// The export layer emits them as this node's subtree, nested as deeply
+    /// as needed (rows containing cells).
     pub children: Vec<AccessNode>,
 }
 
@@ -265,6 +287,7 @@ impl AccessNode {
     pub fn new(role: Role) -> Self {
         Self {
             role,
+            action_target: None,
             name: None,
             description: None,
             value: None,
@@ -274,11 +297,18 @@ impl AccessNode {
             set_size: None,
             pos_in_set: None,
             level: None,
+            key: None,
+            bounds: None,
             children: Vec::new(),
         }
     }
 
-    #[must_use]
+    /// Attach an opaque, widget-local target for actions on this synthetic
+    /// node. Prefer stable model keys over visible indices.
+    pub fn with_action_target(mut self, target: impl Into<String>) -> Self {
+        self.action_target = Some(target.into());
+        self
+    }
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
@@ -286,27 +316,20 @@ impl AccessNode {
     }
 
     /// Handy when an empty label should collapse to `None`.
-    #[must_use]
     pub fn with_optional_name(mut self, name: Option<String>) -> Self {
         self.name = name;
         self
     }
-
-    #[must_use]
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
-    #[must_use]
-
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self
     }
-
-    #[must_use]
 
     pub fn with_optional_value(mut self, value: Option<String>) -> Self {
         self.value = value;
@@ -316,20 +339,15 @@ impl AccessNode {
     /// Publish an editable caret (`anchor == focus`) or selection. Endpoints
     /// are UTF-8 bytes and are clamped to extended grapheme boundaries by the
     /// bridge, matching the toolkit editing contract.
-    #[must_use]
     pub fn with_text_selection(mut self, anchor: usize, focus: usize) -> Self {
         self.text_selection = Some(AccessibleTextSelection { anchor, focus });
         self
     }
 
-    #[must_use]
-
     pub fn with_state(mut self, state: AccessState) -> Self {
         self.state = state;
         self
     }
-
-    #[must_use]
 
     pub fn with_live(mut self, politeness: Politeness) -> Self {
         self.live = Some(politeness);
@@ -337,30 +355,129 @@ impl AccessNode {
     }
 
     /// `pos_in_set` is 1-based within a total of `set_size`. Read out as "N of M".
-    #[must_use]
     pub fn with_position(mut self, pos_in_set: usize, set_size: usize) -> Self {
         self.pos_in_set = Some(pos_in_set);
         self.set_size = Some(set_size);
         self
     }
 
-    #[must_use]
-
     pub fn with_level(mut self, level: usize) -> Self {
         self.level = Some(level);
         self
     }
 
-    #[must_use]
+    /// Set this node's stable [`key`](Self::key) within its sibling list.
+    ///
+    /// Use this for a synthetic node whose *identity* outlives its *position* —
+    /// a clip that can be dragged along a track, a layer that can be
+    /// reordered. The key must be unique among the node's siblings and stable
+    /// for as long as the element it describes exists.
+    pub fn with_key(mut self, key: u64) -> Self {
+        self.key = Some(key);
+        self
+    }
 
+    /// Set this node's stable [`key`](Self::key) by hashing any hashable value
+    /// — the ergonomic form of [`with_key`](Self::with_key) for elements
+    /// identified by a string (`clip.id`), a tuple (`(track, clip)`), or a
+    /// UUID.
+    ///
+    /// ```
+    /// # use ui::a11y::{AccessNode, Role};
+    /// let clip = AccessNode::new(Role::ListItem).with_hashed_key("clip-intro");
+    /// assert_eq!(clip.key, Some(ui::a11y::hash_key(&"clip-intro")));
+    /// ```
+    pub fn with_hashed_key(mut self, key: impl std::hash::Hash) -> Self {
+        self.key = Some(hash_key(&key));
+        self
+    }
+
+    /// Attach absolute logical-pixel geometry to a synthetic semantic node.
+    pub fn with_bounds(mut self, bounds: Rect) -> Self {
+        self.bounds = Some(bounds.into());
+        self
+    }
+
+    /// Attach synthetic [`children`](Self::children) — accessible elements
+    /// with no backing widget (a table's rows/cells).
     pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
         self.children = children;
         self
     }
 }
 
+/// Hash any hashable value into the `u64` key space used by
+/// [`AccessNode::key`].
+///
+/// This is the *inverse-less* half of the key contract: a widget hashes its
+/// element ids on the way out, and compares an incoming key path element back
+/// against `hash_key(&id)` on the way in (see
+/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)).
+/// The hash is a plain FNV-1a with a fixed basis, so it is deterministic within
+/// and across processes — unlike [`std::collections::hash_map::RandomState`],
+/// which would hand an assistive technology a different id every launch.
+pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
+    let mut h = FnvHasher::new();
+    std::hash::Hash::hash(value, &mut h);
+    std::hash::Hasher::finish(&h)
+}
+
+/// FNV-1a, 64-bit. Small, dependency-free and — the part that matters here —
+/// **fixed-seed**, so an id derived from it is reproducible.
+#[derive(Clone, Copy)]
+pub(crate) struct FnvHasher(u64);
+
+impl FnvHasher {
+    pub(crate) const fn new() -> Self {
+        // FNV offset basis.
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            // FNV prime.
+            self.0 = self.0.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+}
+
+/// Serializable absolute logical-pixel geometry for a synthetic
+/// [`AccessNode`]. This mirrors [`Rect`] without requiring widget authors to
+/// depend on its serialization feature.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub struct AccessBounds {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+impl AccessBounds {
+    #[must_use]
+    pub fn to_rect(self) -> Rect {
+        Rect::new(self.x0, self.y0, self.x1, self.y1)
+    }
+}
+
+impl From<Rect> for AccessBounds {
+    fn from(value: Rect) -> Self {
+        Self {
+            x0: value.x0,
+            y0: value.y0,
+            x1: value.x1,
+            y1: value.y1,
+        }
+    }
+}
+
 /// Editable-text selection in the widget's native UTF-8 document space.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AccessibleTextSelection {
     pub anchor: usize,
     pub focus: usize,

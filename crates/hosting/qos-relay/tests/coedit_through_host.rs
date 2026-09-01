@@ -74,7 +74,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
                 return;
             }
             // Ready / presence carry no document bytes — keep draining.
-            Inbound::Ready { .. } | Inbound::Presence { .. } | Inbound::SignedDelta { .. } => {}
+            Inbound::Ready { .. } | Inbound::Presence { .. } => {}
         }
     }
     panic!("no document delta arrived");
@@ -133,7 +133,7 @@ async fn live_coedit_fans_out_through_host() {
     // A produces a real co-edit delta and publishes it via the bridge.
     let mut doc_a = doc_with_text(b"alice", "hello");
     let delta = doc_a.save_incremental();
-    a_session.publish_delta(delta).unwrap();
+    a_session.publish_retained_delta([1; 32], delta).unwrap();
 
     // B converges by applying the fanned-out delta.
     let mut doc_b = AutoCommit::new();
@@ -183,7 +183,7 @@ async fn publish_offline_coedit(
 
     let mut doc_a = doc_with_text(b"alice", "offline-note");
     let delta = doc_a.save_incremental();
-    a_session.publish_delta(delta).unwrap();
+    a_session.publish_retained_delta([2; 32], delta).unwrap();
 
     let mut queued = 0;
     for _ in 0..40 {
@@ -246,7 +246,7 @@ async fn catch_up_first_connection(
                 assert_eq!(pending, 1, "host reports the one queued co-edit");
                 got_ready = true;
             }
-            other => panic!("unexpected inbound {other:?}"),
+            other @ Inbound::Presence { .. } => panic!("unexpected inbound {other:?}"),
         }
     }
     assert!(got_delta, "B must receive the queued co-edit after restart");

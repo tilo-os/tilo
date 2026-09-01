@@ -43,6 +43,7 @@ use std::fmt::Write as _;
 
 use taffy::prelude::*;
 use terminal::TerminalWidget;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -63,48 +64,40 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// Returns an error when the terminal widget fails to spawn (no PTY, no
 /// shell), when building the offscreen render tree for `--shots` fails, or
 /// when the live event loop's own setup fails.
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
-    // Parse a tiny ad-hoc flag set so we don't pull in `clap` for one
-    // boolean-with-string. Anything other than `--shots PATH` is treated
-    // as "open a window the same way it always did".
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        let scenario = parse_scenario_arg(&args);
-        // Optional `--size WxH` overrides the default viewport so a scenario can
-        // be captured at, e.g., a narrow phone-ish width to check the chrome
-        // reflows.
-        let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // The `shell` scenario (and the plain cold-start shot) run a real login
-        // shell so the frame captures a live session. The canned scenarios
-        // (`colors`/`tui`/`scrollback`) drive the grid entirely through `feed`
-        // on a null backend to keep the frame deterministic. `empty` captures
-        // the first-run watermark (a headless widget that never gets output).
-        let mut widget = match scenario.as_deref() {
-            Some("shell" | "shell-select") | None => TerminalWidget::spawn_default()?,
-            Some(_) => TerminalWidget::spawn_headless()?,
-        };
-        render_shot_to_png(&mut widget, viewport, &out, scenario.as_deref())?;
-        return Ok(());
-    }
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new_with_args("dev.qos.terminal", live_root)
+            .live_handler(run_live)
+            .shot_handler(run_shot)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .allowed_options(&["--size"])
+            .scenarios(&[
+                "shell",
+                "shell-select",
+                "colors",
+                "tui",
+                "scrollback",
+                "empty",
+            ]),
+    );
+}
 
-    let widget = TerminalWidget::spawn_default()?;
+fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    TerminalWidget::spawn_default()
+        .map(|widget| Box::new(widget) as Box<dyn Widget>)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
+    let widget = TerminalWidget::spawn_default()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
     // Arm the PTY-reader waker so the event loop idles between output instead of
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            Box::new(widget),
-            "dev.qos.terminal",
-        ));
-    }
-
     let (state, autosave) = ui::persist::open("dev.qos.terminal");
     let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
@@ -115,51 +108,28 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Returns `Some(name)` if `--scenario <name>` (or `--scenario=<name>`)
-/// appears in `args`.
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
-/// Returns `Some((w, h))` if `--size <W>x<H>` (or `--size=<W>x<H>`) appears in
-/// `args` and parses, otherwise `None`.
-fn parse_size_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--size" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--size=") {
-            break rest.to_string();
-        }
-    };
+fn parse_size(raw: &str) -> Option<(u32, u32)> {
     let (w, h) = raw.split_once(['x', 'X'])?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
-/// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
-/// in `args`, otherwise `None`.
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
+fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let scenario = args.scenario.as_deref();
+    let mut widget = match scenario {
+        Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
+        Some(_) => TerminalWidget::spawn_headless(),
     }
-    None
+    .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let viewport = args
+        .viewport
+        .or_else(|| args.value("--size").and_then(parse_size))
+        .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
+    render_shot_to_png(&mut widget, viewport, out, scenario)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the

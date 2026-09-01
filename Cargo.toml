@@ -7,6 +7,7 @@ exclude = [
     "crates/doc/qdoc-codec-markdown-wasm",
     "vendor/vello",
     "vendor/vello_encoding",
+    "vendor/genawaiter-proc-macro",
     "vendor/winit",
 ]
 # `runtime-dylib` is a workspace member (so it shares the lockfile,
@@ -28,6 +29,11 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/dev/headless-schema",
+    "crates/dev/qos-dev",
+    "crates/dev/qos-dev-template-smoke",
+    "crates/dev/ui-builder",
+    "crates/dev/ui-graph",
     "crates/system/qos-rollback",
     "crates/system/qos-cli",
     "crates/system/tinker",
@@ -231,6 +237,14 @@ trailing_empty_array = "deny"
 # with unwrap, since that is denied too.
 as_conversions = "allow"
 
+# `duration_suboptimal_units` wants `Duration::from_days(3)` where the code
+# says `from_secs(259_200)`. It would read better — but `from_days`,
+# `from_hours`, `from_mins` and `from_weeks` are all still behind the unstable
+# `duration_constructors` feature, and the toolchain is pinned to stable. The
+# lint's own suggestion does not compile here, so denying it only produces
+# violations nobody can discharge.
+duration_suboptimal_units = "allow"
+
 # `must_use_candidate` wants `#[must_use]` on every public value-returning
 # function: 6,746 attributes here. The bug it aims at — calling something and
 # discarding a result that mattered — is better caught by `#[must_use]` on the
@@ -320,6 +334,7 @@ sha2 = "0.10"
 hmac = "0.12"
 blake3 = "1.8.5"
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 zeroize = "1"
 bip39 = "2"
 
@@ -385,6 +400,7 @@ semver = "1"
 once_cell = "1.21.4"
 parking_lot = "0.12.5"
 fluent = "0.17.0"
+fluent-syntax = "0.12.0"
 unic-langid = "0.9.6"
 
 # ---------------------------------------------------------------------------
@@ -521,6 +537,7 @@ debug-assertions = true
 # begin/update/end into the same `PinchGesture` event shape the Apple
 # backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
 [patch.crates-io]
+genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 winit = { path = "vendor/winit" }
 # vello reserves its scratch buffers for a 30,000-path stress scene, per
 # renderer and so per process -- about 165 MB a desktop never touches. Its

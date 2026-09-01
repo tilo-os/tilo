@@ -119,12 +119,12 @@ impl CapabilityKind {
             (CapabilityKind::FilesystemReadWrite, Capability::Filesystem { mode, .. }) => {
                 matches!(mode, FsMode::ReadWrite)
             }
-            (CapabilityKind::Camera, Capability::Camera { .. }) => true,
-            (CapabilityKind::Microphone, Capability::Microphone { .. }) => true,
-            (CapabilityKind::Screencast, Capability::Screencast { .. }) => true,
-            (CapabilityKind::RemoteDesktop, Capability::RemoteDesktop { .. }) => true,
-            (CapabilityKind::Print, Capability::Print { .. }) => true,
-            (CapabilityKind::Network, Capability::Network { .. }) => true,
+            (CapabilityKind::Camera, Capability::Camera { .. })
+            | (CapabilityKind::Microphone, Capability::Microphone { .. })
+            | (CapabilityKind::Screencast, Capability::Screencast { .. })
+            | (CapabilityKind::RemoteDesktop, Capability::RemoteDesktop { .. })
+            | (CapabilityKind::Print, Capability::Print { .. })
+            | (CapabilityKind::Network, Capability::Network { .. }) => true,
             _ => false,
         }
     }
@@ -151,8 +151,10 @@ impl GrantStoreHandle {
     /// Build a single-workspace store for unit tests / examples.
     pub fn test_with_workspace(ws: Workspace) -> (Self, WorkspaceId) {
         let ws_id = ws.id;
-        let mut tree = WorkspaceTree::default();
-        tree.active = ws_id;
+        let mut tree = WorkspaceTree {
+            active: ws_id,
+            ..Default::default()
+        };
         tree.workspaces.push(ws);
         (Self::new(tree.shared()), ws_id)
     }
@@ -161,23 +163,34 @@ impl GrantStoreHandle {
     /// of `kind` for `caller`. `None` means "no grant" → the portal will enqueue a prompt.
     ///
     /// Acquires a read lock; returns `None` if the workspace doesn't exist (drained workspace, racy portal request) — defaults safely to deny.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure inside `.collect()` needs \
+                  through the inner block's final statement — already dropped at the earliest \
+                  possible point"
+    )]
     pub fn lookup(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<GrantScope> {
-        let tree = self.tree.read();
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == caller.workspace_id)?;
+        // Collect the matching expiries while the lock is held, then fold
+        // them outside it — nothing past this point touches the tree.
+        let matching_expiries: Vec<GrantScope> = {
+            let tree = self.tree.read();
+            let ws = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == caller.workspace_id)?;
+            ws.app_capabilities(&caller.app_id)
+                .into_iter()
+                .filter_map(|cap| {
+                    let desc = Capability::from_capability(cap)?;
+                    kind.matches(&desc).then_some(cap.expiry)
+                })
+                .collect()
+        };
         let mut best: Option<GrantScope> = None;
-        for cap in ws.app_capabilities(&caller.app_id) {
-            let Some(desc) = Capability::from_capability(cap) else {
-                continue;
-            };
-            if !kind.matches(&desc) {
-                continue;
-            }
+        for expiry in matching_expiries {
             best = Some(match best {
-                Some(prev) => stronger_scope(prev, cap.expiry),
-                None => cap.expiry,
+                Some(prev) => stronger_scope(prev, expiry),
+                None => expiry,
             });
         }
         best
@@ -190,6 +203,11 @@ impl GrantStoreHandle {
     /// about a concrete resource, so a filesystem grant on a directory
     /// authorises a file inside it and a network grant on one host doesn't
     /// authorise another. Fail-closed on every unknown: a missing workspace, an unknown app, an expired capability all deny.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which `ws.allows` needs through the final \
+                  call — already dropped at the earliest possible point, the function's end"
+    )]
     pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
@@ -204,7 +222,7 @@ impl GrantStoreHandle {
     ///
     /// Acquires the write lock briefly, mutates both the cache map and the
     /// automerge doc; peer-sync picks up the change on the next `export_changes` tick.
-    pub fn insert(&self, caller: &PortalCaller, capability: Capability) -> bool {
+    pub fn insert(&self, caller: &PortalCaller, capability: &Capability) -> bool {
         let mut tree = self.tree.write();
         let Some(ws) = tree
             .workspaces
@@ -213,7 +231,7 @@ impl GrantStoreHandle {
         else {
             return false;
         };
-        let ids = ws.grant_app(&caller.app_id, &capability);
+        let ids = ws.grant_app(&caller.app_id, capability);
         // Mirror into the automerge doc so peer-sync ships it and a restart reloads it; tolerant of the doc not being seeded yet.
         let written: Vec<CapOverride> = ws
             .capabilities
@@ -233,6 +251,11 @@ impl GrantStoreHandle {
     /// the same file doesn't append a duplicate `Capability::Filesystem`.
     ///
     /// Acquires a read lock; returns `false` if the workspace or app has no grants (default-deny, so the caller records the grant).
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which `ws.allows` needs through the final \
+                  call — already dropped at the earliest possible point, the function's end"
+    )]
     pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
@@ -503,7 +526,7 @@ pub mod flow {
                     && !matches!(scope, GRANT_ONCE)
                 {
                     let cap = super::with_scope(cap_template, scope);
-                    ctx.grants.insert(&caller, cap);
+                    ctx.grants.insert(&caller, &cap);
                 }
                 outcome
             }
@@ -547,6 +570,13 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 /// dropping the returned [`ServerHandle`] releases the bus name and
 /// drops the connection. **Tests** pass an in-process p2p connection;
 /// **production** passes `zbus::Connection::session()`.
+///
+/// # Errors
+///
+/// Returns `Err` when registering any of the five interface objects on
+/// [`OBJECT_PATH`] fails. Failing to *own* [`BUS_NAME`] is not an error
+/// here — it is recorded on the returned [`ServerHandle::owns_name`],
+/// since a p2p test connection has no broker to request a name from.
 pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
@@ -686,7 +716,7 @@ mod tests {
         let caller = PortalCaller::new(ws_id, "app.org");
         assert!(store.insert(
             &caller,
-            Capability::Microphone {
+            &Capability::Microphone {
                 scope: GRANT_ALWAYS
             }
         ));
@@ -700,6 +730,11 @@ mod tests {
     /// immediately visible to the shell chrome (the WS-Settings "Permissions"
     /// tab reads from `ChromeState`'s shared `WorkspaceTreeHandle`), not sitting in an independent clone.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "st's only use is producing tree via tree(), read from through the inner \
+                  block's last statement; nothing to drop earlier"
+    )]
     fn grant_inserted_via_portal_is_visible_in_ws_settings() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTreeHandleExt;
@@ -721,16 +756,19 @@ mod tests {
             scope: GRANT_SESSION,
         };
         assert!(
-            portal.insert(&caller, cap),
+            portal.insert(&caller, &cap),
             "portal insert must succeed on a workspace that exists",
         );
 
         // The production code path the Permissions tab uses, see `shell::workspace_settings::permissions_pane_rows`.
-        let st = chrome.borrow();
-        let tree = st.tree();
-        let ws = tree.active_workspace().expect("active workspace exists");
+        let has_camera_app_grant = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let ws = tree.active_workspace().expect("active workspace exists");
+            ws.app_grants_snapshot().contains_key("camera-app")
+        };
         assert!(
-            ws.app_grants_snapshot().contains_key("camera-app"),
+            has_camera_app_grant,
             "portal-side grant insert must be visible to the shell chrome \
              (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
         );

@@ -228,7 +228,7 @@ from before this existed and has been removed.
 
 How it works:
 
-- `installer-disk.toml` bakes the kernel arg **`qos.installer=1`**. That single
+- `Containerfile.installer` bakes the kernel arg **`qos.installer=1`**. That single
   flag drives everything: `qos-session-select` launches the installer (not the
   greeter), the `qos-install` backend refuses to run without it, and
   `qos-installer-setup.service` (which drops in the passwordless sudoers rule)
@@ -250,6 +250,9 @@ How it works:
 ./os/dev/build-custom-installer.sh
 #    …or test the OS plumbing without the real UI:
 ./os/dev/build-custom-installer.sh --stub-ui
+#    A local diagnostic image may explicitly add SSH + a wheel account:
+QOS_INSTALLER_DEV_PASSWORD='use-a-unique-local-secret' \
+  ./os/dev/build-custom-installer.sh --dev-login
 
 # 3. Boot the installer with a blank target disk attached as /dev/vdb.
 ./os/dev/vm.sh boot-installer --gl     # GL so the installer UI can render
@@ -261,9 +264,13 @@ How it works:
 ./os/dev/vm.sh boot-target --gl        # boots $QOS_RUN/target.qcow2
 ```
 
-The installed system's update origin defaults to `ghcr.io/nirios/qos:latest`;
-override with `QOS_TARGET_IMGREF=…` (preserved across the backend's sudo
-re-exec via the live-medium sudoers `env_keep`).
+Release installer media contain no login account and mask `sshd`; joining a
+network must not expose a repository-known maintenance credential. The
+explicit `--dev-login` build is for isolated local diagnostics only.
+
+The installed system's update origin defaults to
+`code.sandbox.example/qos/qos:latest`. `QOS_TARGET_IMGREF` may select a tag or digest
+in that same signature-required repository; the backend rejects other origins.
 
 ## Configuration (env vars)
 
@@ -271,4 +278,5 @@ re-exec via the live-medium sudoers `env_keep`).
 `QOS_RENDERNODE` `QOS_USER` `QOS_PASS` `QOS_MEM` `QOS_SMP` — see `_common.sh`.
 Custom installer: `QOS_INSTALLER_IMAGE` `QOS_INSTALLER_OUTPUT`
 `QOS_INSTALLER_DISK` `QOS_TARGET_DISK` `QOS_TARGET_SIZE` `QOS_TARGET_IMGREF`.
+`QOS_INSTALLER_DEV_PASSWORD` is required only with `--dev-login`.
 Disk image: `QOS_DISK_REG_PORT` (registry port), `QOS_RETAINED_GENERATIONS`.

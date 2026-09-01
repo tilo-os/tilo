@@ -8,7 +8,7 @@
 //   * `--shots <PATH> [--step <name>]` — render one screen into a PNG at
 //     `<PATH>` and exit. No window, no event loop. Headless snapshot for
 //     CI / visual inspection (output identical to the live binary's first
-//     frame). `<name>` ∈ {disk, account, keyboard, options, options-open,
+//     frame). `<name>` ∈ {network, disk, account, keyboard, options, options-open,
 //     review, install, finish, failed} (with `user`/`confirm` accepted as
 //     legacy aliases); `options-open` renders the Options step with the
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
@@ -92,6 +92,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// seed sample credentials (so input fields show representative text).
 /// Returns `None` for an unrecognised name.
 fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
+    if name == "disk-alongside" {
+        let mut app = InstallerApp::for_shot(Step::Disk);
+        app.shot_alongside();
+        return Some((Box::new(app), false));
+    }
+    if name == "review-alongside" {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        app.shot_alongside_review();
+        return Some((Box::new(app), true));
+    }
     // `options-open` renders the Options step with the time-zone dropdown
     // popped open, capturing the overlay popup state.
     if name == "options-open" {
@@ -109,6 +119,7 @@ fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
     }
 
     let (step, terminal): (Step, Option<bool>) = match name {
+        "network" => (Step::Network, None),
         "disk" => (Step::Disk, None),
         "account" | "user" => (Step::Account, None),
         "keyboard-default" => (Step::Keyboard, None),
@@ -192,10 +203,6 @@ fn render_shot_to_png(
             .doc
             .put_object(&state.root, "installer.username", ObjType::Text)?;
         let _ = state.doc.splice_text(&uobj, 0, 0, "ada");
-        let pobj = state
-            .doc
-            .put_object(&state.root, "installer.password", ObjType::Text)?;
-        let _ = state.doc.splice_text(&pobj, 0, 0, "hunter2");
     }
 
     widget.sync(&mut state.doc, &state.root);

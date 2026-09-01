@@ -928,6 +928,10 @@ pub fn serialise_response(resp: &Response) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact test-control coordinates are the protocol contract under test"
+)]
 mod tests {
     use super::*;
 

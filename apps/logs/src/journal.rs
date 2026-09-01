@@ -25,7 +25,7 @@ const PROMOTED: &[&str] = &[
     "__MONOTONIC_TIMESTAMP",
 ];
 
-/// (offset_ms, unit, identifier, priority, pid, transport, message, extra)
+/// (`offset_ms`, unit, identifier, priority, pid, transport, message, extra)
 type Row = (
     u64,
     &'static str,

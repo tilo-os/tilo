@@ -163,6 +163,34 @@ pub enum Action {
     /// Run queued capture intents through the production compositor executor.
     /// Opt-in avoids filesystem work in unrelated deterministic scenarios.
     CaptureExecutionEnabled(bool),
+    /// Seed real collaborative room changes and open one of the two history
+    /// surfaces. `explore = false` captures outcome-first Catch up;
+    /// `true` captures the full three-panel browser.
+    SeedRoomActivity {
+        explore: bool,
+    },
+    /// Narrow the open activity surface to Ada's real authored changes so a
+    /// collaboration proof cannot accidentally show only the local author.
+    FilterRoomActivityToAda,
+    /// Add two present collaborators and representative shares to the active
+    /// workspace through the production capability path.
+    SeedSharedWorkspace,
+    /// Seed the durable half of an invitation: the invited person has room
+    /// access, but has not joined the workspace yet. This is intentionally
+    /// distinct from presence so the product proof never calls an invite a
+    /// live collaborator.
+    SeedInvitePending,
+    /// Resolve the pending invite into a live collaborator editing Notes.
+    /// The driver retains the same identity and capability record rather
+    /// than replacing the row with a screenshot-only fake.
+    AdmitInvitedCollaborator,
+    /// Select a real timeline row so provenance and comparison are exercised.
+    SelectRoomActivityEntry(usize),
+    /// Apply a real forward revert to an earlier room-history entry.
+    RevertRoomActivity,
+    /// Move the named live collaborator to Files and focus that native app,
+    /// proving presence follows the work rather than a shell-only avatar.
+    ShowCollaboratorInFiles,
     /// Open a window, the way opening one actually happens: adopt a
     /// toplevel for `app_id` into the chrome's tree through the
     /// production `tab_binding::adopt_toplevel`, so the placement rule
@@ -386,7 +414,7 @@ pub fn run_with<S: SnapshotSink>(
                 // `per_slice` is `total / frames`, so `per_slice * frames` never
                 // exceeds `total` — `saturating_sub` documents that instead of a
                 // bare `-` that clippy can't see is infallible here.
-                let remainder = total.saturating_sub(per_slice * frames);
+                let remainder = total.saturating_sub(per_slice.saturating_mul(frames));
                 let prefix = last_snapshot.unwrap_or("frame");
                 for i in 0..frames {
                     // Distribute the remainder over the first `remainder`
@@ -471,7 +499,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 sink.capture(driver, name);
             }
         }
-        Action::Key(k) => driver.press_key(k.clone()),
+        Action::Key(k) => driver.press_key(k),
         Action::Type(s) => driver.type_str(s),
         Action::Modifiers(m) => driver.set_modifiers(*m),
         Action::Wait(n) => driver.step_frames(*n),
@@ -494,7 +522,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::CONTROL);
-            driver.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::CaptureRecordingActive(active) => {
@@ -549,120 +577,130 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::CaptureExecutionEnabled(enabled) => {
             driver.set_capture_execution_enabled(*enabled);
         }
+        Action::SeedRoomActivity { explore } => {
+            driver.seed_room_activity_for_shots(*explore);
+        }
+        Action::FilterRoomActivityToAda => assert!(
+            driver.filter_room_activity_to_ada_for_shots(),
+            "scenario: attributed history requires a real change authored by Ada"
+        ),
+        Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedInvitePending => driver.seed_invite_pending_for_shots(),
+        Action::AdmitInvitedCollaborator => assert!(
+            driver.admit_invited_collaborator_for_shots(),
+            "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
+        ),
+        Action::SelectRoomActivityEntry(index) => {
+            driver.select_room_activity_entry(*index);
+        }
+        Action::RevertRoomActivity => assert!(
+            driver.revert_room_activity_for_shots(),
+            "scenario: collaboration journey cannot label a frame 'reverted' without a forward revert"
+        ),
+        Action::ShowCollaboratorInFiles => assert!(
+            driver.show_collaborator_in_files_for_shots(),
+            "scenario: collaboration journey cannot label a frame 'Ada in Files' unless Files was focused"
+        ),
         _ => {}
     }
 }
 
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
-    match action {
-        Action::OpenWindow { app_id, surface_id } => {
-            let app_id = *app_id;
-            let surface_id = *surface_id;
-            driver.with_chrome(|st: &mut ChromeState| {
-                {
-                    // Exactly what opening an app does: decide where the
-                    // window goes now, against the layout the user is
-                    // looking at, and leave it as a note for the adoption.
-                    let tree = st.tree();
-                    shell::shell::placement::note_placement_for_launch(
-                        app_id,
-                        &tree,
-                        st.strip_viewport(),
-                    );
-                }
-                {
-                    let mut tree = st.tree_mut();
-                    shell::compositor::tab_binding::adopt_toplevel(
-                        &mut tree,
-                        surface_id,
-                        Some(app_id.to_string()),
-                    );
-                }
-                st.bump();
-            });
-            // Stand in for the client. A window is not painted until it
-            // has drawn something that fits the tab it is in, which is
-            // what stops a launch putting an empty frame on screen — and
-            // an adopted toplevel with no process behind it has drawn
-            // nothing at all, so without this the placement scenarios
-            // would depict where windows land by showing none of them.
-            //
-            // A layout pass first, because the size to draw at is the
-            // tab's, and the tab does not have one until it has been
-            // laid out. Which app each window is still reads off the tab
-            // pill above it.
-            driver.relayout();
-            if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
-                && w > 0
-                && h > 0
+    if let Action::OpenWindow { app_id, surface_id } = action {
+        let app_id = *app_id;
+        let surface_id = *surface_id;
+        driver.with_chrome(|st: &mut ChromeState| {
             {
-                let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-                shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
+                // Exactly what opening an app does: decide where the
+                // window goes now, against the layout the user is
+                // looking at, and leave it as a note for the adoption.
+                let tree = st.tree();
+                shell::shell::placement::note_placement_for_launch(
+                    app_id,
+                    &tree,
+                    st.strip_viewport(),
+                );
             }
+            {
+                let mut tree = st.tree_mut();
+                shell::compositor::tab_binding::adopt_toplevel(
+                    &mut tree,
+                    surface_id,
+                    Some(app_id.to_string()),
+                );
+            }
+            st.bump();
+        });
+        // Stand in for the client. A window is not painted until it
+        // has drawn something that fits the tab it is in, which is
+        // what stops a launch putting an empty frame on screen — and
+        // an adopted toplevel with no process behind it has drawn
+        // nothing at all, so without this the placement scenarios
+        // would depict where windows land by showing none of them.
+        //
+        // A layout pass first, because the size to draw at is the
+        // tab's, and the tab does not have one until it has been
+        // laid out. Which app each window is still reads off the tab
+        // pill above it.
+        driver.relayout();
+        if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
+            && w > 0
+            && h > 0
+        {
+            let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+            shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
         }
-        _ => {}
     }
 }
 
 /// `Action::AddHostedTab` — split out of [`apply`] to keep that dispatcher short.
 fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
-    match action {
-        Action::AddHostedTab { app, title } => {
-            let app = *app;
-            let title = *title;
-            driver.with_chrome(|st: &mut ChromeState| {
-                #[allow(
-                    clippy::significant_drop_tightening,
-                    reason = "tree is held mutably from here through the group push below; \
-                              there's no earlier point to drop it without cloning the tree \
-                              data out for no real gain, and the block already ends right \
-                              after the last use"
-                )]
-                {
-                    let mut tree = st.tree_mut();
-                    // One past the highest tab id anywhere in the tree.
-                    // The production minter is crate-private, and a
-                    // scenario only needs an id no open tab already uses
-                    // — but it has to be *every* tab, not just this
-                    // group's: a tab id names the record its document
-                    // lives in, so reusing one from another workspace
-                    // would put two tabs on one document, which is the
-                    // thing this scenario exists to show cannot happen.
-                    let id = tree
-                        .workspaces
-                        .iter()
-                        .flat_map(|w| &w.strips)
-                        .flat_map(|s| &s.window_groups)
-                        .flat_map(|g| &g.tabs)
-                        .map(|t| t.id)
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_add(1);
-                    let Some(ws) = tree.active_workspace_mut() else {
-                        return;
-                    };
-                    let Some(group) = ws
-                        .strips
-                        .first_mut()
-                        .and_then(|s| s.window_groups.first_mut())
-                    else {
-                        return;
-                    };
-                    group.tabs.push(shell::shell::state::Tab {
-                        id,
-                        title: title.to_string(),
-                        tile: shell::shell::state::TileContent::AppPlaceholder {
-                            kind: shell::shell::state::AppKind::Other(app.to_string()),
-                            label: title.to_string(),
-                        },
-                    });
-                    group.active_tab = id;
-                }
-                st.bump();
+    if let Action::AddHostedTab { app, title } = action {
+        let app = *app;
+        let title = *title;
+        driver.with_chrome(|st: &mut ChromeState| {
+            let mut tree = st.tree_mut();
+            // One past the highest tab id anywhere in the tree.
+            // The production minter is crate-private, and a
+            // scenario only needs an id no open tab already uses
+            // — but it has to be *every* tab, not just this
+            // group's: a tab id names the record its document
+            // lives in, so reusing one from another workspace
+            // would put two tabs on one document, which is the
+            // thing this scenario exists to show cannot happen.
+            let id = tree
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.strips)
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .map(|t| t.id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let Some(ws) = tree.active_workspace_mut() else {
+                return;
+            };
+            let Some(group) = ws
+                .strips
+                .first_mut()
+                .and_then(|s| s.window_groups.first_mut())
+            else {
+                return;
+            };
+            group.tabs.push(shell::shell::state::Tab {
+                id,
+                title: title.to_string(),
+                tile: shell::shell::state::TileContent::AppPlaceholder {
+                    kind: shell::shell::state::AppKind::Other(app.to_string()),
+                    label: title.to_string(),
+                },
             });
-        }
-        _ => {}
+            group.active_tab = id;
+            drop(tree);
+            st.bump();
+        });
     }
 }
 
@@ -1180,6 +1218,35 @@ fn app_kind_for(app: &str) -> shell::shell::state::AppKind {
 // JSON state dumping for headless mode
 // =====================================================================
 
+fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::ShellOverlayHost) {
+    // Groups-per-strip snapshot (drag-out tests):
+    // `[[[group_id, [tab_id, ...]], ...], ...]`.
+    out.push_str("\"groups_per_strip\":[");
+    for (strip_index, (_strip_id, groups)) in host.groups_per_strip().iter().enumerate() {
+        if strip_index > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (group_index, (group_id, tabs)) in groups.iter().enumerate() {
+            if group_index > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            out.push_str(&group_id.to_string());
+            out.push_str(",[");
+            for (tab_index, tab_id) in tabs.iter().enumerate() {
+                if tab_index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&tab_id.to_string());
+            }
+            out.push_str("]]");
+        }
+        out.push(']');
+    }
+    out.push(']');
+}
+
 /// Serialise the chrome's externally-observable state into a compact
 /// JSON object. Hand-rolled instead of pulling `serde_derive` because
 /// `ChromeState` lives in another crate we don't want to annotate.
@@ -1241,6 +1308,30 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
     out.push(',');
+    push_kv_str(
+        &mut out,
+        "room_activity_view",
+        match host.room_activity().view() {
+            shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
+            shell::shell::room_activity::ActivityView::Explore => "explore",
+        },
+    );
+    out.push(',');
+    push_kv_bool(
+        &mut out,
+        "room_activity_compared",
+        host.room_activity().has_comparison(),
+    );
+    out.push(',');
+    push_kv_str(
+        &mut out,
+        "room_activity_focus",
+        host.room_activity()
+            .focused_control_label()
+            .as_deref()
+            .unwrap_or(""),
+    );
+    out.push(',');
     push_kv_str(&mut out, "qs_level", qs_level);
     out.push(',');
     push_kv_str(&mut out, "ws_settings_tab", ws_tab);
@@ -1251,43 +1342,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_u64(&mut out, "revision", st.revision);
     out.push(',');
-    // Groups-per-strip snapshot (drag-out tests): "[[[g_id,[t1,t2,...]],...],...]"
-    // Outer array indexed by strip; each element is the strip's group list,
-    // each group is `[group_id, [tab_ids...]]`. Order of strips matches
-    // `host.groups_per_strip()` (HashMap iter order — not guaranteed
-    // stable across runs, but each scenario's assertions look up the
-    // count not a specific strip slot).
-    let gps = host.groups_per_strip();
-    out.push('"');
-    out.push_str("groups_per_strip");
-    out.push('"');
-    out.push(':');
-    out.push('[');
-    for (si, (_strip_id, groups)) in gps.iter().enumerate() {
-        if si > 0 {
-            out.push(',');
-        }
-        out.push('[');
-        for (gi, (gid, tabs)) in groups.iter().enumerate() {
-            if gi > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            out.push_str(&gid.to_string());
-            out.push(',');
-            out.push('[');
-            for (ti, tid) in tabs.iter().enumerate() {
-                if ti > 0 {
-                    out.push(',');
-                }
-                out.push_str(&tid.to_string());
-            }
-            out.push(']');
-            out.push(']');
-        }
-        out.push(']');
-    }
-    out.push(']');
+    push_groups_per_strip(&mut out, host);
     out.push('}');
     out
 }
@@ -1429,12 +1484,17 @@ pub fn catalogue() -> Vec<Scenario> {
         wheel_overscroll_at_the_end(),
         wheel_summon_at_pointer(),
         overview_transition(),
+        solo_and_shared_shell_states(),
+        collaboration_product_proof(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
         two_notes_tabs_keep_their_own_text(),
         cycle_all_tabs(),
         word_processor_tile(),
         room_activity_from_palette(),
+        room_activity_catch_up_keyboard(),
+        room_activity_explore_keyboard(),
+        room_activity_explore_detail_compare(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
@@ -1450,6 +1510,64 @@ pub fn catalogue() -> Vec<Scenario> {
         wifi_password_prompt(),
         file_chooser_dialog(),
     ]
+}
+
+/// The canonical collaboration journey. Each frame is a state a person can
+/// actually reach: an invitation is not shown as presence, a remote edit is
+/// attributed in room history, and recovery creates a new forward change.
+/// The last frame switches to a second native app so the collaborator's
+/// location is proven to be workspace data rather than chrome decoration.
+fn collaboration_product_proof() -> Scenario {
+    Scenario {
+        name: "collaboration_product_proof",
+        description: "Prove solo work, a pending invite, live editing, attributed history, forward revert, and cross-app presence.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-solo-workspace"),
+            Action::SeedInvitePending,
+            Action::Wait(2),
+            Action::Snapshot("02-invite-pending"),
+            Action::AdmitInvitedCollaborator,
+            Action::Wait(2),
+            Action::Snapshot("03-ada-editing-notes"),
+            Action::SeedRoomActivity { explore: true },
+            Action::FilterRoomActivityToAda,
+            Action::Wait(2),
+            Action::Snapshot("04-attributed-history"),
+            Action::SelectRoomActivityEntry(0),
+            Action::Snapshot("05-history-comparison"),
+            Action::RevertRoomActivity,
+            Action::Wait(18),
+            Action::Snapshot("06-reverted-forward"),
+            Action::ShowCollaboratorInFiles,
+            Action::Wait(2),
+            Action::Snapshot("07-ada-in-files"),
+        ],
+    }
+}
+
+/// The two resting states that define qOS's chrome contract. The first frame
+/// must read as an ordinary personal desktop; the second adds collaboration
+/// without changing the underlying navigation model. The final frame proves
+/// the persistent presence entry opens the roster it represents.
+fn solo_and_shared_shell_states() -> Scenario {
+    Scenario {
+        name: "solo_and_shared_shell_states",
+        description: "Compare the quiet solo desktop with the same workspace after collaborators arrive, then open its roster.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-solo-resting"),
+            Action::SeedSharedWorkspace,
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("02-shared-resting"),
+            Action::ClickNamed("topbar_avatar_stack"),
+            Action::Wait(4),
+            Action::Snapshot("03-shared-roster"),
+        ],
+    }
 }
 
 /// Resolve a [`Action::SeedStatus`] preset name into the reading the
@@ -2028,17 +2146,85 @@ const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 fn room_activity_from_palette() -> Scenario {
     Scenario {
         name: "room_activity_from_palette",
-        description: "Search 'room activity' in the palette and open the sheet from the result.",
+        description: "Search 'workspace activity' in the palette and open the sheet from the result.",
         actions: vec![
             Action::Snapshot("01-desktop"),
             Action::OpenPalette,
             Action::Wait(2),
-            Action::Type("room activity".into()),
+            Action::Type("workspace activity".into()),
             Action::Wait(2),
             Action::Snapshot("02-palette-result"),
             Action::Key(Key::Named(NamedKey::Enter)),
             Action::Wait(20),
             Action::Snapshot("03-room-activity-open"),
+        ],
+    }
+}
+
+/// Outcome cards at rest, then the exact state reached without a pointer:
+/// Tab through the modal controls and expand the first summary with Enter.
+fn room_activity_catch_up_keyboard() -> Scenario {
+    Scenario {
+        name: "room_activity_catch_up_keyboard",
+        description: "Open Catch up, traverse its controls by keyboard, and expand an outcome.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: false },
+            Action::Relayout,
+            Action::Snapshot("01-catch-up"),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-first-outcome-expanded-focus-visible"),
+        ],
+    }
+}
+
+/// Wide Explorer plus a keyboard-selected lens. This gives both the PNG
+/// reviewer and headless state dumps a stable focused-control assertion.
+fn room_activity_explore_keyboard() -> Scenario {
+    Scenario {
+        name: "room_activity_explore_keyboard",
+        description: "Open responsive Explorer and traverse lenses; capture at wide and narrow sweep viewports.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: true },
+            Action::Relayout,
+            Action::Snapshot("01-explorer-three-panel"),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-explorer-browse-focus-visible"),
+        ],
+    }
+}
+
+fn room_activity_explore_detail_compare() -> Scenario {
+    Scenario {
+        name: "room_activity_explore_detail_compare",
+        description: "Select a real history action, show provenance, and materialize its exact comparison.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: true },
+            Action::SelectRoomActivityEntry(0),
+            Action::Relayout,
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("01-selected-detail"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::ArrowLeft)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-exact-comparison"),
         ],
     }
 }
@@ -3507,6 +3693,148 @@ mod tests {
     }
 
     #[test]
+    fn collaboration_product_proof_keeps_invitation_presence_and_recovery_distinct() {
+        let scenario = collaboration_product_proof();
+        let snapshots: Vec<_> = scenario
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::Snapshot(name) => Some(*name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            snapshots,
+            vec![
+                "01-solo-workspace",
+                "02-invite-pending",
+                "03-ada-editing-notes",
+                "04-attributed-history",
+                "05-history-comparison",
+                "06-reverted-forward",
+                "07-ada-in-files",
+            ],
+            "the proof must retain every product state rather than skipping from invite to history"
+        );
+        assert!(
+            scenario
+                .actions
+                .windows(2)
+                .any(|pair| matches!(pair, [Action::SeedInvitePending, Action::Wait(_)]))
+        );
+        assert!(
+            scenario
+                .actions
+                .iter()
+                .any(|action| matches!(action, Action::RevertRoomActivity))
+        );
+    }
+
+    /// Snapshot names are a contract with the visual review suite. Check the
+    /// actual state at each consequential frame as well, so a future fixture
+    /// regression cannot quietly emit a plausible but false PNG.
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "each flag records an independent collaboration-proof invariant"
+    )]
+    struct CollaborationProofSink {
+        pending_invite_is_durable: bool,
+        ada_activity_is_visible: bool,
+        forward_revert_is_announced: bool,
+        ada_is_active_in_files: bool,
+    }
+
+    impl SnapshotSink for CollaborationProofSink {
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the borrowed workspace must stay alive while each named snapshot invariant is inspected"
+        )]
+        fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
+            let state = driver.chrome();
+            let tree = state.tree();
+            let Some(workspace) = tree.active_workspace() else {
+                return;
+            };
+            match name {
+                "02-invite-pending" => {
+                    let ada = workspace
+                        .collaborators
+                        .iter()
+                        .find(|person| person.id == "ada");
+                    self.pending_invite_is_durable = ada.is_some_and(|person| {
+                        person.invited
+                            && person.active_tab.is_none()
+                            && workspace.role_of(&"ada".to_string()).is_some()
+                    });
+                }
+                "04-attributed-history" => {
+                    let activity = driver.host().room_activity();
+                    self.ada_activity_is_visible = activity
+                        .author_filter()
+                        .is_some_and(|author| author.eq_ignore_ascii_case("ada"))
+                        && activity.visible_len() > 0
+                        && (0..activity.visible_len()).all(|index| {
+                            activity
+                                .visible_entry(index)
+                                .is_some_and(|entry| entry.author.name.eq_ignore_ascii_case("ada"))
+                        });
+                }
+                "06-reverted-forward" => {
+                    self.forward_revert_is_announced = state.notifications().iter().any(|notice| {
+                        notice.title == "Reverted a workspace change"
+                            && notice.body.contains("Written forward")
+                    });
+                }
+                "07-ada-in-files" => {
+                    let files_tab = workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .find(|tab| tab.title == "Files")
+                        .map(|tab| tab.id);
+                    self.ada_is_active_in_files = files_tab.is_some_and(|files_tab| {
+                        workspace.collaborators.iter().any(|person| {
+                            person.id == "ada"
+                                && !person.invited
+                                && person.active_tab == Some(files_tab)
+                        })
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn collaboration_product_proof_frames_are_backed_by_the_claimed_state() {
+        let mut driver = ShellDriver::new((1600, 900));
+        let mut sink = CollaborationProofSink {
+            pending_invite_is_durable: false,
+            ada_activity_is_visible: false,
+            forward_revert_is_announced: false,
+            ada_is_active_in_files: false,
+        };
+        run(&mut driver, &collaboration_product_proof(), &mut sink);
+        assert!(
+            sink.pending_invite_is_durable,
+            "the pending-invite frame must show both durable access and non-live presence"
+        );
+        assert!(
+            sink.ada_activity_is_visible,
+            "the attributed-history frame must visibly filter to Ada's authored changes"
+        );
+        assert!(
+            sink.forward_revert_is_announced,
+            "the reverted frame must be backed by a new forward recovery"
+        );
+        assert!(
+            sink.ada_is_active_in_files,
+            "the last frame must place the admitted collaborator in real Files content"
+        );
+    }
+
+    #[test]
     fn scenario_workspace_switch_moves_active_index() {
         let mut d = ShellDriver::new((1600, 900));
         let initial = d.chrome().tree().active;
@@ -3645,18 +3973,18 @@ mod tests {
     /// The strip scenario has to end up with four *windows*, each one a
     /// live app — not four tabs of one window, and not stub cards.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "strip (borrowed from tree) is read all the way through the assertions \
+                  at the end of this test; there's no earlier point to drop it without \
+                  cloning the strip data out for no real gain"
+    )]
     fn strip_scroll_scenario_opens_four_hosted_windows_side_by_side() {
         let mut d = ShellDriver::new((1600, 900));
         let mut sink = NullSink;
         run(&mut d, &strip_scroll_across_apps(), &mut sink);
 
         let st = d.chrome();
-        #[allow(
-            clippy::significant_drop_tightening,
-            reason = "strip (borrowed from tree) is read all the way through the assertions \
-                      at the end of this test; there's no earlier point to drop it without \
-                      cloning the strip data out for no real gain"
-        )]
         let tree = st.tree();
         let strip = &tree.active_workspace().expect("active workspace").strips[0];
         let kinds: Vec<&shell::shell::state::AppKind> = strip

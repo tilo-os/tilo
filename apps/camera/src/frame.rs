@@ -23,6 +23,7 @@ pub struct FrameBuf {
 
 /// A pixel-space rectangle, `x0..x1` × `y0..y1` (half-open). May extend past
 /// the buffer edges — `put`/`blend` clip each pixel.
+#[derive(Clone, Copy)]
 struct Rect {
     x0: i32,
     y0: i32,

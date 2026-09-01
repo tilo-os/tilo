@@ -41,6 +41,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -53,194 +54,122 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-/// Parsed screenshot request.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent, orthogonal --shots scenario flag (not a state \
-              machine); a real CLI accepts them in any combination"
-)]
-struct ShotArgs {
-    out: std::path::PathBuf,
-    viewport: (u32, u32),
-    nav_closed: bool,
-    empty: bool,
-    panel: Option<maps::Panel>,
-    /// Select Transit travel mode inside Directions (`--panel transit`).
-    transit_mode: bool,
-    /// Demo the typeable "From" field mid-edit with its geocoded dropdown.
-    edit_from: bool,
-    /// Demo the Transit picker anchored to an "Arrive by" time.
-    transit_arrive: bool,
-    /// Demo the floating search-results overlay (proximity-ordered).
-    search: bool,
-    /// Demo the live POI marker layer with an open info card.
-    pois: bool,
-    /// Turn the real-time traffic overlay on (sample congestion, or the honest
-    /// "No traffic data" state when combined with `--empty`).
-    traffic: bool,
-    /// Demo the offline-maps overlay with saved, manageable downloaded areas.
-    offline: bool,
-    /// Demo the ⋯ overflow menu expanded (attribution / offline / licenses).
-    menu: bool,
-    /// Production floating-navigation ownership state to render, if any.
-    floating_navigation: Option<&'static str>,
-}
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
-/// # Errors
-///
-/// Returns `Err` if the screenshot renderer fails to write its output file.
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
+pub fn main() {
     // Install the rustls crypto provider before any HTTPS fetch. The tile worker
     // and the geocoding/routing client also call this, but doing it here at
     // startup keeps the provider set for the whole process regardless of which
     // request runs first. See `net::ensure_crypto_provider` for why it's needed.
     maps::net::ensure_crypto_provider();
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(shot) = parse_shots(&args) {
-        // Headless: no event loop and no network — use an offline app so the
-        // tile worker is never spawned and nothing blocks on I/O. The default
-        // offline app renders the bundled sample city; `--empty` mirrors the
-        // live first-run state (empty model, plain basemap).
-        let mut app = if shot.empty {
-            maps::MapsApp::offline_empty()
-        } else {
-            maps::MapsApp::offline()
-        };
-        if shot.nav_closed {
-            app.set_nav_open(false);
-        }
-        if let Some(panel) = shot.panel {
-            app.set_active_panel(panel);
-        }
-        if shot.transit_mode {
-            app.set_travel_mode(maps::TravelMode::Transit);
-        }
-        if shot.edit_from {
-            app.set_demo_edit_origin();
-        }
-        if shot.transit_arrive {
-            app.set_demo_transit_arrive();
-        }
-        if shot.search {
-            app.set_demo_search();
-        }
-        if shot.pois {
-            app.set_demo_pois();
-        }
-        if shot.traffic {
-            app.set_demo_traffic();
-        }
-        if shot.offline {
-            app.set_demo_offline();
-        }
-        if shot.menu {
-            app.set_demo_overflow();
-        }
-        render_shot_to_png(app, shot.viewport, &shot.out, shot.floating_navigation)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(&spec, maps::app_root(), "dev.qos.maps"));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.maps");
-    let mut app = ui::App::new(state, maps::app_root()).with_autosave(autosave);
-    // Register Maps' actions so the shell's Ctrl+K palette can decode + replay the
-    // same saved-place / route / offline-region actions the on-screen affordances
-    // dispatch.
-    maps::actions::register(app.action_registry_mut());
-    app.run();
-    Ok(())
+    ui::launch::run_or_exit(
+        &LaunchSpec::new("dev.qos.maps", maps::app_root)
+            .shot_root(shot_root)
+            .shot_handler(shot_handler)
+            .allowed_flags(&[
+                "--nav-closed",
+                "--empty",
+                "--edit-from",
+                "--transit-arrive",
+                "--search",
+                "--pois",
+                "--traffic",
+                "--offline",
+                "--menu",
+                "--attribution",
+                "--floating-navigation",
+                "--floating-navigation-attached",
+                "--floating-navigation-hover",
+                "--floating-navigation-returning",
+                "--floating-navigation-returned",
+            ])
+            .allowed_options(&["--panel"])
+            .configure_app(|app| maps::actions::register(app.action_registry_mut())),
+    );
 }
 
-fn parse_shots(args: &[String]) -> Option<ShotArgs> {
-    let mut out: Option<std::path::PathBuf> = None;
-    let mut viewport = DEFAULT_SHOTS_VIEWPORT;
-    let mut nav_closed = false;
-    let mut empty = false;
-    let mut panel: Option<maps::Panel> = None;
-    let mut transit_mode = false;
-    let mut edit_from = false;
-    let mut transit_arrive = false;
-    let mut search = false;
-    let mut pois = false;
-    let mut traffic = false;
-    let mut offline = false;
-    let mut menu = false;
-    let mut floating_navigation = None;
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            out = iter.next().map(std::path::PathBuf::from);
-        } else if let Some(rest) = arg.strip_prefix("--shots=") {
-            out = Some(std::path::PathBuf::from(rest));
-        } else if arg == "--viewport" {
-            if let Some(v) = iter.next().and_then(|s| parse_viewport(s)) {
-                viewport = v;
-            }
-        } else if let Some(rest) = arg.strip_prefix("--viewport=") {
-            if let Some(v) = parse_viewport(rest) {
-                viewport = v;
-            }
-        } else if arg == "--nav-closed" {
-            nav_closed = true;
-        } else if arg == "--empty" {
-            empty = true;
-        } else if arg == "--edit-from" {
-            edit_from = true;
-        } else if arg == "--transit-arrive" {
-            transit_arrive = true;
-        } else if arg == "--search" {
-            search = true;
-        } else if arg == "--pois" {
-            pois = true;
-        } else if arg == "--traffic" {
-            traffic = true;
-        } else if arg == "--offline" {
-            offline = true;
-        } else if arg == "--menu" {
-            menu = true;
-        } else if arg == "--floating-navigation" {
-            floating_navigation = Some("detached");
-        } else if arg == "--floating-navigation-attached" {
-            floating_navigation = Some("attached");
-        } else if arg == "--floating-navigation-hover" {
-            floating_navigation = Some("hover");
-        } else if arg == "--floating-navigation-returning" {
-            floating_navigation = Some("returning");
-        } else if arg == "--floating-navigation-returned" {
-            floating_navigation = Some("returned");
-        } else if arg == "--panel" {
-            if let Some(s) = iter.next() {
-                apply_panel(s, &mut panel, &mut transit_mode);
-            }
-        } else if let Some(rest) = arg.strip_prefix("--panel=") {
-            apply_panel(rest, &mut panel, &mut transit_mode);
-        }
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is dictated by ui::launch::ShotFactory"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args)))
+}
+
+fn shot_app(args: &LaunchArgs) -> maps::MapsApp {
+    // Headless: no event loop and no network — use an offline app so the
+    // tile worker is never spawned and nothing blocks on I/O. The default
+    // offline app renders the bundled sample city; `--empty` mirrors the
+    // live first-run state (empty model, plain basemap).
+    let mut app = if args.has("--empty") {
+        maps::MapsApp::offline_empty()
+    } else {
+        maps::MapsApp::offline()
+    };
+    if args.has("--nav-closed") {
+        app.set_nav_open(false);
     }
-    out.map(|out| ShotArgs {
+    let mut panel = None;
+    let mut transit_mode = false;
+    if let Some(value) = args.value("--panel") {
+        apply_panel(value, &mut panel, &mut transit_mode);
+    }
+    if let Some(panel) = panel {
+        app.set_active_panel(panel);
+    }
+    if transit_mode {
+        app.set_travel_mode(maps::TravelMode::Transit);
+    }
+    if args.has("--edit-from") {
+        app.set_demo_edit_origin();
+    }
+    if args.has("--transit-arrive") {
+        app.set_demo_transit_arrive();
+    }
+    if args.has("--search") {
+        app.set_demo_search();
+    }
+    if args.has("--pois") {
+        app.set_demo_pois();
+    }
+    if args.has("--traffic") {
+        app.set_demo_traffic();
+    }
+    if args.has("--offline") {
+        app.set_demo_offline();
+    }
+    if args.has("--menu") {
+        app.set_demo_overflow();
+    }
+    if args.has("--attribution") {
+        app.set_demo_attribution();
+    }
+    app
+}
+
+fn floating_navigation_stage(args: &LaunchArgs) -> Option<&'static str> {
+    [
+        ("--floating-navigation", "detached"),
+        ("--floating-navigation-attached", "attached"),
+        ("--floating-navigation-hover", "hover"),
+        ("--floating-navigation-returning", "returning"),
+        ("--floating-navigation-returned", "returned"),
+    ]
+    .into_iter()
+    .find_map(|(flag, stage)| args.has(flag).then_some(stage))
+}
+
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    render_shot_to_png(
+        shot_app(args),
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
         out,
-        viewport,
-        nav_closed,
-        empty,
-        panel,
-        transit_mode,
-        edit_from,
-        transit_arrive,
-        search,
-        pois,
-        traffic,
-        offline,
-        menu,
-        floating_navigation,
-    })
+        floating_navigation_stage(args),
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Resolve a `--panel` value. `transit` is not a panel — it opens Directions in
@@ -257,14 +186,8 @@ fn apply_panel(s: &str, panel: &mut Option<maps::Panel>, transit_mode: &mut bool
     }
 }
 
-/// Parse a `WxH` (or `WXH`) viewport string like `560x720`.
-fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s.split_once(['x', 'X'])?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-}
-
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
+/// Run one offscreen frame and include app-owned floating surfaces in the same
+/// order as the live compositor.
 fn render_shot_to_png(
     mut app: maps::MapsApp,
     viewport: (u32, u32),
@@ -272,8 +195,6 @@ fn render_shot_to_png(
     floating_navigation: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
-    // so the same frame can be graded in both light and dark (default dark).
     let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
@@ -284,7 +205,6 @@ fn render_shot_to_png(
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
     let mut state = ui::State::new();
     let widget: &mut dyn Widget = &mut app;
     widget.sync(&mut state.doc, &state.root);
@@ -300,7 +220,6 @@ fn render_shot_to_png(
         },
         &[child],
     )?;
-
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
@@ -324,7 +243,6 @@ fn render_shot_to_png(
         app.debug_stage_navigation_for_shot(stage);
     }
     let widget: &mut dyn Widget = &mut app;
-
     let mut scene = Scene::new();
     widget.draw_with_presence(
         &mut scene,
@@ -349,4 +267,27 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("maps: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transit_option_preserves_the_directions_plus_transit_mapping() {
+        let mut panel = None;
+        let mut transit = false;
+        apply_panel("transit", &mut panel, &mut transit);
+        assert_eq!(panel, Some(maps::Panel::Directions));
+        assert!(transit);
+    }
+
+    #[test]
+    fn unknown_panel_preserves_the_default_capture() {
+        let mut panel = None;
+        let mut transit = false;
+        apply_panel("unknown", &mut panel, &mut transit);
+        assert_eq!(panel, None);
+        assert!(!transit);
+    }
 }

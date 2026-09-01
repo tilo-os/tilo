@@ -28,6 +28,7 @@ pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_outbound;
 pub mod collab_presence;
+mod collaborators_overlay;
 pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
@@ -58,9 +59,15 @@ pub mod persist;
 pub mod placement;
 mod power_menu;
 pub mod projection;
+mod projection_overlay;
 pub mod qs_actions;
 pub mod qs_refresh;
 pub mod quick_settings;
+mod quick_settings_bluetooth;
+mod quick_settings_drill_in;
+mod quick_settings_root;
+mod quick_settings_vpn;
+mod quick_settings_wifi;
 pub mod remote_cursors;
 pub mod room_activity;
 pub mod room_records;
@@ -83,14 +90,19 @@ pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
 pub mod workspace_drop;
+pub mod workspace_history;
 pub mod workspace_settings;
+mod workspace_settings_overlay;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
+#[cfg(any(test, debug_assertions))]
+use ui::widget::context_menu::MenuItem;
+#[cfg(any(test, debug_assertions))]
+use ui::widget::toast::ToastStack;
 use ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
-    context_menu::{ContextMenu, MenuItem},
-    toast::ToastStack,
+    context_menu::ContextMenu,
 };
 
 use crate::shell::browser_stub::BrowserStubWidget;
@@ -131,6 +143,7 @@ pub struct Shell {
     /// Hidden unless `search_visible`.
     search: GlobalSearch,
     ws_settings: WorkspaceSettings,
+    #[cfg(any(test, debug_assertions))]
     toasts: ToastStack,
     ctx_menu: ContextMenu,
 
@@ -177,6 +190,7 @@ impl Shell {
             sidebar: SidebarWheel::new(),
             search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
+            #[cfg(any(test, debug_assertions))]
             toasts: ToastStack::new(),
             ctx_menu: ContextMenu::new(),
             overview_visible: false,
@@ -683,6 +697,7 @@ impl Shell {
     /// at `position`. Extracted so the production right-click path (wired
     /// alongside the compositor's pointer-event layer in a later task) and
     /// the test-only simulator share the same item-construction code.
+    #[cfg(any(test, debug_assertions))]
     fn open_default_tile_context_menu(&mut self, position: [f32; 2]) {
         // Rebuild from scratch so repeated right-clicks don't accumulate
         // items from earlier menus (e.g. if a follow-up task adds a
@@ -1137,6 +1152,9 @@ pub fn build_nirios_overlay_host_with_records(
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
+    for room in tree.rooms() {
+        launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
+    }
 
     let (root, group_row_ptrs) = build_workspace_root(&tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to

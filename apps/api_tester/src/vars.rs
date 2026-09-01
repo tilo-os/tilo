@@ -191,6 +191,23 @@ fn tokenize_line(raw: &str) -> JsonLine {
     let indent_len = raw.len() - raw.trim_start().len();
     let depth = indent_len / 2;
     let mut tokens = Vec::new();
+    push_indent_token(&mut tokens, raw, indent_len);
+    let content = raw.get(indent_len..).unwrap_or("");
+    tokenize_content(content, &mut tokens);
+
+    // A line "opens a block" if its last non-whitespace structural token
+    // is an opening brace/bracket.
+    let opens = line_opens_block(&tokens);
+
+    JsonLine {
+        tokens,
+        depth,
+        opens_block: opens,
+        close_line: None,
+    }
+}
+
+fn push_indent_token(tokens: &mut Vec<Token>, raw: &str, indent_len: usize) {
     if indent_len > 0
         && let Some(indent) = raw.get(..indent_len)
     {
@@ -199,45 +216,17 @@ fn tokenize_line(raw: &str) -> JsonLine {
             kind: TokenKind::Plain,
         });
     }
-    let content = raw.get(indent_len..).unwrap_or("");
+}
 
+/// Walk `content`'s characters, pushing one [`Token`] per string / structural
+/// character / run of whitespace or plain text.
+fn tokenize_content(content: &str, tokens: &mut Vec<Token>) {
     let chars: Vec<char> = content.chars().collect();
     let mut i = 0;
     // Track whether the next string we hit is a key (a colon follows it).
     while let Some(&c) = chars.get(i) {
         match c {
-            '"' => {
-                // Consume a full quoted string (handling escapes).
-                let start = i;
-                i += 1;
-                while let Some(&cc) = chars.get(i) {
-                    if cc == '\\' {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    if cc == '"' {
-                        break;
-                    }
-                }
-                let end = i.min(chars.len());
-                let s: String = chars.get(start..end).unwrap_or_default().iter().collect();
-                // A key is a string immediately followed (after optional
-                // spaces) by a colon.
-                let mut j = i;
-                while chars.get(j) == Some(&' ') {
-                    j += 1;
-                }
-                let is_key = chars.get(j) == Some(&':');
-                tokens.push(Token {
-                    text: s,
-                    kind: if is_key {
-                        TokenKind::Key
-                    } else {
-                        TokenKind::StringValue
-                    },
-                });
-            }
+            '"' => tokenize_quoted_string(&chars, &mut i, tokens),
             '{' | '}' | '[' | ']' | ':' | ',' => {
                 tokens.push(Token {
                     text: c.to_string(),
@@ -252,36 +241,71 @@ fn tokenize_line(raw: &str) -> JsonLine {
                 });
                 i += 1;
             }
-            _ => {
-                // Number, keyword, or anything else: consume up to the
-                // next structural delimiter.
-                let start = i;
-                while chars
-                    .get(i)
-                    .is_some_and(|&ch| !matches!(ch, '{' | '}' | '[' | ']' | ':' | ',' | ' ' | '"'))
-                {
-                    i += 1;
-                }
-                let word: String = chars.get(start..i).unwrap_or_default().iter().collect();
-                let kind = if word == "true" || word == "false" || word == "null" {
-                    TokenKind::Keyword
-                } else if word
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E'))
-                    && !word.is_empty()
-                {
-                    TokenKind::Number
-                } else {
-                    TokenKind::Plain
-                };
-                tokens.push(Token { text: word, kind });
-            }
+            _ => tokenize_word(&chars, &mut i, tokens),
         }
     }
+}
 
-    // A line "opens a block" if its last non-whitespace structural token
-    // is an opening brace/bracket.
-    let opens = tokens
+/// Consume a full quoted string (handling escapes) starting at `chars[*i]`,
+/// classifying it as a key (a colon follows, after optional spaces) or a
+/// plain string value.
+fn tokenize_quoted_string(chars: &[char], i: &mut usize, tokens: &mut Vec<Token>) {
+    let start = *i;
+    *i += 1;
+    while let Some(&cc) = chars.get(*i) {
+        if cc == '\\' {
+            *i += 2;
+            continue;
+        }
+        *i += 1;
+        if cc == '"' {
+            break;
+        }
+    }
+    let end = (*i).min(chars.len());
+    let s: String = chars.get(start..end).unwrap_or_default().iter().collect();
+    let mut j = *i;
+    while chars.get(j) == Some(&' ') {
+        j += 1;
+    }
+    let is_key = chars.get(j) == Some(&':');
+    tokens.push(Token {
+        text: s,
+        kind: if is_key {
+            TokenKind::Key
+        } else {
+            TokenKind::StringValue
+        },
+    });
+}
+
+/// Number, keyword, or anything else: consume up to the next structural
+/// delimiter starting at `chars[*i]`.
+fn tokenize_word(chars: &[char], i: &mut usize, tokens: &mut Vec<Token>) {
+    let start = *i;
+    while chars
+        .get(*i)
+        .is_some_and(|&ch| !matches!(ch, '{' | '}' | '[' | ']' | ':' | ',' | ' ' | '"'))
+    {
+        *i += 1;
+    }
+    let word: String = chars.get(start..*i).unwrap_or_default().iter().collect();
+    let kind = if word == "true" || word == "false" || word == "null" {
+        TokenKind::Keyword
+    } else if word
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E'))
+        && !word.is_empty()
+    {
+        TokenKind::Number
+    } else {
+        TokenKind::Plain
+    };
+    tokens.push(Token { text: word, kind });
+}
+
+fn line_opens_block(tokens: &[Token]) -> bool {
+    tokens
         .iter()
         .rev()
         .find_map(|t| {
@@ -292,14 +316,7 @@ fn tokenize_line(raw: &str) -> JsonLine {
                 Some(trimmed.ends_with('{') || trimmed.ends_with('['))
             }
         })
-        .unwrap_or(false);
-
-    JsonLine {
-        tokens,
-        depth,
-        opens_block: opens,
-        close_line: None,
-    }
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

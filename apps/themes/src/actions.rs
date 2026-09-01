@@ -210,8 +210,8 @@ pub fn duplicate_spec(src: &ThemeSpec, id: &str, order: u32) -> ThemeSpec {
 /// customizer Reset button and the palette.
 pub fn reset_spec(current: &ThemeSpec) -> ThemeSpec {
     let mut s = base_preset();
-    s.id = current.id.clone();
-    s.name = current.name.clone();
+    s.id.clone_from(&current.id);
+    s.name.clone_from(&current.name);
     s.builtin = false;
     s.order = current.order;
     s
