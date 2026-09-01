@@ -438,9 +438,7 @@ pub struct PresenceCtx {
     /// When a remote *document* change (not just a caret move) was last
     /// applied, fed by [`Self::note_remote_text_edit`]; the `Caret` arm of
     /// [`Self::apply_remote_presence`] only paints a typing mark when this
-    /// is also recent. Joined by time, not by author — `CollabEvent::
-    /// CRDTIncremental` carries no user id, so another peer's caret can be
-    /// mis-attributed while one person is genuinely editing.
+    /// is also recent.
     last_remote_text_edit: Option<Instant>,
     /// Draw-time visibility window in scene-space pixels, for spatial culling.
     /// `Cell` so containers (Scrollable) can scope-push a tighter inner

@@ -501,6 +501,27 @@ pub fn spawn_native(
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
+        None,
+    )
+}
+
+/// Spawn the production broker pipeline with an explicit enrolled-device set.
+/// Intended for integration harnesses that do not have the desktop identity
+/// registry on disk; certificate, proof, membership, role, and op validation
+/// remain identical to production.
+#[doc(hidden)]
+pub fn spawn_native_harness(
+    capnp_socket_path: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::disabled();
+    spawn_inner(
+        capnp_socket_path,
+        None,
+        &publisher,
+        Some(membership),
+        Some(Arc::new(trusted_devices)),
     )
 }
 
@@ -614,10 +635,8 @@ impl DrainQueues {
                 )
             };
             match (mutation, validation) {
-                (Ok(mutation), Ok(())) => {
-                    self.accept_signed_op(
-                        envelope, &mutation, entry.peer, &route, labels, announced,
-                    );
+                (Ok(_), Ok(())) => {
+                    self.accept_signed_op(envelope, entry.peer, &route, labels, announced);
                 }
                 (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
                     self.record_already_redacted(envelope, artifact, target);
@@ -647,7 +666,6 @@ impl DrainQueues {
     fn accept_signed_op(
         &self,
         envelope: collab_types::SignedOp,
-        mutation: &DocumentMutation,
         peer: u64,
         route: &CrdtRoute,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
@@ -677,15 +695,9 @@ impl DrainQueues {
             labels,
             announced,
         );
-        let event = match mutation {
-            DocumentMutation::Snapshot(_) => CollabEvent::SignedCRDTUpdate {
-                envelope: Box::new(envelope),
-                from_user_id,
-            },
-            DocumentMutation::Incremental(_) => CollabEvent::SignedCRDTIncremental {
-                envelope: Box::new(envelope),
-                from_user_id,
-            },
+        let event = CollabEvent::Document {
+            envelope: Box::new(envelope),
+            from_user_id,
         };
         // An unaddressed route is dropped rather than shown to every app.
         self.table.fanout_to_route(&event, u64::MAX, route);
@@ -811,6 +823,7 @@ fn spawn_inner(
     peer_sync: Option<&Arc<ShellNetwork>>,
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -867,6 +880,7 @@ fn spawn_inner(
         Arc::clone(&channels),
         Arc::clone(publisher),
         membership,
+        trusted_devices,
         Arc::clone(&capnp_quit),
     )?;
 
