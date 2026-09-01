@@ -1,0 +1,507 @@
+//! Workspace-wide history aggregation.
+//!
+//! A workspace is not one Automerge document: the shell tree describes its
+//! windows and governance, while every open record owns a separate change
+//! graph.  This module is the join.  It deliberately retains the originating
+//! document beside each change; a bare [`HistoryEntryId`] is only unique
+//! inside one Automerge graph and is therefore not safe as a workspace key.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use automerge::ChangeHash;
+use collab_types::ArtifactKind;
+use ui::history_source::{AuthorDirectory, HistorySource};
+use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore, home};
+use ui::widget::{HistoryEntry, HistoryEntryId};
+
+use crate::shell::state::{RoomId, WorkspaceTree};
+
+/// Hard ceilings keep a corrupt index or a room with thousands of references
+/// from turning opening History into an unbounded allocation.
+pub const MAX_FEED_ENTRIES: usize = 2_000;
+pub const MAX_INDEXED_RECORDS: usize = 512;
+
+/// Which collaborative document produced a history row.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HistoryOrigin {
+    WorkspaceTree,
+    Record { id: RecordId, kind: RecordKind },
+}
+
+impl HistoryOrigin {
+    pub fn key(&self) -> String {
+        match self {
+            Self::WorkspaceTree => "workspace-tree".to_string(),
+            Self::Record { id, .. } => format!("record:{id}"),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::WorkspaceTree => "Workspace".to_string(),
+            Self::Record { id, .. } => id.file_path().map_or_else(
+                || id.as_str().to_string(),
+                |path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_else(|| id.as_str())
+                        .to_string()
+                },
+            ),
+        }
+    }
+}
+
+/// A globally unambiguous change address.  Both fields are required: two
+/// documents may legitimately contain the same native change hash.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceHistoryId {
+    pub origin: HistoryOrigin,
+    pub change: HistoryEntryId,
+}
+
+impl Ord for WorkspaceHistoryId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.origin
+            .cmp(&other.origin)
+            .then_with(|| self.change.as_bytes().cmp(other.change.as_bytes()))
+    }
+}
+
+impl PartialOrd for WorkspaceHistoryId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A history row plus enough provenance to open, diff, or undo it against the
+/// correct document later.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceHistoryEntry {
+    pub id: WorkspaceHistoryId,
+    pub entry: HistoryEntry,
+}
+
+impl WorkspaceHistoryEntry {
+    /// A collision-resistant projection for widgets whose callback API still
+    /// accepts only a 16-byte id.  Authoritative operations must retain `id`.
+    pub fn timeline_entry(&self) -> HistoryEntry {
+        let mut projected = self.entry.clone();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(self.id.origin.key().as_bytes());
+        hasher.update(self.id.change.as_bytes());
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+        projected.id = HistoryEntryId::from_bytes(bytes);
+        projected
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceHistoryQuery {
+    /// `None` includes every open record.  `Some` includes only records held
+    /// by, or originally minted in, this room.
+    pub room: Option<RoomId>,
+    pub limit: usize,
+}
+
+impl Default for WorkspaceHistoryQuery {
+    fn default() -> Self {
+        Self {
+            room: None,
+            limit: 500,
+        }
+    }
+}
+
+impl WorkspaceHistoryQuery {
+    pub fn for_room(room: RoomId) -> Self {
+        Self {
+            room: Some(room),
+            ..Self::default()
+        }
+    }
+
+    fn bounded_limit(self) -> usize {
+        self.limit.clamp(1, MAX_FEED_ENTRIES)
+    }
+}
+
+/// Explains whether the feed is complete on this device.  A referenced record
+/// can be known to the room before its Automerge document has been opened or
+/// downloaded; silently omitting it would make the history falsely reassuring.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FeedCoverage {
+    pub referenced_records: usize,
+    pub indexed_records: usize,
+    pub unavailable_records: Vec<RecordCheckout>,
+    pub capped_records: usize,
+}
+
+impl FeedCoverage {
+    pub fn is_complete(&self) -> bool {
+        self.unavailable_records.is_empty() && self.capped_records == 0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Fingerprint {
+    query: WorkspaceHistoryQuery,
+    documents: Vec<(String, Vec<ChangeHash>)>,
+    references: Vec<RecordCheckout>,
+    supplied_tree_rows: Option<Vec<(HistoryEntryId, std::time::SystemTime)>>,
+}
+
+/// Cached, deterministic reduction of the workspace's document graphs.
+pub struct WorkspaceHistoryIndex {
+    authors: AuthorDirectory,
+    entries: Vec<WorkspaceHistoryEntry>,
+    coverage: FeedCoverage,
+    fingerprint: Option<Fingerprint>,
+    generation: u64,
+}
+
+impl Default for WorkspaceHistoryIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorkspaceHistoryIndex {
+    pub fn new() -> Self {
+        Self {
+            authors: AuthorDirectory::new(),
+            entries: Vec::new(),
+            coverage: FeedCoverage::default(),
+            fingerprint: None,
+            generation: 0,
+        }
+    }
+
+    pub fn authors_mut(&mut self) -> &mut AuthorDirectory {
+        // A registration can change display names and avatar hues without
+        // changing any document head, so the next refresh must re-project.
+        self.fingerprint = None;
+        &mut self.authors
+    }
+
+    pub fn entries(&self) -> &[WorkspaceHistoryEntry] {
+        &self.entries
+    }
+
+    pub fn coverage(&self) -> &FeedCoverage {
+        &self.coverage
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Build from the tree's complete history.  A surface that already has a
+    /// correctly workspace-scoped tree reduction should use
+    /// [`Self::refresh_with_workspace_entries`] to avoid leaking other rooms'
+    /// shell metadata into a room-specific feed.
+    pub fn refresh(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        query: WorkspaceHistoryQuery,
+    ) -> bool {
+        self.refresh_inner(tree, records, query, None)
+    }
+
+    /// Join a caller's room-scoped tree rows with all records reachable from
+    /// that room.  The supplied rows remain the exact objects used by the room
+    /// pane, so naming and workspace labels cannot drift between surfaces.
+    pub fn refresh_with_workspace_entries(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        query: WorkspaceHistoryQuery,
+        workspace_entries: &[HistoryEntry],
+    ) -> bool {
+        self.refresh_inner(tree, records, query, Some(workspace_entries))
+    }
+
+    fn refresh_inner(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        query: WorkspaceHistoryQuery,
+        supplied: Option<&[HistoryEntry]>,
+    ) -> bool {
+        let limit = query.bounded_limit();
+        let referenced = referenced_records(tree, query.room);
+        let referenced_ids: BTreeSet<RecordId> =
+            referenced.iter().map(|record| record.id.clone()).collect();
+        let open = records.open_records();
+
+        let mut included = Vec::new();
+        for checkout in &open {
+            let belongs = query.room.is_none()
+                || referenced_ids.contains(&checkout.id)
+                || records.read(&checkout.id, |doc| {
+                    home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
+                        == query.room.map(|room| room.as_uuid())
+                }) == Some(true);
+            if belongs {
+                included.push(checkout.clone());
+            }
+        }
+        included.sort();
+
+        let capped_records = included.len().saturating_sub(MAX_INDEXED_RECORDS);
+        included.truncate(MAX_INDEXED_RECORDS);
+        let included_ids: BTreeSet<RecordId> =
+            included.iter().map(|record| record.id.clone()).collect();
+
+        let mut documents = vec![("workspace-tree".to_string(), tree.doc.get_heads())];
+        for record in &included {
+            if let Some(heads) = records.with(&record.id, |doc| doc.get_heads()) {
+                documents.push((format!("record:{}", record.id), heads));
+            }
+        }
+        let supplied_tree_rows = supplied.map(|rows| {
+            rows.iter()
+                .map(|entry| (entry.id, entry.timestamp))
+                .collect()
+        });
+        let fingerprint = Fingerprint {
+            query,
+            documents,
+            references: referenced.clone(),
+            supplied_tree_rows,
+        };
+        if self.fingerprint.as_ref() == Some(&fingerprint) {
+            return false;
+        }
+
+        let mut by_id: BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry> = BTreeMap::new();
+        let tree_rows = supplied.map_or_else(
+            || {
+                HistorySource::new()
+                    .with_authors(self.authors.clone())
+                    .with_artifact_kind(ArtifactKind::Cluster)
+                    .with_max_entries(limit)
+                    .entries(&mut tree.doc)
+            },
+            <[HistoryEntry]>::to_vec,
+        );
+        insert_rows(&mut by_id, HistoryOrigin::WorkspaceTree, tree_rows);
+
+        for record in &included {
+            let kind = artifact_kind(&record.kind);
+            let origin = HistoryOrigin::Record {
+                id: record.id.clone(),
+                kind: record.kind.clone(),
+            };
+            let authors = self.authors.clone();
+            let _ = records.with(&record.id, |doc| {
+                let rows = HistorySource::new()
+                    .with_authors(authors)
+                    .with_artifact_kind(kind)
+                    .with_max_entries(limit)
+                    .entries(doc);
+                insert_rows(&mut by_id, origin, rows);
+            });
+        }
+
+        let mut entries: Vec<_> = by_id.into_values().collect();
+        entries.sort_by(|a, b| {
+            b.entry
+                .timestamp
+                .cmp(&a.entry.timestamp)
+                .then_with(|| a.id.origin.cmp(&b.id.origin))
+                .then_with(|| a.id.change.as_bytes().cmp(b.id.change.as_bytes()))
+        });
+        entries.truncate(limit);
+
+        let unavailable_records = referenced
+            .iter()
+            .filter(|record| !included_ids.contains(&record.id))
+            .cloned()
+            .collect();
+        self.coverage = FeedCoverage {
+            referenced_records: referenced.len(),
+            indexed_records: included.len(),
+            unavailable_records,
+            capped_records,
+        };
+        self.entries = entries;
+        self.fingerprint = Some(fingerprint);
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+}
+
+fn insert_rows(
+    target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
+    origin: HistoryOrigin,
+    rows: Vec<HistoryEntry>,
+) {
+    for entry in rows {
+        let id = WorkspaceHistoryId {
+            origin: origin.clone(),
+            change: entry.id,
+        };
+        target
+            .entry(id.clone())
+            .or_insert(WorkspaceHistoryEntry { id, entry });
+    }
+}
+
+fn referenced_records(tree: &WorkspaceTree, room: Option<RoomId>) -> Vec<RecordCheckout> {
+    let Some(room) = room else {
+        return Vec::new();
+    };
+    tree.room_records_held
+        .get(&room)
+        .into_iter()
+        .flat_map(|records| records.iter())
+        .filter_map(|(id, kind)| {
+            Some(RecordCheckout::new(
+                RecordId::parse(id)?,
+                RecordKind::new(kind),
+            ))
+        })
+        .collect()
+}
+
+fn artifact_kind(kind: &RecordKind) -> ArtifactKind {
+    let lower = kind.as_str().to_ascii_lowercase();
+    if lower.contains("kanban") || lower.contains("board") {
+        ArtifactKind::Kanban
+    } else if lower.contains("chat") || lower.contains("message") {
+        ArtifactKind::ChatLog
+    } else if lower.contains("note") || lower == "tab" || lower.contains("document") {
+        ArtifactKind::Note
+    } else {
+        ArtifactKind::File
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use automerge::ROOT;
+    use automerge::transaction::{CommitOptions, Transactable};
+    use ui::qos_actions::ActionContext;
+
+    use super::*;
+    use crate::shell::state::{Workspace, WorkspaceId};
+
+    fn tree_and_room() -> (WorkspaceTree, RoomId) {
+        let workspace = Workspace::new(WorkspaceId::new(), "Research");
+        let room = workspace.room;
+        let mut tree = WorkspaceTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..WorkspaceTree::default()
+        };
+        tree.doc.put(&ROOT, "name", "Research").unwrap();
+        tree.doc.commit_with(CommitOptions::default().with_time(1));
+        (tree, room)
+    }
+
+    fn action_record(store: &RecordStore, id: RecordId, room: RoomId, time: i64) -> RecordCheckout {
+        let checkout = RecordCheckout::new(id, RecordKind::new("note"));
+        assert!(store.open_record(&checkout));
+        store.with(&checkout.id, |doc| {
+            ui::record::init(doc, &checkout.id, &checkout.kind, &room.to_string());
+            doc.put(&ROOT, "body", "A durable decision").unwrap();
+            let context = ActionContext::for_resource(
+                "Edit note",
+                checkout.id.as_str(),
+                "note",
+                "Decision log",
+            )
+            .with_app("org.qos.Notes", "Notes")
+            .with_purpose("Recorded the launch decision");
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_time(time)
+                    .with_message(context.change_message().unwrap()),
+            );
+        });
+        checkout
+    }
+
+    #[test]
+    fn joins_tree_and_room_records_with_action_provenance() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let kept = action_record(&records, RecordId::for_file("launch.md"), room, 20);
+        let other = action_record(
+            &records,
+            RecordId::for_file("private.md"),
+            RoomId::new(),
+            30,
+        );
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(kept.id.to_string(), kept.kind.to_string());
+
+        let mut index = WorkspaceHistoryIndex::new();
+        assert!(index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room)));
+        assert!(index.entries().iter().any(|row| {
+            matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &kept.id)
+                && row
+                    .entry
+                    .context
+                    .as_ref()
+                    .and_then(|c| c.purpose.as_deref())
+                    == Some("Recorded the launch decision")
+        }));
+        assert!(!index.entries().iter().any(
+            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &other.id)
+        ));
+        assert!(index.coverage().is_complete());
+    }
+
+    #[test]
+    fn refresh_is_cached_and_projected_ids_include_document_identity() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let first = action_record(&records, RecordId::for_tab(1), room, 20);
+        let second = action_record(&records, RecordId::for_tab(2), room, 20);
+        for record in [&first, &second] {
+            tree.room_records_held
+                .entry(room)
+                .or_default()
+                .insert(record.id.to_string(), record.kind.to_string());
+        }
+        let mut index = WorkspaceHistoryIndex::new();
+        let query = WorkspaceHistoryQuery::for_room(room);
+        assert!(index.refresh(&mut tree, &records, query));
+        let generation = index.generation();
+        assert!(!index.refresh(&mut tree, &records, query));
+        assert_eq!(index.generation(), generation);
+
+        let projected: std::collections::HashSet<HistoryEntryId> = index
+            .entries()
+            .iter()
+            .filter(|row| matches!(row.id.origin, HistoryOrigin::Record { .. }))
+            .map(|row| row.timeline_entry().id)
+            .collect();
+        assert!(projected.len() >= 2);
+    }
+
+    #[test]
+    fn reports_referenced_documents_that_are_not_local() {
+        let (mut tree, room) = tree_and_room();
+        let missing = RecordCheckout::new(RecordId::minted(), RecordKind::new("kanban"));
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(missing.id.to_string(), missing.kind.to_string());
+
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(
+            &mut tree,
+            &RecordStore::in_memory(),
+            WorkspaceHistoryQuery::for_room(room),
+        );
+        assert!(!index.coverage().is_complete());
+        assert_eq!(index.coverage().unavailable_records, vec![missing]);
+    }
+}
