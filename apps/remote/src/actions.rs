@@ -36,8 +36,8 @@ use automerge::AutoCommit;
 
 use qos_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
-    ResourceProvider, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::RemoteDoc;
@@ -93,10 +93,16 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
     .with_description("Open a live session to this saved connection")
     .with_contract(ActionContract {
         retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: false },
         tags: vec!["network".into(), "session".into()],
         ..ActionContract::default()
     });
-    if connection.presence == Presence::Offline {
+    if !crate::session::live_sessions_enabled() {
+        spec.unavailable(
+            "live_transport_disabled",
+            "Enable live remote sessions before connecting",
+        )
+    } else if connection.presence == Presence::Offline {
         spec.unavailable("host_offline", "The saved host is currently offline")
     } else {
         spec
@@ -118,6 +124,7 @@ pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resourc
             "Disconnect session",
             "",
             OperationKind::Effect,
+            REMOTE_OPERATION_TYPE,
             Vec::new(),
             move |_| encode_operation(&RemoteOperation::Disconnect { connection_id: id }),
         )
@@ -132,6 +139,7 @@ pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resourc
         "Send text to session",
         "command or text",
         OperationKind::Effect,
+        REMOTE_OPERATION_TYPE,
         vec![ActionParam::required_owned(
             "text",
             ParamType::Text,
@@ -147,6 +155,7 @@ pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resourc
     .with_contract(ActionContract {
         permission: PermissionRequirement::Write,
         retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: false },
         tags: vec!["remote-input".into(), "session".into()],
         ..ActionContract::default()
     });
@@ -568,7 +577,7 @@ mod tests {
         assert_eq!(connect.kind, OperationKind::Effect);
         assert_eq!(
             connect.contract.execution,
-            qos_actions::ExecutionMode::Immediate
+            qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(connect.contract.result, qos_actions::ResultSpec::None);
         assert!(

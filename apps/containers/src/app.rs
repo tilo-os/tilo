@@ -22,9 +22,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::PathSegment;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
-    ActionSpec, OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy,
-};
+use ui::qos_actions::{ActionSpec, OperationKind, PermissionRequirement, Resource, RetryPolicy};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
@@ -979,6 +977,14 @@ fn enter_pressed(event: &WindowEvent) -> bool {
 // =====================================================================
 
 impl Widget for ContainersApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "containers.container",
+            "containers.image",
+            "containers.volume",
+        ]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("containers", "containers.engine", "Containers");
         for container in &self.engine.containers {
@@ -1011,11 +1017,6 @@ impl Widget for ContainersApp {
                         spec = spec.destructive();
                     } else if *verb != "restart" && *verb != "shell" {
                         spec = spec.retry_policy(RetryPolicy::Idempotent);
-                    }
-                    if *verb == "shell" {
-                        spec = spec.returns(ResultSpec::Resource {
-                            resource_kind: "terminal.session".into(),
-                        });
                     }
                     if !self.live {
                         spec = spec.unavailable(
@@ -1103,20 +1104,34 @@ impl Widget for ContainersApp {
         let Some(target) = args.get(1).map(String::as_str) else {
             return Err("missing target".into());
         };
+        if !self.live {
+            return Err("container engine actions are unavailable in demo mode".into());
+        }
         match type_id {
             "containers.container" => match verb {
-                "start" => self.apply_action(Action::Start, target),
-                "stop" => self.apply_action(Action::Stop, target),
-                "restart" => self.apply_action(Action::Restart, target),
-                "pause" => self.apply_action(Action::Pause, target),
-                "remove" => self.apply_action(Action::Remove, target),
-                "shell" => self.attach_shell(target),
+                "start" => podman::run_action(Action::Start, target).map_err(|e| e.to_string())?,
+                "stop" => podman::run_action(Action::Stop, target).map_err(|e| e.to_string())?,
+                "restart" => {
+                    podman::run_action(Action::Restart, target).map_err(|e| e.to_string())?
+                }
+                "pause" => podman::run_action(Action::Pause, target).map_err(|e| e.to_string())?,
+                "remove" => {
+                    podman::run_action(Action::Remove, target).map_err(|e| e.to_string())?
+                }
+                "shell" => crate::terminal::spawn_exec_attach(target, "/bin/sh")
+                    .map_err(|e| e.to_string())?,
                 _ => return Ok(false),
             },
-            "containers.image" if verb == "remove" => self.remove_image(target),
-            "containers.volume" if verb == "remove" => self.remove_volume(target),
+            "containers.image" if verb == "remove" => {
+                podman::remove_image(target, true).map_err(|e| e.to_string())?
+            }
+            "containers.volume" if verb == "remove" => {
+                podman::remove_volume(target, false).map_err(|e| e.to_string())?
+            }
             _ => return Ok(false),
         }
+        self.spawn_refresh();
+        self.show_toast(format!("{verb} accepted for {target}"), false);
         Ok(true)
     }
 

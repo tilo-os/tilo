@@ -111,6 +111,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
 fn navigation_contract() -> ActionContract {
     ActionContract {
         retry: RetryPolicy::Idempotent,
+        execution: ui::qos_actions::ExecutionMode::Background { cancellable: false },
         tags: vec!["network".into(), "navigation".into()],
         ..ActionContract::view()
     }
@@ -169,6 +170,8 @@ pub struct BrowserWidget {
     /// The `WebView` content rect as window fractions `[x0,y0,x1,y1]`,
     /// published each layout for the zero-copy compositor to blit into.
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
+    resource_navigation_invocation: Option<ui::qos_actions::InvocationId>,
+    resource_navigation_result: Option<ui::qos_actions::InvocationUpdate>,
 }
 
 impl BrowserWidget {
@@ -236,6 +239,8 @@ impl BrowserWidget {
             last_query: None,
             force_suggestions: false,
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            resource_navigation_invocation: None,
+            resource_navigation_result: None,
         }
     }
 
@@ -406,11 +411,30 @@ impl BrowserWidget {
                         self.history.record(&self.current_uri, &self.title);
                         let _ = self.history.save();
                     }
+                    if let Some(invocation) = self.resource_navigation_invocation.take() {
+                        self.resource_navigation_result =
+                            Some(ui::qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: ui::qos_actions::ActionOutput::default(),
+                            });
+                    }
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     self.progress = 1.0;
                     tracing::warn!("load failed for {uri}: {error}");
                     self.title = format!("Failed to load {uri}");
+                    if let Some(invocation) = self.resource_navigation_invocation.take() {
+                        self.resource_navigation_result =
+                            Some(ui::qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: ui::qos_actions::ActionFailure {
+                                    code: "browser.navigation_failed".into(),
+                                    message: error,
+                                    details: Some(serde_json::json!({ "uri": uri })),
+                                    retryable: true,
+                                },
+                            });
+                    }
                 }
                 WebViewEvent::HistoryChanged {
                     can_go_back,
@@ -669,6 +693,46 @@ impl Widget for BrowserWidget {
         let operation = decode_browser_operation(payload)?;
         self.perform_browser_operation(operation);
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: ui::qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
+            return Ok(None);
+        }
+        if self.resource_navigation_invocation.is_some() {
+            return Err("another browser navigation is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_navigation_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: ui::qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<ui::qos_actions::InvocationUpdate> {
+        if self
+            .resource_navigation_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_navigation_result.take()
+        } else {
+            None
+        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -1075,7 +1139,7 @@ mod tests {
     fn resource_surface_binds_typed_navigation_and_reports_history_availability() {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (doc, root) = synced(&mut w);
+        let (mut doc, root) = synced(&mut w);
         let resources = Widget::resources(&w, &doc);
         let page = &resources[0];
         let back = page.actions.iter().find(|a| a.id == "back").unwrap();
@@ -1084,22 +1148,30 @@ mod tests {
         assert_eq!(navigate.params()[0].name.as_ref(), "url");
         assert_eq!(
             navigate.contract.execution,
-            ui::qos_actions::ExecutionMode::Immediate
+            ui::qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(navigate.contract.result, ui::qos_actions::ResultSpec::None);
         let mut args = serde_json::Map::new();
         args.insert("url".into(), serde_json::json!("qos.example"));
         let encoded = navigate.build_json(&args).unwrap();
-        assert!(
-            w.invoke_resource_operation(
+        let invocation = ui::qos_actions::InvocationId::new();
+        assert_eq!(
+            w.start_resource_operation(
+                invocation,
                 OperationKind::Effect,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,
                 &root,
             )
-            .unwrap()
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
         );
         assert_eq!(engine.current_uri().as_deref(), Some("https://qos.example"));
+        w.sync(&mut doc, &root);
+        assert!(matches!(
+            w.poll_resource_operation(invocation, false, &doc, &root),
+            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
     }
 }
