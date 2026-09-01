@@ -373,6 +373,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p settings \
+        -p windows-vm --bin qos-windows-vm-control \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback -p qos-cli -p ush -p qos-projector \
@@ -402,6 +403,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-install \
           target/release/qos-cli-shim \
           target/release/qos-ush \
+          target/release/qos-windows-vm-control \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
            p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
@@ -697,11 +699,12 @@ COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/cat
 COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
 COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
 COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
+COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
 COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
 COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
 COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
 RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision \
-              /usr/libexec/qos-windows-recovery-console \
+              /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
     && systemctl enable qos-windows-vm-network.service
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app

@@ -293,6 +293,10 @@ where
             license: session.health.license.clone(),
             catalog_generation: session.health.catalog_generation,
         };
+        // The tools ISO contains the one-time enrollment key. Do not mark the
+        // appliance launchable until both setup images have been removed from
+        // the live and persistent domain configuration.
+        self.backend.retire_installation_media(&self.config)?;
         self.state.save(&ready)?;
         Ok(ready)
     }
@@ -412,6 +416,9 @@ mod tests {
             Ok(self.0)
         }
         fn start(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn retire_installation_media(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
             Ok(())
         }
     }

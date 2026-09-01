@@ -13,9 +13,10 @@ readonly GUEST_SOURCE='/usr/share/qos/windows/guest'
 readonly DISK="$ROOT/system.qcow2"
 readonly INSTALL_MEDIA="$ROOT/install-media.iso"
 readonly TOOLS_MEDIA="$ROOT/qos-guest-tools.iso"
-readonly STATE="$ROOT/state.json"
+readonly STATE="$ROOT/session/state.json"
 readonly UUID_FILE="$ROOT/domain.uuid"
 readonly SECRET="$ROOT/bridge/bootstrap.secret"
+readonly VM_CONTROL='/usr/libexec/qos-windows-vm-control'
 stage=''
 
 die() { printf '%s\n' "qos-windows-provision: $*" >&2; exit 1; }
@@ -25,10 +26,10 @@ Usage: qos-windows-provision prepare --iso /absolute/path/to/windows.iso
        qos-windows-provision assert
 
 `prepare` creates the one protected appliance disk and a guest-tools ISO. It
-does not launch Windows, transmit an ISO over the network, or accept a licence
-key.  Attach the two generated ISOs only through the owner-authorised
-provisioning/recovery action, complete Windows Setup there, and type a product
-key directly into Windows if one is required.
+starts the headless singleton, but does not open a desktop, transmit an ISO over
+the network, or accept a licence key. Open the owner-authorised provisioning
+console to complete Windows Setup, and type a product key directly into Windows
+if one is required.
 EOF
 }
 
@@ -49,8 +50,13 @@ prepare() {
     [ -d "$GUEST_SOURCE" ] || die "missing immutable guest setup payload"
     command -v qemu-img >/dev/null || die 'qemu-img is not installed'
     command -v xorriso >/dev/null || die 'xorriso is not installed'
+    [ -x "$VM_CONTROL" ] || die 'the singleton VM controller is not installed'
 
-    install -d -m 0700 -o root -g root "$ROOT" "$ROOT/bridge"
+    # The active qOS owner is in qos-identity. It may authenticate the
+    # host-only guest bridge and update non-secret readiness/pin state, while
+    # Windows media, disk, and NVRAM remain root-only.
+    install -d -m 0750 -o root -g qos-identity "$ROOT" "$ROOT/bridge"
+    install -d -m 0770 -o root -g qos-identity "$ROOT/session"
     # A second appliance would merge two Windows security domains. Refuse both
     # partial and complete prior state; this tool never resets an appliance.
     [ ! -e "$DISK" ] && [ ! -e "$INSTALL_MEDIA" ] && [ ! -e "$STATE" ] \
@@ -63,7 +69,7 @@ prepare() {
     cp -- "$GUEST_SOURCE/Start-qOSGuestBridge.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSFocusedApp.ps1" "$stage/"
     head -c 32 /dev/urandom > "$stage/qos-bridge.secret"
-    install -m 0600 -o root -g root "$stage/qos-bridge.secret" "$SECRET"
+    install -m 0640 -o root -g qos-identity "$stage/qos-bridge.secret" "$SECRET"
     cat > "$stage/qos-bridge.json" <<'EOF'
 {"protocolMajor":1,"bridgePort":49888,"hostOnlyGateway":"192.168.251.1","network":"192.168.251.0/24"}
 EOF
@@ -82,20 +88,26 @@ EOF
     digest="$(sha256sum "$INSTALL_MEDIA" | awk '{print $1}')"
     uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
     printf '%s\n' "$uuid" > "$UUID_FILE"
-    chmod 0600 "$UUID_FILE"
+    chown root:qos-identity "$UUID_FILE"
+    chmod 0640 "$UUID_FILE"
     printf '{"schema_version":1,"phase":{"installing":{"media_digest":"%s"}},"license":"unknown","catalog_generation":0}\n' "$digest" > "$STATE"
-    chmod 0600 "$STATE"
+    chown root:qos-identity "$STATE"
+    chmod 0660 "$STATE"
+
+    if ! "$VM_CONTROL" start; then
+        die "the appliance is prepared but could not start; retry with: $VM_CONTROL start"
+    fi
 
     cat <<EOF
-Prepared the singleton Windows appliance.
+Prepared and started the headless singleton Windows appliance.
   disk: $DISK
   install media: $INSTALL_MEDIA
   guest tools: $TOOLS_MEDIA
   domain UUID: $uuid
 
-Next: use the owner-authorised provisioning console to attach both ISOs and
-complete Windows Setup. Product keys and organisation activation stay inside
-Windows; qOS has not read or retained either.
+Next: open the owner-authorised provisioning console and complete Windows
+Setup. Product keys and organisation activation stay inside Windows; qOS has
+not read or retained either.
 EOF
 }
 
@@ -105,11 +117,17 @@ assert_state() {
         && [ -f "$STATE" ] && [ -f "$UUID_FILE" ] && [ -f "$SECRET" ] \
         || die 'appliance preparation is incomplete'
     local item mode owner
-    for item in "$DISK" "$INSTALL_MEDIA" "$TOOLS_MEDIA" "$STATE" "$UUID_FILE" "$SECRET"; do
+    for item in "$DISK" "$INSTALL_MEDIA" "$TOOLS_MEDIA"; do
         mode="$(stat -c '%a' "$item")"; owner="$(stat -c '%U:%G' "$item")"
         [ "$mode" = 600 ] && [ "$owner" = root:root ] \
-            || die "private appliance state has unsafe ownership or mode: $item"
+            || die "private appliance media has unsafe ownership or mode: $item"
     done
+    [ "$(stat -c '%a:%U:%G' "$UUID_FILE")" = '640:root:qos-identity' ] \
+        || die "Windows VM identity has unsafe ownership or mode: $UUID_FILE"
+    [ "$(stat -c '%a:%U:%G' "$SECRET")" = '640:root:qos-identity' ] \
+        || die "Windows bridge key has unsafe ownership or mode: $SECRET"
+    [ "$(stat -c '%a:%U:%G' "$STATE")" = '660:root:qos-identity' ] \
+        || die "Windows session state has unsafe ownership or mode: $STATE"
     grep -Fq '"license":"unknown"' "$STATE" \
         || die 'host provisioning state must not contain a Windows licence'
     grep -Fq '"installing"' "$STATE" || die 'unexpected provisioning state'
