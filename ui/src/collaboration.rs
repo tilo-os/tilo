@@ -90,6 +90,10 @@ pub enum CollabRequest {
         code: String,
         message: String,
     },
+    UpdateInvocation {
+        id: u64,
+        update: qos_actions::InvocationUpdate,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +116,7 @@ pub struct ExportedAction {
     pub description: Option<String>,
     pub operation_kind: String,
     pub params_json: String,
+    pub contract_json: String,
     pub input: ExportedInput,
 }
 
@@ -225,6 +230,11 @@ pub enum CollabEvent {
         action: String,
         argument: Option<String>,
         actor: String,
+    },
+    /// The invocation owner requested cooperative cancellation. Delivered at
+    /// most once; the app-side job decides the next safe stopping boundary.
+    InvocationCancellation {
+        id: u64,
     },
 }
 
@@ -1482,11 +1492,13 @@ async fn spawn_invocation_stream(
 ) {
     if let Ok(stream) = channel.subscribe_invocations().await {
         let tx = inbound_tx.clone();
+        let cancellation_channel = channel.clone();
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
+                let id = invocation.id;
                 if tx
                     .send(CollabEvent::Invocation {
-                        id: invocation.id,
+                        id,
                         resource: invocation.resource,
                         action: invocation.action,
                         argument: invocation.argument,
@@ -1496,6 +1508,24 @@ async fn spawn_invocation_stream(
                 {
                     break;
                 }
+                let cancellation_tx = tx.clone();
+                let channel = cancellation_channel.clone();
+                tokio::task::spawn_local(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        match channel.invocation_cancellation(id).await {
+                            Ok(false) => {}
+                            Ok(true) => {
+                                let _ = cancellation_tx
+                                    .send(CollabEvent::InvocationCancellation { id });
+                                break;
+                            }
+                            // The broker removes terminal invocations, so an
+                            // unknown-id error is also the watcher stop signal.
+                            Err(_) => break,
+                        }
+                    }
+                });
             }
         });
     }
@@ -1742,6 +1772,7 @@ async fn dispatch_sdk_request(
                     description: action.description,
                     operation_kind: action.operation_kind,
                     params_json: action.params_json,
+                    contract_json: action.contract_json,
                     input: match action.input {
                         ExportedInput::None => runtime_collab::ExportedInput::None,
                         ExportedInput::Text {
@@ -1765,6 +1796,14 @@ async fn dispatch_sdk_request(
                 tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
             }
         }
+        CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
+            Ok(json) => {
+                if let Err(error) = route.channel.update_invocation(id, &json).await {
+                    tracing::warn!(%error, id, "collab: updating action invocation failed");
+                }
+            }
+            Err(error) => tracing::warn!(%error, id, "collab: encoding action update failed"),
+        },
     }
 }
 fn signed_document_event(
