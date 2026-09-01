@@ -4,10 +4,12 @@ pub mod locales {
     const CATALOG_0: &str = "starter-title = Deine erste qOS-App\n\
 starter-name-label = Dein Name\n\
 starter-name-placeholder = Name eingeben\n\
+starter-updates-label = Neuigkeiten erhalten\n\
 starter-greeting = Hallo, { $name }!\n";
     const CATALOG_1: &str = "starter-title = Your first qOS app\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
+starter-updates-label = Receive updates\n\
 starter-greeting = Hello, { $name }!\n\
 data-name-column = Name\n\
 data-actions-column = Actions\n\
@@ -236,6 +238,14 @@ mod tests {
                 .name_contains("Ada"),
         )
         .expect("generated greeting semantics match");
+        app.perform_named("updates-checkbox", &Action::ToggleCheck)
+            .expect("generated local checkbox remains addressable");
+        app.expect(
+            &SemanticExpectation::named("updates-checkbox")
+                .role(Role::Checkbox)
+                .checked(false),
+        )
+        .expect("generated boolean binding updates semantics");
     }
 
     #[test]
@@ -310,6 +320,7 @@ mod tests {
         let snapshot = app.inspection_json().expect("localized semantic snapshot");
         assert!(snapshot.contains("Deine erste qOS-App"), "{snapshot}");
         assert!(snapshot.contains("Dein Name"), "{snapshot}");
+        assert!(snapshot.contains("Neuigkeiten erhalten"), "{snapshot}");
         assert!(snapshot.contains("Hallo, world!"), "{snapshot}");
         app.expect(
             &SemanticExpectation::named("name-input")

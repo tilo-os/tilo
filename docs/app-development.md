@@ -665,20 +665,27 @@ form needs no snapshots, callbacks, or custom widget:
 
 ```rust
 let query = LocalState::new(String::from("status:open"));
+let live_updates = LocalState::new(true);
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
 let input = TextInput::from_state(&query)
     .with_id("filter-input")
     .with_accessible_name("Filter");
+let updates = labeled_check(
+    "live-updates-label",
+    Checkbox::from_state(&live_updates).with_id("live-updates"),
+);
 ```
 
-`set` replaces a local value and `update` mutates it in place. A bound text
-change invalidates rendering, multiline intrinsic measurement, and
-accessibility in the same synchronization pass without being misreported as a
-user edit. Bind several inputs to the same handle for synchronized
-master/detail or inspector views. An optional `on_change` callback can still
-observe committed user edits without owning synchronization. Use
-`Text::dynamic` when the value comes from an existing local owner instead of
-`LocalState`.
+`TextInput::from_state`, `Checkbox::from_state`, and `Toggle::from_state` all
+use the same explicit typed contract. `set` replaces a local value and `update`
+mutates it in place. A bound text change invalidates rendering, multiline
+intrinsic measurement, and accessibility in the same synchronization pass
+without being misreported as a user edit. Bind several controls to the same
+handle for synchronized master/detail or inspector views. An optional
+`on_change` callback observes committed user edits without owning
+synchronization; `set_text`, `set_checked`, and model synchronization do not
+invoke it. Use `Text::dynamic` when the value comes from an existing local
+owner instead of `LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app
