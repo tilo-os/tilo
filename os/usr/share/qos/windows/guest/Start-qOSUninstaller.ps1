@@ -5,6 +5,12 @@ param(
     [string]$JobPath
 )
 $ErrorActionPreference = 'Stop'
+$processJobHelper = Join-Path $PSScriptRoot 'qOS-ProcessJob.ps1'
+if (-not (Test-Path -LiteralPath $processJobHelper -PathType Leaf)) {
+    throw 'qOS process containment helper is missing.'
+}
+. $processJobHelper
+
 $resolvedJob = [IO.Path]::GetFullPath($JobPath)
 if ($resolvedJob -notmatch '^C:\\ProgramData\\qOS\\InstallerSession\\operations\\[A-Za-z0-9._-]{16,128}\\job\.json$') {
     throw 'invalid qOS uninstaller job path'
@@ -19,8 +25,11 @@ try {
     foreach ($shell in $explorer) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
     # The product code was parsed from an administrator-owned uninstall record.
     # No registry command line, executable path, or client argument is run.
-    $process = Start-Process -FilePath "$env:WINDIR\System32\msiexec.exe" -ArgumentList @('/x', [string]$job.productCode) -Wait -PassThru
-    exit $process.ExitCode
+    $result = [qOS.WindowsGuest.ProcessJob]::RunMsiUninstaller(
+        "$env:WINDIR\System32\msiexec.exe",
+        [string]$job.productCode
+    )
+    exit $result.ExitCode
 } finally {
     $sessionExplorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId })
     if ($explorer.Count -gt 0 -and $sessionExplorer.Count -eq 0) {

@@ -439,6 +439,8 @@ function Start-InstallerOperation($request) {
     Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; packagePath = $operationPayload; kind = [string]$package.kind; byteLen = [UInt64]$package.byteLen; sha256 = [string]$package.sha256 }
     $helper = Join-Path $operationDirectory 'Start-qOSInstaller.ps1'
     Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Destination $helper
+    Copy-Item -LiteralPath (Join-Path $installerRoot 'qOS-ProcessJob.ps1') -Destination (Join-Path $operationDirectory 'qOS-ProcessJob.ps1')
+    Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSProcessJobBroker.ps1') -Destination (Join-Path $operationDirectory 'Start-qOSProcessJobBroker.ps1')
     $operation = @{ operationKind = 'installation'; operationId = [string]$request.operationId; packageId = [string]$request.packageId; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; beforeExecutableHashes = $before; candidates = $null }
     Write-AdminJson $operationPath $operation
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$helper`" -JobPath `"$jobPath`""
@@ -585,6 +587,7 @@ function Start-UninstallOperation($request) {
     Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; productCode = [string]$record.productCode }
     $helper = Join-Path $operationDirectory 'Start-qOSUninstaller.ps1'
     Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSUninstaller.ps1') -Destination $helper
+    Copy-Item -LiteralPath (Join-Path $installerRoot 'qOS-ProcessJob.ps1') -Destination (Join-Path $operationDirectory 'qOS-ProcessJob.ps1')
     $taskName = "qOS-Uninstall-$(([string]$request.operationId).Substring(0, 16))"
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $operation = @{ operationKind = 'uninstallation'; operationId = [string]$request.operationId; applicationId = [string]$request.applicationId; uninstallerId = [string]$record.id; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; catalogGeneration = $null }
