@@ -41,7 +41,7 @@ pub fn breadcrumb_components(
     if let Some(home) = home
         && let Ok(rel) = cwd.strip_prefix(home)
     {
-        out.push(("Home".into(), home.to_path_buf()));
+        out.push((crate::i18n::t("files-place-home"), home.to_path_buf()));
         let mut current = home.to_path_buf();
         for comp in rel.components() {
             if let std::path::Component::Normal(name) = comp {
