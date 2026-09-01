@@ -35,6 +35,10 @@ pub struct Text {
     args: Vec<(String, ArgValue)>,
     i18n_revision: u64,
     style: TextStyle,
+    /// Semantic intent drives accessibility and, by default, live typography.
+    semantic_role: Option<TextRole>,
+    follows_role_style: bool,
+    heading_level: Option<u8>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,
     engine_revision: u64,
     /// `None` (default) renders with the theme's `text_primary`.
@@ -69,6 +73,9 @@ impl Text {
             args: Vec::new(),
             i18n_revision: crate::i18n::I18nManager::revision(),
             style: TextStyle::new(16.0),
+            semantic_role: None,
+            follows_role_style: false,
+            heading_level: None,
             layout_engine: None,
             engine_revision: 0,
             color: None,
@@ -191,7 +198,10 @@ impl Text {
 
     #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
+        self.use_explicit_style();
         self.style.size = size;
+        self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -199,8 +209,10 @@ impl Text {
     /// this same value, so leading, weight, face, and italic cannot drift.
     #[must_use]
     pub fn with_style(mut self, style: TextStyle) -> Self {
+        self.use_explicit_style();
         self.style = style;
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -246,18 +258,78 @@ impl Text {
         }
     }
 
-    /// Resolve a semantic role from the active theme. This is the preferred
-    /// application-level API: one role selects size, leading, weight, and face
-    /// together and automatically reflects text/UI scaling in `theme`.
+    /// Select typography by intent instead of copying sizes into application
+    /// code. The role follows the active theme, text scale, and UI scale when
+    /// the same retained widget is laid out again.
+    ///
+    /// A later explicit typography modifier such as [`Self::with_size`] or
+    /// [`Self::with_style`] opts out of the role. This keeps custom text fully
+    /// controllable without making modifier order ambiguous.
     #[must_use]
-    pub fn with_role(self, role: TextRole, theme: &Theme) -> Self {
-        self.with_style(theme.tokens.typography.style(role))
+    pub fn with_role(mut self, role: TextRole) -> Self {
+        self.semantic_role = Some(role);
+        self.follows_role_style = true;
+        let style = Theme::default().tokens.typography.style(role);
+        self.style = self.merged_semantic_style(&style);
+        self.dirty = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    fn use_explicit_style(&mut self) {
+        self.follows_role_style = false;
+    }
+
+    fn merged_semantic_style(&self, style: &TextStyle) -> TextStyle {
+        let mut resolved = self.style.clone();
+        resolved.size = style.size;
+        resolved.line_height = style.line_height;
+        resolved.weight = style.weight;
+        resolved.italic = style.italic;
+        resolved.family.clone_from(&style.family);
+        resolved
+    }
+
+    fn observe_theme_role(&mut self, theme: &Theme) {
+        if !self.follows_role_style {
+            return;
+        }
+        let Some(role) = self.semantic_role else {
+            return;
+        };
+        let style = theme.tokens.typography.style(role);
+        let resolved = self.merged_semantic_style(&style);
+        if self.style != resolved {
+            self.style = resolved;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+    }
+
+    /// Override the screen-reader heading level while retaining the selected
+    /// visual role. Levels are clamped to the platform-supported 1–6 range.
+    /// This is useful for nested sections; `Title`/`Display` default to level
+    /// 1 and `Heading` defaults to level 2.
+    #[must_use]
+    pub fn with_heading_level(mut self, level: u8) -> Self {
+        self.heading_level = Some(level.clamp(1, 6));
+        self
+    }
+
+    fn accessible_heading_level(&self) -> Option<u8> {
+        self.heading_level.or(match self.semantic_role {
+            Some(TextRole::Title | TextRole::Display) => Some(1),
+            Some(TextRole::Heading) => Some(2),
+            _ => None,
+        })
     }
 
     #[must_use]
     pub fn with_line_height(mut self, multiplier: f32) -> Self {
+        self.use_explicit_style();
         self.style.line_height = multiplier.max(0.1);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -267,6 +339,7 @@ impl Text {
     pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
         self.style = self.style.with_auto_hyphenation(language);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -279,20 +352,25 @@ impl Text {
     ) -> Self {
         self.style = self.style.with_hyphenator(hyphenator);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
     #[must_use]
     pub fn with_weight(mut self, weight: TextWeight) -> Self {
+        self.use_explicit_style();
         self.style.weight = weight;
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
     #[must_use]
     pub fn with_italic(mut self, italic: bool) -> Self {
+        self.use_explicit_style();
         self.style.italic = italic;
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -301,8 +379,10 @@ impl Text {
     /// so a label previewing a font in its own face lays out correctly.
     #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
+        self.use_explicit_style();
         self.style.family = family;
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -310,6 +390,7 @@ impl Text {
     pub fn with_letter_spacing(mut self, px: f32) -> Self {
         self.style = self.style.with_letter_spacing(px);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -317,6 +398,7 @@ impl Text {
     pub fn with_tracking(mut self, em: f32) -> Self {
         self.style = self.style.with_tracking(em);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -324,6 +406,7 @@ impl Text {
     pub fn with_font_feature(mut self, tag: OpenTypeTag, value: u32) -> Self {
         self.style = self.style.with_font_feature(tag, value);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -331,6 +414,7 @@ impl Text {
     pub fn with_kerning(mut self, enabled: bool) -> Self {
         self.style = self.style.with_kerning(enabled);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -338,6 +422,7 @@ impl Text {
     pub fn with_discretionary_ligatures(mut self, enabled: bool) -> Self {
         self.style = self.style.with_discretionary_ligatures(enabled);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -345,6 +430,7 @@ impl Text {
     pub fn with_small_caps(mut self, enabled: bool) -> Self {
         self.style = self.style.with_small_caps(enabled);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -352,6 +438,7 @@ impl Text {
     pub fn with_numeric_style(mut self, numeric_style: NumericStyle) -> Self {
         self.style = self.style.with_numeric_style(numeric_style);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -359,6 +446,7 @@ impl Text {
     pub fn with_font_variation(mut self, tag: OpenTypeTag, value: f32) -> Self {
         self.style = self.style.with_font_variation(tag, value);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -366,6 +454,7 @@ impl Text {
     pub fn with_optical_sizing(mut self, optical_sizing: OpticalSizing) -> Self {
         self.style = self.style.with_optical_sizing(optical_sizing);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -373,6 +462,7 @@ impl Text {
     pub fn with_align(mut self, align: ParagraphAlign) -> Self {
         self.style = self.style.with_align(align);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -380,6 +470,7 @@ impl Text {
     pub fn with_balanced_wrap(mut self) -> Self {
         self.style = self.style.with_wrap_mode(TextWrapMode::Balance);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -387,6 +478,7 @@ impl Text {
     pub fn with_hanging_punctuation(mut self, hanging: HangingPunctuation) -> Self {
         self.style = self.style.with_hanging_punctuation(hanging);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -394,16 +486,19 @@ impl Text {
     pub fn with_fragmentation(mut self, orphans: u8, widows: u8) -> Self {
         self.style = self.style.with_fragmentation(orphans, widows);
         self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
     /// Mutate the font-family override after construction. `None` restores the
     /// default sans face.
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
+        self.use_explicit_style();
         let family = family.unwrap_or(FontChoice::SansSerif);
         if self.style.family != family {
             self.style.family = family;
             self.dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -475,9 +570,10 @@ impl Widget for Text {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.observe_theme_role(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: taffy::Dimension::auto(),
@@ -570,6 +666,7 @@ impl Widget for Text {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.observe_theme_role(theme);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
@@ -692,7 +789,10 @@ impl Widget for Text {
         if label.is_empty() {
             return None;
         }
-        Some(AccessNode::new(Role::StaticText).with_name(label))
+        let role = self
+            .accessible_heading_level()
+            .map_or(Role::StaticText, |level| Role::Heading { level });
+        Some(AccessNode::new(role).with_name(label))
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -959,12 +1059,55 @@ mod tests {
     #[test]
     fn semantic_role_uses_active_theme_typography() {
         let theme = Theme::dark().with_text_scale(1.5);
-        let text = Text::new("Readable").with_role(TextRole::Reading, &theme);
+        let mut text = Text::new("Readable").with_role(TextRole::Reading);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        Widget::build_layout(&mut text, &mut taffy, &theme, &mut nodes);
         assert_eq!(text.text_style().size, theme.tokens.typography.scale.base);
         assert_eq!(
             text.text_style().line_height,
             theme.tokens.typography.line_height_relaxed
         );
+    }
+
+    #[test]
+    fn semantic_role_follows_theme_changes_without_rebuilding_widget() {
+        let mut text = Text::new("Readable")
+            .with_role(TextRole::Reading)
+            .with_auto_hyphenation("en-US");
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let default_theme = Theme::default();
+        Widget::build_layout(&mut text, &mut taffy, &default_theme, &mut nodes);
+        let default_size = text.text_style().size;
+
+        let scaled_theme = Theme::dark().with_text_scale(1.5);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        Widget::build_layout(&mut text, &mut taffy, &scaled_theme, &mut nodes);
+
+        assert!(text.text_style().size > default_size);
+        assert_eq!(
+            text.text_style().size,
+            scaled_theme.tokens.typography.style(TextRole::Reading).size
+        );
+        assert!(matches!(
+            &text.text_style().hyphenation,
+            crate::text_render::Hyphenation::Auto(language) if language == "en-US"
+        ));
+    }
+
+    #[test]
+    fn explicit_typography_modifier_opts_out_of_semantic_role() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = Text::new("Fixed")
+            .with_role(TextRole::Title)
+            .with_size(19.0);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        Widget::build_layout(&mut text, &mut taffy, &theme, &mut nodes);
+
+        assert_eq!(text.text_style().size, 19.0);
     }
     use crate::a11y::Role;
 
@@ -976,6 +1119,27 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("Hello world"));
         assert_eq!(node.value, None);
         assert!(!node.state.focusable, "static text is not focusable");
+    }
+
+    #[test]
+    fn semantic_title_and_heading_roles_create_navigable_headings() {
+        let title = Widget::accessibility(&Text::new("Projects").with_role(TextRole::Title))
+            .expect("title is accessible");
+        let heading = Widget::accessibility(&Text::new("Recent").with_role(TextRole::Heading))
+            .expect("heading is accessible");
+        assert_eq!(title.role, Role::Heading { level: 1 });
+        assert_eq!(heading.role, Role::Heading { level: 2 });
+    }
+
+    #[test]
+    fn custom_heading_style_keeps_semantics_and_level_can_be_overridden() {
+        let text = Text::new("Details")
+            .with_role(TextRole::Heading)
+            .with_size(19.0)
+            .with_heading_level(3);
+        let node = Widget::accessibility(&text).expect("heading is accessible");
+        assert_eq!(node.role, Role::Heading { level: 3 });
+        assert_eq!(text.text_style().size, 19.0);
     }
 
     #[test]
