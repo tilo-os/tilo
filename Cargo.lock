@@ -17108,6 +17108,7 @@ dependencies = [
  "runtime-dylib",
  "runtime-portal",
  "serde",
+ "serde_json",
  "taffy",
  "ui",
  "vello",
