@@ -990,7 +990,8 @@ mod tests {
     #[test]
     fn live_tool_transcript_selects_an_arbitrary_typed_app_action() {
         let offer = Offer {
-            app: "calculator",
+            app: "calculator".to_string(),
+            broker_peer_id: None,
             descriptor: ActionDescriptor {
                 address: ActionAddress::new("calculator.range:main", "sample"),
                 resource_kind: "calculator.range".into(),
