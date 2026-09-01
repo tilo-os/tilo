@@ -36,6 +36,7 @@ pub mod detail;
 pub mod digest;
 pub mod facets;
 pub mod groups;
+pub mod narrative;
 pub mod revert;
 pub mod run_undo;
 pub mod runs;
@@ -50,6 +51,10 @@ pub use facets::HistoryFacetIndex;
 pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
     name_range, read_named_ranges, split_named_range,
+};
+pub use narrative::{
+    ActivityNarrator, GroundedNarrative, NarrativeRequest, deterministic_narrative,
+    validate_narrative,
 };
 pub use revert::{
     ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
