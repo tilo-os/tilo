@@ -15,9 +15,9 @@ use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
-use crate::model::{Chooser, Decision, Route};
+use crate::model::{Chooser, Route};
 use crate::plan::{self, Block, Instruction, Plan};
-use crate::surface::{self, AppContract, Offer, View};
+use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
 #[derive(Clone, Debug)]
@@ -459,16 +459,6 @@ impl Session {
         }
     }
 
-    /// Every operation the room's applications currently export and the
-    /// agent's capabilities allow — a denied one is absent, never merely
-    /// refused. Rebuilt on every call: the whole point of a survey is that
-    /// it answers for the room as it stands right now.
-    fn offers(&self, focus: Option<String>) -> Vec<Offer> {
-        let held = self.held();
-        let view = self.view(focus);
-        surface::offers(&held, &view, &self.cfg.permissions)
-    }
-
     /// Perform the discovered operation `id` names, against whichever
     /// document holds it. `Ok(Err(_))` is a refusal in words a person
     /// reads; `Err(_)` is this session's own I/O failing.
@@ -596,38 +586,49 @@ impl Session {
     /// applications currently export — the model has no say in either of
     /// those, only in the single catalogue request that never needed it.
     fn decide(&mut self, ins_id: &str, asked: &str, blocks: &[Block]) -> Plan {
-        let offers = self.offers(Some(ins_id.to_string()));
-        if plan::clauses(asked).len() < 2 {
-            let Decision { instruction, route } = self.chooser.choose(asked, blocks);
-            let instruction = match instruction {
-                Instruction::Unknown(_) if !offers.is_empty() => {
-                    tracing::debug!("the catalogue found nothing; trying what the room discovers");
-                    Instruction::from_floor(asked, &offers)
+        let held = self.held();
+        let view = self.view(Some(ins_id.to_string()));
+        let catalogue = surface::catalogue(&held, &view, &self.cfg.permissions);
+        let offers = &catalogue.offers;
+        let decision = self.chooser.choose_actions(asked, blocks, &catalogue, 8);
+        let (plan, route) = match decision {
+            Ok(answer) => {
+                let mut steps = Vec::new();
+                let mut invalid = None;
+                for (id, arguments) in answer.actions.iter().zip(&answer.arguments) {
+                    match Instruction::from_answer(id, asked, Some(arguments), offers) {
+                        Ok(instruction) => steps.push(plan::Step::bound(instruction, offers)),
+                        Err(error) => {
+                            invalid = Some(format!("{error:?}"));
+                            break;
+                        }
+                    }
                 }
-                other => other,
-            };
-            tracing::info!(
-                block = %ins_id,
-                asked = %asked,
-                decided_by = route.label(),
-                live = route.is_live(),
-                ?instruction,
-                "{}",
-                route.detail()
-            );
-            self.last_route = Some(route);
-            return Plan::of(instruction);
-        }
-        let plan = Plan::from_floor(asked, &offers);
+                if let Some(error) = invalid {
+                    (
+                        Plan::from_surface(asked, offers),
+                        Route::Keywords(crate::model::Fallback::OutOfCatalogue(error)),
+                    )
+                } else {
+                    if let Some(then) = answer.then {
+                        steps.push(plan::Step::own(Instruction::Unknown(then)));
+                    }
+                    (Plan { steps }, Route::Model { why: answer.why })
+                }
+            }
+            Err(route) => (Plan::from_surface(asked, offers), route),
+        };
         tracing::info!(
             block = %ins_id,
             asked = %asked,
             steps = plan.len(),
             offers = offers.len(),
-            "read as a sequence of {} steps",
-            plan.len()
+            decided_by = route.label(),
+            live = route.is_live(),
+            "{}",
+            route.detail()
         );
-        self.last_route = None;
+        self.last_route = Some(route);
         plan
     }
 
