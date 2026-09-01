@@ -82,6 +82,8 @@ struct ShotArgs {
     offline: bool,
     /// Demo the ⋯ overflow menu expanded (attribution / offline / licenses).
     menu: bool,
+    /// Production floating-navigation ownership state to render, if any.
+    floating_navigation: Option<&'static str>,
 }
 
 /// # Errors
@@ -137,7 +139,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if shot.menu {
             app.set_demo_overflow();
         }
-        render_shot_to_png(Box::new(app), shot.viewport, &shot.out)?;
+        render_shot_to_png(app, shot.viewport, &shot.out, shot.floating_navigation)?;
         return Ok(());
     }
 
@@ -172,6 +174,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut traffic = false;
     let mut offline = false;
     let mut menu = false;
+    let mut floating_navigation = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--shots" {
@@ -204,6 +207,16 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
             offline = true;
         } else if arg == "--menu" {
             menu = true;
+        } else if arg == "--floating-navigation" {
+            floating_navigation = Some("detached");
+        } else if arg == "--floating-navigation-attached" {
+            floating_navigation = Some("attached");
+        } else if arg == "--floating-navigation-hover" {
+            floating_navigation = Some("hover");
+        } else if arg == "--floating-navigation-returning" {
+            floating_navigation = Some("returning");
+        } else if arg == "--floating-navigation-returned" {
+            floating_navigation = Some("returned");
         } else if arg == "--panel" {
             if let Some(s) = iter.next() {
                 apply_panel(s, &mut panel, &mut transit_mode);
@@ -226,6 +239,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         traffic,
         offline,
         menu,
+        floating_navigation,
     })
 }
 
@@ -252,9 +266,10 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    mut app: maps::MapsApp,
     viewport: (u32, u32),
     out: &std::path::Path,
+    floating_navigation: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
@@ -271,6 +286,7 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
+    let widget: &mut dyn Widget = &mut app;
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
@@ -304,6 +320,10 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+    if let Some(stage) = floating_navigation {
+        app.debug_stage_navigation_for_shot(stage);
+    }
+    let widget: &mut dyn Widget = &mut app;
 
     let mut scene = Scene::new();
     widget.draw_with_presence(
@@ -313,6 +333,13 @@ fn render_shot_to_png(
         &theme,
         &presence,
         &permission,
+    );
+    widget.draw_floating_surfaces(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
     );
 
     if let Some(parent) = out.parent() {
