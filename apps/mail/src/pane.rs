@@ -26,7 +26,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
-use ui::widget::{TextInput, WebView};
+use ui::widget::{EmptyState, TextInput, WebView};
 
 use crate::account::AccountStore;
 use crate::draw::{
@@ -43,6 +43,41 @@ const SWIPE_THRESHOLD: f64 = 72.0;
 const READER_COMPACT_W: f64 = 480.0;
 /// Height (px) of the "Add account" row at the foot of the sidebar account list.
 const ADD_ACCOUNT_ROW_H: f64 = 38.0;
+
+/// Honest, actionable copy for each way the message list can be empty. Kept
+/// outside `draw_list` so search, folder and first-run states cannot collapse
+/// back into one vague "No messages" line.
+fn list_zero_state(
+    has_messages: bool,
+    has_accounts: bool,
+    search: &str,
+) -> (Icon, &'static str, &'static str) {
+    if has_messages && search.is_empty() {
+        (
+            Icon::Inbox,
+            "No messages in this folder",
+            "Messages moved here will appear in this list.",
+        )
+    } else if has_messages {
+        (
+            Icon::Search,
+            "No matching messages",
+            "Try another sender, subject, or keyword.",
+        )
+    } else if !has_accounts {
+        (
+            Icon::Mail,
+            "Connect your email",
+            "Use Add account in the sidebar to start sending and receiving messages.",
+        )
+    } else {
+        (
+            Icon::Inbox,
+            "Your inbox is ready",
+            "New messages will appear here after the next sync.",
+        )
+    }
+}
 
 /// Header title placement for the list pane: the x where the folder title
 /// starts, the y (top of its text box) that vertically centres it on the
@@ -798,24 +833,22 @@ impl Pane {
         // Rows.
         let rows = st.list_rows();
         if rows.is_empty() {
-            let hint = if !st.mailbox.messages.is_empty() {
-                if st.search.is_empty() {
-                    "No messages in this folder"
-                } else {
-                    "No results"
-                }
-            } else if st.accounts.is_empty() {
-                "No account yet — use Add account to set one up"
-            } else {
-                "No messages"
-            };
-            tr.draw_text(
+            let (icon, title, message) = list_zero_state(
+                !st.mailbox.messages.is_empty(),
+                !st.accounts.is_empty(),
+                &st.search,
+            );
+            EmptyState::paint(
                 scene,
-                hint,
-                13.0,
-                c.text_dim,
-                t * Affine::translate((r.x0 + self.header_left_inset(), r.y0 + HEADER_H + 12.0)),
+                t,
+                tr,
+                theme,
+                Rect::new(r.x0, r.y0 + HEADER_H, r.x1, r.y1),
+                Some(icon),
+                title,
+                Some(message),
                 None,
+                Point::new(-1.0, -1.0),
             );
             return;
         }
@@ -2393,6 +2426,24 @@ mod tests {
 
     fn shared() -> Shared {
         MailState::shared(MailState::new_sample(crate::app::avatar_store_offline()))
+    }
+
+    #[test]
+    fn empty_message_states_explain_the_next_useful_step() {
+        let (_, title, body) = list_zero_state(false, false, "");
+        assert_eq!(title, "Connect your email");
+        assert!(body.contains("Add account"));
+
+        let (_, title, body) = list_zero_state(false, true, "");
+        assert_eq!(title, "Your inbox is ready");
+        assert!(body.contains("next sync"));
+
+        let (_, title, body) = list_zero_state(true, true, "roadmap");
+        assert_eq!(title, "No matching messages");
+        assert!(body.contains("keyword"));
+
+        let (_, title, _) = list_zero_state(true, true, "");
+        assert_eq!(title, "No messages in this folder");
     }
 
     fn reader_for(sh: &Shared, id: MessageId, w: f64, h: f64) -> Pane {

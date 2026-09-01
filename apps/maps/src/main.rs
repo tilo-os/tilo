@@ -38,8 +38,21 @@
     )
 )]
 
+use std::collections::HashMap;
+
+use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use ui::offscreen::OffscreenRenderer;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 use ui::widget::Widget;
+use vello::Scene;
+use vello::kurbo::{Affine, Point};
+use vello::peniko::Color;
+
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
@@ -54,6 +67,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.maps", maps::app_root)
             .shot_root(shot_root)
+            .shot_handler(shot_handler)
             .allowed_flags(&[
                 "--nav-closed",
                 "--empty",
@@ -65,6 +79,11 @@ pub fn main() {
                 "--offline",
                 "--menu",
                 "--attribution",
+                "--floating-navigation",
+                "--floating-navigation-attached",
+                "--floating-navigation-hover",
+                "--floating-navigation-returning",
+                "--floating-navigation-returned",
             ])
             .allowed_options(&["--panel"])
             .configure_app(|app| maps::actions::register(app.action_registry_mut())),
@@ -76,6 +95,10 @@ pub fn main() {
     reason = "signature is dictated by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(shot_app(args)))
+}
+
+fn shot_app(args: &LaunchArgs) -> maps::MapsApp {
     // Headless: no event loop and no network — use an offline app so the
     // tile worker is never spawned and nothing blocks on I/O. The default
     // offline app renders the bundled sample city; `--empty` mirrors the
@@ -123,7 +146,30 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     if args.has("--attribution") {
         app.set_demo_attribution();
     }
-    Ok(Box::new(app))
+    app
+}
+
+fn floating_navigation_stage(args: &LaunchArgs) -> Option<&'static str> {
+    [
+        ("--floating-navigation", "detached"),
+        ("--floating-navigation-attached", "attached"),
+        ("--floating-navigation-hover", "hover"),
+        ("--floating-navigation-returning", "returning"),
+        ("--floating-navigation-returned", "returned"),
+    ]
+    .into_iter()
+    .find_map(|(flag, stage)| args.has(flag).then_some(stage))
+}
+
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    render_shot_to_png(
+        shot_app(args),
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        out,
+        floating_navigation_stage(args),
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Resolve a `--panel` value. `transit` is not a panel — it opens Directions in
@@ -138,6 +184,89 @@ fn apply_panel(s: &str, panel: &mut Option<maps::Panel>, transit_mode: &mut bool
         }
         _ => {}
     }
+}
+
+/// Run one offscreen frame and include app-owned floating surfaces in the same
+/// order as the live compositor.
+fn render_shot_to_png(
+    mut app: maps::MapsApp,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    floating_navigation: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    let mut text_renderer = TextRenderer::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let mut state = ui::State::new();
+    let widget: &mut dyn Widget = &mut app;
+    widget.sync(&mut state.doc, &state.root);
+
+    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
+            ..Default::default()
+        },
+        &[child],
+    )?;
+    {
+        let measure_map = node_map.clone();
+        let tr = &mut text_renderer;
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
+    }
+    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    if let Some(stage) = floating_navigation {
+        app.debug_stage_navigation_for_shot(stage);
+    }
+    let widget: &mut dyn Widget = &mut app;
+    let mut scene = Scene::new();
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+    widget.draw_floating_surfaces(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("maps: wrote shot to {}", out.display());
+    Ok(())
 }
 
 #[cfg(test)]

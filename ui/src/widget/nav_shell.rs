@@ -1039,6 +1039,9 @@ impl Widget for NavShell {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> = vec![self.overview.as_mut()];
+        if let Some(d) = self.detail.as_mut() {
+            v.push(d.as_mut());
+        }
         if let Some(s) = self.sidebar.as_mut() {
             v.push(s.as_mut());
         }
@@ -1255,6 +1258,27 @@ mod tests {
         // snap to the settled frame every assertion here is about.
         ns.snap();
         ns
+    }
+
+    #[test]
+    fn mutable_children_match_immutable_children_in_logical_order() {
+        let mut ns = NavShell::new(
+            Box::new(Text::new("overview").with_id("overview")),
+            Box::new(Text::new("detail").with_id("detail")),
+        )
+        .with_sidebar(Box::new(Text::new("sidebar").with_id("sidebar")));
+
+        let immutable: Vec<String> = Widget::children(&ns)
+            .into_iter()
+            .map(|child| child.test_id().unwrap_or_default().to_string())
+            .collect();
+        let mutable: Vec<String> = Widget::children_mut(&mut ns)
+            .into_iter()
+            .map(|child| child.test_id().unwrap_or_default().to_string())
+            .collect();
+
+        assert_eq!(immutable, vec!["overview", "detail", "sidebar"]);
+        assert_eq!(mutable, immutable);
     }
 
     // --- the chip's band over the content --------------------------------

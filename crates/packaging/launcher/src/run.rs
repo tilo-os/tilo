@@ -1476,6 +1476,7 @@ pub fn run_with(
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
+    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
     if let Some(identity) = resolve_identity_bind(
         launch_app_id,
         opts.workspace_id.as_deref(),
@@ -1709,6 +1710,7 @@ pub fn run_with_captured(
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
+    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
     if let Some(identity) = resolve_identity_bind(
         launch_app_id,
         opts.workspace_id.as_deref(),

@@ -94,13 +94,17 @@ impl PowerMenu {
     }
 
     pub(crate) fn draw(
-        &self,
+        &mut self,
         viewport: Rect,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        if theme.reduce_motion {
+            self.transition
+                .set_open(self.open, Duration::ZERO, ui::Curve::Linear);
+        }
         let now = Instant::now();
         if !self.transition.is_visible(now) {
             return;

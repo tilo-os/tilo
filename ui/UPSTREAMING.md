@@ -254,7 +254,8 @@ This is the same "recurring pattern → framework" move as `ui::doc` and
 `ui::portal`, one level up. It also gives a single place to enforce the
 diff-splice write discipline (route model writes through `ui::doc`) so the
 O(n²) `store()` churn can't regress per app. Build it once the write-side sweep
-(item in `apps/MISSING.md`) has a stable set of doc helpers to build on.
+(tracked in the current `docs/ui-ux-overview.md` release ledger) has a stable
+set of doc helpers to build on.
 
 ---
 

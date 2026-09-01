@@ -224,6 +224,56 @@ pub struct OutputSpan {
 }
 
 impl GroupRow {
+    /// Paint selected active app surfaces without the row's viewport clip.
+    ///
+    /// The ordinary desktop pass clips the continuous strip to the physical
+    /// output. Capture cannot reuse that pass for `FullApp`/`WholeStrip`: an
+    /// app may be partly or wholly beyond the monitor while still having live
+    /// layout and pixels. This method deliberately calls the owning group
+    /// directly, preserving its real app draw path and geometry while omitting
+    /// only the output clip.
+    pub fn draw_capture_targets(
+        &mut self,
+        target_ids: &[String],
+        extent: crate::widget::CaptureExtent,
+        complete_semantic_content: bool,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        for group in &mut self.groups {
+            let active = group.active_tab_id();
+            let id = format!("group:{}:tab:{}", group.id, active);
+            if !target_ids.iter().any(|wanted| wanted == &id) {
+                continue;
+            }
+            let Some(_) = group.active_host() else {
+                continue;
+            };
+            if extent == crate::widget::CaptureExtent::FullApp
+                && complete_semantic_content
+                && let Some(rect) =
+                    group.draw_complete_capture(scene, transform, text_renderer, theme, presence)
+            {
+                rects.push(rect);
+                continue;
+            }
+            // `group.draw` includes the tab/window decoration, so its capture
+            // crop must use that same complete rect. Cropping to the active
+            // TileHost made “App” silently omit its own chrome.
+            let rect = group.get_rect();
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            group.draw(scene, transform, text_renderer, theme, presence);
+            rects.push(rect);
+        }
+        rects
+    }
+
     pub fn new(groups: Vec<WindowGroup>) -> Self {
         Self {
             groups,
@@ -1452,6 +1502,76 @@ impl Widget for GroupRow {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.groups
+            .iter_mut()
+            .find_map(super::Widget::take_floating_surface_request)
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        self.groups
+            .iter_mut()
+            .find_map(super::Widget::take_capture_studio_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.groups
+            .iter_mut()
+            .flat_map(super::Widget::take_floating_surface_source_updates)
+            .collect()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for group in &mut self.groups {
+            group.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        for group in &mut self.groups {
+            group.set_floating_surface_bounds(bounds);
+        }
+    }
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.groups
+            .iter()
+            .flat_map(super::Widget::floating_surface_presentations)
+            .collect()
+    }
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(super::Widget::active_floating_surface_ids)
+            .collect()
+    }
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for group in &mut self.groups {
+            group.on_floating_surface_host_message(message);
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.groups.iter().any(super::Widget::wants_pointer_capture)
+            || self
+                .handles
+                .iter()
+                .any(super::Widget::wants_pointer_capture)
     }
 
     /// Neither this nor [`WindowGroup`] exposes `children()` (groups lay
