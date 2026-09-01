@@ -481,8 +481,41 @@ impl App {
         self.action_transport = transport;
     }
 
-    pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+    fn collect_declared_resources(&self) -> Vec<qos_actions::Resource> {
         self.root_widget.resources(&self.state.doc)
+    }
+
+    /// The complete machine-driveable surface: domain resources declared by
+    /// the app plus ordinary controls projected from its retained semantic
+    /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
+    pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+        let mut resources = self.collect_declared_resources();
+        let mut semantics = crate::a11y_tree::SemanticTree::new();
+        semantics.refresh(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            self.focused_node,
+            &[],
+        );
+        resources.extend(semantics.action_resources());
+        resources
+    }
+
+    fn invoke_semantic_operation_encoded(
+        &mut self,
+        encoded: &qos_actions::EncodedAction,
+    ) -> Result<bool, String> {
+        if encoded.type_id != crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::a11y_tree::SemanticOperation =
+            serde_json::from_slice(&encoded.payload).map_err(|error| error.to_string())?;
+        self.refresh_semantic_tree();
+        self.invoke_semantic_action(
+            &crate::a11y_tree::SemanticId(operation.node),
+            &operation.action,
+            operation.value.as_deref(),
+        )
     }
 
     /// Publish the live resource/action tree through the session broker.
@@ -604,6 +637,18 @@ impl App {
                 } else {
                     qos_actions::door::encode(&resources, address, argument)?
                 };
+                if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
+                    let handled = self
+                        .invoke_semantic_operation_encoded(&encoded)
+                        .map_err(qos_actions::DoorError::Failed)?;
+                    if !handled {
+                        return Err(qos_actions::DoorError::Unknown(address.clone()));
+                    }
+                    self.commit_action();
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                    return Ok(());
+                }
                 let handled = self
                     .root_widget
                     .invoke_resource_operation(
@@ -680,18 +725,29 @@ impl App {
                     Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
                 }
             } else {
-                match self.root_widget.invoke_resource_operation(
-                    pending.kind,
-                    &pending.encoded.type_id,
-                    &pending.encoded.payload,
-                    &self.state.doc,
-                    &root,
-                ) {
-                    Ok(true) => self.layout_dirty = true,
-                    Ok(false) => tracing::warn!(
-                        type_id = %pending.encoded.type_id,
-                        "no widget handled exported resource operation"
-                    ),
+                let result = if pending.encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE
+                {
+                    self.invoke_semantic_operation_encoded(&pending.encoded)
+                } else {
+                    self.root_widget.invoke_resource_operation(
+                        pending.kind,
+                        &pending.encoded.type_id,
+                        &pending.encoded.payload,
+                        &self.state.doc,
+                        &root,
+                    )
+                };
+                match result {
+                    Ok(true) => {
+                        self.commit_action();
+                        self.layout_dirty = true;
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            type_id = %pending.encoded.type_id,
+                            "no widget handled exported resource operation"
+                        );
+                    }
                     Err(error) => tracing::warn!(%error, "resource operation failed"),
                 }
             }
@@ -2142,7 +2198,7 @@ impl App {
     /// `scale` is the window scale factor so bounds land in physical pixels
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
-        let resources = self.collect_resources();
+        let resources = self.collect_declared_resources();
         crate::accesskit_bridge::build_tree_update_with_resources(
             self.root_widget.as_ref(),
             &self.node_map,
@@ -2171,7 +2227,7 @@ impl App {
             _ => None,
         };
         if let Some(argument) = argument {
-            let resources = self.collect_resources();
+            let resources = self.collect_declared_resources();
             fn find_resource_action(
                 resources: &[qos_actions::Resource],
                 target: accesskit::NodeId,
@@ -2261,10 +2317,62 @@ impl App {
         }
     }
 
+    /// Complete an accessibility activation for legacy hand-hit-tested
+    /// controls that do not implement `perform_action` yet. The semantic
+    /// target has already resolved to this exact point; routing the usual
+    /// move/press/release sequence through the widget tree preserves the same
+    /// behavior as hardware input instead of reporting a false success.
+    fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(root_node) = self.root_node else {
+            return false;
+        };
+        let events = [
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: PhysicalPosition::new(x, y),
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ];
+        let mut handled_any = false;
+        for event in events {
+            let mut handled = false;
+            let mut focus_target = None;
+            self.root_widget.handle_event(
+                &event,
+                1.0,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus_target,
+                root_node,
+                &self.taffy,
+            );
+            if let Some(id) = focus_target {
+                self.set_focused_node(Some(id));
+            }
+            handled_any |= handled;
+        }
+        if handled_any {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        handled_any
+    }
+
     /// Node identity is preserved for everything that recurred, so a
     /// consumer reacts to just the diff.
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
-        let resources = self.collect_resources();
+        let resources = self.collect_declared_resources();
         self.semantic_tree.refresh(
             self.root_widget.as_ref(),
             &self.node_map,
@@ -2311,6 +2419,12 @@ impl App {
                 self.dispatch_encoded_semantic(encoded)
             }
             SemanticActionKind::Verb(verb) => {
+                let verb = match verb {
+                    crate::a11y::Action::SetValue(_) => {
+                        crate::a11y::Action::SetValue(arg.unwrap_or_default().to_string())
+                    }
+                    other => other,
+                };
                 let Some((taffy_raw, semantic_target)) =
                     self.semantic_tree.node(id).and_then(|n| {
                         n.widget_taffy_id
@@ -2342,10 +2456,9 @@ impl App {
                     return Ok(handled);
                 }
                 let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
-                // A `Some((x, y))` result means the widget self-activates only
-                // via a pointer click, needing the windowed input path; we
-                // surface the verb as dispatched either way.
-                let _pending_click = self.dispatch_a11y_action(ak, &verb);
+                if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {
+                    return Ok(self.dispatch_semantic_click(x, y));
+                }
                 Ok(true)
             }
         }
@@ -6092,7 +6205,7 @@ mod fullscreen_tests {
 #[cfg(test)]
 mod action_palette_tests {
     use super::*;
-    use crate::widget::Widget;
+    use crate::widget::{Button, Widget};
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
     use qos_actions::{Action, ActionError, ActionSpec, Doc, Resource};
@@ -6312,6 +6425,22 @@ mod action_palette_tests {
             app.needs_sync && app.layout_dirty,
             "navigation marks a redraw"
         );
+    }
+
+    #[test]
+    fn ctrl_k_invokes_a_projected_semantic_control() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+            captured.set(captured.get().saturating_add(1));
+        });
+        let mut app = App::new(State::new(), Box::new(button));
+        app.init_layout();
+        app.open_action_palette();
+        app.action_palette.as_mut().unwrap().set_query("activate");
+
+        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert_eq!(presses.get(), 1, "Ctrl+K reaches the real control");
     }
 }
 
@@ -7115,5 +7244,26 @@ mod semantic_tree_app_tests {
                 .expect("semantic dispatch")
         );
         assert_eq!(changed.get(), 1);
+    }
+
+    #[test]
+    fn projected_control_is_invokable_through_the_resource_door() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+            captured.set(captured.get().saturating_add(1));
+        });
+        let mut app = App::new(State::new(), Box::new(button));
+        app.init_layout();
+
+        let resource = app
+            .collect_resources()
+            .into_iter()
+            .find(|resource| resource.kind == "qos.ui.control" && resource.label == "Drive me")
+            .expect("semantic button is in the published catalogue");
+        let address = qos_actions::ActionAddress::new(resource.id.0, "activate");
+        app.invoke_resource_action(&address, None, "agent:test")
+            .expect("the resource door invokes the same button action");
+        assert_eq!(presses.get(), 1);
     }
 }

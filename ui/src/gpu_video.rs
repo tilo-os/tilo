@@ -481,7 +481,10 @@ impl YuvConverter {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        // This is an off-screen conversion target, not an app
+                        // surface. A transparent clear is deterministic and
+                        // the fullscreen pass replaces it with opaque video.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
