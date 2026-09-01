@@ -37,9 +37,9 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, ParamType, PermissionRequirement, Resource, ResourceProvider,
-    RetryPolicy, RiskLevel,
+    ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
+    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
+    PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -412,25 +412,46 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
     } else {
         "Start firewall"
     };
-    root = root.with_action(immediate_spec(
-        "toggle-enabled",
-        enable_label,
-        &set_enabled_action(!config.enabled),
-    ));
+    root = root.with_action(
+        ActionSpec::operation(
+            "toggle-enabled",
+            enable_label,
+            OperationKind::Effect,
+            "firewall.set-enabled",
+            &(!config.enabled),
+        )
+        .expect("firewall enabled state is serializable")
+        .with_contract(ActionContract {
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::Idempotent,
+            discovery: DiscoveryScope::Launchable,
+            tags: vec!["security".into(), "firewall".into()],
+            ..ActionContract::default()
+        }),
+    );
     let panic_label = if config.panic_mode {
         "Exit panic mode"
     } else {
         "Enter panic mode"
     };
     root = root.with_action(
-        immediate_spec(
+        ActionSpec::operation(
             "toggle-panic",
             panic_label,
-            &set_panic_action(!config.panic_mode),
+            OperationKind::Effect,
+            "firewall.set-panic",
+            &(!config.panic_mode),
         )
+        .expect("firewall panic state is serializable")
         .with_contract(ActionContract {
             confirmation: ConfirmationPolicy::Confirm,
-            ..config_contract()
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            retry: RetryPolicy::Idempotent,
+            tags: vec!["security".into(), "firewall".into()],
+            ..ActionContract::default()
         }),
     );
 
@@ -663,6 +684,15 @@ mod tests {
         let cfg_actions: Vec<&str> = cfg.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(cfg_actions.contains(&"toggle-enabled"), "{cfg_actions:?}");
         assert!(cfg_actions.contains(&"toggle-panic"), "{cfg_actions:?}");
+        let enabled = cfg
+            .actions
+            .iter()
+            .find(|action| action.id == "toggle-enabled")
+            .expect("start/stop operation");
+        assert_eq!(enabled.kind, OperationKind::Effect);
+        assert_eq!(enabled.contract.permission, PermissionRequirement::Admin);
+        assert_eq!(enabled.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(enabled.contract.discovery, DiscoveryScope::Launchable);
         assert_eq!(cfg.children.len(), 9, "all nine stock zones are published");
 
         // The public zone carries rules in the sample; find it and check both

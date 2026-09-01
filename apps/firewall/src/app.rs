@@ -196,6 +196,13 @@ struct RuleRow {
     delete: Rect,
 }
 
+#[derive(Clone, Copy)]
+enum PendingFirewallEffect {
+    Apply,
+    SetEnabled(bool),
+    SetPanic(bool),
+}
+
 pub struct FirewallApp {
     config: FirewallConfig,
     selected_zone: ZoneKind,
@@ -231,6 +238,7 @@ pub struct FirewallApp {
     /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
     actions: ui::ActionHost,
+    pending_effect: Option<PendingFirewallEffect>,
 }
 
 impl Default for FirewallApp {
@@ -282,6 +290,7 @@ impl FirewallApp {
             seeded: false,
             available,
             actions: ui::ActionHost::new(),
+            pending_effect: None,
         }
     }
 
@@ -767,22 +776,36 @@ impl FirewallApp {
 
     fn toggle_panic(&mut self, state: &mut AutoCommit) {
         let on = !self.config.panic_mode;
-        self.perform_action(state, &crate::actions::set_panic_action(on));
-        self.status = if on {
-            "PANIC MODE ON — all traffic dropped".to_string()
-        } else {
-            "Panic mode off".to_string()
-        };
+        self.set_panic_and_apply(state, on);
     }
 
     fn toggle_enabled(&mut self, state: &mut AutoCommit) {
         let on = !self.config.enabled;
+        self.set_enabled_and_apply(state, on);
+    }
+
+    fn set_panic_and_apply(&mut self, state: &mut AutoCommit, on: bool) {
+        self.perform_action(state, &crate::actions::set_panic_action(on));
+        self.apply();
+        if !self.status.starts_with("Apply failed") {
+            self.status = if on {
+                "PANIC MODE ON — all traffic dropped".to_string()
+            } else {
+                "Panic mode off".to_string()
+            };
+        }
+    }
+
+    fn set_enabled_and_apply(&mut self, state: &mut AutoCommit, on: bool) {
         self.perform_action(state, &crate::actions::set_enabled_action(on));
-        self.status = if on {
-            "Firewall enabled".to_string()
-        } else {
-            "Firewall stopped".to_string()
-        };
+        self.apply();
+        if !self.status.starts_with("Apply failed") {
+            self.status = if on {
+                "Firewall enabled".to_string()
+            } else {
+                "Firewall stopped".to_string()
+            };
+        }
     }
 
     fn apply(&mut self) {
@@ -858,6 +881,13 @@ impl Widget for FirewallApp {
             }
             self.seeded = true;
             return;
+        }
+        if let Some(effect) = self.pending_effect.take() {
+            match effect {
+                PendingFirewallEffect::Apply => self.apply(),
+                PendingFirewallEffect::SetEnabled(on) => self.set_enabled_and_apply(state, on),
+                PendingFirewallEffect::SetPanic(on) => self.set_panic_and_apply(state, on),
+            }
         }
         // Adopt genuine remote edits (collab).
         if let Some(json) = FirewallDoc::load_json(state)
@@ -1032,7 +1062,55 @@ impl Widget for FirewallApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        if let Some(root) = resources.first_mut() {
+            root.actions.push(
+                qos_actions::ActionSpec::operation(
+                    "apply",
+                    "Apply firewall configuration",
+                    qos_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &"",
+                )
+                .expect("firewall apply payload is serializable")
+                .with_contract(qos_actions::ActionContract {
+                    permission: qos_actions::PermissionRequirement::Admin,
+                    risk: qos_actions::RiskLevel::Privileged,
+                    confirmation: qos_actions::ConfirmationPolicy::Confirm,
+                    retry: qos_actions::RetryPolicy::Idempotent,
+                    discovery: qos_actions::DiscoveryScope::Launchable,
+                    ..qos_actions::ActionContract::default()
+                }),
+            );
+        }
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        if !self.available {
+            return Err("Firewall service is unavailable".into());
+        }
+        self.pending_effect = Some(match type_id {
+            "firewall.apply" => PendingFirewallEffect::Apply,
+            "firewall.set-enabled" => PendingFirewallEffect::SetEnabled(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            "firewall.set-panic" => PendingFirewallEffect::SetPanic(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            _ => return Ok(false),
+        });
+        Ok(true)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

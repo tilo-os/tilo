@@ -9,8 +9,8 @@ use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Availability,
-    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
+    OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -122,9 +122,8 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                         app.launch_unavailable_reason.as_deref(),
                     ),
                     retry: RetryPolicy::AtMostOnce,
-                    result: ResultSpec::Resource {
-                        resource_kind: "windows.session".into(),
-                    },
+                    discovery: DiscoveryScope::Launchable,
+                    result: ResultSpec::None,
                     ..ActionContract::default()
                 },
             ));
@@ -163,12 +162,8 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                         risk,
                         confirmation,
                         retry: RetryPolicy::AtMostOnce,
-                        execution: if matches!(type_id, "windows.retry-install" | "windows.escalate-install") {
-                            ExecutionMode::Background { cancellable: false }
-                        } else {
-                            ExecutionMode::Immediate
-                        },
-                        result: if matches!(type_id, "windows.retry-install" | "windows.escalate-install") { ResultSpec::Job } else { ResultSpec::None },
+                        execution: ExecutionMode::Immediate,
+                        result: ResultSpec::None,
                         ..ActionContract::default()
                     },
                 ));
