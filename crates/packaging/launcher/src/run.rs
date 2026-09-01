@@ -129,6 +129,10 @@ pub struct RunOptions {
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
+    /// Override the in-namespace launcher executable. Production leaves this
+    /// unset and re-enters the currently running `qos-launcher`; integration
+    /// tests use the separately-built binary rather than their test harness.
+    pub sandbox_shim_bin: Option<PathBuf>,
     /// Bind-mount the minimum host paths a dynamically-linked ELF needs to
     /// `execve()`, read-only. Ignored (silently) when a runtime bundle resolves.
     pub minimal_libs: bool,
@@ -188,6 +192,7 @@ impl Default for RunOptions {
             no_services: false,
             runtime_root: None,
             bwrap_bin: None,
+            sandbox_shim_bin: None,
             minimal_libs: false,
             // qpkg applications are untrusted by default.  A caller using the
             // convenience constructor must not accidentally remove one of the
@@ -1003,6 +1008,7 @@ struct ShimSpliceCtx<'a> {
     dbus_plan: &'a Option<DBusBindPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
+    keep_fds: &'a [RawFd],
 }
 
 /// In-sandbox shim: bind this launcher binary in and rewrite the trailing
@@ -1020,8 +1026,12 @@ fn splice_sandbox_shim(
         return Ok(());
     }
     let entry = pop_entry(argv)?;
-    let launcher = std::env::current_exe()
-        .map_err(|e| RunError::Io(std::io::Error::other(format!("current_exe: {e}"))))?;
+    let launcher = if let Some(path) = &opts.sandbox_shim_bin {
+        path.clone()
+    } else {
+        std::env::current_exe()
+            .map_err(|e| RunError::Io(std::io::Error::other(format!("current_exe: {e}"))))?
+    };
     argv.push("--ro-bind".to_string());
     argv.push(launcher.display().to_string());
     argv.push(SHIM_MOUNT_PATH.to_string());
@@ -1029,6 +1039,10 @@ fn splice_sandbox_shim(
     argv.push(crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string());
     if !opts.landlock_enforce {
         argv.push("--no-landlock".to_string());
+    }
+    for fd in ctx.keep_fds {
+        argv.push("--keep-fd".to_string());
+        argv.push(fd.to_string());
     }
     // The relay's endpoints. Passed whenever a gate is running, so
     // an unmodified HTTP client honouring ALL_PROXY reaches it.
@@ -1467,6 +1481,10 @@ pub fn run_with(
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
         resolve_identity_broker(&capabilities, opts)?;
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
+    let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
+    if identity_broker_app.is_some() {
+        keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
+    }
 
     // Egress: a grant naming specific hosts runs a gate; `*` or bare `host`
     // mode shares the host network with no allowlist to enforce, so neither
@@ -1507,6 +1525,7 @@ pub fn run_with(
             dbus_plan: &dbus_plan,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            keep_fds: &keep_fds,
         },
     )?;
 
@@ -1540,46 +1559,9 @@ fn validated_tool_context_from_env() -> Option<String> {
     }
 }
 
-/// `run_with` variant that captures the child's stdout. Returns the
-/// exit status alongside the captured bytes. Used by tests.
-/// Entrypoint + trailing passthrough args for the lighter `run_with_captured`
-/// path — resolved the same way `run_with` does, so both entries agree on
-/// binary and arguments.
-fn resolve_entry_and_passthrough(
-    manifest: &MinimalManifest,
-    opts: &RunOptions,
-) -> Result<(String, Vec<String>), RunError> {
-    match &opts.mode {
-        LaunchMode::Gui => Ok((
-            manifest
-                .entrypoint
-                .gui_bin()
-                .unwrap_or(&manifest.entrypoint.bin)
-                .to_string(),
-            gui_open_args(opts),
-        )),
-        LaunchMode::Cli {
-            passthrough_argv, ..
-        } => Ok((
-            manifest
-                .entrypoint
-                .cli_bin()
-                .unwrap_or(&manifest.entrypoint.bin)
-                .to_string(),
-            passthrough_argv.clone(),
-        )),
-        // Refused at the top of `run_with_captured`; fail the launch instead
-        // of trusting that guard never moves or disappears.
-        LaunchMode::Host { desktop_id } => Err(RunError::HostAppNotAPackage {
-            desktop_id: desktop_id.clone(),
-        }),
-    }
-}
-
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
-/// with its stdout piped, capture it, and wait. The `run_with_captured`
-/// counterpart of [`spawn_and_wait`] — no Landlock shim on this path, so
-/// none of that wiring.
+/// with its stdout piped, capture it, and wait. Confinement is prepared by
+/// the same path as [`spawn_and_wait`]; capturing fd 1 is not a weaker launch.
 fn spawn_and_capture(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
@@ -1652,9 +1634,9 @@ fn spawn_and_capture(
     Ok((status, buf))
 }
 
-/// Lighter sibling of [`run_with`] that skips Landlock + minimal-libs and
-/// captures the child's stdout instead of inheriting it, for callers that
-/// need the sandboxed process's output rather than a live session.
+/// [`run_with`] sibling that captures the child's stdout instead of inheriting
+/// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
+/// identity, filesystem and egress decisions as a normal qpkg launch.
 ///
 /// # Errors
 ///
@@ -1700,8 +1682,7 @@ pub fn run_with_captured(
     let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile(&manifest.package_id))?;
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
 
-    // Argv. run_with_captured is a lighter sibling that skips Landlock +
-    // minimal-libs, but still honours a manifest-declared runtime bundle.
+    // Build the exact production sandbox shape. Capture changes stdout only.
     let resolved_runtime = resolve_runtime(manifest, opts)?;
     let runtime_arg = resolved_runtime
         .as_ref()
@@ -1712,6 +1693,10 @@ pub fn run_with_captured(
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
         resolve_identity_broker(&capabilities, opts)?;
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
+    let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
+    if identity_broker_app.is_some() {
+        keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
+    }
     // Same egress decision as `run_with`: without the gate spliced in here
     // too, a host-scoped grant would be silently offline. No shim on this
     // path, so no loopback relay — ALL_PROXY has nothing listening behind it.
@@ -1719,26 +1704,42 @@ pub fn run_with_captured(
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     // Entrypoint + trailing arguments, resolved the same way `run_with`
     // does — both entries must agree on binary and arguments.
-    let (entry_bin, passthrough) = resolve_entry_and_passthrough(manifest, opts)?;
-    let mut argv = crate::sandbox::build_bwrap_argv_for_entry(
+    let (mut argv, extra_setenv, passthrough) = build_initial_argv(
         manifest,
         payload_root,
+        opts,
         runtime_arg,
         &binds,
         dbus_plan.as_ref(),
         identity_arg,
-        &entry_bin,
         &capabilities,
-    );
+    )?;
+    splice_cli_setenv(&mut argv, extra_setenv)?;
+    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
-    {
-        let app_dir = resolve_app_dir(manifest, opts)?;
-        let entry = pop_entry(&mut argv)?;
-        crate::appdir::push_app_dir(&mut argv, &app_dir);
-        argv.push(entry);
-    }
+    let app_dir = resolve_app_dir(manifest, opts)?;
+    splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
+    let wayland_bind = splice_wayland(&mut argv, opts)?;
+    let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    splice_sandbox_shim(
+        &mut argv,
+        opts,
+        &ShimSpliceCtx {
+            manifest,
+            net_gate: &net_gate,
+            runtime_arg,
+            extra_ro_paths: &extra_ro_paths,
+            egress: &egress,
+            capabilities: &capabilities,
+            dbus_plan: &dbus_plan,
+            wayland_bind: &wayland_bind,
+            gpu: &gpu,
+            keep_fds: &keep_fds,
+        },
+    )?;
 
     spawn_and_capture(
         argv,

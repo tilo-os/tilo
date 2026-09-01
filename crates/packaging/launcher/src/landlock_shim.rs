@@ -25,11 +25,13 @@ use std::ffi::CString;
 use std::path::PathBuf;
 
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, RestrictionStatus, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetError, RulesetStatus,
+    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, PathFd,
+    RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
 };
 
-use crate::landlock::{FsRule, LandlockOutcome, TARGET_ABI};
+use crate::landlock::{
+    FS_ABI, FsRule, LandlockBuildError, LandlockOutcome, TARGET_ABI, access_for_fd,
+};
 
 /// Hidden subcommand token. Dispatched by `main.rs` before clap.
 pub const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
@@ -53,6 +55,9 @@ pub struct ShimArgs {
     /// host the relay — an empty ruleset denies everything, so "no FS
     /// policy" must be said explicitly.
     pub no_landlock: bool,
+    /// Connected broker descriptors intentionally handed to the app. Every
+    /// other descriptor above stderr is closed before the entrypoint executes.
+    pub keep_fds: Vec<i32>,
     /// The real app argv to `execvp` after restricting.
     pub command: Vec<String>,
 }
@@ -84,7 +89,7 @@ impl ShimArgs {
     /// Parse the slice AFTER the `__sandbox-exec` token.
     ///
     /// Grammar:
-    /// `[--ro <p>]* [--rw <p>]* [--net-restricted] [--no-landlock]
+    /// `[--ro <p>]* [--rw <p>]* [--keep-fd <n>]* [--net-restricted] [--no-landlock]
     ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
     /// Unknown flags before `--` are rejected. The shim is a security-policy
     /// parser, so version skew must fail closed rather than silently omitting a
@@ -114,7 +119,7 @@ impl ShimArgs {
                 }
                 "--net-restricted" => parsed.net_restricted = true,
                 "--no-landlock" => parsed.no_landlock = true,
-                "--ro" | "--rw" | "--net-gate" | "--net-gate-port" => {
+                "--ro" | "--rw" | "--net-gate" | "--net-gate-port" | "--keep-fd" => {
                     let value = args
                         .get(i.saturating_add(1))
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
@@ -122,6 +127,15 @@ impl ShimArgs {
                         "--ro" => parsed.ro.push(PathBuf::from(value)),
                         "--rw" => parsed.rw.push(PathBuf::from(value)),
                         "--net-gate" => parsed.net_gate = Some(PathBuf::from(value)),
+                        "--keep-fd" => {
+                            let fd: i32 = value
+                                .parse()
+                                .map_err(|_| ShimParseError::DanglingValue(arg.clone()))?;
+                            if !(3..=1024).contains(&fd) {
+                                return Err(ShimParseError::DanglingValue(arg.clone()));
+                            }
+                            parsed.keep_fds.push(fd);
+                        }
                         // A port we can't parse must not silently become "no port", which
                         // would leave the app pinned by Landlock to nothing, unable to reach
                         // the relay at all.
@@ -152,8 +166,9 @@ impl ShimArgs {
 
 /// Map ro/rw to FS rules — pure, unit-testable.
 pub fn access_plan(ro: &[PathBuf], rw: &[PathBuf], abi: ABI) -> Vec<FsRule> {
-    let read = AccessFs::from_read(abi);
-    let all = AccessFs::from_all(abi);
+    let fs_abi = if abi >= ABI::V5 { FS_ABI } else { abi };
+    let read = AccessFs::from_read(fs_abi);
+    let all = AccessFs::from_all(fs_abi);
     let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
     for p in ro {
         plan.push(FsRule {
@@ -180,10 +195,12 @@ pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
 
 /// Build + `restrict_self()`. The one function that permanently locks
 /// the calling process — never call it from unit tests.
-fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError> {
+fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuildError> {
     let abi = TARGET_ABI;
 
-    let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(FS_ABI))?;
     // Two mutually exclusive shapes of network restriction:
     // `net_restricted` denies every TCP bind/connect (belt and braces over
     // an already-empty namespace); `net_gate_port` denies every TCP
@@ -192,7 +209,7 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
     // to anywhere but the gate.
     let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
     if args.net_restricted || gate_port.is_some() {
-        ruleset = ruleset.handle_access(AccessNet::from_all(abi))?;
+        ruleset = ruleset.handle_access(AccessNet::from_all(ABI::V4))?;
     }
 
     let mut created = ruleset.create()?;
@@ -204,7 +221,8 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
     for rule in access_plan(&args.ro, &args.rw, abi) {
         match PathFd::new(&rule.path) {
             Ok(fd) => {
-                created = created.add_rule(PathBeneath::new(fd, rule.access))?;
+                let access = access_for_fd(&fd, rule.access)?;
+                created = created.add_rule(PathBeneath::new(fd, access))?;
             }
             Err(e) => {
                 eprintln!(
@@ -215,7 +233,7 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
         }
     }
 
-    created.restrict_self()
+    Ok(created.restrict_self()?)
 }
 
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
@@ -225,11 +243,57 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
         return LandlockOutcome::NotEnforced;
     }
     match build_and_restrict(args) {
-        Ok(status) => outcome_from_status(&status.ruleset),
+        Ok(status) => {
+            eprintln!("qos-sandbox-exec: Landlock restriction status: {status:?}");
+            outcome_from_status(&status.ruleset)
+        }
         Err(e) => {
             eprintln!("qos-sandbox-exec: failed to build/apply ruleset: {e}");
             LandlockOutcome::Errored
         }
+    }
+}
+
+/// Close every inherited descriptor except stdin/out/err and the explicitly
+/// connected service descriptors. `close_range` is part of the qOS kernel
+/// contract; inability to close ambient descriptors refuses the launch.
+fn close_ambient_fds(keep: &[i32]) -> std::io::Result<()> {
+    for (first, last) in ambient_fd_close_ranges(keep)? {
+        close_fd_range(first, last)?;
+    }
+    Ok(())
+}
+
+fn ambient_fd_close_ranges(keep: &[i32]) -> std::io::Result<Vec<(u32, u32)>> {
+    let mut keep = keep.to_vec();
+    keep.sort_unstable();
+    keep.dedup();
+    let mut ranges = Vec::with_capacity(keep.len().saturating_add(1));
+    let mut first = 3_u32;
+    for fd in keep {
+        let fd = u32::try_from(fd).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "negative kept fd")
+        })?;
+        if fd > first {
+            ranges.push((first, fd - 1));
+        }
+        first = fd.saturating_add(1);
+    }
+    ranges.push((first, u32::MAX));
+    Ok(ranges)
+}
+
+fn close_fd_range(first: u32, last: u32) -> std::io::Result<()> {
+    if first > last {
+        return Ok(());
+    }
+    // SAFETY: close_range consumes no pointers. It only closes descriptors in
+    // the inclusive numeric interval and returns an errno on failure.
+    let rc = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -320,8 +384,13 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
     if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
         eprintln!(
-            "qos-sandbox-exec: refusing qpkg launch because the complete Landlock v4 policy is not enforced"
+            "qos-sandbox-exec: refusing qpkg launch because the complete Landlock v5 policy is not enforced"
         );
+        std::process::exit(126);
+    }
+
+    if let Err(error) = close_ambient_fds(&parsed.keep_fds) {
+        eprintln!("qos-sandbox-exec: refusing qpkg launch: could not close ambient descriptors: {error}");
         std::process::exit(126);
     }
 
@@ -394,6 +463,8 @@ mod tests {
             "--rw".into(),
             "/tmp/data".into(),
             "--net-restricted".into(),
+            "--keep-fd".into(),
+            "17".into(),
             "--".into(),
             "/app".into(),
         ];
@@ -401,6 +472,7 @@ mod tests {
         assert_eq!(parsed.ro, vec![PathBuf::from("/usr")]);
         assert_eq!(parsed.rw, vec![PathBuf::from("/tmp/data")]);
         assert!(parsed.net_restricted);
+        assert_eq!(parsed.keep_fds, vec![17]);
         assert_eq!(parsed.command, vec!["/app".to_string()]);
     }
 
@@ -432,6 +504,34 @@ mod tests {
     }
 
     #[test]
+    fn invalid_or_standard_keep_fd_is_rejected() {
+        for value in ["no", "-1", "2", "1025"] {
+            let args = vec![
+                "--keep-fd".into(),
+                value.into(),
+                "--".into(),
+                "/app".into(),
+            ];
+            assert!(matches!(
+                ShimArgs::parse(&args),
+                Err(ShimParseError::DanglingValue(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn ambient_fd_plan_preserves_only_named_brokers() {
+        assert_eq!(
+            ambient_fd_close_ranges(&[18, 17, 18]).expect("plan"),
+            vec![(3, 16), (19, u32::MAX)]
+        );
+        assert_eq!(
+            ambient_fd_close_ranges(&[]).expect("plan"),
+            vec![(3, u32::MAX)]
+        );
+    }
+
+    #[test]
     fn empty_command_is_error() {
         let args = vec!["--".into()];
         assert_eq!(ShimArgs::parse(&args), Err(ShimParseError::EmptyCommand));
@@ -442,7 +542,7 @@ mod tests {
         let plan = access_plan(
             &[PathBuf::from("/usr")],
             &[PathBuf::from("/tmp/data")],
-            TARGET_ABI,
+            FS_ABI,
         );
         assert_eq!(plan.len(), 2);
         assert_eq!(plan[0].path, PathBuf::from("/usr"));
