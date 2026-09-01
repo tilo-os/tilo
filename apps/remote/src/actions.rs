@@ -35,9 +35,9 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
-    RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::RemoteDoc;
@@ -45,15 +45,49 @@ use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presenc
 
 /// Registry `type_id` for every Remote action.
 pub const REMOTE_ACTION_TYPE: &str = "remote.action";
-pub const REMOTE_CONNECT_OPERATION_TYPE: &str = "remote.operation.connect";
+pub const REMOTE_OPERATION_TYPE: &str = "remote.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RemoteOperation {
+    Connect {
+        connection_id: ConnectionId,
+    },
+    Disconnect {
+        connection_id: ConnectionId,
+    },
+    SendText {
+        connection_id: ConnectionId,
+        text: String,
+    },
+}
+
+fn encode_operation(operation: &RemoteOperation) -> EncodedAction {
+    EncodedAction::encode_operation(REMOTE_OPERATION_TYPE, operation).unwrap_or_else(|_| {
+        EncodedAction {
+            type_id: REMOTE_OPERATION_TYPE.to_string(),
+            payload: Vec::new(),
+        }
+    })
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<RemoteOperation>, String> {
+    if type_id != REMOTE_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 fn connect_spec(connection: &Connection) -> ActionSpec {
     let spec = ActionSpec::operation(
         "connect",
         "Connect",
         OperationKind::Effect,
-        REMOTE_CONNECT_OPERATION_TYPE,
-        &connection.id,
+        REMOTE_OPERATION_TYPE,
+        &RemoteOperation::Connect {
+            connection_id: connection.id,
+        },
     )
     .expect("RemoteOperation is always serializable")
     .with_description("Open a live session to this saved connection")
@@ -71,6 +105,69 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
     } else {
         spec
     }
+}
+
+pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resource {
+    let id = connection.id;
+    let disconnect = ActionSpec::operation(
+        "disconnect",
+        "Disconnect session",
+        OperationKind::Effect,
+        REMOTE_OPERATION_TYPE,
+        &RemoteOperation::Disconnect { connection_id: id },
+    )
+    .unwrap_or_else(|_| {
+        ActionSpec::typed_operation(
+            "disconnect",
+            "Disconnect session",
+            "",
+            OperationKind::Effect,
+            Vec::new(),
+            move |_| encode_operation(&RemoteOperation::Disconnect { connection_id: id }),
+        )
+    })
+    .with_contract(ActionContract {
+        retry: RetryPolicy::Idempotent,
+        tags: vec!["network".into(), "session".into()],
+        ..ActionContract::default()
+    });
+    let input = ActionSpec::typed_operation(
+        "send-text",
+        "Send text to session",
+        "command or text",
+        OperationKind::Effect,
+        vec![ActionParam::required_owned(
+            "text",
+            ParamType::Text,
+            "Text to deliver to the connected SSH terminal",
+        )],
+        move |args: &ActionArgs| {
+            encode_operation(&RemoteOperation::SendText {
+                connection_id: id,
+                text: args.text("text").unwrap_or("").to_string(),
+            })
+        },
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Write,
+        retry: RetryPolicy::AtMostOnce,
+        tags: vec!["remote-input".into(), "session".into()],
+        ..ActionContract::default()
+    });
+    Resource::new(
+        format!("remote.session:{id}"),
+        "remote.session",
+        format!("{} session", connection.name),
+    )
+    .with_action(disconnect)
+    .with_action(if can_send_text {
+        input
+    } else {
+        input.unavailable(
+            "terminal_not_connected",
+            "Text input requires a connected SSH terminal",
+        )
+    })
 }
 
 /// Every collaborative operation Remote exports on the shared document. Each
@@ -487,8 +584,11 @@ mod tests {
                 != qos_actions::ConfirmationPolicy::None
         );
         let encoded = immediate_encode(connect);
-        assert_eq!(encoded.type_id, REMOTE_CONNECT_OPERATION_TYPE);
-        assert_eq!(encoded.payload, format!("\"{id}\"").into_bytes());
+        assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(RemoteOperation::Connect { connection_id: id })
+        );
 
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
@@ -501,6 +601,26 @@ mod tests {
             "{labels:?}"
         );
         assert!(labels.iter().any(|l| l.contains("Delete")), "{labels:?}");
+    }
+
+    #[test]
+    fn active_session_exports_lifecycle_and_typed_input() {
+        let id = Uuid::new_v4();
+        let session = session_resource(&sample(id, "Build Box"), false);
+        assert_eq!(session.id.as_str(), format!("remote.session:{id}"));
+        let disconnect = session
+            .actions
+            .iter()
+            .find(|a| a.id == "disconnect")
+            .unwrap();
+        assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
+        let input = session
+            .actions
+            .iter()
+            .find(|a| a.id == "send-text")
+            .unwrap();
+        assert_eq!(input.params()[0].ty, ParamType::Text);
+        assert!(!input.contract.availability.is_available());
     }
 
     /// The palette's favourite action tracks the live document: with a favourited
