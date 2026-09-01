@@ -2399,6 +2399,7 @@ impl SlidesApp {
 
     /// Load a `.odp` from disk, replacing the deck in the shared document so
     /// undo/redo and collaboration see the whole swap as one change.
+    #[cfg(test)]
     fn load_odp(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
         self.load_presentation(doc, path)
     }
@@ -2430,6 +2431,7 @@ impl SlidesApp {
 
     /// Serialise the current deck to a `.odp` at `path` (adding the extension
     /// if the host didn't).
+    #[cfg(test)]
     fn save_odp(&self, path: &std::path::Path) -> bool {
         self.save_presentation(path)
     }
