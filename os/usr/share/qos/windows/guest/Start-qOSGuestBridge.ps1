@@ -16,6 +16,9 @@ $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | Conver
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
 $installerRoot = 'C:\ProgramData\qOS\InstallerSession'
+$processJobHelper = Join-Path $installerRoot 'qOS-ProcessJob.ps1'
+if (-not (Test-Path -LiteralPath $processJobHelper -PathType Leaf)) { throw 'qOS process-job helper is missing' }
+. $processJobHelper
 $installerStateRoot = Join-Path $root 'installer-state'
 $packageStateRoot = Join-Path $installerStateRoot 'packages'
 $operationStateRoot = Join-Path $installerStateRoot 'operations'
@@ -223,7 +226,7 @@ function Reset-UninstallRecord($operation) {
     $record = @($store.records | Where-Object { $_.applicationId -eq [string]$operation.applicationId -and $_.id -eq [string]$operation.uninstallerId }) | Select-Object -First 1
     if ($null -eq $record) { return }
     $record.consumed = $false
-    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($store.records | Where-Object { $_.applicationId -ne [string]$operation.applicationId }) + @($record) }
+    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 2; records = @($store.records | Where-Object { $_.applicationId -ne [string]$operation.applicationId }) + @($record) }
 }
 
 function Invoke-InstallerCleanup() {
@@ -345,11 +348,35 @@ function Get-SafeUninstallProjection($record) {
 
 function Get-UninstallRecordStore() {
     if (-not (Test-Path -LiteralPath $uninstallRecordsPath -PathType Leaf)) {
-        return @{ schemaVersion = 1; records = @() }
+        return @{ schemaVersion = 2; records = @() }
     }
     $store = Get-Content -Raw -LiteralPath $uninstallRecordsPath | ConvertFrom-Json
-    if ([int]$store.schemaVersion -ne 1 -or $null -eq $store.records) { throw 'uninstall record store is invalid' }
-    return @{ schemaVersion = 1; records = @($store.records) }
+    if ($null -eq $store.records) { throw 'uninstall record store is invalid' }
+    if ([int]$store.schemaVersion -eq 2) {
+        return @{ schemaVersion = 2; records = @($store.records) }
+    }
+    if ([int]$store.schemaVersion -ne 1) { throw 'uninstall record store is invalid' }
+
+    # Schema 1 contained only fixed MSI product-code records. Upgrade those in
+    # memory to the tagged schema; the next administrator write persists v2.
+    $records = @()
+    foreach ($legacy in @($store.records)) {
+        $productCode = [string]$legacy.productCode
+        if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') {
+            throw 'legacy uninstall record store contains a non-MSI record'
+        }
+        $records += @{
+            applicationId = [string]$legacy.applicationId
+            id = [string]$legacy.id
+            displayName = [string]$legacy.displayName
+            displayVersion = $legacy.displayVersion
+            publisher = $legacy.publisher
+            kind = 'msi'
+            productCode = $productCode.ToUpperInvariant()
+            consumed = [bool]$legacy.consumed
+        }
+    }
+    return @{ schemaVersion = 2; records = @($records) }
 }
 
 function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
@@ -361,13 +388,61 @@ function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
         $location = [string]$entry.InstallLocation
         $name = [string]$entry.DisplayName
         if ([string]::IsNullOrWhiteSpace($location) -or [string]::IsNullOrWhiteSpace($name)) { continue }
-        try { $resolved = [IO.Path]::GetFullPath($location).TrimEnd('\') + '\' } catch { continue }
-        if (-not $candidatePath.StartsWith($resolved, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($location -notmatch '^[A-Za-z]:\\' -or $location.Substring(2).Contains(':')) { continue }
+        try { $resolvedRoot = [IO.Path]::GetFullPath($location).TrimEnd('\') } catch { continue }
+        if (-not (Test-qOSPathInsideRoot -Path $candidatePath -Root $resolvedRoot)) { continue }
         $productCode = [string]$entry.PSChildName
-        if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { continue }
         $safeName = ConvertTo-SafeOptionalMetadata $name
         if ($null -eq $safeName) { continue }
-        return @{ id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"; displayName = $safeName; displayVersion = (ConvertTo-SafeOptionalMetadata $entry.DisplayVersion); publisher = (ConvertTo-SafeOptionalMetadata $entry.Publisher); productCode = $productCode.ToUpperInvariant() }
+        $common = @{
+            id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"
+            displayName = $safeName
+            displayVersion = (ConvertTo-SafeOptionalMetadata $entry.DisplayVersion)
+            publisher = (ConvertTo-SafeOptionalMetadata $entry.Publisher)
+        }
+        if ($productCode -match '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') {
+            $common.kind = 'msi'
+            $common.productCode = $productCode.ToUpperInvariant()
+            return $common
+        }
+
+        # Non-MSI registry commands are discovery input only. Parse with the
+        # native Windows argv routine, then bind the exact EXE and argv to this
+        # candidate's trustworthy product-specific InstallLocation.
+        $uninstallString = [string]$entry.UninstallString
+        if ([string]::IsNullOrWhiteSpace($uninstallString)) { continue }
+        try {
+            $argv = @([qOS.WindowsGuest.ProcessJob]::ParseUninstallCommandLine($uninstallString))
+            if ($argv.Count -lt 1) { continue }
+            $rawExecutable = [string]$argv[0]
+            if ($rawExecutable -notmatch '^[A-Za-z]:\\' -or $rawExecutable.Substring(2).Contains(':')) { continue }
+            $executable = [IO.Path]::GetFullPath($rawExecutable)
+            $arguments = if ($argv.Count -gt 1) { @($argv[1..($argv.Count - 1)]) } else { @() }
+            $programRootBound = $false
+            foreach ($basePath in @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) {
+                $programRoot = [IO.Path]::GetFullPath([string]$basePath).TrimEnd('\')
+                if ($resolvedRoot.StartsWith(($programRoot + '\'), [StringComparison]::OrdinalIgnoreCase)) { $programRootBound = $true; break }
+            }
+            if (-not $programRootBound -or [IO.Path]::GetExtension($executable) -ine '.exe') { continue }
+            $null = Assert-qOSTrustedPathChain -Root $resolvedRoot -Path $candidatePath -Leaf
+            $null = Assert-qOSTrustedPathChain -Root $resolvedRoot -Path $executable -Leaf
+            $digest = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+            $validated = Get-qOSValidatedExecutableUninstallContract @{
+                kind = 'exe'
+                installRoot = $resolvedRoot
+                applicationPath = $candidatePath
+                executablePath = $executable
+                executableSha256 = $digest
+                arguments = @($arguments)
+            }
+        } catch { continue }
+        $common.kind = 'exe'
+        $common.installRoot = $validated.installRoot
+        $common.applicationPath = $validated.applicationPath
+        $common.executablePath = $validated.executablePath
+        $common.executableSha256 = $validated.executableSha256
+        $common.arguments = @($validated.arguments)
+        return $common
     }
     return $null
 }
@@ -436,7 +511,7 @@ function Start-InstallerOperation($request) {
     Write-AdminJson $metadataPath $package
     $taskName = "qOS-Install-$(([string]$request.operationId).Substring(0, 16))"
     $jobPath = Join-Path $operationDirectory 'job.json'
-    Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; packagePath = $operationPayload; kind = [string]$package.kind; byteLen = [UInt64]$package.byteLen; sha256 = [string]$package.sha256 }
+    Write-AdminJson $jobPath @{ operationKind = 'installation'; operationId = [string]$request.operationId; packagePath = $operationPayload; kind = [string]$package.kind; byteLen = [UInt64]$package.byteLen; sha256 = [string]$package.sha256 }
     $helper = Join-Path $operationDirectory 'Start-qOSInstaller.ps1'
     Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Destination $helper
     Copy-Item -LiteralPath (Join-Path $installerRoot 'qOS-ProcessJob.ps1') -Destination (Join-Path $operationDirectory 'qOS-ProcessJob.ps1')
@@ -529,10 +604,38 @@ function Publish-DiscoveredCandidate($request) {
     $uninstallStoreBefore = Get-UninstallRecordStore
     $uninstallStoreChanged = $false
     if ($null -ne $candidate.uninstall) {
-        $productCode = [string]$candidate.uninstall.productCode
-        if (-not (Test-OpaqueId ([string]$candidate.uninstall.id)) -or $productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { throw 'discovered uninstaller record is invalid' }
-        $record = @{ applicationId = [string]$request.applicationId; id = [string]$candidate.uninstall.id; displayName = [string]$candidate.uninstall.displayName; displayVersion = $candidate.uninstall.displayVersion; publisher = $candidate.uninstall.publisher; productCode = $productCode.ToUpperInvariant(); consumed = $false }
-        Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($uninstallStoreBefore.records | Where-Object { $_.applicationId -ne [string]$request.applicationId }) + @($record) }
+        if (-not (Test-OpaqueId ([string]$candidate.uninstall.id))) { throw 'discovered uninstaller record is invalid' }
+        $candidateUninstallKind = [string]$candidate.uninstall.kind
+        if ([string]::IsNullOrWhiteSpace($candidateUninstallKind) -and [string]$candidate.uninstall.productCode -match '^\{[A-Fa-f0-9-]{36}\}$') {
+            $candidateUninstallKind = 'msi'
+        }
+        $record = @{
+            applicationId = [string]$request.applicationId
+            id = [string]$candidate.uninstall.id
+            displayName = [string]$candidate.uninstall.displayName
+            displayVersion = $candidate.uninstall.displayVersion
+            publisher = $candidate.uninstall.publisher
+            kind = $candidateUninstallKind
+            consumed = $false
+        }
+        if ($record.kind -eq 'msi') {
+            $productCode = [string]$candidate.uninstall.productCode
+            if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { throw 'discovered MSI uninstaller record is invalid' }
+            $record.productCode = $productCode.ToUpperInvariant()
+        } elseif ($record.kind -eq 'exe') {
+            $validatedUninstaller = Get-qOSValidatedExecutableUninstallContract $candidate.uninstall
+            if (-not $validatedUninstaller.applicationPath.Equals($path, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'discovered EXE uninstaller is bound to a different application'
+            }
+            $record.installRoot = $validatedUninstaller.installRoot
+            $record.applicationPath = $validatedUninstaller.applicationPath
+            $record.executablePath = $validatedUninstaller.executablePath
+            $record.executableSha256 = $validatedUninstaller.executableSha256
+            $record.arguments = @($validatedUninstaller.arguments)
+        } else {
+            throw 'discovered uninstaller kind is invalid'
+        }
+        Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 2; records = @($uninstallStoreBefore.records | Where-Object { $_.applicationId -ne [string]$request.applicationId }) + @($record) }
         $uninstallStoreChanged = $true
     }
     try {
@@ -564,7 +667,21 @@ function Start-UninstallOperation($request) {
     if (Test-Path -LiteralPath $operationPath) { throw 'uninstall operation identity was already used' }
     $store = Get-UninstallRecordStore
     $record = @($store.records | Where-Object { $_.applicationId -eq [string]$request.applicationId }) | Select-Object -First 1
-    if ($null -eq $record -or [bool]$record.consumed -or [string]$record.productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { throw 'safe discovered uninstaller is unavailable' }
+    if ($null -eq $record -or [bool]$record.consumed) { throw 'safe discovered uninstaller is unavailable' }
+    $uninstallJob = @{ operationKind = 'uninstallation'; operationId = [string]$request.operationId; kind = [string]$record.kind }
+    if ([string]$record.kind -eq 'msi') {
+        if ([string]$record.productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { throw 'safe discovered MSI uninstaller is unavailable' }
+        $uninstallJob.productCode = ([string]$record.productCode).ToUpperInvariant()
+    } elseif ([string]$record.kind -eq 'exe') {
+        $validatedUninstaller = Get-qOSValidatedExecutableUninstallContract $record
+        $uninstallJob.installRoot = $validatedUninstaller.installRoot
+        $uninstallJob.applicationPath = $validatedUninstaller.applicationPath
+        $uninstallJob.executablePath = $validatedUninstaller.executablePath
+        $uninstallJob.executableSha256 = $validatedUninstaller.executableSha256
+        $uninstallJob.arguments = @($validatedUninstaller.arguments)
+    } else {
+        throw 'safe discovered uninstaller kind is unavailable'
+    }
     $user = Get-ManagedInteractiveUser
     if ($null -eq $user) { throw 'no managed interactive session exists for uninstallation' }
     $account = New-Object Security.Principal.NTAccount($user)
@@ -584,16 +701,17 @@ function Start-UninstallOperation($request) {
     $readRule = New-Object Security.AccessControl.FileSystemAccessRule($account, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
     [void]$operationAcl.AddAccessRule($readRule); Set-Acl -LiteralPath $operationDirectory -AclObject $operationAcl
     $jobPath = Join-Path $operationDirectory 'job.json'
-    Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; productCode = [string]$record.productCode }
+    Write-AdminJson $jobPath $uninstallJob
     $helper = Join-Path $operationDirectory 'Start-qOSUninstaller.ps1'
     Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSUninstaller.ps1') -Destination $helper
     Copy-Item -LiteralPath (Join-Path $installerRoot 'qOS-ProcessJob.ps1') -Destination (Join-Path $operationDirectory 'qOS-ProcessJob.ps1')
+    Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSProcessJobBroker.ps1') -Destination (Join-Path $operationDirectory 'Start-qOSProcessJobBroker.ps1')
     $taskName = "qOS-Uninstall-$(([string]$request.operationId).Substring(0, 16))"
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $operation = @{ operationKind = 'uninstallation'; operationId = [string]$request.operationId; applicationId = [string]$request.applicationId; uninstallerId = [string]$record.id; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; catalogGeneration = $null }
     Write-AdminJson $operationPath $operation
     $record.consumed = $true
-    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($store.records | Where-Object { $_.applicationId -ne [string]$request.applicationId }) + @($record) }
+    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 2; records = @($store.records | Where-Object { $_.applicationId -ne [string]$request.applicationId }) + @($record) }
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$helper`" -JobPath `"$jobPath`""
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType InteractiveToken -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 12) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
@@ -619,7 +737,7 @@ function Complete-UninstallPublication($operation) {
     }
     Remove-Item -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$($operation.applicationId)") -Recurse -Force -ErrorAction SilentlyContinue
     $store = Get-UninstallRecordStore
-    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($store.records | Where-Object { $_.applicationId -ne [string]$operation.applicationId }) }
+    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 2; records = @($store.records | Where-Object { $_.applicationId -ne [string]$operation.applicationId }) }
     return $generation
 }
 
