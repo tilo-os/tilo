@@ -1,0 +1,581 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use thiserror::Error;
+
+use crate::libvirt::VmBackendError;
+use crate::remote_app::validate_share_path;
+use crate::{
+    AgentError, ApplianceConfig, ApplianceState, Catalog, CatalogError, DomainState, GuestAgent,
+    ProvisioningError, ProvisioningStore, RemoteAppError, RemoteAppLauncher, RemoteAppProcess,
+    VmBackend,
+};
+
+pub const HOST_PROTOCOL_MAJOR: u16 = 1;
+
+/// An immutable projection of grants already resolved by qOS's workspace
+/// permission service. This is transport input, not a second policy database.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VmLaunchGrants {
+    pub network: bool,
+    pub clipboard: bool,
+    pub microphone: bool,
+    /// Opaque portal document identifiers. The broker resolves these to
+    /// narrowly scoped staging paths and controls read/write mode.
+    pub portal_documents: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaunchRequest {
+    pub workspace_id: String,
+    pub application_id: String,
+    pub grants: VmLaunchGrants,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShareBinding {
+    pub drive_name: String,
+    /// Portal document this staging mount represents.
+    pub portal_document_id: String,
+    /// Broker-owned bind mount below the lease root. `read_only` is enforced
+    /// on this mount; it is not merely a hint to `FreeRDP`.
+    pub host_path: PathBuf,
+    pub read_only: bool,
+}
+
+/// Short-lived resources materialised by the existing qOS capability service.
+/// Dropping or explicitly revoking `lease_id` is the broker's responsibility.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrokeredLaunch {
+    pub lease_id: String,
+    pub network: bool,
+    pub clipboard: bool,
+    pub microphone: bool,
+    pub shares: Vec<ShareBinding>,
+}
+
+impl BrokeredLaunch {
+    #[must_use]
+    pub fn deny_all(lease_id: impl Into<String>) -> Self {
+        Self {
+            lease_id: lease_id.into(),
+            network: false,
+            clipboard: false,
+            microphone: false,
+            shares: Vec::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RemoteAppError> {
+        if self.lease_id.is_empty()
+            || !self
+                .lease_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(RemoteAppError::InvalidLease);
+        }
+        let lease_root = PathBuf::from("/run/qos/windows-vm/leases").join(&self.lease_id);
+        let mut names = HashSet::new();
+        let mut documents = HashSet::new();
+        for share in &self.shares {
+            if share.drive_name.is_empty()
+                || share.drive_name.len() > 12
+                || !share
+                    .drive_name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric())
+            {
+                return Err(RemoteAppError::InvalidDriveName);
+            }
+            if !names.insert(share.drive_name.as_str()) {
+                return Err(RemoteAppError::DuplicateDriveName);
+            }
+            if share.portal_document_id.trim().is_empty()
+                || !documents.insert(share.portal_document_id.as_str())
+            {
+                return Err(RemoteAppError::InvalidPortalDocument);
+            }
+            validate_share_path(&share.host_path)?;
+            if !share.host_path.starts_with(&lease_root) {
+                return Err(RemoteAppError::ShareOutsideLease);
+            }
+        }
+        Ok(())
+    }
+}
+
+pub trait CapabilityBroker: Send + Sync {
+    /// Opens egress and portal exports only for fields present in the resolved
+    /// qOS grant snapshot. Implementations must return clipboard/microphone no
+    /// broader than requested; the appliance verifies that invariant.
+    fn materialize(&self, request: &LaunchRequest) -> Result<BrokeredLaunch, LaunchError>;
+
+    fn revoke(&self, lease_id: &str);
+}
+
+#[derive(Debug)]
+pub struct RunningRemoteApp {
+    pub application_id: String,
+    pub workspace_id: String,
+    pub lease_id: String,
+    pub process: RemoteAppProcess,
+}
+
+pub struct WindowsAppliance<B, A, C, L> {
+    config: ApplianceConfig,
+    state: ProvisioningStore,
+    backend: B,
+    agent: A,
+    capabilities: C,
+    launcher: L,
+    agent_timeout: Duration,
+}
+
+impl<B, A, C, L> WindowsAppliance<B, A, C, L> {
+    #[must_use]
+    pub fn new(
+        config: ApplianceConfig,
+        state: ProvisioningStore,
+        backend: B,
+        agent: A,
+        capabilities: C,
+        launcher: L,
+    ) -> Self {
+        Self {
+            config,
+            state,
+            backend,
+            agent,
+            capabilities,
+            launcher,
+            agent_timeout: Duration::from_secs(45),
+        }
+    }
+
+    #[must_use]
+    pub fn with_agent_timeout(mut self, timeout: Duration) -> Self {
+        self.agent_timeout = timeout;
+        self
+    }
+}
+
+impl<B, A, C, L> WindowsAppliance<B, A, C, L>
+where
+    B: VmBackend,
+    A: GuestAgent,
+    C: CapabilityBroker,
+    L: RemoteAppLauncher,
+{
+    /// Refreshes the app catalogue only through the authenticated guest
+    /// bridge. An RDP server alone is never enough to publish applications.
+    pub fn catalog(&self) -> Result<Catalog, LaunchError> {
+        let state = self.ready_state()?;
+        self.ensure_running()?;
+        let session = self.agent.wait_ready(self.agent_timeout)?;
+        validate_health(&state, &session.health)?;
+        let catalog = self.agent.catalog(&session)?;
+        catalog.validate()?;
+        if catalog.generation < state.catalog_generation {
+            return Err(LaunchError::CatalogRollback {
+                stored: state.catalog_generation,
+                received: catalog.generation,
+            });
+        }
+        Ok(catalog)
+    }
+
+    /// Starts one allow-listed `RemoteApp`. The capability lease is revoked on
+    /// every error after it is created and when `FreeRDP` exits normally.
+    pub fn launch(&self, request: &LaunchRequest) -> Result<RunningRemoteApp, LaunchError> {
+        validate_request(request)?;
+        let state = self.ready_state()?;
+        self.ensure_running()?;
+        let session = self.agent.wait_ready(self.agent_timeout)?;
+        validate_health(&state, &session.health)?;
+
+        let catalog = self.agent.catalog(&session)?;
+        catalog.validate()?;
+        if catalog.generation < state.catalog_generation {
+            return Err(LaunchError::CatalogRollback {
+                stored: state.catalog_generation,
+                received: catalog.generation,
+            });
+        }
+        let application = catalog
+            .application(&request.application_id)
+            .ok_or_else(|| LaunchError::ApplicationNotPublished(request.application_id.clone()))?;
+
+        let brokered = self.capabilities.materialize(request)?;
+        let result = (|| {
+            brokered.validate()?;
+            if brokered.network && !request.grants.network {
+                return Err(LaunchError::BrokerEscalated("network"));
+            }
+            if brokered.clipboard && !request.grants.clipboard {
+                return Err(LaunchError::BrokerEscalated("clipboard"));
+            }
+            if brokered.microphone && !request.grants.microphone {
+                return Err(LaunchError::BrokerEscalated("microphone"));
+            }
+            let granted_documents = request
+                .grants
+                .portal_documents
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            if brokered
+                .shares
+                .iter()
+                .any(|share| !granted_documents.contains(share.portal_document_id.as_str()))
+            {
+                return Err(LaunchError::BrokerEscalated("files"));
+            }
+
+            let guest = self
+                .agent
+                .prepare_launch(&session, &request.application_id)?;
+            if guest.remote_app_alias != application.remote_app_alias {
+                return Err(LaunchError::PublicationChanged);
+            }
+            let process = self.launcher.launch(&guest, &brokered)?;
+            Ok(RunningRemoteApp {
+                application_id: request.application_id.clone(),
+                workspace_id: request.workspace_id.clone(),
+                lease_id: brokered.lease_id.clone(),
+                process,
+            })
+        })();
+        self.capabilities.revoke(&brokered.lease_id);
+        result
+    }
+
+    fn ready_state(&self) -> Result<ApplianceState, LaunchError> {
+        let state = self.state.load()?;
+        if !state.can_launch() {
+            return Err(LaunchError::NotReady(state));
+        }
+        Ok(state)
+    }
+
+    fn ensure_running(&self) -> Result<(), LaunchError> {
+        self.backend.ensure_singleton(&self.config)?;
+        match self.backend.state(&self.config)? {
+            DomainState::Running => Ok(()),
+            DomainState::ShutOff => self.backend.start(&self.config).map_err(Into::into),
+            DomainState::Absent => Err(LaunchError::DomainDisappeared),
+            DomainState::Paused | DomainState::Other => Err(LaunchError::RecoveryRequired),
+        }
+    }
+}
+
+fn validate_health(
+    stored: &ApplianceState,
+    health: &crate::AgentHealth,
+) -> Result<(), LaunchError> {
+    if health.protocol_major != HOST_PROTOCOL_MAJOR {
+        return Err(AgentError::ProtocolMismatch {
+            expected: HOST_PROTOCOL_MAJOR,
+            actual: health.protocol_major,
+        }
+        .into());
+    }
+    if health.license == crate::LicenseState::Unknown {
+        return Err(LaunchError::GuestLicenseUnknown);
+    }
+    if health.catalog_generation < stored.catalog_generation {
+        return Err(LaunchError::CatalogRollback {
+            stored: stored.catalog_generation,
+            received: health.catalog_generation,
+        });
+    }
+    Ok(())
+}
+
+fn validate_request(request: &LaunchRequest) -> Result<(), LaunchError> {
+    if request.workspace_id.trim().is_empty() {
+        return Err(LaunchError::InvalidRequest("workspace id"));
+    }
+    if request.application_id.is_empty()
+        || !request
+            .application_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(LaunchError::InvalidRequest("application id"));
+    }
+    if request
+        .grants
+        .portal_documents
+        .iter()
+        .any(|document| document.trim().is_empty() || document.chars().any(char::is_control))
+    {
+        return Err(LaunchError::InvalidRequest("portal document id"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Error)]
+pub enum LaunchError {
+    #[error("the Windows appliance is not ready: {0:?}")]
+    NotReady(ApplianceState),
+    #[error("invalid launch request field {0}")]
+    InvalidRequest(&'static str),
+    #[error("application {0:?} was not published by the authenticated guest bridge")]
+    ApplicationNotPublished(String),
+    #[error("the publication changed while the application was being launched")]
+    PublicationChanged,
+    #[error("guest catalogue rolled back from generation {stored} to {received}")]
+    CatalogRollback { stored: u64, received: u64 },
+    #[error("the guest has not reported its Windows licensing state")]
+    GuestLicenseUnknown,
+    #[error("capability broker returned access broader than the qOS grant: {0}")]
+    BrokerEscalated(&'static str),
+    #[error("the appliance domain disappeared")]
+    DomainDisappeared,
+    #[error("the appliance needs the explicit administrator recovery flow")]
+    RecoveryRequired,
+    #[error(transparent)]
+    Backend(#[from] VmBackendError),
+    #[error(transparent)]
+    Agent(#[from] AgentError),
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
+    #[error(transparent)]
+    Provisioning(#[from] ProvisioningError),
+    #[error(transparent)]
+    RemoteApp(#[from] RemoteAppError),
+    #[error("capability broker failed: {0}")]
+    CapabilityBroker(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Mutex;
+
+    use tempfile::TempDir;
+
+    use crate::{
+        AgentHealth, Association, AssociationKind, GuestLaunch, GuestSession, LicenseState,
+        PublishedApplication, RdpEndpoint, Secret,
+    };
+
+    use super::*;
+
+    struct Backend(DomainState);
+
+    impl VmBackend for Backend {
+        fn ensure_singleton(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn state(&self, _: &ApplianceConfig) -> Result<DomainState, VmBackendError> {
+            Ok(self.0)
+        }
+        fn start(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+    }
+
+    struct Agent {
+        available: bool,
+        alias_on_launch: String,
+    }
+
+    impl GuestAgent for Agent {
+        fn wait_ready(&self, _: Duration) -> Result<GuestSession, AgentError> {
+            if !self.available {
+                return Err(AgentError::Unavailable);
+            }
+            Ok(GuestSession {
+                id: "session".to_string(),
+                health: AgentHealth {
+                    protocol_major: 1,
+                    guest_boot_id: "boot".to_string(),
+                    catalog_generation: 2,
+                    license: LicenseState::DigitallyActivated,
+                },
+            })
+        }
+
+        fn catalog(&self, _: &GuestSession) -> Result<Catalog, AgentError> {
+            Ok(Catalog {
+                generation: 2,
+                applications: vec![PublishedApplication {
+                    id: "word".to_string(),
+                    display_name: "Word".to_string(),
+                    remote_app_alias: "qos-word".to_string(),
+                    icon_sha256: None,
+                    associations: vec![Association {
+                        kind: AssociationKind::Extension,
+                        value: ".docx".to_string(),
+                    }],
+                }],
+            })
+        }
+
+        fn prepare_launch(&self, _: &GuestSession, _: &str) -> Result<GuestLaunch, AgentError> {
+            Ok(GuestLaunch {
+                endpoint: RdpEndpoint {
+                    address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
+                    username: "qos".to_string(),
+                    certificate_sha256: "a".repeat(64),
+                },
+                password: Secret::new(b"secret".to_vec()),
+                remote_app_alias: self.alias_on_launch.clone(),
+                launch_nonce: "nonce".to_string(),
+            })
+        }
+    }
+
+    struct Broker {
+        launch: BrokeredLaunch,
+        revoked: Mutex<Vec<String>>,
+    }
+
+    impl CapabilityBroker for Broker {
+        fn materialize(&self, _: &LaunchRequest) -> Result<BrokeredLaunch, LaunchError> {
+            Ok(self.launch.clone())
+        }
+
+        fn revoke(&self, lease_id: &str) {
+            self.revoked.lock().unwrap().push(lease_id.to_string());
+        }
+    }
+
+    struct Launcher;
+
+    impl RemoteAppLauncher for Launcher {
+        fn launch(
+            &self,
+            _: &GuestLaunch,
+            _: &BrokeredLaunch,
+        ) -> Result<RemoteAppProcess, RemoteAppError> {
+            Ok(RemoteAppProcess { exit_code: Some(0) })
+        }
+    }
+
+    fn fixture(
+        directory: &TempDir,
+        agent: Agent,
+        brokered: BrokeredLaunch,
+    ) -> WindowsAppliance<Backend, Agent, Broker, Launcher> {
+        let store = ProvisioningStore::new(directory.path().join("state.json"));
+        store
+            .save(&ApplianceState {
+                schema_version: 1,
+                phase: crate::AppliancePhase::Ready,
+                license: LicenseState::DigitallyActivated,
+                catalog_generation: 1,
+            })
+            .unwrap();
+        WindowsAppliance::new(
+            ApplianceConfig::recommended(
+                "01234567-89ab-cdef-0123-456789abcdef",
+                "/var/lib/qos/windows/system.qcow2",
+                "/var/lib/qos/windows/nvram.fd",
+            ),
+            store,
+            Backend(DomainState::Running),
+            agent,
+            Broker {
+                launch: brokered,
+                revoked: Mutex::new(Vec::new()),
+            },
+            Launcher,
+        )
+    }
+
+    fn request() -> LaunchRequest {
+        LaunchRequest {
+            workspace_id: "workspace-1".to_string(),
+            application_id: "word".to_string(),
+            grants: VmLaunchGrants::default(),
+        }
+    }
+
+    #[test]
+    fn unavailable_guest_bridge_fails_closed() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: false,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch::deny_all("lease"),
+        );
+        assert!(matches!(
+            appliance.launch(&request()),
+            Err(LaunchError::Agent(AgentError::Unavailable))
+        ));
+    }
+
+    #[test]
+    fn unpublished_application_cannot_be_launched() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: true,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch::deny_all("lease"),
+        );
+        let mut bad = request();
+        bad.application_id = "arbitrary-exe".to_string();
+        assert!(matches!(
+            appliance.launch(&bad),
+            Err(LaunchError::ApplicationNotPublished(_))
+        ));
+    }
+
+    #[test]
+    fn a_broker_cannot_enable_ungranted_clipboard() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: true,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch {
+                lease_id: "lease".to_string(),
+                network: false,
+                clipboard: true,
+                microphone: false,
+                shares: Vec::new(),
+            },
+        );
+        assert!(matches!(
+            appliance.launch(&request()),
+            Err(LaunchError::BrokerEscalated("clipboard"))
+        ));
+        assert_eq!(
+            appliance.capabilities.revoked.lock().unwrap().as_slice(),
+            ["lease"]
+        );
+    }
+
+    #[test]
+    fn changed_publication_alias_fails_and_revokes_lease() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: true,
+                alias_on_launch: "qos-different".to_string(),
+            },
+            BrokeredLaunch::deny_all("lease"),
+        );
+        assert!(matches!(
+            appliance.launch(&request()),
+            Err(LaunchError::PublicationChanged)
+        ));
+        assert_eq!(
+            appliance.capabilities.revoked.lock().unwrap().as_slice(),
+            ["lease"]
+        );
+    }
+}
