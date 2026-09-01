@@ -5,25 +5,28 @@ boundary contracts. It currently provides:
 
 - deterministic catalogue resolution;
 - persistent isolated Wine/UMU capsule state and registered-program lookup;
-- a fixed Bubblewrap, Landlock, network-gate, Wayland, GPU, and brokered-audio plan;
+- a fixed Bubblewrap, Landlock, network-gate, Wayland, and GPU plan;
 - a real no-shell Bubblewrap executor with the qOS seccomp baseline for Wine;
 - a trait boundary to the singleton `windows-vm` appliance;
-- explainable status DTOs for the Windows Apps UI; and
-- a versioned JSON protocol *contract*.
+- explainable status DTOs for the Windows Apps UI;
+- an authenticated, bounded session protocol with server-owned entry IDs; and
+- descriptor-anchored, no-follow capsule storage.
 
-It does **not** currently bind a daemon socket or provide an end-to-end live
-provider. `apps/windows` therefore keeps
-its live `EmptyProvider` and does not claim that example applications are
-installed. Wiring requires a session daemon that authenticates peer
-credentials, obtains `CapOverride` records from the compositor (never from the
-client message), owns an output/capture-filtered audio proxy and hostname
-egress-gate leases, and adapts the authenticated Windows guest bridge to
-`VmDelegate`. The protocol module deliberately describes this boundary without
-pretending the daemon exists.
+The compositor binds the live session service and authenticates the launcher
+with a one-use PID/start-time/app/workspace registry before passing its
+connected descriptor into `apps/windows`. Requests contain only opaque managed
+entry IDs. The compositor reloads current `CapOverride` records for every
+launch; the client cannot supply grants, executable or host paths, runner
+settings, or VM intent. The manager uses an empty unavailable state when the
+optional service is absent, while sample applications remain screenshot-only.
+
+Filtered network access uses the existing qOS egress gate. Audio is currently
+denied because qOS does not yet have a playback-only PipeWire proxy, and the
+live VM route is disabled until a privileged authenticated guest-bridge adapter
+implements `VmDelegate`.
 
 Also not implemented here: prefix snapshots, runner migration, component
-installation, repair/reset, failure-triggered fallback ordering, or automatic
-VM fallback. Existing recipe changes fail with `RecipeChanged`; VM selection
-requires both a matching VM catalogue recipe and an explicit trusted caller
-action. These operations need durable transaction and recovery semantics before
-they should appear as live UI actions.
+installation/import, repair/reset, failure-triggered fallback ordering, or
+automatic VM fallback. Existing recipe changes fail with `RecipeChanged`.
+These operations need durable transaction and recovery semantics before they
+should appear as live UI actions.
