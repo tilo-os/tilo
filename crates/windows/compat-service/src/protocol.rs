@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ExplainStatus, InstallReceipt, InstallationStatus, LaunchReceipt, RouteKind, VmAvailability,
-    VmInstallConfirmation, VmInstallation, VmUninstallation,
+    VmInstallConfirmation, VmInstallation, VmPresentation, VmUninstallation,
 };
 
-pub const PROTOCOL_VERSION: u16 = 6;
+// Version 7 adds explicit presentation and portal-file capability fields to
+// `ManagedApplication`; do not let a v6 peer decode it as the same schema.
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -33,7 +35,6 @@ pub enum ProtocolRequest {
     LaunchVmWithPortalFile {
         version: u16,
         entry_id: String,
-        writable: bool,
     },
     /// The portal-selected descriptor accompanies this frame via `SCM_RIGHTS`.
     Install {
@@ -122,11 +123,37 @@ pub struct ManagedApplication {
     pub explanation: ExplainStatus,
     pub vm_launch_available: bool,
     pub vm_unavailable_reason: Option<String>,
+    /// Presentation capability for the read-only portal-file action. This is
+    /// explicit because app-focused SPICE has no portal file bridge.
+    pub presentation: Option<VmPresentation>,
+    pub portal_file_open_available: bool,
+    pub portal_file_open_unavailable_reason: Option<String>,
     pub audio_output_available: bool,
     pub audio_unavailable_reason: Option<String>,
     pub installation_status: Option<InstallationStatus>,
     pub remove_launcher_available: bool,
     pub vendor_uninstall_available: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portal_file_launch_has_no_client_controlled_writeback_bit() {
+        let request = ProtocolRequest::LaunchVmWithPortalFile {
+            version: PROTOCOL_VERSION,
+            entry_id: "windows-entry".to_string(),
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert!(!encoded.contains("writable"));
+        assert!(
+            serde_json::from_str::<ProtocolRequest>(
+                r#"{"method":"launch_vm_with_portal_file","version":7,"entry_id":"windows-entry","writable":true}"#,
+            )
+            .is_err()
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

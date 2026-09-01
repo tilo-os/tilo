@@ -385,7 +385,7 @@ mod tests {
             shares: vec![ShareBinding {
                 drive_name: "QOS1".to_string(),
                 portal_document_id: "document-42".to_string(),
-                host_path: "/run/qos/windows-vm/leases/lease/document-42".into(),
+                host_path: crate::portal_lease_root().join("lease/document-42"),
                 read_only: true,
             }],
             network: false,
@@ -464,7 +464,7 @@ mod tests {
             shares: vec![ShareBinding {
                 drive_name: "QOS1".to_string(),
                 portal_document_id: "document-42".to_string(),
-                host_path: "/run/qos/windows-vm/leases/lease/document-42".into(),
+                host_path: crate::portal_lease_root().join("lease/document-42"),
                 read_only: true,
             }],
         };
