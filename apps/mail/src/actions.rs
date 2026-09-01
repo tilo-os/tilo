@@ -42,8 +42,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::doc::MailDoc;
@@ -51,6 +52,21 @@ use crate::model::{Draft, Folder};
 
 /// Registry `type_id` for every Mail action.
 pub const MAIL_ACTION_TYPE: &str = "mail.action";
+pub const MAIL_OPERATION_TYPE: &str = "mail.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MailOperation {
+    RefreshCurrentFolder,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MailOperation>, String> {
+    if type_id != MAIL_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 /// The persisted scalar fields of the in-progress draft, in exactly the shape
 /// [`MailDoc::store_draft`] writes. Carrying the document shape keeps
@@ -299,6 +315,7 @@ pub struct MailResourceCtx {
     pub custom_folders: Vec<(String, String)>,
     /// Whether a persisted draft exists (so "Discard draft" is offered).
     pub has_draft: bool,
+    pub can_sync: bool,
 }
 
 /// # Panics
@@ -309,7 +326,9 @@ pub struct MailResourceCtx {
     reason = "MailAction is a plain derived-Serialize enum, so encoding cannot fail; a spec that cannot encode its action would be an unusable palette entry"
 )]
 fn immediate_spec(id: &str, label: &str, action: &MailAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, MAIL_ACTION_TYPE, action).expect("encode mail action")
+    ActionSpec::immediate(id, label, MAIL_ACTION_TYPE, action)
+        .expect("encode mail action")
+        .reversible()
 }
 
 fn message_label(m: &MessageRow) -> String {
@@ -331,20 +350,44 @@ fn message_label(m: &MessageRow) -> String {
 pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
 
+    if let Ok(refresh) = ActionSpec::operation(
+        "refresh",
+        "Refresh current folder",
+        OperationKind::Effect,
+        MAIL_OPERATION_TYPE,
+        &MailOperation::RefreshCurrentFolder,
+    ) {
+        let refresh = refresh.with_contract(ActionContract {
+            retry: RetryPolicy::Idempotent,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            tags: vec!["network".into(), "mail".into(), "refresh".into()],
+            ..ActionContract::default()
+        });
+        root = root.with_action(if ctx.can_sync {
+            refresh
+        } else {
+            refresh.unavailable("account_offline", "No connected mail account is available")
+        });
+    }
+
     // Mailbox-level: create a new local folder. The id is minted once when the
     // name is committed, then baked into the envelope, so replay stays
     // deterministic.
-    root = root.with_action(ActionSpec::prompted(
-        "new-folder",
-        "New folder",
-        "Name",
-        "folder name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let id = uuid::Uuid::new_v4().to_string();
-            encode(&create_folder_action(&id, name.trim()))
-        },
-    ));
+    root = root.with_action(
+        ActionSpec::prompted(
+            "new-folder",
+            "New folder",
+            "Name",
+            "folder name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let id = uuid::Uuid::new_v4().to_string();
+                encode(&create_folder_action(&id, name.trim()))
+            },
+        )
+        .reversible(),
+    );
 
     // The currently-open folder, with its messages nested.
     let mut folder_node = Resource::new(
@@ -353,11 +396,9 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
         ctx.current_folder.title().to_string(),
     );
     if ctx.current_folder == Folder::Drafts && ctx.has_draft {
-        folder_node = folder_node.with_action(immediate_spec(
-            "discard-draft",
-            "Discard draft",
-            &discard_draft_action(),
-        ));
+        folder_node = folder_node.with_action(
+            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
+        );
     }
     for m in &ctx.messages {
         let mut msg = Resource::new(
@@ -385,11 +426,14 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
             "Archive",
             &move_action(vec![m.id.clone()], Folder::Archive),
         ));
-        msg = msg.with_action(immediate_spec(
-            "delete",
-            "Delete",
-            &move_action(vec![m.id.clone()], Folder::Trash),
-        ));
+        msg = msg.with_action(
+            immediate_spec(
+                "delete",
+                "Delete",
+                &move_action(vec![m.id.clone()], Folder::Trash),
+            )
+            .destructive(),
+        );
 
         // Add a label (prompted). The id is captured presentation-side.
         let mid = m.id.clone();
@@ -419,19 +463,21 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     for (id, name) in &ctx.custom_folders {
         let rid = id.clone();
         let mut f = Resource::new(format!("mail.folder:{id}"), "mail.folder", name.clone());
-        f = f.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename folder",
-            "Name",
-            "folder name…",
-            ExecutionLocus::ClientLocal,
-            move |n: &str| encode(&rename_folder_action(&rid, n.trim())),
-        ));
-        f = f.with_action(immediate_spec(
-            "delete-folder",
-            "Delete folder",
-            &delete_folder_action(id),
-        ));
+        f = f.with_action(
+            ActionSpec::prompted(
+                "rename",
+                "Rename folder",
+                "Name",
+                "folder name…",
+                ExecutionLocus::ClientLocal,
+                move |n: &str| encode(&rename_folder_action(&rid, n.trim())),
+            )
+            .reversible(),
+        );
+        f = f.with_action(
+            immediate_spec("delete-folder", "Delete folder", &delete_folder_action(id))
+                .destructive(),
+        );
         root = root.with_child(f);
     }
 
@@ -512,6 +558,7 @@ mod tests {
         assert_eq!(mailbox.kind, "mail.mailbox");
         let mb_actions: Vec<&str> = mailbox.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(mb_actions.contains(&"new-folder"), "{mb_actions:?}");
+        assert!(mb_actions.contains(&"refresh"), "{mb_actions:?}");
 
         let folder = mailbox
             .children
@@ -530,6 +577,16 @@ mod tests {
                 "message exports {want}: {msg_actions:?}"
             );
         }
+        assert_eq!(
+            message
+                .actions
+                .iter()
+                .find(|a| a.id == "delete")
+                .unwrap()
+                .contract
+                .risk,
+            qos_actions::RiskLevel::Destructive
+        );
 
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);

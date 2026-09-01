@@ -34,8 +34,8 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::model::{Route, TubeModel};
@@ -222,7 +222,8 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                 video_id: video_id.clone(),
             },
         )
-        .with_description("Toggle the like on this video"),
+        .with_description("Toggle the like on this video")
+        .reversible(),
     );
     for (id, label, kind, operation) in [
         (
@@ -241,6 +242,15 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
         ),
     ] {
         if let Ok(spec) = ActionSpec::operation(id, label, kind, TUBE_OPERATION_TYPE, &operation) {
+            let spec = if id == "share" {
+                spec.with_contract(ActionContract {
+                    retry: RetryPolicy::Idempotent,
+                    tags: vec!["clipboard".into(), "sharing".into()],
+                    ..ActionContract::default()
+                })
+            } else {
+                spec
+            };
             root = root.with_action(spec);
         }
     }
@@ -252,7 +262,13 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
                 video_id: video_id.clone(),
             },
         )
-        .with_description("Append to the shared watch queue"),
+        .with_description("Append to the shared watch queue")
+        .with_contract(ActionContract {
+            retry: RetryPolicy::RetryWithInvocationId,
+            execution: ExecutionMode::Immediate,
+            ..ActionContract::default()
+        })
+        .reversible(),
     );
 
     for (index, comment) in video.comments.iter().enumerate() {
@@ -263,14 +279,17 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
             "tube.comment",
             comment_label(&comment.author, &comment.text),
         )
-        .with_action(immediate_spec(
-            "like",
-            "Like comment",
-            &TubeAction::LikeComment {
-                video_id: vid.clone(),
-                index,
-            },
-        ))
+        .with_action(
+            immediate_spec(
+                "like",
+                "Like comment",
+                &TubeAction::LikeComment {
+                    video_id: vid.clone(),
+                    index,
+                },
+            )
+            .reversible(),
+        )
         .with_action(ActionSpec::prompted(
             "reply",
             "Reply to comment",
@@ -344,6 +363,18 @@ mod tests {
         assert!(
             video_actions.contains(&"queue"),
             "video exports add-to-queue"
+        );
+        assert!(video_actions.contains(&"play-pause"));
+        assert!(video_actions.contains(&"share"));
+        assert_eq!(
+            video
+                .actions
+                .iter()
+                .find(|a| a.id == "queue")
+                .unwrap()
+                .contract
+                .retry,
+            RetryPolicy::RetryWithInvocationId
         );
 
         assert_eq!(

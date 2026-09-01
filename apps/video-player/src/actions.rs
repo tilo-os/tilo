@@ -1,7 +1,10 @@
 //! Discoverable effect/view operations for the local video player.
 
 use automerge::AutoCommit;
-use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use qos_actions::{
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
+};
 use serde::{Deserialize, Serialize};
 
 pub const OPERATION_TYPE: &str = "video-player.operation";
@@ -23,6 +26,15 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
 }
 
 pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resource> {
+    let open_contract = ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Resource {
+            resource_kind: "media.video".into(),
+        },
+        tags: vec!["filesystem".into(), "media".into()],
+        ..ActionContract::default()
+    };
     let mut player = Resource::new("video-player.current", "media.video", title)
         .with_action(
             ActionSpec::operation(
@@ -41,43 +53,58 @@ pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resourc
                     OperationKind::Effect,
                     |path| encode(&PlayerOperation::OpenPath(path.to_string())),
                 )
-            }),
+            })
+            .with_contract(open_contract.clone()),
         )
-        .with_action(ActionSpec::prompted_operation(
-            "open-path",
-            "Open video path",
-            "Video path",
-            "/path/to/video.mp4",
-            OperationKind::Effect,
-            |path| encode(&PlayerOperation::OpenPath(path.to_string())),
-        ));
-    if has_media {
-        for (id, label, op) in [
-            (
-                "play-pause",
-                "Play or pause",
-                PlayerOperation::TogglePlayback,
-            ),
-            ("mute", "Mute or unmute", PlayerOperation::ToggleMute),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::View, OPERATION_TYPE, &op)
-            {
-                player = player.with_action(spec);
-            }
+        .with_action(
+            ActionSpec::prompted_operation(
+                "open-path",
+                "Open video path",
+                "Video path",
+                "/path/to/video.mp4",
+                OperationKind::Effect,
+                |path| encode(&PlayerOperation::OpenPath(path.to_string())),
+            )
+            .with_contract(open_contract),
+        );
+    for (id, label, op) in [
+        (
+            "play-pause",
+            "Play or pause",
+            PlayerOperation::TogglePlayback,
+        ),
+        ("mute", "Mute or unmute", PlayerOperation::ToggleMute),
+    ] {
+        if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::View, OPERATION_TYPE, &op)
+        {
+            player = player.with_action(if has_media {
+                spec
+            } else {
+                spec.unavailable("no_media", "Open a video before using playback controls")
+            });
         }
-        player = player.with_action(ActionSpec::prompted_operation(
-            "seek",
-            "Seek to seconds",
-            "Position in seconds",
-            "30",
-            OperationKind::View,
-            |value| {
-                let seconds = value.parse::<f64>().unwrap_or(0.0).max(0.0);
-                encode(&PlayerOperation::SeekSeconds(seconds))
-            },
-        ));
     }
+    let seek = ActionSpec::typed_operation(
+        "seek",
+        "Seek to seconds",
+        "30",
+        OperationKind::View,
+        vec![ActionParam::required_owned(
+            "seconds",
+            ParamType::Number,
+            "Non-negative playback position in seconds",
+        )],
+        |args: &ActionArgs| {
+            encode(&PlayerOperation::SeekSeconds(
+                args.number("seconds").unwrap_or(0.0).max(0.0),
+            ))
+        },
+    );
+    player = player.with_action(if has_media {
+        seek
+    } else {
+        seek.unavailable("no_media", "Open a video before seeking")
+    });
     vec![player]
 }
 
@@ -88,4 +115,26 @@ pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<PlayerOperation>, 
     serde_json::from_slice(payload)
         .map(Some)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_player_keeps_controls_discoverable_with_reasons_and_typed_seek() {
+        let resources = resources("No media", false, &AutoCommit::new());
+        let actions = &resources[0].actions;
+        let play = actions.iter().find(|a| a.id == "play-pause").unwrap();
+        assert!(!play.contract.availability.is_available());
+        let seek = actions.iter().find(|a| a.id == "seek").unwrap();
+        assert_eq!(seek.params()[0].ty, ParamType::Number);
+        let mut args = serde_json::Map::new();
+        args.insert("seconds".into(), serde_json::json!(12.5));
+        let encoded = seek.build_json(&args).unwrap();
+        assert_eq!(
+            decode(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PlayerOperation::SeekSeconds(12.5))
+        );
+    }
 }

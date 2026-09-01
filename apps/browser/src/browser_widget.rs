@@ -28,7 +28,10 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
@@ -56,6 +59,66 @@ const SUGGESTION_LIMIT: usize = 8;
 /// e2e id of the address input (also used internally to detect whether
 /// the user is editing it).
 const URL_INPUT_ID: &str = "browser.url_input";
+
+const BROWSER_OPERATION_TYPE: &str = "browser.operation";
+
+#[derive(Clone, Debug)]
+enum BrowserOperation {
+    Back,
+    Forward,
+    Reload,
+    Navigate { url: String },
+}
+
+fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
+    match operation {
+        BrowserOperation::Back => serde_json::json!({ "operation": "back" }),
+        BrowserOperation::Forward => serde_json::json!({ "operation": "forward" }),
+        BrowserOperation::Reload => serde_json::json!({ "operation": "reload" }),
+        BrowserOperation::Navigate { url } => {
+            serde_json::json!({ "operation": "navigate", "url": url })
+        }
+    }
+}
+
+fn encode_browser_operation(operation: &BrowserOperation) -> EncodedAction {
+    let payload = browser_operation_payload(operation);
+    EncodedAction::encode_operation(BROWSER_OPERATION_TYPE, &payload).unwrap_or_else(|_| {
+        EncodedAction {
+            type_id: BROWSER_OPERATION_TYPE.to_string(),
+            payload: Vec::new(),
+        }
+    })
+}
+
+fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> {
+    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+    match value.get("operation").and_then(serde_json::Value::as_str) {
+        Some("back") => Ok(BrowserOperation::Back),
+        Some("forward") => Ok(BrowserOperation::Forward),
+        Some("reload") => Ok(BrowserOperation::Reload),
+        Some("navigate") => value
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(|url| BrowserOperation::Navigate {
+                url: url.to_string(),
+            })
+            .ok_or_else(|| "browser navigate operation is missing `url`".to_string()),
+        _ => Err("unknown browser operation".to_string()),
+    }
+}
+
+fn navigation_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Resource {
+            resource_kind: "browser.page".into(),
+        },
+        tags: vec!["network".into(), "navigation".into()],
+        ..ActionContract::view()
+    }
+}
 
 /// First page loaded in a fresh live window.
 const DEFAULT_URL: &str = "https://duckduckgo.com";
@@ -191,6 +254,18 @@ impl BrowserWidget {
     /// zero-copy compositor. Updated every layout.
     pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
         self.content_rect.clone()
+    }
+
+    fn perform_browser_operation(&self, operation: BrowserOperation) {
+        let command = match operation {
+            BrowserOperation::Back => WebViewCommand::GoBack,
+            BrowserOperation::Forward => WebViewCommand::GoForward,
+            BrowserOperation::Reload => WebViewCommand::Reload,
+            BrowserOperation::Navigate { url } => {
+                WebViewCommand::Navigate(normalise_url(url.trim()))
+            }
+        };
+        self.engine.send(command);
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -524,27 +599,58 @@ impl Widget for BrowserWidget {
                 &self.title
             },
         );
-        for (id, label) in [
-            ("back", "Go back"),
-            ("forward", "Go forward"),
-            ("reload", "Reload"),
+        for (id, label, operation, available, reason) in [
+            (
+                "back",
+                "Go back",
+                BrowserOperation::Back,
+                self.can_go_back,
+                "No previous page",
+            ),
+            (
+                "forward",
+                "Go forward",
+                BrowserOperation::Forward,
+                self.can_go_forward,
+                "No next page",
+            ),
+            ("reload", "Reload", BrowserOperation::Reload, true, ""),
         ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "browser.operation", &id)
-            {
-                page.actions.push(spec);
+            let payload = browser_operation_payload(&operation);
+            if let Ok(spec) = ActionSpec::operation(
+                id,
+                label,
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                &payload,
+            ) {
+                let spec = spec.with_contract(navigation_contract());
+                page.actions.push(if available {
+                    spec
+                } else {
+                    spec.unavailable("history_boundary", reason)
+                });
             }
         }
-        page.actions.push(ActionSpec::prompted_operation(
-            "navigate",
-            "Open address",
-            "Address or search",
-            "https://…",
-            OperationKind::Effect,
-            |value| {
-                EncodedAction::encode_operation("browser.navigate", &value).expect("string payload")
-            },
-        ));
+        page.actions.push(
+            ActionSpec::typed_operation(
+                "navigate",
+                "Open address",
+                "https://…",
+                OperationKind::Effect,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute URL or search terms",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::Navigate {
+                        url: args.text("url").unwrap_or("").to_string(),
+                    })
+                },
+            )
+            .with_contract(navigation_contract()),
+        );
         vec![page]
     }
 
@@ -556,22 +662,11 @@ impl Widget for BrowserWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
             return Ok(false);
         }
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match type_id {
-            "browser.operation" => match value.as_str() {
-                "back" => self.engine.send(WebViewCommand::GoBack),
-                "forward" => self.engine.send(WebViewCommand::GoForward),
-                "reload" => self.engine.send(WebViewCommand::Reload),
-                _ => return Ok(false),
-            },
-            "browser.navigate" => self
-                .engine
-                .send(WebViewCommand::Navigate(normalise_url(&value))),
-            _ => return Ok(false),
-        }
+        let operation = decode_browser_operation(payload)?;
+        self.perform_browser_operation(operation);
         Ok(true)
     }
 
@@ -605,13 +700,13 @@ impl Widget for BrowserWidget {
         self.apply_engine_events(state, path);
 
         if Self::take_flag(state, path, BACK_FLAG) {
-            self.engine.send(WebViewCommand::GoBack);
+            self.perform_browser_operation(BrowserOperation::Back);
         }
         if Self::take_flag(state, path, FORWARD_FLAG) {
-            self.engine.send(WebViewCommand::GoForward);
+            self.perform_browser_operation(BrowserOperation::Forward);
         }
         if Self::take_flag(state, path, RELOAD_FLAG) {
-            self.engine.send(WebViewCommand::Reload);
+            self.perform_browser_operation(BrowserOperation::Reload);
         }
         if Self::take_flag(state, path, SETTINGS_FLAG) {
             self.show_settings = !self.show_settings;
@@ -973,5 +1068,32 @@ mod tests {
         // app, and blocker thread.
         let engine: SharedEngine = default_engine();
         let _clone: SharedEngine = Arc::clone(&engine);
+    }
+
+    #[test]
+    fn resource_surface_binds_typed_navigation_and_reports_history_availability() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (doc, root) = synced(&mut w);
+        let resources = Widget::resources(&w, &doc);
+        let page = &resources[0];
+        let back = page.actions.iter().find(|a| a.id == "back").unwrap();
+        assert!(!back.contract.availability.is_available());
+        let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
+        assert_eq!(navigate.params()[0].name.as_ref(), "url");
+        let mut args = serde_json::Map::new();
+        args.insert("url".into(), serde_json::json!("qos.example"));
+        let encoded = navigate.build_json(&args).unwrap();
+        assert!(
+            w.invoke_resource_operation(
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &root,
+            )
+            .unwrap()
+        );
+        assert_eq!(engine.current_uri().as_deref(), Some("https://qos.example"));
     }
 }

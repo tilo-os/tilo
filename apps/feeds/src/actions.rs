@@ -38,8 +38,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::doc::FeedsDoc;
@@ -47,6 +48,21 @@ use crate::model::{Feed, FeedKind, Folder, Id};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
+pub const FEEDS_OPERATION_TYPE: &str = "feeds.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FeedsOperation {
+    RefreshAll,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<FeedsOperation>, String> {
+    if type_id != FEEDS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 /// Guess a feed's kind from its URL scheme — the same rule the fetch worker
 /// uses so the record the action creates matches what a refresh would produce.
@@ -351,6 +367,27 @@ fn feed_label(f: &FeedRef) -> String {
 pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
 
+    if let Ok(refresh) = ActionSpec::operation(
+        "refresh-all",
+        "Refresh all subscriptions",
+        OperationKind::Effect,
+        FEEDS_OPERATION_TYPE,
+        &FeedsOperation::RefreshAll,
+    ) {
+        let refresh = refresh.with_contract(ActionContract {
+            retry: RetryPolicy::Idempotent,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            tags: vec!["network".into(), "refresh".into()],
+            ..ActionContract::default()
+        });
+        root = root.with_action(if ctx.feeds.is_empty() {
+            refresh.unavailable("no_subscriptions", "There are no subscriptions to refresh")
+        } else {
+            refresh
+        });
+    }
+
     // Reader-level: create a folder. The uuid is minted once when the name is
     // committed, then baked into the envelope, so replay stays deterministic.
     let order = ctx.next_folder_order;
@@ -386,11 +423,11 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             ExecutionLocus::ClientLocal,
             move |name: &str| encode(&rename_folder_action(id, name)),
         ))
-        .with_action(immediate_spec(
-            "delete",
-            "Delete folder",
-            &delete_folder_action(id),
-        ));
+        .with_action(
+            immediate_spec("delete", "Delete folder", &delete_folder_action(id))
+                .destructive()
+                .reversible(),
+        );
         root = root.with_child(child);
     }
 
@@ -431,11 +468,15 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                 encode(&move_feed_action(id, folder))
             },
         ));
-        child = child.with_action(immediate_spec(
-            "unsubscribe",
-            "Unsubscribe",
-            &remove_subscription_action(id),
-        ));
+        child = child.with_action(
+            immediate_spec(
+                "unsubscribe",
+                "Unsubscribe",
+                &remove_subscription_action(id),
+            )
+            .destructive()
+            .reversible(),
+        );
         root = root.with_child(child);
     }
 
@@ -497,6 +538,19 @@ mod tests {
         assert_eq!(reader.kind, "feeds.reader");
         let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
+        assert!(
+            reader_actions.contains(&"refresh-all"),
+            "{reader_actions:?}"
+        );
+        let refresh = reader
+            .actions
+            .iter()
+            .find(|a| a.id == "refresh-all")
+            .unwrap();
+        assert!(matches!(
+            refresh.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
 
         let folder = reader
             .children
@@ -517,6 +571,15 @@ mod tests {
         assert!(s_actions.contains(&"mark-read"), "{s_actions:?}");
         assert!(s_actions.contains(&"move"), "{s_actions:?}");
         assert!(s_actions.contains(&"unsubscribe"), "{s_actions:?}");
+        assert_eq!(
+            feed.actions
+                .iter()
+                .find(|a| a.id == "unsubscribe")
+                .unwrap()
+                .contract
+                .risk,
+            qos_actions::RiskLevel::Destructive
+        );
 
         // The full flattened tree exports every action — the palette's Actions
         // group is display-capped, so reachability is asserted on the flatten.
