@@ -1703,6 +1703,28 @@ request when clicked or activated with Enter or Space. Sources that cannot
 wake the application may return `true` from `needs_poll`; idle workers should
 prefer `LatestRequest`.
 
+Use `with_slot_delegate` to replace the built-in placeholder copy with
+localized retained widgets. The delegate receives the stable `TreeSlot`, its
+depth, and `TreeSlotState::Loading` or `TreeSlotState::Error`. Only unresolved
+rows in the virtual window are mounted. The tree keeps the outer tree-item
+semantics, marks loading rows busy and error rows invalid, measures variable
+placeholder heights, and preserves click/keyboard activation as retry:
+
+```rust
+tree.with_slot_delegate(|_, slot, _depth, state| {
+    let message = match state {
+        TreeSlotState::Loading => "project-tree-loading",
+        TreeSlotState::Error { .. } => "project-tree-load-error",
+    };
+    Box::new(Text::new(message).with_id(format!("tree-slot-{}", slot.index)))
+});
+```
+
+Generated tree components install this localized delegate by default. Replace
+it with a progress indicator, diagnostic detail, or a retry button when the app
+needs richer loading UI; ordinary child-widget focus and accessibility remain
+nested beneath the slot's `TreeItem` semantic node.
+
 When a slot changes state, send `TreeModelChange::SlotsChanged`. The tree
 invalidates request deduplication and transfers focus, measured height, and the
 viewport anchor from the placeholder to the loaded node id.
