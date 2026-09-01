@@ -1,13 +1,10 @@
 //! Resource + action-model status for the terminal.
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
-//! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an `Action` (`qos_actions::Action`) — a serializable value that
-//! deterministically changes the shared Automerge document, so undo and
-//! multi-peer replay come for free — while presentation / view state stays plain
-//! app code. Applying that split to the terminal leaves **nothing** on the action
-//! side, and this module records that finding rather than fabricate a
-//! saved-profiles or named-sessions model just to have actions.
+//! The qOS action-model recipe separates durable document mutations from
+//! effects. A terminal has no authored record model to undo: its shared
+//! Automerge document is the live screen projection. It does, however, publish
+//! honest **effect operations** for automation and collaborative control:
+//! sending text, interrupting the foreground process, and clearing the screen.
 //!
 //! ## Everything that changes the world is external
 //!
@@ -32,6 +29,8 @@
 //!   buffers, a `List` of line `Map`s each holding a `Text` and packed `attrs`;
 //! - `cursor` — the cursor's `x` / `y`;
 //! - `terminal_links` — OSC 8 hyperlink targets the program emitted;
+//! - `terminal_images` — content hashes and cell placements for terminal
+//!   graphics; immutable bytes ride the shared qdoc blob transport;
 //! - `terminal_title` — the OSC 0/2 window title the program set;
 //! - `terminal_pane_id` — a shared id that scopes collaboration *presence* (whose
 //!   caret is whose), not user data.
@@ -63,14 +62,9 @@
 //! names "the current selection, an overlay being open" as presentation that must
 //! *never* be an action.
 //!
-//! ## Consequence
-//!
-//! The terminal exports **no** actions and publishes **no** Ctrl+K resource tree:
-//! [`Widget::resources`](ui::widget::Widget::resources) stays empty and
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
-//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch, and `main.rs` registers no action decoder). The
-//! tests below prove each half of this split on the real production path.
+//! These controls deliberately remain effects rather than undoable actions:
+//! they write bytes to the real PTY, while the resulting output is mirrored to
+//! collaborators through the same CRDT-backed grid as ordinary shell output.
 
 #[cfg(test)]
 mod tests {
@@ -239,6 +233,7 @@ mod tests {
                 "cursor".to_string(),
                 "terminal_grid".to_string(),
                 "terminal_grid_alt".to_string(),
+                "terminal_images".to_string(),
                 "terminal_links".to_string(),
                 "terminal_pane_id".to_string(),
             ],
@@ -360,14 +355,10 @@ mod tests {
         );
     }
 
-    /// The honest steady state: the terminal fabricates no action or resource
-    /// surface. Exercised on the live widget *after* real interaction — program
-    /// output, a keystroke, and a stray click — `Widget::resources` is empty
-    /// (nothing to publish to Ctrl+K) and no action-host undo boundary is recorded
-    /// (`take_committed_action` is `None`). Both are toolkit defaults, because no
-    /// action is ever dispatched and no `ui::ActionHost` is embedded.
+    /// The honest steady state: PTY controls are published as effects while no
+    /// undoable document action is fabricated.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_effect_controls_without_an_undo_boundary() {
         let (mut widget, _rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.init_crdt(&mut doc, &ROOT);
@@ -377,9 +368,16 @@ mod tests {
         send(&mut widget, &mut doc, &char_event("x"));
         send(&mut widget, &mut doc, &left_press());
 
-        assert!(
-            Widget::resources(&widget, &doc).is_empty(),
-            "the terminal publishes no Ctrl+K resource tree — its only doc state is the live screen",
+        let resources = Widget::resources(&widget, &doc);
+        assert_eq!(
+            resources.len(),
+            1,
+            "one live terminal session is discoverable"
+        );
+        assert_eq!(
+            resources[0].actions.len(),
+            3,
+            "send, interrupt and clear are honest PTY effects"
         );
         assert!(
             widget.take_committed_action().is_none(),
