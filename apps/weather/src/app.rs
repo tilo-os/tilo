@@ -507,6 +507,7 @@ impl Widget for WeatherApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod interaction_tests {
     //! Drive the real `handle_event` / draw path (the same code the live loop
     //! runs) and assert the model + shell view actually changed. Built with

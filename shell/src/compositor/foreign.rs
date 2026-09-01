@@ -1526,6 +1526,10 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic geometry fixtures use exactly representable values"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;

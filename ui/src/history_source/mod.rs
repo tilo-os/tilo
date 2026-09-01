@@ -429,7 +429,22 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     sa == sb && a != b
 }
 
-/// The fallback for documents that don't carry the qdoc schema.
+/// Describe, in one short phrase, what moving `doc` from `from` to `to` does:
+/// `"+12 -3 chars"`, `"+1 item"`, `"2 fields"`.
+///
+/// The public face of the same producer the history rows are built from, so an
+/// Undo control and the timeline describe an action identically rather than
+/// each inventing wording. Like every summary here it never guesses: a change
+/// whose effect cannot be described comes back as [`NO_VISIBLE_CHANGE`].
+///
+/// `&mut AutoCommit` because reading a diff flushes the open transaction; the
+/// document is not otherwise modified.
+pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHash]) -> String {
+    patch_summary(doc, from, to).0
+}
+
+/// Describe a change by reading its own patch set. The fallback for documents
+/// that don't carry the qdoc schema.
 fn patch_summary(
     doc: &mut AutoCommit,
     before: &[ChangeHash],

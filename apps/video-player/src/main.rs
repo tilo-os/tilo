@@ -56,12 +56,12 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-/// # Errors
-///
-/// Returns an error if launching the app or running a `--shots` capture fails.
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+/// # Errors
+///
+/// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.video-player", live_root)

@@ -2426,9 +2426,21 @@ mod tests {
         // Delete through the real sidebar-event path.
         app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
 
-        // The host drains the captured heads and records one boundary for it.
-        let before = Widget::take_committed_action(&mut app).expect("heads captured for the host");
-        state.record_committed_action(before, None, None);
+        // The host's own recorder drains the captured heads and records the
+        // boundary. Going through it rather than pushing an entry by hand is
+        // the point: attribution happens in there, and undo is author-scoped.
+        // The node map is empty because the app widget is the root here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched delete"
+        );
 
         assert!(
             !NotesDoc::list_pages(&state.doc)
@@ -2436,9 +2448,13 @@ mod tests {
                 .any(|p| p.id == welcome),
             "the delete removed the page from the document"
         );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
         );
         assert!(
             Widget::take_committed_action(&mut app).is_none(),
@@ -2446,7 +2462,9 @@ mod tests {
         );
 
         // Ctrl+Z reverts the document; the next `sync` reconciles the workspace.
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert!(
             NotesDoc::list_pages(&state.doc)
                 .iter()

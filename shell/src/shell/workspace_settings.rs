@@ -113,12 +113,6 @@ impl WsTab {
     }
 }
 
-/// The workspace's invite URL, kept in one place so this and the
-/// compositor's inline copy can't drift.
-pub fn invite_link(ws: &Workspace) -> String {
-    format!("quickdesktop://invite/{}", u64::from(ws.id))
-}
-
 /// The `WorkspaceSettings` lens state.
 #[derive(Debug)]
 pub struct WorkspaceSettings {
@@ -169,10 +163,6 @@ impl WorkspaceSettings {
 
     pub fn remove_collaborator(&mut self, ws: &mut Workspace, collab_id: &str) {
         ws.collaborators.retain(|c| c.id != collab_id);
-    }
-
-    pub fn invite_link(&self, ws: &Workspace) -> String {
-        invite_link(ws)
     }
 
     // -----------------------------------------------------------------
@@ -913,6 +903,7 @@ pub fn scope_label(scope: &Scope) -> String {
         Scope::Room(_) => "this room".to_string(),
         Scope::App(app) => format!("the {app} app"),
         Scope::FsPath(path) => fs_scope_label(path),
+        Scope::FsRecord(record) => format!("one shared file ({})", short_id(record)),
         Scope::Device(device) => device_label(device).to_string(),
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
@@ -1055,7 +1046,6 @@ enum GrantTarget {
     Device(&'static str),
     AnyHost,
     WorkspaceFiles,
-    Workspace,
 }
 
 /// One entry in the composer's "what does this allow" picker. Every
@@ -1110,20 +1100,15 @@ static GRANT_CHOICES: &[GrantChoice] = &[
         target: GrantTarget::WorkspaceFiles,
         verb: Verb::Write,
     },
-    GrantChoice {
-        label: "Administer workspace",
-        target: GrantTarget::Workspace,
-        verb: Verb::Admin,
-    },
 ];
 
 /// Fallback for [`GrantDraft::choice`] if the index and [`GRANT_CHOICES`]'s
 /// length ever disagree — unreachable in practice since the index is
 /// always taken modulo the live length, but a real value beats a panic.
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
-    label: "Administer workspace",
-    target: GrantTarget::Workspace,
-    verb: Verb::Admin,
+    label: "Edit workspace files",
+    target: GrantTarget::WorkspaceFiles,
+    verb: Verb::Write,
 };
 
 /// The path workspace files are projected at. A capability scoped here
@@ -1248,7 +1233,6 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverrid
         GrantTarget::Device(d) => Scope::Device(d.to_string()),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
-        GrantTarget::Workspace => Scope::Workspace,
     };
     Some(CapOverride::grant(subject, scope, choice.verb).expiring(draft.expiry))
 }
@@ -1311,17 +1295,15 @@ pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, cap_id: &str) -> CapEdit
 
 /// The roles a member's role chip cycles through. `Denied` is not in
 /// the cycle — that's what Revoke expresses, not an accidental click.
-const ROLE_CYCLE: [CapRole; 4] = [
-    CapRole::Viewer,
-    CapRole::Commenter,
-    CapRole::Editor,
-    CapRole::Owner,
-];
+const ROLE_CYCLE: [CapRole; 3] = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
 
 /// Inverse of the mapping [`Workspace::role_of`] reads.
 fn role_verb(role: CapRole) -> Option<Verb> {
     match role {
-        CapRole::Owner => Some(Verb::Admin),
+        // Ownership is a structural governance transfer, not a role-chip
+        // mutation. Until that ceremony is signed and replicated end-to-end,
+        // this panel must never manufacture a second apparent owner.
+        CapRole::Owner => None,
         CapRole::Editor => Some(Verb::Write),
         CapRole::Commenter => Some(Verb::Comment),
         CapRole::Viewer => Some(Verb::Read),
@@ -1330,6 +1312,9 @@ fn role_verb(role: CapRole) -> Option<Verb> {
 }
 
 pub fn next_role(role: CapRole) -> CapRole {
+    if matches!(role, CapRole::Owner | CapRole::Denied) {
+        return CapRole::Viewer;
+    }
     let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
     let next = idx
         .wrapping_add(1)
@@ -1366,7 +1351,7 @@ pub fn set_member_role(
     let Some(verb) = role_verb(role) else {
         return CapEdit::default();
     };
-    if !ws.may_administer(actor) {
+    if !ws.may_administer(actor) || actor == member {
         return CapEdit::default();
     }
     // The owner's role is structural, not a capability — nothing to rewrite.
@@ -1375,14 +1360,16 @@ pub fn set_member_role(
     }
     let mut edit = CapEdit::default();
     for id in membership_ids(ws, member) {
-        if ws.revoke_as(actor, &id) {
+        // Authority was proven once above. Mutate atomically from that
+        // snapshot: re-checking after each removal lets a delegated admin
+        // remove its own authority midway and strands a half-written edit.
+        if ws.revoke_capability(&id) {
             edit.revoked.push(id);
         }
     }
-    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb);
-    if let Some(id) = ws.grant_as(actor, cap) {
-        edit.granted.push(id);
-    }
+    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb)
+        .granted_by(Principal::Person(actor.clone()));
+    edit.granted.push(ws.grant_capability(cap));
     edit
 }
 
@@ -1390,7 +1377,8 @@ pub fn set_member_role(
 pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> CapEdit {
     // The owner is the workspace's root of trust; removing them would
     // leave a room no one can administer.
-    if ws.owner.as_deref() == Some(member.as_str()) {
+    if ws.owner.as_deref() == Some(member.as_str()) || actor == member || !ws.may_administer(actor)
+    {
         return CapEdit::default();
     }
     let ids: Vec<String> = ws
@@ -1401,7 +1389,7 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Cap
         .collect();
     let mut edit = CapEdit::default();
     for id in ids {
-        if ws.revoke_as(actor, &id) {
+        if ws.revoke_capability(&id) {
             edit.revoked.push(id);
         }
     }
@@ -1656,11 +1644,12 @@ fn draw_member_row(
         None,
     );
 
+    let can_manage_row = is_owner && !row.is_workspace_owner && &row.user != local_user;
     draw_member_role_chip(
         scene,
         transform,
         row,
-        is_owner,
+        can_manage_row,
         detail_size,
         text_renderer,
         theme,
@@ -1671,7 +1660,7 @@ fn draw_member_row(
         transform,
         row.remove_rect,
         "Remove",
-        is_owner && !row.is_workspace_owner,
+        can_manage_row,
         text_renderer,
         theme,
     );
@@ -1683,14 +1672,14 @@ fn draw_member_role_chip(
     scene: &mut Scene,
     transform: Affine,
     row: &MemberRow,
-    is_owner: bool,
+    interactive: bool,
     detail_size: f32,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let role_interactive = is_owner && !row.is_workspace_owner;
+    let role_interactive = interactive;
     let chip_tint = if row.role == CapRole::Denied {
         colors.semantic.danger
     } else if row.is_workspace_owner {
@@ -2696,6 +2685,10 @@ fn draw_permission_row(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact settings layout geometry is the behavior under test"
+)]
 mod tab_tests {
     //! The modal's tab surface: default tab, switching, sidebar
     //! geometry, and that the sidebar renders without a pane drawer.
@@ -3022,8 +3015,46 @@ mod members_pane_tests {
     fn role_chip_cycles_through_the_positive_roles() {
         assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
         assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
-        assert_eq!(next_role(CapRole::Editor), CapRole::Owner);
+        assert_eq!(next_role(CapRole::Editor), CapRole::Viewer);
         assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
+        assert_eq!(next_role(CapRole::Denied), CapRole::Viewer);
+    }
+
+    #[test]
+    fn role_control_cannot_create_or_transfer_ownership() {
+        let mut ws = ws_with_two_members();
+        let edit = set_member_role(
+            &mut ws,
+            &OWNER.to_string(),
+            &PEER.to_string(),
+            CapRole::Owner,
+        );
+        assert!(edit.is_empty());
+        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+        assert_eq!(ws.owner.as_deref(), Some(OWNER));
+    }
+
+    #[test]
+    fn delegated_admin_cannot_partially_demote_or_remove_itself() {
+        let mut ws = ws_with_two_members();
+        let admin =
+            CapOverride::membership(Subject::person(PEER), ws.room.to_string(), Verb::Admin);
+        ws.grant_as(&OWNER.to_string(), admin)
+            .expect("owner delegates administration");
+        let before = ws.capabilities.clone();
+
+        assert!(
+            set_member_role(
+                &mut ws,
+                &PEER.to_string(),
+                &PEER.to_string(),
+                CapRole::Viewer,
+            )
+            .is_empty()
+        );
+        assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_empty());
+        assert_eq!(ws.capabilities, before);
+        assert!(ws.may_administer(&PEER.to_string()));
     }
 
     #[test]
@@ -3111,6 +3142,23 @@ mod permissions_pane_tests {
 
     fn pane() -> Rect {
         Rect::new(0.0, 0.0, 660.0, 480.0)
+    }
+
+    #[test]
+    fn stable_file_record_scope_is_presented_without_inventing_a_path() {
+        let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        assert_eq!(
+            scope_label(&Scope::FsRecord(record.to_string())),
+            "one shared file (b0d4e23f-c…)"
+        );
+        assert_eq!(
+            capability_allows(&CapOverride::grant(
+                Subject::Principal(Principal::App("files".to_string())),
+                Scope::FsRecord(record.to_string()),
+                Verb::Read,
+            )),
+            "View one shared file (b0d4e23f-c…)"
+        );
     }
 
     #[test]

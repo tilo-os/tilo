@@ -29,8 +29,8 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, OpClass, RedactedMarker,
-    ResourceRef, SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id,
+    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, RedactedMarker, ResourceRef,
+    SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
@@ -521,7 +521,6 @@ impl CapnpBrokerState {
         if route.app_id.is_empty()
             || envelope.artifact != expected_artifact
             || envelope.attestation_id != expected_attestation
-            || envelope.op_class != OpClass::Splice
             || envelope.encryption.is_some()
         {
             return Err(capnp::Error::failed(
@@ -552,11 +551,13 @@ impl CapnpBrokerState {
             kind: ArtifactKind::Note,
             instance: expected_artifact,
         };
-        let decision = workspace.decide(&actor, &resource, Verb::Write);
+        let required = collab_types::caps::verb_for_opclass(envelope.op_class);
+        let decision = workspace.decide(&actor, &resource, required);
+        let role_allows = role_permits(admitted.role, ArtifactKind::Note, envelope.op_class);
         drop(tree);
-        if decision != CapDecision::Allow {
+        if decision != CapDecision::Allow || !role_allows {
             return Err(capnp::Error::failed(
-                "current workspace capability denies document editing".into(),
+                "current workspace capability denies this document action".into(),
             ));
         }
         Ok(mutation)
@@ -1214,13 +1215,13 @@ fn handle_signed_op_send(
             if let Ok(mut ch) = state.broker_channels.lock() {
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
-                if envelope.op_class == OpClass::Compaction
+                if envelope.op_class == collab_types::OpClass::Compaction
                     && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
             }
-            if envelope.op_class == OpClass::Redact {
+            if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
@@ -1417,6 +1418,28 @@ impl presence_handle::Server for CapnpPresenceHandle {
         })
     }
 
+    fn publish_pointer(
+        self: Rc<Self>,
+        params: presence_handle::PublishPointerParams,
+        _results: presence_handle::PublishPointerResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            self.publish_keyed(
+                &key_bytes,
+                PresencePayload::Pointer {
+                    x: r.get_x(),
+                    y: r.get_y(),
+                },
+            );
+            Ok(())
+        })
+    }
+
     fn publish_caret(
         self: Rc<Self>,
         params: presence_handle::PublishCaretParams,
@@ -1462,6 +1485,28 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 )
             })?;
             self.publish_keyed(&key_bytes, PresencePayload::Selection { start, end });
+            Ok(())
+        })
+    }
+
+    fn publish_typing(
+        self: Rc<Self>,
+        params: presence_handle::PublishTypingParams,
+        _results: presence_handle::PublishTypingResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            let start = usize::try_from(r.get_start()).map_err(|_| {
+                capnp::Error::failed("publishTyping: start overflows usize on this platform".into())
+            })?;
+            let end = usize::try_from(r.get_end()).map_err(|_| {
+                capnp::Error::failed("publishTyping: end overflows usize on this platform".into())
+            })?;
+            self.publish_keyed(&key_bytes, PresencePayload::Typing { start, end });
             Ok(())
         })
     }
@@ -1608,18 +1653,20 @@ impl presence_stream::Server for PresenceStreamServer {
             let mut payload: presence_payload::Builder = ev.init_payload();
             match env.payload {
                 PresencePayload::Pointer { x, y } => {
-                    let mut c = payload.init_cursor();
+                    let mut c = payload.init_pointer();
                     c.set_x(x);
                     c.set_y(y);
                 }
                 PresencePayload::Caret { pos } => {
                     payload.init_caret().set_pos(pos as u64);
                 }
-                // No dedicated "typing" case in the capnp union yet; it
-                // shares the selection wire shape.
-                PresencePayload::Selection { start, end }
-                | PresencePayload::Typing { start, end } => {
+                PresencePayload::Selection { start, end } => {
                     let mut s = payload.init_selection();
+                    s.set_start(start as u64);
+                    s.set_end(end as u64);
+                }
+                PresencePayload::Typing { start, end } => {
+                    let mut s = payload.init_typing();
                     s.set_start(start as u64);
                     s.set_end(end as u64);
                 }
@@ -2068,7 +2115,7 @@ mod tests {
         workspace.capabilities.push(CapOverride::membership(
             Subject::person(principal),
             room,
-            Verb::Read,
+            collab_types::Verb::Read,
         ));
         drop(tree);
     }
@@ -2294,7 +2341,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            OpClass::Splice,
+            collab_types::OpClass::Splice,
             SystemTime::now(),
             1,
         );

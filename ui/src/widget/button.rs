@@ -17,7 +17,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
     reason = "each bool is an independent interaction/lifecycle flag (hover, press, focus, enabled, cache-dirty), not a combinatorial state machine"
 )]
 pub struct Button {
-    _id: String,
+    id: String,
     label: String,
     /// Accessible name for an icon-only button (empty visible label);
     /// left unset when the label itself serves as the accessible name.
@@ -58,6 +58,9 @@ pub struct Button {
     /// coordinates; the App's transform is reapplied on `Scene::append`.
     cached: vello::Scene,
     dirty: bool,
+    layout_dirty: bool,
+    i18n_revision: u64,
+    interaction: crate::interaction::InteractionEnvironment,
     /// Compared *by size* to the current rect — pure translation is
     /// absorbed by the per-frame append transform without invalidating
     /// the cache.
@@ -69,7 +72,7 @@ pub struct Button {
 impl Button {
     pub fn new(id: &str, label: &str, on_click_path: Option<&str>) -> Self {
         Self {
-            _id: id.to_string(),
+            id: id.to_string(),
             label: label.to_string(),
             accessible_name: None,
             tooltip: None,
@@ -89,6 +92,9 @@ impl Button {
             enabled: true,
             cached: vello::Scene::new(),
             dirty: true,
+            layout_dirty: false,
+            i18n_revision: crate::i18n::I18nManager::revision(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
             last_state: (false, false, false),
         }
@@ -148,6 +154,15 @@ impl Button {
 
     pub fn set_tooltip(&mut self, text: Option<String>) {
         self.tooltip = text;
+    }
+
+    fn observe_i18n_revision(&mut self) {
+        let revision = crate::i18n::I18nManager::revision();
+        if revision != self.i18n_revision {
+            self.i18n_revision = revision;
+            self.dirty = true;
+            self.layout_dirty |= self.fit_content;
+        }
     }
 
     /// Overrides the default 120×40 intrinsic size.
@@ -672,7 +687,21 @@ impl Button {
 }
 
 impl Widget for Button {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.is_hovered &= environment.supports_hover();
+            self.layout_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        self.observe_i18n_revision();
+    }
 
     fn build_layout(
         &mut self,
@@ -680,9 +709,14 @@ impl Widget for Button {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let (mut w, h) = self.size.unwrap_or((120.0, 40.0));
+        self.observe_i18n_revision();
+        let (mut w, mut h) = self.size.unwrap_or((120.0, 40.0));
+        let minimum_target = self.interaction.minimum_target();
+        w = w.max(minimum_target);
+        h = h.max(minimum_target);
         if self.fit_content {
-            w = (label_px(self.label.chars().count()) * 8.0 + 30.0).max(64.0);
+            let label = i18n!(&self.label);
+            w = (label_px(label.chars().count()) * 8.0 + 30.0).max(64.0);
         }
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
@@ -721,6 +755,7 @@ impl Widget for Button {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.observe_i18n_revision();
         let current_state = (self.is_hovered, self.is_pressed, self.is_focused);
         if current_state != self.last_state {
             self.dirty = true;
@@ -802,11 +837,14 @@ impl Widget for Button {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
+        self.dirty
+            || self.i18n_revision != crate::i18n::I18nManager::revision()
+            || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.layout_dirty = false;
     }
 
     /// The `Rect::ZERO` sentinel keeps the first frame's
@@ -815,6 +853,12 @@ impl Widget for Button {
     /// cache's append transform, no taffy involvement).
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
+            || self.layout_dirty
+            || (self.fit_content && self.i18n_revision != crate::i18n::I18nManager::revision())
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.i18n_revision != crate::i18n::I18nManager::revision()
     }
 
     fn handle_event(
@@ -878,7 +922,7 @@ impl Widget for Button {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some(self.label.as_str())
+        Some(self.id.as_str())
     }
 
     /// Returns the raw string (a fluent key or plain text); the host
@@ -926,21 +970,7 @@ impl Widget for Button {
         }
         match action {
             Action::Activate => {
-                if let Some(path) = &self.on_click_path {
-                    match state.get(root, path.as_str()) {
-                        Ok(Some((Value::Scalar(s), _)))
-                            if matches!(s.as_ref(), automerge::ScalarValue::Counter(_)) =>
-                        {
-                            let _ = state.increment(root, path.as_str(), 1);
-                        }
-                        _ => {
-                            let _ = state.put(root, path.as_str(), true);
-                        }
-                    }
-                }
-                if let Some(cb) = &mut self.on_click {
-                    cb();
-                }
+                self.activate(state, root);
                 true
             }
             _ => false,
@@ -1059,9 +1089,13 @@ mod tests {
     use crate::widget::Widget;
 
     #[test]
-    fn button_test_id_returns_label() {
+    fn button_test_id_is_stable_constructor_id() {
         let b = Button::new("id", "Save", None);
-        assert_eq!(Widget::test_id(&b), Some("Save"));
+        assert_eq!(Widget::test_id(&b), Some("id"));
+        assert_eq!(
+            Widget::accessibility(&b).unwrap().name.as_deref(),
+            Some("Save")
+        );
     }
 
     #[test]
@@ -1455,6 +1489,17 @@ mod tests {
             .fit_content(34.0);
         let mut doc = AutoCommit::new();
         button.activate(&mut doc, &automerge::ROOT);
+
+        let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
+        assert_eq!(value.to_str(), Some("apply"));
+    }
+
+    #[test]
+    fn semantic_activation_uses_the_same_click_value_contract() {
+        let mut button = Button::new("id", "Apply", Some("command")).with_click_value("apply");
+        let mut doc = AutoCommit::new();
+
+        assert!(button.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
 
         let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
         assert_eq!(value.to_str(), Some("apply"));

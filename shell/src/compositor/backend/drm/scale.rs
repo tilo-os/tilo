@@ -110,6 +110,10 @@ pub fn preferred_scale_at(outputs: &[OutputGeometry], x: f64, y: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact scale conversion results are the behavior under test"
+)]
 mod tests {
     use super::*;
 

@@ -23,7 +23,7 @@ pub type Shortcut = (Icon, String, PathBuf);
 /// the tier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarTier {
-    pub title: &'static str,
+    pub title: String,
     pub entries: Vec<Shortcut>,
 }
 
@@ -41,24 +41,48 @@ pub fn build_tiers(home: Option<&Path>) -> Vec<SidebarTier> {
     let mut tiers = Vec::new();
     if let Some(home) = home {
         tiers.push(SidebarTier {
-            title: "Favorites",
+            title: crate::i18n::t("files-place-favorites"),
             entries: vec![
-                (Icon::Home, "Home".into(), home.to_path_buf()),
-                (Icon::FileText, "Documents".into(), home.join("Documents")),
+                (
+                    Icon::Home,
+                    crate::i18n::t("files-place-home"),
+                    home.to_path_buf(),
+                ),
+                (
+                    Icon::FileText,
+                    crate::i18n::t("files-place-documents"),
+                    home.join("Documents"),
+                ),
                 (
                     Icon::CloudDownload,
-                    "Downloads".into(),
+                    crate::i18n::t("files-place-downloads"),
                     home.join("Downloads"),
                 ),
-                (Icon::Image, "Pictures".into(), home.join("Pictures")),
-                (Icon::Music, "Music".into(), home.join("Music")),
-                (Icon::Film, "Videos".into(), home.join("Videos")),
+                (
+                    Icon::Image,
+                    crate::i18n::t("files-place-pictures"),
+                    home.join("Pictures"),
+                ),
+                (
+                    Icon::Music,
+                    crate::i18n::t("files-place-music"),
+                    home.join("Music"),
+                ),
+                (
+                    Icon::Film,
+                    crate::i18n::t("files-place-videos"),
+                    home.join("Videos"),
+                ),
             ],
         });
     }
     tiers.push(SidebarTier {
-        title: "System",
-        entries: vec![(Icon::HardDrive, "Root".into(), PathBuf::from("/"))],
+        title: crate::i18n::t("files-place-system"),
+        entries: vec![(
+            Icon::HardDrive,
+            crate::i18n::t("files-place-root"),
+            PathBuf::from("/"),
+        )],
     });
     tiers
 }

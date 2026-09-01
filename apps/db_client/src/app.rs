@@ -2046,6 +2046,7 @@ fn engine_color(engine: Engine, theme: &Theme) -> Color {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod responsive_tests {
     use super::*;
 
