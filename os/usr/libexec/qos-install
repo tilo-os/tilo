@@ -17,6 +17,10 @@
 #                                     where there is a TPM, otherwise the boot
 #                                     passphrase (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
+#     --alongside --root-partition P --efi-partition P
+#                                     preserve the disk's partition table;
+#                                     format only a prepared empty Linux root
+#                                     and reuse (never format) its existing ESP
 #
 # (These are optional so an older UI that omits them still works.) We:
 #
@@ -163,6 +167,9 @@ KEYVARIANT_VAL=""    # xkb variant (empty → none)
 ENCRYPT=0            # --encrypt → bootc --block-setup tpm2-luks (else direct)
 WANT_PIN=0           # --pin → enroll a TPM2+PIN keyslot (PIN read on stdin line 2)
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
+ALONGSIDE=0
+ROOT_PARTITION=""
+EFI_PARTITION=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -176,6 +183,9 @@ while [ $# -gt 0 ]; do
     --encrypt) ENCRYPT=1; shift ;;
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
+    --alongside) ALONGSIDE=1; shift ;;
+    --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
+    --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -184,6 +194,14 @@ done
 
 [ -n "$DISK" ] || die "missing --disk <device>"
 [ -n "$USERNAME" ] || die "missing --user <name>"
+
+if [ "$ALONGSIDE" -eq 1 ]; then
+  [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
+    || die "--alongside requires --root-partition and --efi-partition"
+else
+  [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
+    || die "partition arguments require --alongside"
+fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
 # across the distributions qOS targets. It also keeps the colon-delimited
@@ -294,6 +312,49 @@ done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 [ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] \
   || die "$DISK is the live medium's own disk — refusing to install onto it"
 
+validate_alongside() {
+  local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
+  for tool in blockdev blkid lsblk wipefs "mkfs.$FILESYSTEM" mount; do
+    command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
+  done
+  [ -b "$ROOT_PARTITION" ] && [ "$(lsblk -dno TYPE "$ROOT_PARTITION" 2>/dev/null)" = part ] \
+    || die "$ROOT_PARTITION is not a partition"
+  [ -b "$EFI_PARTITION" ] && [ "$(lsblk -dno TYPE "$EFI_PARTITION" 2>/dev/null)" = part ] \
+    || die "$EFI_PARTITION is not a partition"
+  root_parent="$(lsblk -no PKNAME "$ROOT_PARTITION" 2>/dev/null | head -1)"
+  efi_parent="$(lsblk -no PKNAME "$EFI_PARTITION" 2>/dev/null | head -1)"
+  [ -n "$root_parent" ] && [ -n "$efi_parent" ] \
+    && [ "$(readlink -f "/dev/$root_parent")" = "$DISK" ] \
+    && [ "$(readlink -f "/dev/$efi_parent")" = "$DISK" ] \
+    || die "alongside root and EFI partitions must both belong to $DISK"
+  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  efi_type="$(lsblk -dno PARTTYPE "$EFI_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ "$root_type" = "0fc63daf-8483-4772-8e79-3d69d8477de4" ] \
+    || die "$ROOT_PARTITION is not explicitly typed as a Linux filesystem partition"
+  [ "$efi_type" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] \
+    || die "$EFI_PARTITION is not an EFI System Partition"
+  efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
+  [ "$efi_fs" = vfat ] || die "$EFI_PARTITION is not a FAT EFI System Partition"
+  [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
+    || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
+  mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
+    || die "could not inspect $ROOT_PARTITION mount state"
+  [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \
+    || die "$ROOT_PARTITION is mounted"
+  signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")" \
+    || die "could not inspect signatures on $ROOT_PARTITION"
+  [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
+    || die "$ROOT_PARTITION contains a filesystem or volume signature; refusing to guess that its data is disposable"
+}
+
+if [ "$ALONGSIDE" -eq 1 ]; then
+  ROOT_PARTITION="$(readlink -f "$ROOT_PARTITION")"
+  EFI_PARTITION="$(readlink -f "$EFI_PARTITION")"
+  validate_alongside
+  log "  alongside   : preserve partition table; format only $ROOT_PARTITION"
+  log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
+fi
+
 # Refuse if the target disk (or any of its partitions) is currently mounted.
 if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
   die "$DISK (or one of its partitions) is currently mounted — unmount it first"
@@ -332,12 +393,21 @@ ENC_MNT=""
 ENC_LUKS=""
 ENC_KEYFILE=""
 if [ "$ENCRYPT" -eq 1 ]; then
-  step "Preparing an encrypted root on $DISK (this ERASES the disk)"
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    step "Preparing encrypted qOS root on $ROOT_PARTITION (existing OS partitions are preserved)"
+  else
+    step "Preparing an encrypted root on $DISK (this ERASES the disk)"
+  fi
   # The helper reports the volume it made on stdout and its progress on stderr;
   # keep the report and let the progress through to the UI, which reads our
   # stdout. fd 3 is this script's stdout for the duration.
   exec 3>&1
-  PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    validate_alongside
+    PREP="$("$DISK_ENCRYPT" prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION" --filesystem "$FILESYSTEM" 2>&3)"
+  else
+    PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
+  fi
   exec 3>&-
   ENC_MNT="$(printf '%s\n' "$PREP" | sed -n 's/^MNT=//p')"
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
@@ -377,6 +447,33 @@ if [ "$ENCRYPT" -eq 1 ]; then
       --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize \
       /target
+elif [ "$ALONGSIDE" -eq 1 ]; then
+  validate_alongside
+  step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
+  case "$FILESYSTEM" in
+    btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
+    ext4) mkfs.ext4 -q -F -L root "$ROOT_PARTITION" ;;
+    xfs) mkfs.xfs -q -f -L root "$ROOT_PARTITION" >/dev/null ;;
+  esac
+  ROOT_FS_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION")"
+  [ -n "$ROOT_FS_UUID" ] || die "could not read the new qOS root UUID"
+  ALONGSIDE_MNT="$(mktemp -d)"
+  mount "$ROOT_PARTITION" "$ALONGSIDE_MNT"
+  install -d -m 0755 "$ALONGSIDE_MNT/boot/efi"
+  mount "$EFI_PARTITION" "$ALONGSIDE_MNT/boot/efi"
+  cleanup_alongside() {
+    umount "$ALONGSIDE_MNT/boot/efi" 2>/dev/null || true
+    umount "$ALONGSIDE_MNT" 2>/dev/null || true
+    rmdir "$ALONGSIDE_MNT" 2>/dev/null || true
+  }
+  trap cleanup_alongside EXIT
+  podman run --rm --privileged --pid=host --ipc=host \
+    -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
+    -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
+    "$LOCAL_IMG" bootc install to-filesystem \
+      --root-mount-spec "UUID=$ROOT_FS_UUID" \
+      --karg-delete qos.installer=1 --target-imgref "$QOS_TARGET_IMGREF" \
+      --skip-finalize /target
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
   podman run --rm --privileged --pid=host --ipc=host \
@@ -447,6 +544,9 @@ find_deploy_etc() {
 
 if [ "$ENCRYPT" -eq 1 ]; then
   MNT="$ENC_MNT"
+  DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+elif [ "$ALONGSIDE" -eq 1 ]; then
+  MNT="$ALONGSIDE_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
 else
   MNT="$(mktemp -d)"
@@ -572,6 +672,9 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # unmounts the tree and closes the mapping.
   step "Closing the encrypted root"
   "$DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEYFILE" --mnt "$ENC_MNT" 2>&1
+elif [ "$ALONGSIDE" -eq 1 ]; then
+  cleanup_alongside
+  trap - EXIT
 else
   umount "$MOUNTED" 2>/dev/null || true
   MOUNTED=""

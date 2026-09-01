@@ -92,6 +92,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// seed sample credentials (so input fields show representative text).
 /// Returns `None` for an unrecognised name.
 fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
+    if name == "disk-alongside" {
+        let mut app = InstallerApp::for_shot(Step::Disk);
+        app.shot_alongside();
+        return Some((Box::new(app), false));
+    }
+    if name == "review-alongside" {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        app.shot_alongside_review();
+        return Some((Box::new(app), true));
+    }
     // `options-open` renders the Options step with the time-zone dropdown
     // popped open, capturing the overlay popup state.
     if name == "options-open" {

@@ -59,5 +59,5 @@ pub mod status_log;
 pub mod step_indicator;
 pub mod timezones;
 
-pub use disks::{Disk, parse_lsblk, read_disks};
+pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};
 pub use installer_app::{InstallState, InstallerApp, Step};
