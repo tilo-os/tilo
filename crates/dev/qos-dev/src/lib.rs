@@ -27,6 +27,7 @@ const TREE_APP_TEMPLATE: &str = include_str!("../templates/tree.rs");
 const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
 const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
+const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
@@ -37,6 +38,7 @@ pub enum Template {
     Graph,
     Async,
     Document,
+    Qr,
 }
 
 impl Template {
@@ -49,6 +51,7 @@ impl Template {
             Self::Graph => "graph",
             Self::Async => "async",
             Self::Document => "document",
+            Self::Qr => "qr",
         }
     }
 
@@ -61,6 +64,7 @@ impl Template {
             Self::Graph => "Serialized UI graph and router",
             Self::Async => "Restartable background task with cancellation",
             Self::Document => "Durable synchronized editor with undo",
+            Self::Qr => "IME input to accessible generated QR output",
         }
     }
 }
@@ -4505,7 +4509,7 @@ fn prompt_screen_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter   Accessible form and standard lifecycle\n  2) data      Sparse table with retained cell controls\n  3) list      Sparse variable-height retained list\n  4) tree      Professional hierarchy browser\n  5) graph     Serialized UI graph and router\n  6) async     Restartable background task with cancellation\n  7) document  Durable synchronized editor with undo"
+        "\nStarter template:\n  1) starter   Accessible form and standard lifecycle\n  2) data      Sparse table with retained cell controls\n  3) list      Sparse variable-height retained list\n  4) tree      Professional hierarchy browser\n  5) graph     Serialized UI graph and router\n  6) async     Restartable background task with cancellation\n  7) document  Durable synchronized editor with undo\n  8) qr        IME input to accessible generated QR output"
     )
     .context("showing template choices")?;
     loop {
@@ -4526,8 +4530,9 @@ fn parse_template(value: &str) -> Result<Template> {
         "5" | "graph" | "g" | "builder" => Ok(Template::Graph),
         "6" | "async" | "a" | "task" => Ok(Template::Async),
         "7" | "document" | "doc" | "editor" => Ok(Template::Document),
+        "8" | "qr" | "qrcode" | "showcase" => Ok(Template::Qr),
         _ => bail!(
-            "unknown template {value:?}; choose 1-7 or `starter`, `data`, `list`, `tree`, `graph`, `async`, or `document`"
+            "unknown template {value:?}; choose 1-8 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, or `qr`"
         ),
     }
 }
@@ -4711,6 +4716,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Graph => format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
         Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
         Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
+        Template::Qr => QR_APP_TEMPLATE.to_owned(),
     };
     format!(
         "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
@@ -4747,7 +4753,11 @@ document-title-label = Title\n\
 document-title-placeholder = Untitled\n\
 document-body-label = Body\n\
 document-body-placeholder = Start writing…\n\
-document-preview-heading = Live preview\n",
+document-preview-heading = Live preview\n\
+qr-title = QR code generator\n\
+qr-input-label = Content\n\
+qr-input-placeholder = Type text or a link\n\
+qr-output-alt = QR code for { $payload }\n",
     )
 }
 
@@ -4848,7 +4858,39 @@ fn app_exposes_a_virtualized_table() {{
         Template::Graph => graph_app_test(crate_name),
         Template::Async => async_app_test(crate_name),
         Template::Document => document_app_test(crate_name),
+        Template::Qr => qr_app_test(crate_name),
     }
+}
+
+fn qr_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn app_generates_an_accessible_visual_from_semantic_input() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (800, 600),
+    );
+
+    app.perform_named("qr-input", &Action::SetValue("你好 Rust GUI".into()))
+        .expect("the generated IME-capable input remains addressable");
+    app.expect(
+        &SemanticExpectation::named("qr-input")
+            .role(Role::TextInput)
+            .value("你好 Rust GUI"),
+    )
+    .expect("input semantics match");
+    app.expect(
+        &SemanticExpectation::named("qr-output")
+            .role(Role::Image)
+            .name_contains("你好 Rust GUI"),
+    )
+    .expect("generated visual output has payload-specific alternative text");
+}}
+"#
+    )
 }
 
 fn graph_app_test(crate_name: &str) -> String {
@@ -5126,6 +5168,9 @@ fn headless_actions(spec: &AppSpec) -> String {
         Template::Document => String::from(
             "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"static_text\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
         ),
+        Template::Qr => String::from(
+            "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",
+        ),
     }
 }
 
@@ -5236,6 +5281,12 @@ fn app_readme(spec: &AppSpec) -> String {
         let _ = writeln!(
             out,
             "\nThe title and body inputs write directly to the persisted Automerge document. Their preview reads the same fields without app-owned notifications; standard undo/redo, collaboration, inspection, and autosave all observe those edits."
+        );
+    }
+    if spec.template == Template::Qr {
+        let _ = writeln!(
+            out,
+            "\nThe input writes to one typed `LocalState<String>`. `ModelView::from_state` rebuilds only the generated QR output when that value changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
         );
     }
     let _ = writeln!(
@@ -6964,7 +7015,35 @@ mod tests {
         assert_eq!(parse_template("document").unwrap(), Template::Document);
         assert_eq!(parse_template("7").unwrap(), Template::Document);
         assert_eq!(parse_template("editor").unwrap(), Template::Document);
+        assert_eq!(parse_template("qr").unwrap(), Template::Qr);
+        assert_eq!(parse_template("8").unwrap(), Template::Qr);
+        assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
         assert!(parse_template("dashboard").is_err());
+    }
+
+    #[test]
+    fn qr_template_composes_ime_input_state_visual_output_and_accessibility() {
+        let spec = AppSpec {
+            package_name: "qr-code".into(),
+            crate_name: "qr_code".into(),
+            title: "QR Code".into(),
+            app_id: "dev.qos.qr.code".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Qr,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("LocalState::new"));
+        assert!(source.contains("TextInput::local()"));
+        assert!(source.contains("ModelView::from_state"));
+        assert!(source.contains("QrWidget::new"));
+        assert!(source.contains("with_id(\"qr-output\")"));
+        assert!(source.contains("with_alt(alt)"));
+        let test = app_test(&spec);
+        assert!(test.contains("你好 Rust GUI"));
+        assert!(test.contains("Role::Image"));
+        assert!(test.contains("name_contains"));
+        assert!(app_readme(&spec).contains("payload-specific alternative text"));
     }
 
     #[test]
@@ -7154,6 +7233,7 @@ mod tests {
             Template::Graph,
             Template::Async,
             Template::Document,
+            Template::Qr,
         ] {
             let spec = AppSpec {
                 package_name: "demo".into(),
