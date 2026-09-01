@@ -657,6 +657,7 @@ impl Widget for SlashMenu {
             .filter_map(|(pos, &row_idx)| {
                 self.rows.get(row_idx).map(|row| {
                     AccessNode::new(Role::MenuItem)
+                        .with_action_target(format!("row:{row_idx}"))
                         .with_name(row.label.to_string())
                         .with_state(AccessState {
                             selected: pos == self.cursor,
@@ -676,6 +677,33 @@ impl Widget for SlashMenu {
                 })
                 .with_children(items),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(row_index) = target
+            .strip_prefix("row:")
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if !self.visible_flag
+            || !matches!(action, crate::a11y::Action::Activate)
+            || !self.visible.contains(&row_index)
+        {
+            return false;
+        }
+        let Some(kind) = self.rows.get(row_index).map(|row| row.kind.clone()) else {
+            return false;
+        };
+        self.pending_selection = Some(kind);
+        self.set_visible(false);
+        true
     }
 }
 
@@ -784,6 +812,29 @@ mod tests {
         assert!(!m.is_visible(), "Enter should close the menu");
         // Subsequent take is empty.
         assert!(m.take_selected_kind().is_none());
+    }
+
+    #[test]
+    fn synthetic_menu_item_activation_commits_that_exact_filtered_row() {
+        let mut menu = SlashMenu::new();
+        menu.set_visible(true);
+        let access = Widget::accessibility(&menu).expect("open menu semantics");
+        let heading = access
+            .children
+            .iter()
+            .find(|item| item.name.as_deref() == Some("Heading 2"))
+            .expect("Heading 2 item");
+        let target = heading.action_target.clone().expect("stable menu target");
+
+        assert!(Widget::perform_semantic_action(
+            &mut menu,
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(menu.take_selected_kind(), Some(BlockKind::Heading(2)));
+        assert!(!menu.is_visible());
     }
 
     #[test]

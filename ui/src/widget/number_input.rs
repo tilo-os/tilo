@@ -167,6 +167,7 @@ pub struct NumberInput {
     enabled: bool,
     width: f64,
     height: f64,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl NumberInput {
@@ -198,6 +199,7 @@ impl NumberInput {
             enabled: true,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         };
         s.value = s.value.clamp(s.min, s.max);
         s.sync_field();
@@ -388,6 +390,16 @@ impl NumberInput {
 }
 
 impl Widget for NumberInput {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.field.set_interaction_environment(environment);
+        self.minus_hover &= environment.supports_hover();
+        self.plus_hover &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
@@ -433,7 +445,10 @@ impl Widget for NumberInput {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(px_f32(self.width)),
-                height: Dimension::length(px_f32(self.height)),
+                height: Dimension::length(px_f32(
+                    self.height
+                        .max(f64::from(self.interaction.minimum_target())),
+                )),
             },
             ..Default::default()
         });

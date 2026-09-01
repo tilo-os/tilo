@@ -222,7 +222,7 @@ impl RichTextLayout {
     ) -> Self {
         let line_height = style.line_height_px();
         let offset_map = if max_width.is_some() {
-            OffsetMap::for_text_with_hyphenation(text, style.hyphenation.language())
+            style.hyphenation.offset_map(text)
         } else {
             OffsetMap::default()
         };
@@ -323,7 +323,7 @@ impl RichTextLayout {
     ) -> Self {
         let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
         let offset_map = if max_width.is_some() {
-            OffsetMap::for_text_with_hyphenation(&full_text, style.hyphenation.language())
+            style.hyphenation.offset_map(&full_text)
         } else {
             OffsetMap::default()
         };

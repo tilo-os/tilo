@@ -29,6 +29,11 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/dev/headless-schema",
+    "crates/dev/qos-dev",
+    "crates/dev/qos-dev-template-smoke",
+    "crates/dev/ui-builder",
+    "crates/dev/ui-graph",
     "crates/system/qos-rollback",
     "crates/system/qos-cli",
     "crates/system/tinker",
@@ -395,6 +400,7 @@ semver = "1"
 once_cell = "1.21.4"
 parking_lot = "0.12.5"
 fluent = "0.17.0"
+fluent-syntax = "0.12.0"
 unic-langid = "0.9.6"
 
 # ---------------------------------------------------------------------------
