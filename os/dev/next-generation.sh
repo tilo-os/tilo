@@ -19,11 +19,10 @@
 # So it cannot be a timestamp, and it cannot be a commit count: commits between
 # releases would open gaps of exactly the size that breaks the arithmetic above.
 #
-# THE SERIES IS ITS OWN RECORD. Every published image is tagged `gen<N>` in the
-# registry, so the next number is `max(gen tags) + 1`, read from the place the
-# images actually are. That needs no counter file to keep in sync with reality, no
-# commit written back by CI, and it cannot drift from what was published — which a
-# tracked file can, in either direction, silently.
+# THE SIGNED SERIES IS ITS OWN RECORD. Every published image is tagged `gen<N>`
+# and has signed SLSA provenance carrying the same generation. Registry tag names
+# are attacker-controlled input: the resolver verifies the highest tag, its
+# provenance, the latest channel, and a dense tag history before trusting it.
 #
 # Nothing here falls back to a constant when the registry cannot be reached. A
 # constant is precisely the failure this replaces: it produced images that all
@@ -61,6 +60,7 @@ QOS_REGISTRY_CREDS="${QOS_REGISTRY_CREDS:-}"
 # skopeo is not installed everywhere this runs — the host is image-based and the CI
 # runner does not ship it — so fall back to running it in a container.
 SKOPEO_IMAGE="${QOS_SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
+QOS_GENERATION_VERIFY_KEY="${QOS_GENERATION_VERIFY_KEY:-keys/cosign.pub}"
 
 # An auth file that actually carries an entry for this registry, not merely the
 # first one that exists.
@@ -128,10 +128,54 @@ $(printf '%s' "$tags" | sed 's/^/    /')"
 
 # The highest gen<N> tag. `sort -n | tail -1` rather than a max in the pipeline,
 # because a lexical sort makes gen9 the newest of gen9..gen10.
-current="$(printf '%s' "$tags" \
-  | sed -n 's/.*"gen\([0-9][0-9]*\)".*/\1/p' \
-  | sort -n | tail -1)"
+command -v jq >/dev/null 2>&1 || die "jq is required to parse the registry response safely"
+generations="$(printf '%s' "$tags" | jq -r '
+  .Tags // [] | .[] | select(test("^gen[0-9]+$")) | sub("^gen"; "")
+' | sort -n)" || die "the registry returned an invalid tag listing"
+current="$(printf '%s\n' "$generations" | tail -1)"
 current="${current:-0}"
+
+verify_signed_generation() {
+  local generation="$1" image="$QOS_PUBLISH_REPO:gen$1" signatures provenance
+  command -v cosign >/dev/null 2>&1 || die \
+    "cosign is required: unsigned registry tags are not a generation oracle"
+  [ -s "$QOS_GENERATION_VERIFY_KEY" ] || die \
+    "release verification key is missing: $QOS_GENERATION_VERIFY_KEY"
+  signatures="$(cosign verify --key "$QOS_GENERATION_VERIFY_KEY" "$image")" || die \
+    "gen$generation has no valid transparency-logged qOS release signature"
+  provenance="$(cosign verify-attestation --key "$QOS_GENERATION_VERIFY_KEY" \
+    --type slsaprovenance "$image")" || die \
+    "gen$generation has no valid transparency-logged SLSA provenance"
+  printf '%s' "$provenance" | jq -e --argjson generation "$generation" '
+    [.[].payload | @base64d | fromjson
+      | .predicate.buildDefinition.externalParameters.generation]
+    | any(. == $generation)
+  ' >/dev/null || die \
+    "gen$generation provenance does not bind the tag to generation $generation"
+  printf '%s' "$signatures" | jq -er \
+    '.[0].critical.image["docker-manifest-digest"]' | head -1
+}
+
+if [ "$current" != 0 ]; then
+  # Missing historical tags make deletion/reset indistinguishable from a fresh
+  # series. Refuse before assigning a duplicate generation.
+  expected=1
+  while IFS= read -r generation; do
+    [ -n "$generation" ] || continue
+    [ "$generation" -eq "$expected" ] || die \
+      "published generation history is not dense: expected gen$expected, found gen$generation"
+    expected=$(( expected + 1 ))
+  done <<< "$generations"
+
+  current_digest="$(verify_signed_generation "$current")"
+  latest_signatures="$(cosign verify --key "$QOS_GENERATION_VERIFY_KEY" \
+    "$QOS_PUBLISH_REPO:latest")" || die \
+    "latest has no valid transparency-logged qOS release signature"
+  latest_digest="$(printf '%s' "$latest_signatures" | jq -er \
+    '.[0].critical.image["docker-manifest-digest"]')"
+  [ "$latest_digest" = "$current_digest" ] || die \
+    "latest does not point at signed gen$current; refusing a split release series"
+fi
 
 if [ "$WANT" = current ]; then
   printf '%s\n' "$current"

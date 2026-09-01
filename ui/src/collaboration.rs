@@ -79,6 +79,40 @@ pub enum CollabRequest {
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
+    /// Replace this application's complete exported resource/action surface.
+    PublishActions {
+        app_id: String,
+        actions: Vec<ExportedAction>,
+    },
+    /// Report the terminal result of a directed invocation.
+    CompleteInvocation {
+        id: u64,
+        code: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportedInput {
+    None,
+    Text {
+        prompt: String,
+        placeholder: String,
+        wants_content: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedAction {
+    pub resource: String,
+    pub action: String,
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action_label: String,
+    pub description: Option<String>,
+    pub operation_kind: String,
+    pub params_json: String,
+    pub input: ExportedInput,
 }
 
 /// An explicit typed collaboration route.
@@ -182,6 +216,15 @@ pub enum CollabEvent {
         /// range (typically evicted by compaction).
         ops: Vec<Box<SignedOp>>,
         exhausted: bool,
+    },
+    /// One capability-checked invocation addressed to this application
+    /// connection by the session action broker.
+    Invocation {
+        id: u64,
+        resource: String,
+        action: String,
+        argument: Option<String>,
+        actor: String,
     },
 }
 
@@ -1301,6 +1344,7 @@ async fn ensure_sdk_route(
     spawn_op_stream(&channel, inbound_tx).await;
     spawn_context_stream(&channel, inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
+    spawn_invocation_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
 
     routes.insert(
@@ -1418,6 +1462,35 @@ async fn spawn_action_stream(
                         type_id: action.type_id,
                         payload: action.payload,
                         from_user_id: action.from_user_id,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_invocation_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    if let Ok(stream) = channel.subscribe_invocations().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(invocation) = stream.read().await {
+                if tx
+                    .send(CollabEvent::Invocation {
+                        id: invocation.id,
+                        resource: invocation.resource,
+                        action: invocation.action,
+                        argument: invocation.argument,
+                        actor: invocation.actor,
                     })
                     .is_err()
                 {
@@ -1656,6 +1729,41 @@ async fn dispatch_sdk_request(
                 ops,
                 exhausted,
             });
+        }
+        CollabRequest::PublishActions { app_id, actions } => {
+            let actions = actions
+                .into_iter()
+                .map(|action| runtime_collab::ExportedAction {
+                    resource: action.resource,
+                    action: action.action,
+                    resource_kind: action.resource_kind,
+                    resource_label: action.resource_label,
+                    action_label: action.action_label,
+                    description: action.description,
+                    operation_kind: action.operation_kind,
+                    params_json: action.params_json,
+                    input: match action.input {
+                        ExportedInput::None => runtime_collab::ExportedInput::None,
+                        ExportedInput::Text {
+                            prompt,
+                            placeholder,
+                            wants_content,
+                        } => runtime_collab::ExportedInput::Text {
+                            prompt,
+                            placeholder,
+                            wants_content,
+                        },
+                    },
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
+                tracing::warn!(%error, "collab: publishing resource/action surface failed");
+            }
+        }
+        CollabRequest::CompleteInvocation { id, code, message } => {
+            if let Err(error) = route.channel.complete_invocation(id, &code, &message).await {
+                tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
+            }
         }
     }
 }

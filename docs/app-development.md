@@ -76,6 +76,7 @@ Grow an existing app from any directory inside it with `add`:
 ```bash
 qos-dev add
 qos-dev add component profile-card --template form
+qos-dev add component project-tree --template tree
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -89,10 +90,10 @@ With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
 containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
-typed-props display or a typed-state form. The wizard reviews the resolved
-artifact before entering the same atomic publication path as the explicit
-commands. Scripts and CI should continue to use the fully specified
-subcommands.
+typed-props display, a typed-state form, or a source-agnostic virtualized tree.
+The wizard reviews the resolved artifact before entering the same atomic
+publication path as the explicit commands. Scripts and CI should continue to
+use the fully specified subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -114,6 +115,35 @@ generates a typed props struct plus a heading/detail view. Component source,
 registry, library wiring, and locale updates publish as one rollback-safe batch;
 an app-owned registry or existing component is protected unless replacement is
 explicit.
+
+`add component project-tree --template tree` starts at the professional tree
+boundary without choosing the app's data source. Its function accepts any
+`TreeModel`—including a database, CRDT, remote-page cache, or `TreeNode`
+adapter—and returns the concrete `TreeView<(), M>`. App code can therefore
+attach its own retained row widgets and reorder policy instead of editing a
+generated wrapper or giving up toolkit behavior:
+
+```rust
+let config = ProjectTreeConfig {
+    expanded: vec![workspace_id],
+    selection: restored_selection,
+    ..ProjectTreeConfig::default()
+};
+let tree = project_tree("project-browser", database_model, &config)
+    .with_row_delegate(project_row)
+    .with_reorder(can_move_project, move_project);
+```
+
+The generated configuration also controls the localized accessible name,
+stable-key multi-selection, viewport height, and the initial variable-row
+estimate. `TreeView` continues to own sparse
+virtualization, loading/error slots, keyboard navigation, selection across
+collapsed branches, drag edge-scrolling and insertion previews, stable scroll
+anchoring, model notifications, accessibility, and reduced-motion-aware
+structural transitions. The embedded headless test proves that expansion,
+stable-key selection, and an interactive button inside a custom row delegate
+remain independent. The tree's accessible name is added to every Fluent
+catalog in the same atomic generation batch.
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,

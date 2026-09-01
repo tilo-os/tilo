@@ -285,11 +285,11 @@ impl ActionRefusal {
     }
 }
 
-/// Translate one JSON argument object into the action vocabulary's values. Kept at the transport, not the action API, so the catalogue never learns a wire format. JSON shapes with no parameter type (null, arrays, objects, non-integer numbers) are refused by name.
+/// Translate one JSON argument object into the action vocabulary's values. Kept at the transport, not the action API, so the catalogue never learns a wire format. JSON shapes with no parameter type (null, arrays and objects) are refused by name.
 ///
 /// # Errors
 ///
-/// Returns [`ActionRefusal::invalid_arguments`] for a JSON value with no matching parameter type: a non-integer number, `null`, an array, or an object.
+/// Returns [`ActionRefusal::invalid_arguments`] for a JSON value with no matching parameter type: `null`, an array, an object, or a non-finite number.
 pub fn arg_values_from_json(
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<(String, ArgValue)>, ActionRefusal> {
@@ -300,11 +300,11 @@ pub fn arg_values_from_json(
             serde_json::Value::Bool(b) => ArgValue::Boolean(*b),
             serde_json::Value::Number(n) => match n.as_i64() {
                 Some(i) => ArgValue::Integer(i),
-                None => {
-                    return Err(ActionRefusal::invalid_arguments(format!(
-                        "argument `{name}` must be a whole number, got {n}"
-                    )));
-                }
+                None => n.as_f64().map(ArgValue::Number).ok_or_else(|| {
+                    ActionRefusal::invalid_arguments(format!(
+                        "argument `{name}` is not a finite number"
+                    ))
+                })?,
             },
             other => {
                 return Err(ActionRefusal::invalid_arguments(format!(
