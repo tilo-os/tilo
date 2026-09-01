@@ -209,6 +209,14 @@ mod tests {
     use crate::preview::{Rgb, palette_rgb};
     use uuid::Uuid;
 
+    #[cfg(feature = "decode")]
+    mod generated_clip {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/generated_clip.rs"
+        ));
+    }
+
     /// The compositor under test, or a skip when this box has no adapter.
     /// A missing GPU is an environment fact, not a passing test — every
     /// caller here reports it loudly rather than asserting nothing.
@@ -1405,32 +1413,10 @@ mod tests {
         );
     }
 
-    /// The bundled demo clip, if this checkout has it.
+    /// Deterministic moving footage encoded in-process for decode fidelity.
     #[cfg(feature = "decode")]
     fn demo_clip() -> std::path::PathBuf {
-        if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
-            let p = std::path::PathBuf::from(p);
-            assert!(
-                p.exists(),
-                "$QOS_VE_TEST_CLIP does not exist: {}",
-                p.display()
-            );
-            return p;
-        }
-        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        for _ in 0..5 {
-            let candidate = dir.join(".claude/demo-artifacts/qos-demo-57s.mp4");
-            if candidate.exists() {
-                return candidate;
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-        panic!(
-            "this test needs real footage at .claude/demo-artifacts/qos-demo-57s.mp4, \
-             or $QOS_VE_TEST_CLIP pointing at a clip — it cannot verify decode without it",
-        );
+        generated_clip::encoded_video()
     }
 
     /// Mean horizontal neighbour variation. The representative fill is
@@ -1475,10 +1461,10 @@ mod tests {
             id: mid,
             name: "demo".into(),
             kind: MediaKind::Video,
-            duration: 57.0,
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
+            duration: generated_clip::DURATION_SECS,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            fps: f64::from(generated_clip::FPS),
             palette: 0,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
@@ -1591,10 +1577,10 @@ mod tests {
             id: mid,
             name: "demo".into(),
             kind: crate::model::MediaKind::Video,
-            duration: 57.0,
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
+            duration: generated_clip::DURATION_SECS,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            fps: f64::from(generated_clip::FPS),
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
             ..Default::default()
@@ -1791,10 +1777,10 @@ mod tests {
             id: mid,
             name: "demo".into(),
             kind: MediaKind::Video,
-            duration: 57.0,
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
+            duration: generated_clip::DURATION_SECS,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            fps: f64::from(generated_clip::FPS),
             palette: 0,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
@@ -1897,10 +1883,10 @@ mod tests {
             id: mid,
             name: "demo".into(),
             kind: MediaKind::Video,
-            duration: 57.0,
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
+            duration: generated_clip::DURATION_SECS,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            fps: f64::from(generated_clip::FPS),
             palette: 0,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,

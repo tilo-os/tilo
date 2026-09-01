@@ -27,33 +27,18 @@ use video_editor::param::{Interp, Param};
 const GRID_W: usize = 160;
 const GRID_H: usize = 90;
 
-/// The bundled demo clip. Absence is a failure, not a skip: this test
-/// cannot verify anything without real footage, and a check that quietly
-/// passes when it could not look is how the original bug survived.
+mod generated_clip {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/generated_clip.rs"
+    ));
+}
+
+/// A deterministic, genuinely encoded moving-picture source. Generation is a
+/// hard requirement, not a skip: a test that could not inspect footage must
+/// not claim that export fidelity passed.
 fn demo_clip() -> std::path::PathBuf {
-    if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
-        let p = std::path::PathBuf::from(p);
-        assert!(
-            p.exists(),
-            "$QOS_VE_TEST_CLIP does not exist: {}",
-            p.display()
-        );
-        return p;
-    }
-    let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..5 {
-        let candidate = dir.join(".claude/demo-artifacts/qos-demo-57s.mp4");
-        if candidate.exists() {
-            return candidate;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    panic!(
-        "the export fidelity test needs real footage at \
-         .claude/demo-artifacts/qos-demo-57s.mp4, or $QOS_VE_TEST_CLIP pointing at a clip",
-    );
+    generated_clip::encoded_video()
 }
 
 /// A project holding `path` untrimmed at t=0 for `len` seconds, at the
@@ -70,10 +55,10 @@ fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
         id: mid,
         name: "demo".into(),
         kind: MediaKind::Video,
-        duration: 57.0,
-        width: 1920,
-        height: 1080,
-        fps: 30.0,
+        duration: generated_clip::DURATION_SECS,
+        width: generated_clip::WIDTH,
+        height: generated_clip::HEIGHT,
+        fps: f64::from(generated_clip::FPS),
         palette: 3,
         path: path.to_string_lossy().into_owned(),
         hydration: video_editor::media::Hydration::Local,
@@ -413,10 +398,8 @@ fn a_wipe_reaches_the_encoded_file_as_geometry() {
 
     let clip = demo_clip();
     let pid = std::process::id();
-    // Both clips come off one source. The bundled demo is a screen
-    // recording that barely moves, so two instants of it are the same
-    // picture — invert the incoming clip and the two sides of the wipe
-    // become unmistakable.
+    // Both clips come off one source. Invert the incoming clip so the two
+    // sides of the wipe remain unmistakable regardless of source motion.
     let build = |kind: Transition, name: String| {
         let mut p = project_over(&clip, 1.0, &name);
         let track = p.tracks[0].id;
@@ -667,12 +650,11 @@ fn speed_shortens_the_encoded_file() {
 // ---------------------------------------------------------------------------
 // Audio: proving the export's second branch writes a real, correct track.
 //
-// The bundled demo clip has no audio stream at all — `vide` handlers, no
-// `soun` — so nothing in this file could check the audio branch against it.
-// Worse, it could appear to: a length check against a stream of silence
-// passes, which is how an "audio" test on this branch once went green over a
-// file with no audio in it. So the fixture here is *generated*, and its
-// content is known sample by sample before anything encodes it.
+// The encoded source has its own verified AAC track, but the mixer needs an
+// input whose exact samples are known before anything encodes them. A length
+// check against silence can pass, which is how an "audio" test once went
+// green over a file with no audio in it. So this second fixture is generated
+// as PCM and known sample by sample.
 // ---------------------------------------------------------------------------
 
 /// Everything mixes and muxes at this rate; the fixture is written at it so
@@ -974,7 +956,7 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     DecodedAudio { pcm: out, native }
 }
 
-/// A project with the demo footage on a video track and the generated tone on
+/// A project with generated footage on a video track and the generated tone on
 /// an audio track, both running from t=0 for [`FIXTURE_SECS`].
 ///
 /// Both branches of the export graph therefore have real content to carry,
@@ -1006,26 +988,23 @@ fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> P
     p
 }
 
-/// The demo footage carries no sound, so an audio assertion made against it
-/// would be an assertion about silence.
-///
-/// This is not a remark, it is the trap: an earlier audio test on this branch
-/// went green over a stream with no audio in it, because a length check passes
-/// on silence. Every test below builds its own tone fixture instead, and this
-/// one states — by decoding — the reason they have to.
+/// The generated source itself is a genuine audiovisual container, and the
+/// separate WAV used by mixer tests is independently verified too. This keeps
+/// source decoding and known-signal mixer assertions from depending on private
+/// footage or accidentally testing silence.
 #[test]
 #[serial_test::serial(video_editor_gst)]
-fn the_demo_footage_has_no_audio_to_test_against() {
+fn the_generated_footage_and_mixer_fixture_are_audible() {
     let clip = demo_clip();
     let decoded = decode_audio_full(&clip);
+    let (rate, channels) = decoded.native.unwrap_or_else(|| {
+        panic!("{} has no audio track", clip.display());
+    });
     assert!(
-        decoded.native.is_none() && decoded.pcm.is_empty(),
-        "{} has grown an audio track ({:?}, {} samples). The audio tests here build their \
-         own fixture precisely because it had none; if this clip now has sound, they are \
-         still right to, but this note is stale",
-        clip.display(),
+        rate > 0 && channels == 2 && peak(&decoded.pcm) > 0.1,
+        "the generated source has an audible stereo track: {:?}, peak {:.3}",
         decoded.native,
-        decoded.pcm.len(),
+        peak(&decoded.pcm),
     );
 
     // And the fixture the audio tests do use is audible, at the rate and
@@ -1038,7 +1017,10 @@ fn the_demo_footage_has_no_audio_to_test_against() {
         "the generated fixture is {FIXTURE_RATE} Hz stereo",
     );
     println!(
-        "demo clip: no audio track. fixture: {:?}, {:.3}s, peak {:.3}",
+        "generated clip: {:?}, {:.3}s, peak {:.3}; mixer fixture: {:?}, {:.3}s, peak {:.3}",
+        decoded.native,
+        decoded.secs(),
+        peak(&decoded.pcm),
         f.native,
         f.secs(),
         peak(&f.pcm),
@@ -1149,6 +1131,42 @@ fn an_mp4_export_carries_the_timelines_real_audio() {
 #[serial_test::serial(video_editor_gst)]
 fn a_webm_export_carries_the_timelines_real_audio() {
     assert_audio_round_trip(Container::WebM);
+}
+
+/// The source fixture's AAC track must survive the same import/mix/export
+/// path as user footage, not merely prove decodable in isolation. Exercise
+/// both output muxers because their timestamp and encoder-delay handling are
+/// independent.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn the_encoded_sources_audio_survives_mp4_and_webm_export() {
+    let source = demo_clip();
+    let pid = std::process::id();
+    for container in [Container::Mp4, Container::WebM] {
+        let name = format!("ve source audio {} {pid}", container.extension());
+        let output = export_as(&av_project(&name, &source, &source), container);
+        let decoded = decode_audio_full(&output);
+        let (rate, channels) = decoded.native.unwrap_or_else(|| {
+            panic!(
+                "the {container:?} export dropped the encoded source's AAC track: {}",
+                output.display()
+            );
+        });
+        assert_eq!(rate, FIXTURE_RATE as i32);
+        assert_eq!(channels, 2);
+        assert!(
+            (decoded.secs() - FIXTURE_SECS).abs() < 0.15,
+            "{container:?} retained {:.3}s of the source's {FIXTURE_SECS}s audio cut",
+            decoded.secs(),
+        );
+        let left = channel(&decoded.pcm, 0);
+        assert!(peak(&left) > 0.1, "the propagated source audio is audible");
+        assert!(
+            goertzel(&left, 440.0) > 0.1,
+            "the propagated track retains the source's 440 Hz signal",
+        );
+        tidy(&output);
+    }
 }
 
 /// Where in the decoded audio the right channel changes tone, in seconds, or
@@ -1297,8 +1315,8 @@ fn the_exported_audio_sits_where_the_timeline_puts_it() {
 // one inverted, so the two sides are unmistakable — and reads the decoded
 // export back.
 //
-// The plate is generated rather than bundled because the demo footage has no
-// green screen in it, and a key asserted against footage that was never keyed
+// This purpose-built plate exists because the general footage has no green
+// screen in it, and a key asserted against footage that was never keyed
 // proves nothing. It is verified before it is used, for the same reason the
 // audio fixture is: a fixture that turns out to be the wrong colour makes
 // every assertion below a statement about nothing.
@@ -1681,7 +1699,7 @@ fn a_keyframed_mask_moves_across_the_encoded_file() {
 // the file means reading tones back and comparing them with what the table
 // says — not "the picture got brighter", which a brightness slider also does.
 //
-// The fixture is a step wedge of known greys rather than the demo footage:
+// The fixture is a step wedge of known greys rather than the general footage:
 // against real footage there is no tone whose value is known in advance, so
 // nothing could distinguish "the curve was applied" from "the encoder shifted
 // the picture a little". It is verified before it is used, for the same reason
