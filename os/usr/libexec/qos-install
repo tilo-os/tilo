@@ -66,6 +66,14 @@ log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Updates are signature-required only for the official qOS repository in the
+# shipped containers policy. Do not let a live-session environment override
+# silently turn the installed system onto an unsigned update origin.
+case "$QOS_TARGET_IMGREF" in
+  code.sandbox.example/qos/qos:*|code.sandbox.example/qos/qos@sha256:*) : ;;
+  *) die "untrusted QOS_TARGET_IMGREF '$QOS_TARGET_IMGREF' (must use the signature-required code.sandbox.example/qos/qos repository)" ;;
+esac
+
 # Map an xkb layout (+optional variant) to a Linux console (kbd) keymap
 # name for /etc/vconsole.conf. The console map set doesn't line up 1:1 with
 # xkb, so this is a curated table for the layouts the installer offers;
@@ -190,6 +198,10 @@ esac
 case "$USERNAME" in
   *[!a-z0-9_-]*) die "invalid --user '$USERNAME' (use lowercase letters, digits, _ or -)" ;;
 esac
+case "$USERNAME" in
+  root|bin|daemon|adm|lp|sync|shutdown|halt|mail|operator|games|ftp|nobody|dbus|polkitd|sshd|chrony|tss|greetd|qos)
+    die "reserved --user '$USERNAME'" ;;
+esac
 
 # Validate the filesystem against the set bootc accepts for to-disk.
 case "$FILESYSTEM" in
@@ -234,7 +246,8 @@ if [ -n "$KEYVARIANT_VAL" ]; then
   esac
 fi
 
-# Accept either a bare name (vda) or a full path (/dev/vda).
+# Accept either a bare name (vda) or a full path (/dev/vda), then collapse
+# aliases such as /dev/disk/by-id before any destructive comparison.
 case "$DISK" in
   /dev/*) : ;;
   *) DISK="/dev/$DISK" ;;
@@ -252,19 +265,34 @@ grep -qw 'qos.installer' /proc/cmdline 2>/dev/null \
 
 # Target must be a real, whole-disk block device.
 [ -b "$DISK" ] || die "$DISK is not a block device"
+DISK="$(readlink -f "$DISK")"
+[ -b "$DISK" ] || die "target disk alias did not resolve to a block device"
 DTYPE="$(lsblk -dno TYPE "$DISK" 2>/dev/null || true)"
 [ "$DTYPE" = "disk" ] || die "$DISK is not a whole disk (type='$DTYPE'); pass the whole device, not a partition"
+TARGET_MAJ_MIN="$(lsblk -dno MAJ:MIN "$DISK" 2>/dev/null || true)"
+[ -n "$TARGET_MAJ_MIN" ] || die "could not resolve the target disk identity"
 
-# Never target the disk the live medium itself is running from.
-ROOT_SRC="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
-LIVE_DISK=""
-if [ -n "$ROOT_SRC" ]; then
-  pk="$(lsblk -nro PKNAME "$ROOT_SRC" 2>/dev/null | head -1 || true)"
-  [ -n "$pk" ] && LIVE_DISK="/dev/$pk"
-fi
-if [ -n "$LIVE_DISK" ] && [ "$DISK" = "$LIVE_DISK" ]; then
-  die "$DISK is the live medium's own disk — refusing to install onto it"
-fi
+# Never target the disk the live medium itself is running from. The root may
+# be overlayfs, so inspect every mounted block source and reduce partitions,
+# dm-crypt and aliases to their whole-disk ancestor. Fail closed if the live
+# medium cannot be identified; guessing here can erase the running installer.
+LIVE_MAJ_MIN=""
+while read -r SOURCE MOUNTPOINT; do
+  SOURCE="${SOURCE%%\[*}"
+  [ -b "$SOURCE" ] || continue
+  case "$MOUNTPOINT" in
+    /|/boot|/boot/*|/sysroot|/sysroot/*|/run/initramfs/live|/run/initramfs/live/*|/run/rootfsbase|/run/rootfsbase/*) ;;
+    *) continue ;;
+  esac
+  LIVE_DISK="$(lsblk -spno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
+  [ -n "$LIVE_DISK" ] || continue
+  LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
+  [ -n "$LIVE_MAJ_MIN" ] && break
+done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
+[ -n "$LIVE_MAJ_MIN" ] \
+  || die "could not resolve the live medium's physical disk; refusing a destructive install"
+[ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] \
+  || die "$DISK is the live medium's own disk — refusing to install onto it"
 
 # Refuse if the target disk (or any of its partitions) is currently mounted.
 if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
@@ -452,12 +480,20 @@ fi
 # completes the boundary between installer and target.
 install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
+# Release media mask sshd, while an explicit diagnostic image may enable it.
+# Neither live-only state belongs on the installed system; the base qOS image
+# leaves sshd disabled but unmasked.
+rm -f "$DEPLOY_ETC/systemd/system/sshd.service" \
+      "$DEPLOY_ETC/systemd/system/multi-user.target.wants/sshd.service"
 log "  restored the normal greeter configuration"
 
 # NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
 # files in the live medium. Preserve those profiles so a connection made in
-# the optional Network step also works on first boot. Never follow links or
-# copy subdirectories, and reassert NetworkManager's private file mode.
+# the optional Network step also works on first boot. Never follow links, copy
+# non-root-owned/hard-linked/permissive files, or copy subdirectories. A
+# profile created by the live `greetd` user may contain
+# `permissions=user:greetd:;`; remove that live-session restriction so the
+# installed account can activate the machine connection.
 LIVE_CONNECTIONS=/etc/NetworkManager/system-connections
 TARGET_CONNECTIONS="$DEPLOY_ETC/NetworkManager/system-connections"
 COPIED_CONNECTIONS=0
@@ -467,9 +503,11 @@ if [ -d "$LIVE_CONNECTIONS" ]; then
   while IFS= read -r -d '' PROFILE; do
     TARGET_PROFILE="$TARGET_CONNECTIONS/$(basename "$PROFILE")"
     install -m 0600 "$PROFILE" "$TARGET_PROFILE"
+    sed -i '/^[[:space:]]*permissions=/d' "$TARGET_PROFILE"
     chcon --reference="$PROFILE" "$TARGET_PROFILE" 2>/dev/null || true
     COPIED_CONNECTIONS=$((COPIED_CONNECTIONS + 1))
-  done < <(find "$LIVE_CONNECTIONS" -mindepth 1 -maxdepth 1 -type f -print0)
+  done < <(find "$LIVE_CONNECTIONS" -mindepth 1 -maxdepth 1 -type f \
+    -uid 0 -links 1 ! -perm /077 -print0)
 fi
 if [ "$COPIED_CONNECTIONS" -gt 0 ]; then
   log "  preserved $COPIED_CONNECTIONS NetworkManager connection profile(s) for first boot"
@@ -477,8 +515,10 @@ fi
 
 install -d -m 0755 "$DEPLOY_ETC/qos"
 CONF="$DEPLOY_ETC/qos/install-user.conf"
-printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF"
-chmod 0600 "$CONF"
+CONF_TMP="$(mktemp "$DEPLOY_ETC/qos/.install-user.XXXXXX")"
+chmod 0600 "$CONF_TMP"
+printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
+mv -f "$CONF_TMP" "$CONF"
 log "  wrote $CONF (consumed by qos-firstboot-user.service on first boot)"
 
 # --- 4. seed hostname + time zone into the installed deployment's /etc -------
