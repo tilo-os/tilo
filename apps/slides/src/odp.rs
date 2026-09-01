@@ -415,6 +415,21 @@ fn picture_cache_dir() -> PathBuf {
         .join("qos/slides/imported-pictures")
 }
 
+/// Persist picture bytes from an imported office package in the same
+/// content-addressed cache used by ODP. PPTX uses this too, so reopening either
+/// format gives the renderer a real local file without leaking the author's
+/// original path.
+pub(crate) fn cache_imported_picture(bytes: &[u8]) -> Option<String> {
+    let (ext, _) = picture_format(bytes)?;
+    let dir = picture_cache_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{:016x}.{ext}", fnv1a(bytes)));
+    if !path.exists() {
+        std::fs::write(&path, bytes).ok()?;
+    }
+    Some(path.to_string_lossy().into_owned())
+}
+
 fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
