@@ -37,8 +37,8 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ParamType, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
@@ -216,12 +216,23 @@ fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
         format!("Turn on {noun}")
     };
     let action = set_bool_action(key, !on_now);
-    ActionSpec::immediate(id, label.clone(), SETTINGS_ACTION_TYPE, &action).unwrap_or_else(|_| {
-        // The fallible builder's fallback. `ActionSpec`'s fields are
-        // private now that it carries typed parameters, so construct it
-        // through the constructor that takes an already-encoded action.
-        ActionSpec::immediate_encoded(id, label, action.locus(), encode(&action))
-    })
+    ActionSpec::immediate(id, label.clone(), SETTINGS_ACTION_TYPE, &action)
+        .unwrap_or_else(|_| {
+            // The fallible builder's fallback. `ActionSpec`'s fields are
+            // private now that it carries typed parameters, so construct it
+            // through the constructor that takes an already-encoded action.
+            ActionSpec::immediate_encoded(id, label, action.locus(), encode(&action))
+        })
+        .with_contract(setting_contract())
+}
+
+fn setting_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["configuration".into(), "system-setting".into()],
+        ..ActionContract::default()
+    }
 }
 
 fn float_prompt_spec(
@@ -232,28 +243,21 @@ fn float_prompt_spec(
     lo: f64,
     hi: f64,
 ) -> ActionSpec {
-    ActionSpec::prompted(
+    ActionSpec::typed(
         id,
         label,
-        "Value",
         placeholder,
         ExecutionLocus::ClientLocal,
-        move |raw: &str| {
-            // A blank / unparseable entry lands on the low end of the range
-            // rather than fabricating a surprising value. `is_finite` also
-            // catches "nan" / "inf" — both parse successfully as f64 but
-            // cannot round-trip through `encode`'s JSON payload, which would
-            // otherwise turn a typo into a palette-wide panic.
-            let v = raw
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|v| v.is_finite())
-                .unwrap_or(lo)
-                .clamp(lo, hi);
+        vec![
+            ActionParam::required("value", ParamType::Number, "New setting value")
+                .with_schema(serde_json::json!({ "minimum": lo, "maximum": hi })),
+        ],
+        move |args| {
+            let v = args.number("value").unwrap_or(lo).clamp(lo, hi);
             encode(&set_float_action(key, v))
         },
     )
+    .with_contract(setting_contract())
 }
 
 fn choice_prompt_spec(
@@ -264,28 +268,24 @@ fn choice_prompt_spec(
     options: &'static [&'static str],
     fallback: String,
 ) -> ActionSpec {
-    ActionSpec::prompted(
+    ActionSpec::typed(
         id,
         label,
-        "Choice",
         placeholder,
         ExecutionLocus::ClientLocal,
-        move |raw: &str| {
-            // An unrecognised choice keeps the current value, so a typo never
-            // writes a surprising setting.
-            let v = match_option(raw.trim(), options).unwrap_or_else(|| fallback.clone());
+        vec![
+            ActionParam::required("choice", ParamType::Text, "New setting value")
+                .with_choices(options.iter().copied()),
+        ],
+        move |args| {
+            let v = args
+                .text("choice")
+                .map(str::to_string)
+                .unwrap_or_else(|| fallback.clone());
             encode(&set_text_action(key, v))
         },
     )
-}
-
-/// Match a typed choice against a fixed option list, case-insensitively.
-fn match_option(raw: &str, options: &[&str]) -> Option<String> {
-    let r = raw.trim().to_ascii_lowercase();
-    options
-        .iter()
-        .find(|o| o.to_ascii_lowercase() == r)
-        .map(std::string::ToString::to_string)
+    .with_contract(setting_contract())
 }
 
 /// Build the resource tree Settings publishes: the configuration root, a child

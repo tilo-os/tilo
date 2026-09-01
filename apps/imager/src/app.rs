@@ -3247,7 +3247,58 @@ impl Widget for ImagerApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`]. Empty unless an installable qOS image is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        let mut job =
+            qos_actions::Resource::new("imager.job", "imager.write-plan", "Image write plan");
+        let available = self.source.is_some() && self.target().is_some();
+        job.actions.push(
+            qos_actions::ActionSpec::operation(
+                "export-config",
+                "Export headless configuration",
+                qos_actions::OperationKind::View,
+                "imager.export-config",
+                &"",
+            )
+            .expect("imager operation payload is serializable")
+            .with_contract(qos_actions::ActionContract {
+                availability: if available {
+                    qos_actions::Availability::Available
+                } else {
+                    qos_actions::Availability::Unavailable {
+                        code: "incomplete_plan".into(),
+                        reason: "Select an image source and target drive first".into(),
+                    }
+                },
+                result: qos_actions::ResultSpec::Json {
+                    schema: serde_json::json!({ "type": "string" }),
+                },
+                ..qos_actions::ActionContract::view()
+            }),
+        );
+        resources.push(job);
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        _payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::View || type_id != "imager.export-config" {
+            return Ok(false);
+        }
+        if self.source.is_none() || self.target().is_none() {
+            return Err("Select an image source and target drive first".into());
+        }
+        let text = self
+            .profile
+            .to_headless_config(self.source.as_ref(), self.target());
+        self.export_dialog.show(text);
+        self.dirty = true;
+        Ok(true)
     }
 
     /// The framework host drains the undo boundary an on-screen profile control
