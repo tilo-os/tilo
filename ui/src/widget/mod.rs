@@ -141,6 +141,20 @@ pub trait Widget {
         None
     }
 
+    /// Geometry for an immediate-mode semantic child from
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
+    /// its child-index path beneath this widget's accessibility node. Returning
+    /// a rect lets AccessKit activation inject the same click as pointer input.
+    fn synthetic_accessibility_rect(&self, _path: &[usize]) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
+    /// Move this widget's own immediate-mode focus to a synthetic semantic
+    /// child. Retained widgets continue to use the ordinary taffy focus path.
+    fn focus_synthetic_accessibility(&mut self, _path: &[usize]) -> bool {
+        false
+    }
+
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
     /// Default `false` ("not handled") falls back to generic dispatch
     /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
