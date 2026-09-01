@@ -23,8 +23,8 @@ pub use crate::shell::collab_core::{
 };
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::network::{
-    InboundAppCrdt, InboundAppCrdtSigned, InboundAppPresence, InboundScrollbackRequest,
-    InboundScrollbackResponse, ShellNetwork,
+    InboundAppPresence, InboundDocument, InboundScrollbackRequest, InboundScrollbackResponse,
+    ShellNetwork,
 };
 
 /// What a room calls the peers in it, keyed by the handle presence
@@ -510,10 +510,8 @@ pub fn spawn_native(
 /// itself — see the `drain_*` methods below, extracted from what used
 /// to be one large loop body.
 struct DrainQueues {
-    inbound: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    snapshot_inbound: Arc<Mutex<Vec<InboundAppCrdt>>>,
     presence_inbound: Arc<Mutex<Vec<InboundAppPresence>>>,
-    signed_inbound: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    documents: Arc<Mutex<Vec<InboundDocument>>>,
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
     table: Arc<FanoutState>,
@@ -535,68 +533,10 @@ impl DrainQueues {
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) -> bool {
-        self.drain_incremental()
-            && self.drain_snapshots()
-            && self.drain_presence(labels, announced)
-            && self.drain_signed(labels, announced)
+        self.drain_presence(labels, announced)
+            && self.drain_documents(labels, announced)
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
-    }
-
-    /// Drain inbound unsigned CRDT increments.
-    fn drain_incremental(&self) -> bool {
-        let drained: Vec<_> = {
-            let Ok(mut buf) = self.inbound.lock() else {
-                return false;
-            };
-            std::mem::take(&mut *buf)
-        };
-        for entry in drained {
-            tracing::info!(
-                target: "qos_collab_probe",
-                app = %entry.app_id,
-                cluster = %entry.cluster_id,
-                record = %entry.record_id,
-                bytes = entry.data.len(),
-                "PROBE drain incremental -> local fanout",
-            );
-            let event = CollabEvent::CRDTIncremental { data: entry.data };
-            // Deliver only to apps that announced the same
-            // app+cluster; no local peer skipped by id since
-            // the update originated outside this host.
-            let route = CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
-            self.table.fanout_to_route(&event, u64::MAX, &route);
-        }
-        true
-    }
-
-    /// Drain inbound whole-document snapshots, sent because this
-    /// host's app announced `Arrived`. Delivered as `CRDTUpdate`, which
-    /// the toolkit merges rather than assigns — a snapshot arriving
-    /// after the local user typed must not discard it. Routed by the
-    /// full record triple: a document merged into the wrong record is
-    /// unrecoverable, not just noisy.
-    fn drain_snapshots(&self) -> bool {
-        let drained_snapshots: Vec<_> = {
-            let Ok(mut buf) = self.snapshot_inbound.lock() else {
-                return false;
-            };
-            std::mem::take(&mut *buf)
-        };
-        for entry in drained_snapshots {
-            tracing::info!(
-                target: "qos_collab_probe",
-                app = %entry.app_id,
-                cluster = %entry.cluster_id,
-                record = %entry.record_id,
-                bytes = entry.data.len(),
-                "PROBE drain snapshot -> local fanout",
-            );
-            let event = CollabEvent::CRDTUpdate { data: entry.data };
-            let route = CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
-            self.table.fanout_to_route(&event, u64::MAX, &route);
-        }
-        true
     }
 
     /// Drain inbound presence, attributed to its sender. Cluster scope,
@@ -619,12 +559,6 @@ impl DrainQueues {
             let Some((key, payload)) = decoded else {
                 continue;
             };
-            // `Arrived` means the peer has no document
-            // yet; note it so the next snapshot this
-            // host's apps produce gets published.
-            if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
-                self.net.note_snapshot_request(&entry.cluster_id);
-            }
             let user_id = remote_participant_id(
                 &entry.cluster_id,
                 entry.peer,
@@ -646,13 +580,13 @@ impl DrainQueues {
 
     /// Validate inbound signed ops against local channel state, record
     /// on success, fan to local apps.
-    fn drain_signed(
+    fn drain_documents(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) -> bool {
         let drained_signed: Vec<_> = {
-            let Ok(mut buf) = self.signed_inbound.lock() else {
+            let Ok(mut buf) = self.documents.lock() else {
                 return false;
             };
             std::mem::take(&mut *buf)
@@ -708,7 +642,7 @@ impl DrainQueues {
     }
 
     /// Record a signed op that passed validation and fan it to local
-    /// apps — the `Ok(())` arm of [`Self::drain_signed`]'s per-entry
+    /// apps — the `Ok(())` arm of [`Self::drain_documents`]'s per-entry
     /// match, split out to keep that match's arms short.
     fn accept_signed_op(
         &self,
@@ -753,9 +687,7 @@ impl DrainQueues {
                 from_user_id,
             },
         };
-        // Same app + cluster stamp as unsigned envelopes; an
-        // unaddressed one (too old to stamp) is dropped, not shown to
-        // every app.
+        // An unaddressed route is dropped rather than shown to every app.
         self.table.fanout_to_route(&event, u64::MAX, route);
     }
 
@@ -889,18 +821,15 @@ fn spawn_inner(
     let pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Inbound-drain: when peer-sync is on, drain `ShellNetwork`'s queues
-    // every 100ms and fan to local apps — unsigned/signed CRDT deltas,
-    // snapshots, presence, and cooperative scrollback requests/responses.
+    // Inbound-drain: when peer-sync is on, drain signed documents, presence,
+    // and cooperative scrollback requests/responses every 100ms.
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
-            inbound: net.inbound_app_crdt_handle(),
             presence_inbound: net.inbound_app_presence_handle(),
-            snapshot_inbound: net.inbound_app_crdt_snapshot_handle(),
-            signed_inbound: net.inbound_app_crdt_signed_handle(),
+            documents: net.inbound_documents_handle(),
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
             table: Arc::clone(&table),
