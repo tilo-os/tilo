@@ -319,19 +319,12 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                         acc.color = next_color;
                         add_account_action(&acc, next_order)
                     }
-                    // A malformed link yields an AddAccount with an empty secret,
-                    // which `apply` no-ops — never a partial account.
-                    Err(_) => TotpAction::AddAccount {
-                        id: Uuid::nil().to_string(),
-                        issuer: String::new(),
-                        label: String::new(),
-                        secret: String::new(),
-                        algorithm: Algorithm::Sha1.as_str().to_string(),
-                        digits: 6,
-                        period: 30,
-                        color: 0,
-                        order: 0,
-                    },
+                    Err(error) => {
+                        return EncodedAction {
+                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: format!("invalid otpauth setup URI: {error}").into_bytes(),
+                        };
+                    }
                 };
                 encode(&action)
             },
@@ -793,21 +786,22 @@ mod tests {
         );
     }
 
-    /// A malformed `otpauth://` paste is a clean no-op: the built action applies
-    /// without inserting a half-formed account.
+    /// A malformed `otpauth://` paste is refused during binding, before a
+    /// replayable action or half-formed account can exist.
     #[test]
-    fn malformed_add_link_is_a_no_op() {
-        let mut doc = AutoCommit::new();
+    fn malformed_add_link_is_refused_before_dispatch() {
+        let doc = AutoCommit::new();
         let resources = provide_resources(&doc);
         let add = resources[0]
             .actions
             .iter()
             .find(|a| a.id == "add-account")
             .unwrap();
-        let encoded = prompted_encode(add, "not-an-otpauth-link");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        let encoded = prompted_encode(add, "otpauth://totp/broken");
+        assert_eq!(
+            encoded.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
         assert!(
             AuthDoc::list_accounts(&doc).is_empty(),
             "no partial account was inserted"
