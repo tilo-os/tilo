@@ -86,15 +86,27 @@ while ($listener.IsListening) {
                 # FreeRDP launch too.
                 $name = "qra$([Guid]::NewGuid().ToString('N').Substring(0, 16))"
                 $passwordBytes = [byte[]]::new(32)
-                [Security.Cryptography.RandomNumberGenerator]::Fill($passwordBytes)
+                # .NET Framework (and therefore Windows PowerShell 5.1 on
+                # supported Windows Server releases) has Create/GetBytes but
+                # not the newer static RandomNumberGenerator.Fill API.
+                $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+                try { $rng.GetBytes($passwordBytes) }
+                finally { $rng.Dispose() }
                 $password = [Convert]::ToBase64String($passwordBytes) + '!qA1'
                 $secure = ConvertTo-SecureString $password -AsPlainText -Force
                 New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires | Out-Null
                 Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $name
                 $when = (Get-Date).AddMinutes(10)
                 $taskName = "qOS-Remove-$name"
-                $delete = "cmd.exe /d /c `"net user $name /delete & schtasks /Delete /TN $taskName /F`""
-                schtasks.exe /Create /TN $taskName /SC ONCE /ST $($when.ToString('HH:mm')) /SD $($when.ToString('MM/dd/yyyy')) /RU SYSTEM /RL HIGHEST /TR $delete /F | Out-Null
+                # ScheduledTasks takes a DateTime directly, avoiding
+                # schtasks.exe's locale-dependent /SD date syntax. Deleting
+                # the task as part of its own action prevents steady-state
+                # task-list growth after many RemoteApp sessions.
+                $cleanupCommand = "Remove-LocalUser -Name '$name' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false"
+                $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$cleanupCommand`""
+                $cleanupTrigger = New-ScheduledTaskTrigger -Once -At $when
+                $cleanupPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                Register-ScheduledTask -TaskName $taskName -Action $cleanupAction -Trigger $cleanupTrigger -Principal $cleanupPrincipal -Force | Out-Null
                 Write-Json $context @{ endpoint = "$guestIp`:3389"; bridgePort = $port; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256 }
                 break
             }
