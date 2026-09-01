@@ -460,10 +460,11 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
 }
 
 #[test]
-fn workspace_settings_copy_button_copies_the_invite_link() {
+fn workspace_settings_invite_button_opens_the_signed_composer() {
     use shell::shell::chrome_state::WsTab;
 
-    let tree = minimal_tree();
+    let mut tree = minimal_tree();
+    tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome.borrow_mut();
@@ -477,25 +478,26 @@ fn workspace_settings_copy_button_copies_the_invite_link() {
     // real frame before any click arrives.
     let _ = &taffy;
 
-    let btn = host.ws_settings_copy_rect_for_tests();
-    assert!(btn.area() > 0.0, "the Copy button has no geometry to click");
+    let btn = host.ws_settings_invite_rect_for_tests();
     assert!(
-        host.ws_invite_copied_at_for_tests().is_none(),
-        "nothing should have been copied before the click"
+        btn.area() > 0.0,
+        "the Create button has no geometry to click"
     );
+    assert!(!host.peer_sync_card_visible());
 
     let c = btn.center();
     click_at(&mut host, &taffy, host_node, c.x, c.y);
 
     assert!(
-        host.ws_invite_copied_at_for_tests().is_some(),
-        "clicking Copy did not run the copy path — the button is painted but not routed"
+        host.peer_sync_card_visible(),
+        "clicking Create did not open the signed invite composer"
     );
+    assert!(!chrome.borrow().overlays.ws_settings);
 }
 
 /// Guards against a hit rect widened until it swallows the rest of the tab.
 #[test]
-fn a_click_beside_the_copy_button_does_not_copy() {
+fn a_click_beside_the_invite_button_does_not_open_the_composer() {
     use shell::shell::chrome_state::WsTab;
 
     let tree = minimal_tree();
@@ -509,14 +511,14 @@ fn a_click_beside_the_copy_button_does_not_copy() {
     let (taffy, host_node) = layout_host(&mut host);
     host.force_ws_settings_settled();
 
-    let btn = host.ws_settings_copy_rect_for_tests();
+    let btn = host.ws_settings_invite_rect_for_tests();
     // Well left of the button, still inside the modal body.
     let p = Point::new(btn.x0 - 160.0, btn.center().y);
     click_at(&mut host, &taffy, host_node, p.x, p.y);
 
     assert!(
-        host.ws_invite_copied_at_for_tests().is_none(),
-        "a click beside the Copy button copied anyway"
+        !host.peer_sync_card_visible(),
+        "a click beside the Create button opened the composer anyway"
     );
 }
 
