@@ -14,14 +14,20 @@ SPEC.loader.exec_module(contract)
 
 
 class AppResourceActionContractTests(unittest.TestCase):
-    def fixture(self, source: str, *, dependencies: str = 'qos-actions="1"\n') -> Path:
+    def fixture(
+        self,
+        source: str,
+        *,
+        dependencies: str = 'qos-actions="1"\n',
+        app_name: str = "sample",
+    ) -> Path:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        app = root / "apps" / "sample"
+        app = root / "apps" / app_name
         (app / "src").mkdir(parents=True)
         (app / "Cargo.toml").write_text(
-            '[package]\nname="sample"\nversion="0.1.0"\n[dependencies]\n'
+            f'[package]\nname="{app_name}"\nversion="0.1.0"\n[dependencies]\n'
             + dependencies,
             encoding="utf-8",
         )
@@ -89,6 +95,26 @@ class AppResourceActionContractTests(unittest.TestCase):
         reasons = "\n".join(item.reason for item in violations)
         self.assertIn("ActionSpec", reasons)
         self.assertIn("empty provider", reasons)
+
+    def test_agent_must_use_generic_broker_catalogue_and_receipts(self):
+        root = self.fixture(
+            "fn resources() {}\nstruct ActionDescriptor;\n",
+            app_name="agent",
+        )
+        violations, _ = contract.audit(root)
+        reasons = "\n".join(item.reason for item in violations)
+        self.assertIn("generic action catalogue", reasons)
+        self.assertIn("invoke and observe", reasons)
+
+    def test_generic_broker_agent_passes(self):
+        root = self.fixture(
+            "fn resources() {}\n"
+            "struct ActionDescriptor; struct BrokerActionSurface;\n"
+            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            app_name="agent",
+        )
+        violations, _ = contract.audit(root)
+        self.assertEqual(violations, [])
 
 
 if __name__ == "__main__":
