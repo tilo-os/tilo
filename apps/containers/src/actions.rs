@@ -300,12 +300,10 @@ mod tests {
         );
     }
 
-    /// The honest steady state: Containers fabricates no action or resource
-    /// surface. `Widget::resources` is empty (nothing to publish to Ctrl+K) and no
-    /// action-host undo boundary is recorded, because no action is dispatched —
-    /// both the toolkit defaults, held on the real widget after a full event.
+    /// Containers publishes its host resources and effect operations to Ctrl+K,
+    /// without fabricating a document action or undo boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_ctrl_k_effects_without_recording_a_document_action() {
         let mut app = ContainersApp::new(false);
         let mut doc = AutoCommit::new();
 
@@ -316,9 +314,23 @@ mod tests {
         // A stray click on the surface, too.
         send(&mut app, &mut doc, &left_press());
 
+        let resources = Widget::resources(&app, &doc);
+        assert_eq!(resources.len(), 1, "one container-engine root");
+        let engine = &resources[0];
+        assert_eq!(engine.kind, "containers.engine");
+        let container = engine
+            .children
+            .iter()
+            .find(|resource| resource.kind == "containers.container")
+            .expect("a container resource");
+        let actions: Vec<&str> = container
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
         assert!(
-            Widget::resources(&app, &doc).is_empty(),
-            "Containers publishes no Ctrl+K resource tree — its shared state is view state + native text",
+            actions.iter().any(|id| matches!(*id, "start" | "stop")),
+            "container publishes the lifecycle action appropriate to its state: {actions:?}",
         );
         assert!(
             app.take_committed_action().is_none(),

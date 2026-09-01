@@ -170,7 +170,7 @@ pub trait Widget {
         None
     }
 
-    /// One-shot request for the session shell's shared capture/PiP chooser.
+    /// One-shot request for the session shell's shared capture/`PiP` chooser.
     /// Apps request only the starting mode; the shell remains authoritative
     /// for targets, consent, capture execution, and the visible selector.
     fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
@@ -179,7 +179,7 @@ pub trait Widget {
 
     /// Rising-edge source-geometry updates for an already adopted generic
     /// floating surface. App-owned native call/navigation windows publish
-    /// complete presentation geometry below; browser media PiP instead keeps
+    /// complete presentation geometry below; browser media `PiP` instead keeps
     /// a shell mirror pointed at the current app-local element rectangle.
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
         Vec::new()
@@ -662,6 +662,11 @@ pub trait Widget {
     /// Containers inherit recursive routing; an application overrides only
     /// for the effect/view types it publishes and returns `Ok(true)` when it
     /// handled the payload. Document operations never enter this hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error reported while routing the operation through
+    /// the retained widget tree.
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

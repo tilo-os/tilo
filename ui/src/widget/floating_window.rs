@@ -9,6 +9,12 @@
 //! drawn into the content. It owns only the frame chrome and the
 //! move/resize/clamp mechanics.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "floating-window animation and geometry operate on bounded screen coordinates"
+)]
+
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -58,6 +64,10 @@ enum Drag {
     },
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent retained interaction flags model modal, chrome, and hover state"
+)]
 pub struct FloatingWindow<C: Widget> {
     title: String,
     content: C,
@@ -82,7 +92,7 @@ pub struct FloatingWindow<C: Widget> {
     opened_at: Option<Instant>,
     /// Optional source pixels this window visually emerges from. Geometry and
     /// hit testing stay at `rect`; this is presentation-only continuity for
-    /// screenshot/PiP selection handoffs.
+    /// screenshot/`PiP` selection handoffs.
     spawn_from: Option<Rect>,
     /// Deterministic visual-harness override. Production leaves this `None`
     /// and follows `opened_at`; a pinned PNG must not drift merely because a
@@ -91,15 +101,15 @@ pub struct FloatingWindow<C: Widget> {
     squish: f64,
     squish_axis: Vec2,
     last_motion_at: Option<Instant>,
-    /// Dialogs are modal; desktop PiP/live-activity surfaces are not.
+    /// Dialogs are modal; desktop `PiP`/live-activity surfaces are not.
     modal: bool,
     /// Shell-owned mirrors opt into a close affordance. App-owned surfaces
     /// can keep supplying their own controls.
     closable: bool,
-    /// PiP payloads keep their pixels edge-to-edge and place small controls
+    /// `PiP` payloads keep their pixels edge-to-edge and place small controls
     /// over the image. Dialog-like floats reserve a conventional title row.
     overlay_chrome: bool,
-    /// Media and capture PiP preserve their source shape through every resize
+    /// Media and capture `PiP` preserve their source shape through every resize
     /// instead of trading useful pixels for letterboxing after the first drag.
     aspect_ratio: Option<f64>,
     /// Overlay controls are present for discovery on landing, then yield the
@@ -235,7 +245,7 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     /// Draw the drag/title/close controls as small translucent affordances
-    /// over edge-to-edge content. Intended for media and captured-region PiP,
+    /// over edge-to-edge content. Intended for media and captured-region `PiP`,
     /// where permanently sacrificing a title row makes the payload needlessly
     /// small. The complete top strip remains a generous drag target.
     #[must_use]
@@ -316,7 +326,7 @@ impl<C: Widget> FloatingWindow<C> {
         }
     }
 
-    /// Update proximity without forwarding an event into the PiP payload.
+    /// Update proximity without forwarding an event into the `PiP` payload.
     /// The shell calls this for every mirror, including the one the pointer
     /// just left, so hidden chrome can genuinely fade instead of sticking.
     pub fn update_pointer_position(&mut self, point: Point) {
@@ -676,6 +686,10 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         self.place_content(&theme, &mut tr);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the immediate-mode frame painter intentionally keeps paint order explicit"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1164,6 +1178,10 @@ fn map_rect(from: Rect, to: Rect) -> Affine {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unchecked_time_subtraction,
+        reason = "tests place retained animation clocks at exact elapsed phases"
+    )]
     use super::*;
     use vello_encoding::DrawTag;
 

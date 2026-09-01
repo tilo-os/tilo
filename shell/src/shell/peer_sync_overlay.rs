@@ -912,11 +912,7 @@ fn parse_recipient_identity(value: &str) -> Option<[u8; 32]> {
 
 fn identity_fingerprint(key: &[u8; 32]) -> String {
     let encoded = hex::encode(key);
-    format!(
-        "{} {}",
-        &encoded[encoded.len() - 8..encoded.len() - 4],
-        &encoded[encoded.len() - 4..]
-    )
+    peer_fingerprint(&encoded)
 }
 
 fn time_until(expiry: u64) -> String {

@@ -182,6 +182,7 @@ pub fn set_windows_compat_entry_ids(mut entry_ids: Vec<String>) -> u64 {
     let mut current = lock(&WINDOWS_COMPAT_ENTRY_IDS);
     if *current != entry_ids {
         *current = entry_ids;
+        drop(current);
         return WINDOWS_COMPAT_ENTRY_GENERATION
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
             .saturating_add(1);
