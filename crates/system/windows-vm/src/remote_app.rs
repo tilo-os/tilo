@@ -113,6 +113,10 @@ impl<R> FreeRdpLauncher<R> {
             request = request.arg("/microphone:sys:pulse");
         }
         for share in &brokered.shares {
+            // `host_path` is a broker-created, per-lease directory, never a
+            // workspace path.  Read-only enforcement belongs to that mount,
+            // not to an advisory FreeRDP switch (RDPDR has no trustworthy
+            // read-only command-line mode).
             request = request.arg(format!(
                 "/drive:{},{}",
                 share.drive_name,
@@ -293,6 +297,8 @@ pub enum RemoteAppError {
     InvalidLease,
     #[error("capability broker returned an invalid or duplicate portal document")]
     InvalidPortalDocument,
+    #[error("capability broker returned an incomplete network lease")]
+    InvalidNetworkLease,
     #[error("capability broker returned a share outside its private lease mount")]
     ShareOutsideLease,
 }
@@ -355,6 +361,7 @@ mod tests {
         let launcher = FreeRdpLauncher::new(Runner::default());
         let brokered = BrokeredLaunch {
             lease_id: "lease".to_string(),
+            network_binding: None,
             clipboard: true,
             microphone: true,
             shares: vec![ShareBinding {
@@ -424,6 +431,7 @@ mod tests {
         guest.presentation = ApplicationPresentation::AppFocusedSpice;
         let brokered = BrokeredLaunch {
             lease_id: "lease".to_string(),
+            network_binding: None,
             network: false,
             clipboard: false,
             microphone: false,
