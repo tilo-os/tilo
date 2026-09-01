@@ -122,6 +122,21 @@ pub trait VmDelegate: Send + Sync {
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError>;
 }
 
+/// Fail-closed adapter used until the privileged authenticated guest bridge is
+/// available in the compositor session. The protocol exposes this state as a
+/// disabled route instead of pretending the VM can launch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnavailableVmDelegate;
+
+impl VmDelegate for UnavailableVmDelegate {
+    fn launch(
+        &self,
+        _request: VmRouteRequest<'_>,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        Err(windows_vm::AgentError::Unavailable.into())
+    }
+}
+
 pub struct CompatibilityService<R, B, E, V> {
     catalogue: Catalogue,
     store: CapsuleStore,
