@@ -55,6 +55,9 @@ pub struct WindowsApp {
     launch_button: Button,
     vm_fallback_button: Button,
     install_button: Button,
+    confirm_capsule_button: Button,
+    confirm_vm_install_button: Button,
+    publish_vm_candidate_button: Button,
     retry_button: Button,
     remove_launcher_button: Button,
     vendor_uninstall_button: Button,
@@ -64,6 +67,9 @@ pub struct WindowsApp {
     launch_signal: Rc<Cell<bool>>,
     vm_fallback_signal: Rc<Cell<bool>>,
     install_signal: Rc<Cell<bool>>,
+    confirm_capsule_signal: Rc<Cell<bool>>,
+    confirm_vm_install_signal: Rc<Cell<bool>>,
+    publish_vm_candidate_signal: Rc<Cell<bool>>,
     retry_signal: Rc<Cell<bool>>,
     remove_launcher_signal: Rc<Cell<bool>>,
     vendor_uninstall_signal: Rc<Cell<bool>>,
@@ -118,6 +124,9 @@ impl WindowsApp {
         let launch = Rc::clone(&launch_signal);
         let vm_fallback = Rc::clone(&vm_fallback_signal);
         let install = Rc::clone(&install_signal);
+        let confirm_capsule_signal = Rc::new(Cell::new(false));
+        let confirm_vm_install_signal = Rc::new(Cell::new(false));
+        let publish_vm_candidate_signal = Rc::new(Cell::new(false));
         let retry = Rc::clone(&retry_signal);
         let remove_launcher = Rc::clone(&remove_launcher_signal);
         let vendor_uninstall = Rc::clone(&vendor_uninstall_signal);
@@ -151,6 +160,39 @@ impl WindowsApp {
             install_button: Button::new("windows-install", "windows-install", None)
                 .with_size(256.0, 32.0)
                 .on_click(move || install.set(true)),
+            confirm_capsule_button: Button::new(
+                "windows-confirm-capsule-install",
+                "windows-install-private-capsule",
+                None,
+            )
+            .with_size(256.0, 32.0)
+            .with_enabled(false)
+            .on_click({
+                let signal = Rc::clone(&confirm_capsule_signal);
+                move || signal.set(true)
+            }),
+            confirm_vm_install_button: Button::new(
+                "windows-confirm-vm-install",
+                "windows-install-windows-appliance",
+                None,
+            )
+            .with_size(256.0, 32.0)
+            .with_enabled(false)
+            .on_click({
+                let signal = Rc::clone(&confirm_vm_install_signal);
+                move || signal.set(true)
+            }),
+            publish_vm_candidate_button: Button::new(
+                "windows-publish-vm-candidate",
+                "windows-publish-vm-candidate",
+                None,
+            )
+            .with_size(190.0, 32.0)
+            .with_enabled(false)
+            .on_click({
+                let signal = Rc::clone(&publish_vm_candidate_signal);
+                move || signal.set(true)
+            }),
             retry_button: Button::new("windows-retry-install", "windows-retry-install", None)
                 .with_size(118.0, 32.0)
                 .with_enabled(false)
@@ -180,6 +222,9 @@ impl WindowsApp {
             launch_signal,
             vm_fallback_signal,
             install_signal,
+            confirm_capsule_signal,
+            confirm_vm_install_signal,
+            publish_vm_candidate_signal,
             retry_signal,
             remove_launcher_signal,
             vendor_uninstall_signal,
@@ -203,6 +248,9 @@ impl WindowsApp {
         self.reset_button.set_enabled(false);
         self.launch_button.set_enabled(false);
         self.vm_fallback_button.set_enabled(false);
+        self.confirm_capsule_button.set_enabled(false);
+        self.confirm_vm_install_button.set_enabled(false);
+        self.publish_vm_candidate_button.set_enabled(false);
         self.retry_button.set_enabled(false);
         self.remove_launcher_button.set_enabled(false);
         self.vendor_uninstall_button.set_enabled(false);
@@ -212,6 +260,9 @@ impl WindowsApp {
         self.reset_signal.set(false);
         self.launch_signal.set(false);
         self.vm_fallback_signal.set(false);
+        self.confirm_capsule_signal.set(false);
+        self.confirm_vm_install_signal.set(false);
+        self.publish_vm_candidate_signal.set(false);
         self.retry_signal.set(false);
         self.remove_launcher_signal.set(false);
         self.vendor_uninstall_signal.set(false);
@@ -286,6 +337,24 @@ impl WindowsApp {
         reason = "one ordered dispatcher drains the retained controls before mutating the selected model"
     )]
     fn apply_control_signals(&mut self) {
+        if self.confirm_capsule_signal.replace(false)
+            && self.catalogue.vm_install_confirmation.is_some()
+        {
+            self.notice = self.provider.confirm_capsule_install().err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-capsule-setup-started"));
+            }
+            self.refresh();
+        }
+        if self.confirm_vm_install_signal.replace(false)
+            && self.catalogue.vm_install_confirmation.is_some()
+        {
+            self.notice = self.provider.confirm_vm_install().err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-vm-setup-started"));
+            }
+            self.refresh();
+        }
         if self.install_signal.replace(false) && self.portal_rx.is_none() {
             self.portal_rx = Some(installer_pick_request().send());
             self.notice = Some(strings::t("windows-choose-installer"));
@@ -340,6 +409,17 @@ impl WindowsApp {
                 self.notice = Some(strings::t("windows-vm-launch-queued"));
             }
         }
+        if self.publish_vm_candidate_signal.replace(false)
+            && let Some(app) = self.selected_app()
+            && app.can_publish_vm_candidate
+        {
+            let id = app.id.clone();
+            self.notice = self.provider.publish_vm_candidate(&id).err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-vm-candidate-publishing"));
+            }
+            self.refresh();
+        }
         if self.retry_signal.replace(false)
             && let Some(app) = self.selected_app()
             && app.can_retry_install
@@ -364,15 +444,24 @@ impl WindowsApp {
             && let Some(app) = self.selected_app()
             && app.can_vendor_uninstall
         {
-            let capsule = app.capsule.clone();
-            if self.confirm_vendor_uninstall.as_deref() == Some(capsule.as_str()) {
+            let vm_application = app.route == Route::Vm;
+            let management_id = if vm_application {
+                app.id.clone()
+            } else {
+                app.capsule.clone()
+            };
+            if self.confirm_vendor_uninstall.as_deref() == Some(management_id.as_str()) {
                 self.confirm_vendor_uninstall = None;
-                self.notice = self.provider.vendor_uninstall(&capsule).err();
+                self.notice = if vm_application {
+                    self.provider.vendor_uninstall_vm(&management_id).err()
+                } else {
+                    self.provider.vendor_uninstall(&management_id).err()
+                };
                 if self.notice.is_none() {
                     self.notice = Some(strings::t("windows-uninstalling"));
                 }
             } else {
-                self.confirm_vendor_uninstall = Some(capsule);
+                self.confirm_vendor_uninstall = Some(management_id);
                 self.confirm_delete_data = None;
                 self.notice = Some(strings::t("windows-confirm-uninstall"));
             }
@@ -546,7 +635,91 @@ impl Widget for WindowsApp {
         self.install_button.set_style(ButtonStyle::Primary);
         self.install_button.set_enabled(self.portal_rx.is_none());
         self.install_button.draw(scene, t, tr, theme, presence);
-        let mut y = sidebar.y0 + 122.0;
+        if let Some(confirmation) = &self.catalogue.vm_install_confirmation {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(sidebar.x0 + PAD, sidebar.y0 + 120.0),
+                &confirmation.display_name,
+                12.0,
+                theme.text_primary,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(sidebar.x0 + PAD, sidebar.y0 + 136.0),
+                &strings::t("windows-choose-install-destination"),
+                10.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+            let capsule = Rect::new(
+                sidebar.x0 + PAD,
+                sidebar.y0 + 144.0,
+                sidebar.x1 - PAD,
+                sidebar.y0 + 176.0,
+            );
+            self.confirm_capsule_button.apply_layout_external(capsule);
+            self.confirm_capsule_button
+                .set_style(if confirmation.recommended_route == Route::Vm {
+                    ButtonStyle::Neutral
+                } else {
+                    ButtonStyle::Primary
+                });
+            self.confirm_capsule_button.set_enabled(true);
+            self.confirm_capsule_button
+                .draw(scene, t, tr, theme, presence);
+            if confirmation.recommended_route != Route::Vm {
+                Self::text(
+                    tr,
+                    scene,
+                    t,
+                    Point::new(capsule.x1 - 82.0, capsule.y0 + 20.0),
+                    &strings::t("windows-recommended"),
+                    10.0,
+                    theme.text_primary,
+                    TextWeight::Bold,
+                );
+            }
+            let vm = Rect::new(
+                sidebar.x0 + PAD,
+                sidebar.y0 + 180.0,
+                sidebar.x1 - PAD,
+                sidebar.y0 + 212.0,
+            );
+            self.confirm_vm_install_button.apply_layout_external(vm);
+            self.confirm_vm_install_button.set_style(
+                if confirmation.recommended_route == Route::Vm {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Neutral
+                },
+            );
+            self.confirm_vm_install_button.set_enabled(true);
+            self.confirm_vm_install_button
+                .draw(scene, t, tr, theme, presence);
+            if confirmation.recommended_route == Route::Vm {
+                Self::text(
+                    tr,
+                    scene,
+                    t,
+                    Point::new(vm.x1 - 82.0, vm.y0 + 20.0),
+                    &strings::t("windows-recommended"),
+                    10.0,
+                    theme.text_primary,
+                    TextWeight::Bold,
+                );
+            }
+        }
+        let mut y = sidebar.y0
+            + if self.catalogue.vm_install_confirmation.is_some() {
+                232.0
+            } else {
+                122.0
+            };
         for (index, app) in self.catalogue.apps.iter().enumerate() {
             let row = Rect::new(sidebar.x0 + 10.0, y, sidebar.x1 - 10.0, y + ROW_H - 6.0);
             if index == self.selected {
@@ -855,6 +1028,7 @@ impl Widget for WindowsApp {
             || app.can_remove_launcher
             || app.can_vendor_uninstall
             || app.can_delete_data
+            || app.can_publish_vm_candidate
         {
             Self::text(
                 tr,
@@ -866,6 +1040,16 @@ impl Widget for WindowsApp {
                 theme.text_primary,
                 TextWeight::Bold,
             );
+        }
+        if app.can_publish_vm_candidate {
+            let rect = Rect::new(manage_x, manage_y, manage_x + 190.0, manage_y + 32.0);
+            self.publish_vm_candidate_button.apply_layout_external(rect);
+            self.publish_vm_candidate_button
+                .set_style(ButtonStyle::Primary);
+            self.publish_vm_candidate_button.set_enabled(true);
+            self.publish_vm_candidate_button
+                .draw(scene, t, tr, theme, presence);
+            manage_x += 200.0;
         }
         if app.can_retry_install {
             let rect = Rect::new(manage_x, manage_y, manage_x + 118.0, manage_y + 32.0);
@@ -936,6 +1120,12 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.install_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.confirm_capsule_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.confirm_vm_install_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.publish_vm_candidate_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.retry_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.remove_launcher_button
@@ -1000,6 +1190,18 @@ impl Widget for WindowsApp {
             self.vm_fallback_button.get_rect(),
         ));
         rects.push(("windows-install".into(), self.install_button.get_rect()));
+        rects.push((
+            "windows-install-private-capsule".into(),
+            self.confirm_capsule_button.get_rect(),
+        ));
+        rects.push((
+            "windows-install-windows-appliance".into(),
+            self.confirm_vm_install_button.get_rect(),
+        ));
+        rects.push((
+            "windows-publish-vm-candidate".into(),
+            self.publish_vm_candidate_button.get_rect(),
+        ));
         rects.push(("windows-retry-install".into(), self.retry_button.get_rect()));
         rects.push((
             "windows-remove-launcher".into(),
@@ -1025,6 +1227,9 @@ impl Widget for WindowsApp {
         children.push(&self.launch_button);
         children.push(&self.vm_fallback_button);
         children.push(&self.install_button);
+        children.push(&self.confirm_capsule_button);
+        children.push(&self.confirm_vm_install_button);
+        children.push(&self.publish_vm_candidate_button);
         children.push(&self.retry_button);
         children.push(&self.remove_launcher_button);
         children.push(&self.vendor_uninstall_button);
@@ -1041,6 +1246,9 @@ impl Widget for WindowsApp {
         children.push(&mut self.launch_button);
         children.push(&mut self.vm_fallback_button);
         children.push(&mut self.install_button);
+        children.push(&mut self.confirm_capsule_button);
+        children.push(&mut self.confirm_vm_install_button);
+        children.push(&mut self.publish_vm_candidate_button);
         children.push(&mut self.retry_button);
         children.push(&mut self.remove_launcher_button);
         children.push(&mut self.vendor_uninstall_button);
@@ -1086,6 +1294,9 @@ mod tests {
                 "windows-launch",
                 "windows-open-in-vm",
                 "windows-install",
+                "windows-install-private-capsule",
+                "windows-install-windows-appliance",
+                "windows-publish-vm-candidate",
                 "windows-retry-install",
                 "windows-remove-launcher",
                 "windows-vendor-uninstall",

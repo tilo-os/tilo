@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +30,9 @@ pub struct VmPublishedApplication {
     pub published_application_id: String,
     pub display_name: String,
     pub presentation: String,
+    /// Guest-persisted capability; it is never inferred from a transient
+    /// installer operation or a host-side command.
+    pub uninstall_available: bool,
 }
 
 /// Read-only manager snapshot of the singleton appliance. Implementations
@@ -38,6 +42,70 @@ pub struct VmPublishedApplication {
 pub struct VmInventory {
     pub availability: VmAvailability,
     pub applications: Vec<VmPublishedApplication>,
+}
+
+/// The inspected, digest-bound package metadata passed to the singleton VM.
+/// It deliberately has neither a host path nor an installer command line.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VmInstallerInput {
+    pub source_name: String,
+    pub display_name: String,
+    pub sha256: String,
+    pub byte_len: u64,
+    pub kind: VmInstallerKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VmInstallerKind {
+    Exe,
+    Msi,
+}
+
+/// Opaque, server-owned candidate from the guest's discovered application
+/// list. Its ID is only meaningful to the delegate that issued it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmInstallCandidate {
+    pub entry_id: String,
+    pub display_name: String,
+    pub publisher: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmInstallationPhase {
+    Starting,
+    Running,
+    Completed,
+    Failed,
+}
+
+/// One bounded, singleton installer operation. The guest operation handle is
+/// retained by the privileged delegate; manager clients see only this opaque
+/// status and candidate entry IDs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmInstallation {
+    pub detail: String,
+    pub phase: VmInstallationPhase,
+    pub exit_code: Option<u32>,
+    pub candidates: Vec<VmInstallCandidate>,
+}
+
+/// A local confirmation is required before the exact portal file is streamed
+/// to Windows. It is the only outcome that can select the VM installer path.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmInstallConfirmation {
+    pub display_name: String,
+    pub detail: String,
+    pub recommended_route: RouteKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstallOutcome {
+    Confirmation {
+        confirmation: VmInstallConfirmation,
+        input: VmInstallerInput,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -197,6 +265,54 @@ pub trait VmDelegate: Send + Sync {
         }
     }
 
+    /// Starts a VM installer from the exact descriptor selected through the
+    /// qOS portal. The implementation owns the bridge operation handle and
+    /// returns only bounded, client-safe status.
+    fn install_from_portal(
+        &self,
+        _input: VmInstallerInput,
+        _source: File,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        Err(windows_vm::AgentError::InstallerUnsupported.into())
+    }
+
+    /// Passive status query for the one managed installer operation. It must
+    /// not accept a client operation ID or wake the appliance.
+    fn installation_status(&self) -> Option<VmInstallation> {
+        None
+    }
+
+    /// Explicitly refreshes the active installation. It accepts no operation
+    /// handle from the client, so it cannot become a guest-process oracle.
+    fn refresh_installation_status(
+        &self,
+    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+        Ok(self.installation_status())
+    }
+
+    /// Publishes a candidate selected by its server-owned entry ID. The
+    /// delegate rechecks that the candidate belongs to the active operation.
+    fn publish_install_candidate(
+        &self,
+        _entry_id: &str,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        Err(windows_vm::AgentError::InstallerUnsupported.into())
+    }
+
+    /// Removes only the guest publication, preserving the Windows install.
+    fn remove_published_application(&self, _entry_id: &str) -> Result<(), windows_vm::LaunchError> {
+        Err(windows_vm::AgentError::InstallerUnsupported.into())
+    }
+
+    /// Runs the guest-authorized persistent uninstaller for one published
+    /// application. The client never supplies a path or uninstall command.
+    fn uninstall_published_application(
+        &self,
+        _entry_id: &str,
+    ) -> Result<(), windows_vm::LaunchError> {
+        Err(windows_vm::AgentError::InstallerUnsupported.into())
+    }
+
     fn launch(
         &self,
         request: VmRouteRequest<'_>,
@@ -210,6 +326,42 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
 
     fn inventory(&self) -> VmInventory {
         (**self).inventory()
+    }
+
+    fn install_from_portal(
+        &self,
+        input: VmInstallerInput,
+        source: File,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        (**self).install_from_portal(input, source)
+    }
+
+    fn installation_status(&self) -> Option<VmInstallation> {
+        (**self).installation_status()
+    }
+
+    fn refresh_installation_status(
+        &self,
+    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+        (**self).refresh_installation_status()
+    }
+
+    fn publish_install_candidate(
+        &self,
+        entry_id: &str,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        (**self).publish_install_candidate(entry_id)
+    }
+
+    fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
+        (**self).remove_published_application(entry_id)
+    }
+
+    fn uninstall_published_application(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), windows_vm::LaunchError> {
+        (**self).uninstall_published_application(entry_id)
     }
 
     fn launch(
@@ -227,6 +379,42 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Arc<T> {
 
     fn inventory(&self) -> VmInventory {
         (**self).inventory()
+    }
+
+    fn install_from_portal(
+        &self,
+        input: VmInstallerInput,
+        source: File,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        (**self).install_from_portal(input, source)
+    }
+
+    fn installation_status(&self) -> Option<VmInstallation> {
+        (**self).installation_status()
+    }
+
+    fn refresh_installation_status(
+        &self,
+    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+        (**self).refresh_installation_status()
+    }
+
+    fn publish_install_candidate(
+        &self,
+        entry_id: &str,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        (**self).publish_install_candidate(entry_id)
+    }
+
+    fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
+        (**self).remove_published_application(entry_id)
+    }
+
+    fn uninstall_published_application(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), windows_vm::LaunchError> {
+        (**self).uninstall_published_application(entry_id)
     }
 
     fn launch(
@@ -334,6 +522,15 @@ where
     #[must_use]
     pub fn vm_inventory(&self) -> VmInventory {
         self.vm.inventory()
+    }
+
+    #[must_use]
+    pub fn vm_installation_status(&self) -> Option<VmInstallation> {
+        self.vm.installation_status()
+    }
+
+    pub fn refresh_vm_installation_status(&self) -> Result<Option<VmInstallation>, ServiceError> {
+        self.vm.refresh_installation_status().map_err(Into::into)
     }
 
     pub fn register_program(
@@ -462,16 +659,107 @@ where
         source: &mut File,
         source_name: &str,
         workspace_id: &str,
-        capabilities: &[CapOverride],
-        now_unix: Option<u64>,
-    ) -> Result<InstallReceipt, ServiceError> {
+        _capabilities: &[CapOverride],
+        _now_unix: Option<u64>,
+    ) -> Result<InstallOutcome, ServiceError> {
         validate_launch_id("workspace id", workspace_id)?;
         let inspection = inspect_installer(source, source_name)?;
+        let app_id = imported_app_id(&inspection.sha256);
+        let route =
+            self.resolve_route(&installer_query(&inspection), VmFallback::Explicit, &app_id)?;
+        let input = vm_installer_input(&inspection);
+        let recommended_route = RouteKind::from(route.runtime.layer);
+        let detail = if recommended_route == RouteKind::Vm {
+            "qOS recommends the managed Windows appliance for this installer. Confirm the recommended choice or choose a private Wine/Proton capsule."
+        } else {
+            "qOS recommends a private compatibility capsule. You can instead explicitly use the managed Windows appliance."
+        };
+        Ok(InstallOutcome::Confirmation {
+            confirmation: VmInstallConfirmation {
+                display_name: input.display_name.clone(),
+                detail: detail.to_string(),
+                recommended_route,
+            },
+            input,
+        })
+    }
+
+    /// Starts the ordinary Wine/Proton transaction after a second local
+    /// confirmation. The portal descriptor is re-inspected against the
+    /// session-owned pending digest before anything reaches a capsule.
+    pub fn install_in_capsule(
+        &self,
+        mut source: File,
+        source_name: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+        expected: &VmInstallerInput,
+    ) -> Result<InstallReceipt, ServiceError> {
+        validate_launch_id("workspace id", workspace_id)?;
+        let inspection = inspect_installer(&mut source, source_name)?;
+        if &vm_installer_input(&inspection) != expected {
+            return Err(ServiceError::VmInstallConfirmationMismatch);
+        }
         let _mutation = self
             .installation_gate
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
-        self.install_inspected(source, &inspection, workspace_id, capabilities, now_unix)
+        self.install_inspected(
+            &mut source,
+            &inspection,
+            workspace_id,
+            capabilities,
+            now_unix,
+        )
+    }
+
+    /// Starts a catalogued Windows-VM installation after the manager's second
+    /// explicit confirmation. The same already-open portal descriptor is
+    /// re-inspected and rewound before it crosses the authenticated bridge.
+    pub fn install_in_vm(
+        &self,
+        mut source: File,
+        source_name: &str,
+        workspace_id: &str,
+        expected: &VmInstallerInput,
+    ) -> Result<VmInstallation, ServiceError> {
+        validate_launch_id("workspace id", workspace_id)?;
+        let inspection = inspect_installer(&mut source, source_name)?;
+        let input = vm_installer_input(&inspection);
+        if &input != expected {
+            return Err(ServiceError::VmInstallConfirmationMismatch);
+        }
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(InstallerError::from)?;
+        self.vm
+            .install_from_portal(input, source)
+            .map_err(Into::into)
+    }
+
+    pub fn publish_vm_install_candidate(
+        &self,
+        entry_id: &str,
+    ) -> Result<VmInstallation, ServiceError> {
+        validate_launch_id("VM installer candidate", entry_id)?;
+        self.vm
+            .publish_install_candidate(entry_id)
+            .map_err(Into::into)
+    }
+
+    pub fn remove_vm_published_application(&self, entry_id: &str) -> Result<(), ServiceError> {
+        validate_launch_id("Windows application", entry_id)?;
+        self.vm
+            .remove_published_application(entry_id)
+            .map_err(Into::into)
+    }
+
+    pub fn uninstall_vm_published_application(&self, entry_id: &str) -> Result<(), ServiceError> {
+        validate_launch_id("Windows application", entry_id)?;
+        self.vm
+            .uninstall_published_application(entry_id)
+            .map_err(Into::into)
     }
 
     /// Retry the exact digest-pinned installer retained in a capsule. The
@@ -842,6 +1130,19 @@ fn installer_query(inspection: &InstallerInspection) -> ApplicationQuery {
     }
 }
 
+fn vm_installer_input(inspection: &InstallerInspection) -> VmInstallerInput {
+    VmInstallerInput {
+        source_name: inspection.source_name.clone(),
+        display_name: inspection.display_name.clone(),
+        sha256: inspection.sha256.clone(),
+        byte_len: inspection.size,
+        kind: match inspection.kind {
+            InstallerKind::Exe => VmInstallerKind::Exe,
+            InstallerKind::Msi => VmInstallerKind::Msi,
+        },
+    }
+}
+
 fn imported_app_id(sha256: &str) -> String {
     format!(
         "dev.qos.windows.import.{}",
@@ -1093,6 +1394,10 @@ pub enum ServiceError {
         "this installer is catalogued for the Windows VM and needs explicit fallback confirmation"
     )]
     VmInstallNeedsExplicitFallback,
+    #[error("this installer has no approved managed Windows appliance route")]
+    VmInstallNotCatalogued,
+    #[error("the confirmed portal installer no longer matches the inspected bytes")]
+    VmInstallConfirmationMismatch,
     #[error("capsule is not a portal-managed installation")]
     NotManagedInstallation,
     #[error("the retained installer does not match this capsule journal")]
@@ -1275,6 +1580,7 @@ mod tests {
             published_application_id: "published-word".to_string(),
             display_name: "Word".to_string(),
             presentation: "native RAIL".to_string(),
+            uninstall_available: false,
         };
 
         assert!(matches!(
