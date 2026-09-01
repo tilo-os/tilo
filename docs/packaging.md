@@ -127,7 +127,8 @@ job-private root filesystem and execute it through checksum-pinned PRoot plus
 digest-pinned static QEMU. This works entirely in the job's user space: it does
 not register a host binfmt handler, require a privileged runner mutation, or
 leave an emulator installed after the job. It also keeps every emulated build
-in CI rather than on developer machines.
+in CI rather than on developer machines. Declared Docker volumes are copied
+into the private root before execution, including the Nix image's `/nix` store.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
