@@ -1,9 +1,14 @@
 use std::fmt;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::https_guest::{
+    InstallationOperationId, InstallationStatus, InstallerPackage, PreparedInstallation,
+    PublicationResult, StagedInstaller,
+};
 use crate::{ApplicationPresentation, Catalog, CatalogError, LicenseState};
 
 /// A secret whose formatter never exposes its contents and whose allocation is
@@ -83,6 +88,55 @@ pub trait GuestAgent: Send + Sync {
         session: &GuestSession,
         application_id: &str,
     ) -> Result<GuestLaunch, AgentError>;
+
+    fn stage_installer<R>(
+        &self,
+        _session: &GuestSession,
+        _package: &InstallerPackage,
+        _reader: R,
+    ) -> Result<StagedInstaller, AgentError>
+    where
+        R: Read + Send + 'static,
+    {
+        Err(AgentError::InstallerUnsupported)
+    }
+
+    fn begin_installation(
+        &self,
+        _session: &GuestSession,
+        _staged: &StagedInstaller,
+    ) -> Result<PreparedInstallation, AgentError> {
+        Err(AgentError::InstallerUnsupported)
+    }
+
+    fn installation_status(
+        &self,
+        _session: &GuestSession,
+        _operation: &InstallationOperationId,
+    ) -> Result<InstallationStatus, AgentError> {
+        Err(AgentError::InstallerUnsupported)
+    }
+
+    fn publish_candidate(
+        &self,
+        _session: &GuestSession,
+        _operation: &InstallationOperationId,
+        _candidate_id: &str,
+        _application_id: &str,
+        _display_name: &str,
+        _expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        Err(AgentError::InstallerUnsupported)
+    }
+
+    fn remove_publication(
+        &self,
+        _session: &GuestSession,
+        _application_id: &str,
+        _expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        Err(AgentError::InstallerUnsupported)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -101,6 +155,8 @@ pub enum AgentError {
     InvalidEndpoint,
     #[error("guest bridge installer package or operation was invalid")]
     InvalidInstaller,
+    #[error("guest bridge does not support managed installer operations")]
+    InstallerUnsupported,
     #[error("guest bridge transport failed: {0}")]
     Transport(String),
 }
