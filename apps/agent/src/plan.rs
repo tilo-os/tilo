@@ -30,6 +30,9 @@ pub enum Instruction {
         /// Canonical JSON argument object, keyed exactly as the live
         /// descriptor declares. Empty for a nullary operation.
         arguments: serde_json::Map<String, serde_json::Value>,
+        /// Contract confirmation was explicitly and correctly supplied in
+        /// the plan metadata. Never inferred from prose or risk level.
+        confirmation: ConfirmationEvidence,
     },
     /// Turn the run of bullets above the instruction into a table.
     Table,
@@ -39,6 +42,34 @@ pub enum Instruction {
     Heading,
     /// Something outside the vocabulary; the agent says so in the document.
     Unknown(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ConfirmationEvidence {
+    #[default]
+    None,
+    Confirm,
+    Phrase(String),
+}
+
+impl ConfirmationEvidence {
+    pub fn satisfies(&self, policy: &qos_actions::ConfirmationPolicy) -> bool {
+        matches!(
+            (self, policy),
+            (Self::None, qos_actions::ConfirmationPolicy::None)
+                | (Self::Confirm, qos_actions::ConfirmationPolicy::Confirm)
+        ) || matches!(
+            (self, policy),
+            (
+                Self::Phrase(supplied),
+                qos_actions::ConfirmationPolicy::Phrase { phrase }
+            ) if supplied == phrase
+        )
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 /// Why an answer did not become an instruction.
@@ -126,10 +157,10 @@ impl Instruction {
             return by_keyword;
         }
         match surface::from_verbs(rest, offers) {
-            Ok((offer, arguments)) => Instruction::Perform {
-                id: offer.id(),
-                arguments,
-            },
+            Ok((offer, arguments)) => {
+                Instruction::from_answer(&offer.id(), rest, Some(&arguments), offers)
+                    .unwrap_or_else(|why| Instruction::Unknown(format!("{why:?}")))
+            }
             Err(why) => Instruction::Unknown(unmatched(rest, &why)),
         }
     }
@@ -168,33 +199,60 @@ impl Instruction {
         let Some(offer) = surface::find(offers, id) else {
             return Err(Refused::NotExported(id.to_string()));
         };
-        if offer.wants_content() {
-            return Ok(Instruction::Perform {
-                id: offer.id(),
-                arguments: serde_json::Map::new(),
-            });
-        }
-        if offer.wants_arguments() {
-            let arguments = supplied
+        let mut arguments = if offer.wants_content() {
+            supplied.cloned().unwrap_or_default()
+        } else if offer.wants_arguments() {
+            supplied
                 .cloned()
-                .or_else(|| offer.arguments_from_literal(rest));
-            let arguments = arguments.ok_or_else(|| {
-                Refused::Unusable(format!(
-                    "{} requires structured arguments and neither the answer nor the \
+                .or_else(|| offer.arguments_from_literal(rest))
+                .ok_or_else(|| {
+                    Refused::Unusable(format!(
+                        "{} requires structured arguments and neither the answer nor the \
                      instruction supplied a valid object",
-                    offer.descriptor.action_label
-                ))
-            })?;
+                        offer.descriptor.action_label
+                    ))
+                })?
+        } else {
+            supplied.cloned().unwrap_or_default()
+        };
+        let confirmation = match &offer.descriptor.contract.confirmation {
+            qos_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
+            qos_actions::ConfirmationPolicy::Confirm => {
+                if arguments.remove("confirm") != Some(serde_json::Value::Bool(true)) {
+                    return Err(Refused::Unusable(format!(
+                        "{} requires `confirm: true`",
+                        offer.descriptor.action_label
+                    )));
+                }
+                ConfirmationEvidence::Confirm
+            }
+            qos_actions::ConfirmationPolicy::Phrase { phrase } => {
+                if arguments
+                    .remove("confirmation_phrase")
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    != Some(phrase.clone())
+                {
+                    return Err(Refused::Unusable(format!(
+                        "{} requires the exact confirmation phrase",
+                        offer.descriptor.action_label
+                    )));
+                }
+                ConfirmationEvidence::Phrase(phrase.clone())
+            }
+        };
+        // Confirmation is invocation metadata, never an app argument. Strip
+        // both reserved names even for actions that need no confirmation so
+        // they cannot collide with or sneak through strict schema binding.
+        arguments.remove("confirm");
+        arguments.remove("confirmation_phrase");
+        if !offer.wants_content() {
             qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
                 .map_err(|error| Refused::Unusable(error.to_string()))?;
-            return Ok(Instruction::Perform {
-                id: offer.id(),
-                arguments,
-            });
         }
         Ok(Instruction::Perform {
             id: offer.id(),
-            arguments: serde_json::Map::new(),
+            arguments,
+            confirmation,
         })
     }
 }
@@ -324,10 +382,10 @@ impl Plan {
             .into_iter()
             .map(|clause| {
                 let instruction = match surface::from_verbs(&clause, offers) {
-                    Ok((offer, arguments)) => Instruction::Perform {
-                        id: offer.id(),
-                        arguments,
-                    },
+                    Ok((offer, arguments)) => {
+                        Instruction::from_answer(&offer.id(), &clause, Some(&arguments), offers)
+                            .unwrap_or_else(|why| Instruction::Unknown(format!("{why:?}")))
+                    }
                     Err(why) => Instruction::Unknown(unmatched(&clause, &why)),
                 };
                 Step::bound(instruction, offers)
@@ -1122,10 +1180,16 @@ mod tests {
         // "centre" and "notes" together land on exactly one offer: the
         // heading's own alignment, not the document's.
         let one = Instruction::from_floor("centre the Notes", &offers);
-        let Instruction::Perform { id, arguments } = &one else {
+        let Instruction::Perform {
+            id,
+            arguments,
+            confirmation,
+        } = &one
+        else {
             panic!("a single clear match must resolve to an address, got {one:?}");
         };
         assert!(arguments.is_empty());
+        assert_eq!(confirmation, &ConfirmationEvidence::None);
         assert!(
             surface::find(&offers, id).is_some_and(|o| o
                 .descriptor
@@ -1178,12 +1242,32 @@ mod tests {
         );
 
         for offer in &offers {
-            let answered = Instruction::from_answer(&offer.id(), "asked", None, &offers);
+            let supplied = match &offer.descriptor.contract.confirmation {
+                qos_actions::ConfirmationPolicy::None => serde_json::Map::new(),
+                qos_actions::ConfirmationPolicy::Confirm => {
+                    serde_json::Map::from_iter([("confirm".into(), serde_json::Value::Bool(true))])
+                }
+                qos_actions::ConfirmationPolicy::Phrase { phrase } => {
+                    serde_json::Map::from_iter([(
+                        "confirmation_phrase".into(),
+                        serde_json::Value::String(phrase.clone()),
+                    )])
+                }
+            };
+            let confirmation = match &offer.descriptor.contract.confirmation {
+                qos_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
+                qos_actions::ConfirmationPolicy::Confirm => ConfirmationEvidence::Confirm,
+                qos_actions::ConfirmationPolicy::Phrase { phrase } => {
+                    ConfirmationEvidence::Phrase(phrase.clone())
+                }
+            };
+            let answered = Instruction::from_answer(&offer.id(), "asked", Some(&supplied), &offers);
             assert_eq!(
                 answered,
                 Ok(Instruction::Perform {
                     id: offer.id(),
-                    arguments: serde_json::Map::new()
+                    arguments: serde_json::Map::new(),
+                    confirmation,
                 }),
                 "{} is offered but the gate would not dispatch it",
                 offer.id()
@@ -1229,6 +1313,7 @@ mod tests {
             Ok(Instruction::Perform {
                 id: "word-processor.section:b7#place-image".into(),
                 arguments: serde_json::Map::new(),
+                confirmation: ConfirmationEvidence::None,
             })
         );
     }
@@ -1265,6 +1350,7 @@ mod tests {
                     "value".into(),
                     serde_json::Value::String("b.md".into())
                 )]),
+                confirmation: ConfirmationEvidence::None,
             }),
             "a literal quoted in the instruction is used"
         );
@@ -1284,6 +1370,7 @@ mod tests {
                     "value".into(),
                     serde_json::Value::String("c.md".into())
                 )]),
+                confirmation: ConfirmationEvidence::None,
             }),
             "a literal the answer itself supplied is used even with no quote in the instruction"
         );
@@ -1317,6 +1404,7 @@ mod tests {
             Instruction::Perform {
                 id: "sheets.range:r1#fill".into(),
                 arguments: valid,
+                confirmation: ConfirmationEvidence::None,
             }
         );
 
@@ -1328,6 +1416,99 @@ mod tests {
             Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
             Err(Refused::Unusable(_))
         ));
+    }
+
+    #[test]
+    fn consequential_actions_require_and_strip_explicit_confirmation_metadata() {
+        let mut destructive = offer(
+            "files",
+            "files.entry:/important",
+            "delete",
+            "Delete file",
+            None,
+        );
+        destructive.descriptor.contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
+        destructive.descriptor.params = vec![qos_actions::ActionParam::required(
+            "recursive",
+            qos_actions::ParamType::Boolean,
+            "Delete descendants",
+        )];
+        let offers = vec![destructive];
+
+        for arguments in [
+            serde_json::json!({"recursive": true}),
+            serde_json::json!({"recursive": true, "confirm": false}),
+            serde_json::json!({"recursive": true, "confirm": "true"}),
+        ] {
+            assert!(matches!(
+                Instruction::from_answer(
+                    "files.entry:/important#delete",
+                    "delete it",
+                    arguments.as_object(),
+                    &offers,
+                ),
+                Err(Refused::Unusable(_))
+            ));
+        }
+
+        let confirmed = serde_json::json!({"recursive": true, "confirm": true});
+        assert_eq!(
+            Instruction::from_answer(
+                "files.entry:/important#delete",
+                "delete it",
+                confirmed.as_object(),
+                &offers,
+            ),
+            Ok(Instruction::Perform {
+                id: "files.entry:/important#delete".into(),
+                arguments: serde_json::Map::from_iter([(
+                    "recursive".into(),
+                    serde_json::Value::Bool(true),
+                )]),
+                confirmation: ConfirmationEvidence::Confirm,
+            })
+        );
+    }
+
+    #[test]
+    fn phrase_confirmation_must_match_exactly_before_an_instruction_can_dispatch() {
+        let phrase = "delete all archived messages";
+        let mut destructive = offer("chat", "chat.archive:2025", "purge", "Purge archive", None);
+        destructive.descriptor.contract.confirmation = qos_actions::ConfirmationPolicy::Phrase {
+            phrase: phrase.into(),
+        };
+        let offers = vec![destructive];
+
+        for supplied in [
+            serde_json::json!({}),
+            serde_json::json!({"confirmation_phrase": "Delete all archived messages"}),
+            serde_json::json!({"confirmation_phrase": "delete all archived messages "}),
+        ] {
+            assert!(matches!(
+                Instruction::from_answer(
+                    "chat.archive:2025#purge",
+                    "purge it",
+                    supplied.as_object(),
+                    &offers,
+                ),
+                Err(Refused::Unusable(_))
+            ));
+        }
+
+        let exact = serde_json::json!({"confirmation_phrase": phrase});
+        assert_eq!(
+            Instruction::from_answer(
+                "chat.archive:2025#purge",
+                "purge it",
+                exact.as_object(),
+                &offers,
+            ),
+            Ok(Instruction::Perform {
+                id: "chat.archive:2025#purge".into(),
+                arguments: serde_json::Map::new(),
+                confirmation: ConfirmationEvidence::Phrase(phrase.into()),
+            })
+        );
     }
 
     // -- Sequences: Plan, Step, clauses -----------------------------------
@@ -1437,6 +1618,7 @@ mod tests {
         let perform = |o: &Offer| Instruction::Perform {
             id: o.id(),
             arguments: serde_json::Map::new(),
+            confirmation: ConfirmationEvidence::None,
         };
         assert!(
             Step::bound(perform(&content), &offers).carries,
@@ -1465,14 +1647,16 @@ mod tests {
         assert!(
             Step::own(Instruction::Perform {
                 id: open.id(),
-                arguments: serde_json::Map::new()
+                arguments: serde_json::Map::new(),
+                confirmation: ConfirmationEvidence::None,
             })
             .opens_an_application()
         );
         assert!(
             !Step::own(Instruction::Perform {
                 id: ordinary.id(),
-                arguments: serde_json::Map::new()
+                arguments: serde_json::Map::new(),
+                confirmation: ConfirmationEvidence::None,
             })
             .opens_an_application()
         );
@@ -1506,6 +1690,7 @@ mod tests {
                 Step::own(Instruction::Perform {
                     id: open.id(),
                     arguments: serde_json::Map::new(),
+                    confirmation: ConfirmationEvidence::None,
                 }),
                 Step::own(Instruction::Unknown("crop it square".into())),
             ],
@@ -1522,6 +1707,7 @@ mod tests {
                 Step::own(Instruction::Perform {
                     id: open.id(),
                     arguments: serde_json::Map::new(),
+                    confirmation: ConfirmationEvidence::None,
                 }),
             ],
         };
