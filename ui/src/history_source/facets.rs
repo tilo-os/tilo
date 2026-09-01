@@ -54,7 +54,8 @@ impl HistoryFacetIndex {
 }
 
 fn bump(map: &mut BTreeMap<String, usize>, key: &str) {
-    *map.entry(key.to_string()).or_default() += 1;
+    let count = map.entry(key.to_string()).or_default();
+    *count = count.saturating_add(1);
 }
 
 fn op_label(class: OpClass) -> &'static str {
@@ -86,7 +87,7 @@ mod tests {
         let author = HistoryAuthor::new("Ada", 20.0, "ada");
         let contextual = HistoryEntry {
             id: HistoryEntryId([1; 16]),
-            author: author.clone(),
+            author,
             timestamp: SystemTime::UNIX_EPOCH,
             op_class: OpClass::EditMeta,
             artifact_kind: ArtifactKind::File,

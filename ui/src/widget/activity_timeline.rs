@@ -352,7 +352,7 @@ impl ActivityTimeline {
             let contiguous = positions.len() == selected_ids.len()
                 && positions
                     .windows(2)
-                    .all(|pair| pair[1] == pair[0].saturating_add(1));
+                    .all(|pair| matches!(pair, [left, right] if *right == left.saturating_add(1)));
             contiguous.then(|| {
                 (
                     *positions.first().unwrap_or(&0),

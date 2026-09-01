@@ -351,6 +351,57 @@ fn visit_synthetic(
 /// synthetic `AccessNode` and its child-index path. This repeats the same DFS
 /// counter used by `build_tree_update`, so immediate-mode controls can be
 /// focused and activated without pretending they are taffy widgets.
+fn visit_synthetic_widget<'a>(
+    widget: &'a dyn Widget,
+    target: u64,
+    counter: &mut u64,
+) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+    let access = widget.accessibility();
+    *counter = counter.saturating_add(1);
+    if let Some(access) = access {
+        for child in widget.children() {
+            if let Some(found) = visit_synthetic_widget(child, target, counter) {
+                return Some(found);
+            }
+        }
+        for (index, child) in access.children.iter().enumerate() {
+            if let Some(found) = visit_synthetic_child(widget, child, vec![index], target, counter)
+            {
+                return Some(found);
+            }
+        }
+    } else {
+        for child in widget.children() {
+            if let Some(found) = visit_synthetic_widget(child, target, counter) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn visit_synthetic_child<'a>(
+    owner: &'a dyn Widget,
+    child: &AccessNode,
+    path: Vec<usize>,
+    target: u64,
+    counter: &mut u64,
+) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+    let id = SYNTHETIC_ID_BASE.saturating_add(*counter);
+    *counter = counter.saturating_add(1);
+    if id == target {
+        return Some((std::ptr::from_ref(owner), path));
+    }
+    for (index, nested) in child.children.iter().enumerate() {
+        let mut nested_path = path.clone();
+        nested_path.push(index);
+        if let Some(found) = visit_synthetic_child(owner, nested, nested_path, target, counter) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_synthetic_target<'a>(
     root: &'a dyn Widget,
     target: AkNodeId,
@@ -358,56 +409,7 @@ pub fn resolve_synthetic_target<'a>(
     if target.0 < SYNTHETIC_ID_BASE || target.0 >= TEXT_RUN_ID_BASE {
         return None;
     }
-    fn visit_widget<'a>(
-        widget: &'a dyn Widget,
-        target: u64,
-        counter: &mut u64,
-    ) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-        let access = widget.accessibility();
-        *counter = counter.saturating_add(1);
-        if let Some(access) = access {
-            for child in widget.children() {
-                if let Some(found) = visit_widget(child, target, counter) {
-                    return Some(found);
-                }
-            }
-            for (index, child) in access.children.iter().enumerate() {
-                if let Some(found) = visit_child(widget, child, vec![index], target, counter) {
-                    return Some(found);
-                }
-            }
-        } else {
-            for child in widget.children() {
-                if let Some(found) = visit_widget(child, target, counter) {
-                    return Some(found);
-                }
-            }
-        }
-        None
-    }
-    fn visit_child<'a>(
-        owner: &'a dyn Widget,
-        child: &AccessNode,
-        path: Vec<usize>,
-        target: u64,
-        counter: &mut u64,
-    ) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-        let id = SYNTHETIC_ID_BASE.saturating_add(*counter);
-        *counter = counter.saturating_add(1);
-        if id == target {
-            return Some((std::ptr::from_ref(owner), path));
-        }
-        for (index, nested) in child.children.iter().enumerate() {
-            let mut nested_path = path.clone();
-            nested_path.push(index);
-            if let Some(found) = visit_child(owner, nested, nested_path, target, counter) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    visit_widget(root, target.0, &mut 0)
+    visit_synthetic_widget(root, target.0, &mut 0)
 }
 
 fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: f64) {

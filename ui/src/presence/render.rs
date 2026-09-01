@@ -756,7 +756,7 @@ fn draw_edge_mist(
 /// Paint already-resolved peer cursors in one coordinate space. On-screen
 /// peers get moving dots and collision-free name pills; off-screen peers
 /// become directional edge mist. This is the compositor-facing sibling of
-/// draw_remote_presence, which resolves cursors from a PresenceCtx.
+/// [`draw_remote_presence`], which resolves cursors from a [`PresenceCtx`].
 pub fn draw_peer_presence(
     scene: &mut Scene,
     transform: Affine,
