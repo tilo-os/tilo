@@ -90,6 +90,12 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingIdentityAdmission {
+    name: String,
+    role: crate::network::invite::InviteRole,
+}
+
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
 /// runtime hosting the [`Actor`], the per-workspace
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
@@ -143,7 +149,7 @@ pub struct ShellNetwork {
     /// Invite redemptions awaiting a certificate-bearing person principal.
     /// Unlike the display-name map, unnamed invites also enter this table.
     pending_identity_admissions:
-        Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
+        Mutex<std::collections::HashMap<crate::shell::state::RoomId, PendingIdentityAdmission>>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -771,7 +777,12 @@ impl ShellNetwork {
         local: crate::shell::state::WorkspaceId,
         expiry_seconds_from_now: u64,
     ) -> Result<String, String> {
-        self.issue_invite_for(local, expiry_seconds_from_now, None)
+        self.issue_invite_for(
+            local,
+            expiry_seconds_from_now,
+            None,
+            crate::network::invite::InviteRole::Editor,
+        )
     }
 
     /// [`Self::issue_invite`], for a person this machine will name.
@@ -788,7 +799,23 @@ impl ShellNetwork {
         expiry_seconds_from_now: u64,
         invitee: &str,
     ) -> Result<String, String> {
-        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee))
+        self.issue_invite_named_with_role(
+            local,
+            expiry_seconds_from_now,
+            invitee,
+            crate::network::invite::InviteRole::Editor,
+        )
+    }
+
+    /// Mint a named invite carrying the exact role the owner selected.
+    pub fn issue_invite_named_with_role(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        expiry_seconds_from_now: u64,
+        invitee: &str,
+        role: crate::network::invite::InviteRole,
+    ) -> Result<String, String> {
+        self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee), role)
     }
 
     #[allow(
@@ -802,6 +829,7 @@ impl ShellNetwork {
         local: crate::shell::state::WorkspaceId,
         expiry_seconds_from_now: u64,
         invitee: Option<&str>,
+        role: crate::network::invite::InviteRole,
     ) -> Result<String, String> {
         let addr = self
             .dial_addr()
@@ -828,12 +856,13 @@ impl ShellNetwork {
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
-            let token = crate::network::invite::make_invite_token_with_identity(
+            let token = crate::network::invite::make_invite_token_with_identity_and_role(
                 &self.keypair,
                 &ws,
                 &addr,
                 &hosts,
                 Some(device_cert),
+                role,
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
@@ -861,7 +890,13 @@ impl ShellNetwork {
             pending.insert(room, invitee.to_string());
         }
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-            pending.insert(room, invitee.unwrap_or("Member").to_string());
+            pending.insert(
+                room,
+                PendingIdentityAdmission {
+                    name: invitee.unwrap_or("Member").to_string(),
+                    role,
+                },
+            );
         }
         Ok(token)
     }
@@ -1314,12 +1349,12 @@ impl ShellNetwork {
                 .find(|room| room_topic_id(*room) == workspace_topic)
         });
         let Some(room) = room else { return };
-        let name = self
+        let admission = self
             .pending_identity_admissions
             .lock()
             .ok()
             .and_then(|pending| pending.get(&room).cloned());
-        let Some(name) = name else { return };
+        let Some(admission) = admission else { return };
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
@@ -1347,7 +1382,7 @@ impl ShellNetwork {
                     crate::shell::state::CapOverride::membership(
                         crate::shell::state::Subject::person(person.clone()),
                         room_scope,
-                        crate::shell::state::Verb::Write,
+                        admission.role.verb(),
                     ),
                 )
                 .is_some();
@@ -1365,9 +1400,10 @@ impl ShellNetwork {
         let session = crate::network::behaviour::peer_liveness_handle(peer);
         tree.admit_collaborator_in_room(
             room,
-            crate::shell::state::Collaborator::new(person, name.clone()).with_session(session),
+            crate::shell::state::Collaborator::new(person, admission.name.clone())
+                .with_session(session),
         );
-        let _ = tree.name_peer(room, &local, &peer.to_string(), &name);
+        let _ = tree.name_peer(room, &local, &peer.to_string(), &admission.name);
         // The peer may already have been named by its first SyncReq. In
         // that case `name_peer` is a no-op, so project the membership grant
         // explicitly instead of relying on the naming path to do it.
@@ -1380,6 +1416,7 @@ impl ShellNetwork {
         tracing::info!(
             room = %room,
             user = %hex::encode(cert.user_public_key),
+            role = admission.role.label(),
             "admitted invited collaboration identity"
         );
     }
@@ -1615,7 +1652,13 @@ mod tests {
         net.pending_identity_admissions
             .lock()
             .expect("pending")
-            .insert(room, "Ada".into());
+            .insert(
+                room,
+                PendingIdentityAdmission {
+                    name: "Ada".into(),
+                    role: crate::network::invite::InviteRole::Editor,
+                },
+            );
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
@@ -1727,6 +1770,69 @@ mod tests {
             None,
             "revocation removes document authority as well as app access",
         );
+    }
+
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        let device = iroh::SecretKey::from_bytes(&[82; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Viewer laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).expect("certificate");
+
+        let room = RoomId::new();
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(81),
+            "Read only",
+        );
+        workspace.room = room;
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (net, _commands) = shell_network_for_test(tree.shared(), 81);
+        net.pending_identity_admissions
+            .lock()
+            .expect("pending")
+            .insert(
+                room,
+                PendingIdentityAdmission {
+                    name: "Vi".into(),
+                    role: crate::network::invite::InviteRole::Viewer,
+                },
+            );
+
+        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
+        net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            )
+        else {
+            unreachable!()
+        };
+        let replica = net.replica.lock().expect("replica");
+        let tree = replica.tree.read();
+        let joined = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("workspace");
+        assert_eq!(
+            joined.role_of(&person),
+            Some(crate::shell::state::CapRole::Viewer),
+            "admission must enforce the signed invite role"
+        );
+        assert!(!joined.may_administer(&person));
     }
 
     #[test]
@@ -1991,7 +2097,13 @@ mod tests {
         net.pending_identity_admissions
             .lock()
             .expect("pending admission")
-            .insert(our_room, "Peer".into());
+            .insert(
+                our_room,
+                PendingIdentityAdmission {
+                    name: "Peer".into(),
+                    role: crate::network::invite::InviteRole::Editor,
+                },
+            );
         net.event_tx
             .try_send(NetEvent::Msg {
                 ws: room_topic_id(our_room),
