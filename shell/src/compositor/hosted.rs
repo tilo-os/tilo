@@ -84,6 +84,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // merged state with no copy-back. Held alive for the life of `run` so the actor's tokio runtime
     // doesn't drop mid-session; a load failure is logged and treated as "peer-sync stays off".
     let peer_sync = spawn_peer_sync(enable_peer_sync, tree_handle.clone());
+    // Spawn before boxing the shell root so Follow can retain a cloneable
+    // session-control dispatcher into the same broker local apps use.
+    let collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
     qos_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
@@ -101,14 +104,19 @@ pub fn run_with_full_options(opts: HostedOptions) {
     host.room_records().borrow_mut().attach_store();
     // Give the palette's `/invite` and `/connect` rows something that actually performs them —
     // without this the host records an intent and drops it: reachable in the palette, inert in a running session.
-    let host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
+    let mut host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
+    if let Some(broker) = collab_broker.as_ref() {
+        let dispatcher = broker.follow_dispatcher();
+        host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+            dispatcher.set(&room.to_string(), peer_id);
+        }));
+    }
 
     // The portal's two queues, made here (before the host is boxed into the app, since attaching
     // them needs the concrete type) and unconditionally — two cheap handles, and an unfilled queue costs nothing to hold.
     let portal_prompts =
         crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
     let portal_pickers = crate::portal::FilePickerQueue::new();
-    let mut host = host;
     host.set_portal_queues(portal_prompts.clone(), portal_pickers.clone());
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     qos_startup_metrics::mark("hosted-app-new-start");
@@ -151,10 +159,6 @@ pub fn run_with_full_options(opts: HostedOptions) {
     };
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
-
-    // Local typed collaboration broker, held for the lifetime of `app.run()`.
-    // When peer sync is enabled it also bridges app changes between machines.
-    let _collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
     let identity_socket = launcher::services::identity_socket();
     let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
