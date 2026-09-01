@@ -574,12 +574,15 @@ impl Widget for Toggle {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(toggle_accessibility(
-            self.is_checked,
-            self.is_focused(),
-            self.is_enabled(),
-            self.accessible_name.as_deref(),
-        ))
+        Some(
+            toggle_accessibility(
+                self.is_checked,
+                self.is_focused(),
+                self.is_enabled(),
+                self.accessible_name.as_deref(),
+            )
+            .with_semantic_key(&self._id),
+        )
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {

@@ -139,13 +139,14 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                     ),
                     risk: RiskLevel::Privileged,
                     permission: PermissionRequirement::Admin,
+                    confirmation: ConfirmationPolicy::Confirm,
                     retry: RetryPolicy::AtMostOnce,
                     ..ActionContract::default()
                 },
             ));
             for (id, label, type_id, enabled, payload, confirmation, risk) in [
                 ("publish", "Publish launcher", "windows.publish", app.can_publish_vm_candidate, app.id.as_str(), ConfirmationPolicy::None, RiskLevel::Low),
-                ("retry-install", "Retry installation", "windows.retry-install", app.can_retry_install, app.capsule.as_str(), ConfirmationPolicy::None, RiskLevel::Privileged),
+                ("retry-install", "Retry installation", "windows.retry-install", app.can_retry_install, app.capsule.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Privileged),
                 ("escalate-install", "Install in Windows appliance", "windows.escalate-install", app.can_escalate_install_to_vm, app.capsule.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Privileged),
                 ("remove-launcher", "Remove launcher", "windows.remove-launcher", app.can_remove_launcher, app.id.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Destructive),
                 ("uninstall", "Uninstall", "windows.uninstall", app.can_vendor_uninstall, app.id.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Destructive),

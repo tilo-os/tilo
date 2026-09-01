@@ -47,6 +47,7 @@ pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resourc
                     "Video path",
                     "/path/to/video.mp4",
                     OperationKind::Effect,
+                    OPERATION_TYPE,
                     |path| encode(&PlayerOperation::OpenPath(path.to_string())),
                 )
             })
@@ -59,6 +60,7 @@ pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resourc
                 "Video path",
                 "/path/to/video.mp4",
                 OperationKind::Effect,
+                OPERATION_TYPE,
                 |path| encode(&PlayerOperation::OpenPath(path.to_string())),
             )
             .with_contract(open_contract),
@@ -85,6 +87,7 @@ pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resourc
         "Seek to seconds",
         "30",
         OperationKind::View,
+        OPERATION_TYPE,
         vec![ActionParam::required_owned(
             "seconds",
             ParamType::Number,
