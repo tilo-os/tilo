@@ -124,6 +124,16 @@ else
   note "no owner Secure Boot keys (qos-secureboot generate-keys)"
 fi
 
+if [ -x /usr/libexec/qos-verified-boot-install-preflight ]; then
+  if /usr/libexec/qos-verified-boot-install-preflight --capability >/dev/null 2>&1; then
+    ok "native reinstall can preserve verified boot for TPM short-PIN enrollment"
+  else
+    note "TPM short-PIN install preflight is not satisfied; native install will require a strong passphrase"
+  fi
+else
+  warn "verified-boot target preflight is missing; TPM short-PIN install must remain disabled"
+fi
+
 # Root filesystem encryption. Walk from the root mount to its backing device and
 # ask whether a dm-crypt layer is under it.
 rootsrc="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
