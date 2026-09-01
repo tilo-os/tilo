@@ -3,10 +3,10 @@ name: Package the qOS desktop session
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
 # All work runs on the existing `runner` pool. amd64 containers execute
-# directly; docker/setup-qemu-action registers ARM64 user emulation before the
-# aarch64 containers start. Pull requests build and install-test the affected
-# release payload. Version tags additionally publish the verified artifacts to
-# Forgejo releases and its native package registries.
+# directly; ARM64 containers are exported into a per-job PRoot/QEMU userspace,
+# with no runner-global binfmt registration. Pull requests build and
+# install-test the affected release payload. Version tags additionally publish
+# the verified artifacts to Forgejo releases and its native package registries.
 on:
   pull_request:
     branches: [main]
@@ -50,8 +50,10 @@ jobs:
         run: |
           set -uo pipefail
           diagnostic=success
-          if ! bash -n dist/*.sh dist/*/*.sh; then
+          if ! bash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key; then
             diagnostic=bash-syntax
+          elif ! cc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c; then
+            diagnostic=qemu-wrapper-compile
           elif ! test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"; then
             diagnostic=arch-version-drift
           elif ! grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec; then
