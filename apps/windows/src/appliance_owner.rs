@@ -22,6 +22,32 @@ pub enum LifecycleAction {
     Shutdown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EgressPurpose {
+    Activation,
+    WindowsUpdate,
+}
+
+impl EgressPurpose {
+    const fn argument(self) -> &'static str {
+        match self {
+            Self::Activation => "activation",
+            Self::WindowsUpdate => "windows-update",
+        }
+    }
+
+    const fn ready_notice(self) -> &'static str {
+        match self {
+            Self::Activation => {
+                "Windows has a temporary activation connection. Opening the authorised recovery desktop…"
+            }
+            Self::WindowsUpdate => {
+                "Windows has a temporary update connection. Opening the authorised recovery desktop…"
+            }
+        }
+    }
+}
+
 impl LifecycleAction {
     const fn argument(self) -> &'static str {
         match self {
@@ -173,6 +199,7 @@ enum OwnerEvent {
     Imported(Result<(), String>),
     Recovery(Result<(), String>),
     Lifecycle(LifecycleAction, Result<(), String>),
+    Egress(EgressPurpose, Result<(), String>),
 }
 
 /// One narrow nonblocking owner-command queue. It never exposes a generic
@@ -290,6 +317,34 @@ impl ApplianceOwnerClient {
         Ok(())
     }
 
+    /// Materialise a ten-minute, purpose-bound appliance connection and then
+    /// take the owner to the already-authorised recovery/update desktop. The
+    /// system-owned lease reaper closes it even if this manager exits.
+    pub fn open_temporary_egress(&mut self, purpose: EgressPurpose) -> Result<(), String> {
+        if self.action_pending {
+            return Err("A Windows appliance action is already in progress.".into());
+        }
+        if !self.status.is_provisioned() {
+            return Err("Set up the Windows appliance before connecting it temporarily.".into());
+        }
+        self.action_pending = true;
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let result = Command::new("pkexec")
+                .arg(OWNER)
+                .arg("egress-open")
+                .arg(purpose.argument())
+                .arg("600")
+                .output()
+                .map_err(|error| {
+                    format!("Could not start the standard authorisation prompt: {error}")
+                })
+                .and_then(|output| success_output(&output));
+            let _ = sender.send(OwnerEvent::Egress(purpose, result));
+        });
+        Ok(())
+    }
+
     /// This deliberately bypasses the read-only status precheck only after a
     /// successful `import-iso`: the helper has just prepared the appliance,
     /// while the status cache has not yet had an opportunity to refresh.
@@ -370,6 +425,17 @@ impl ApplianceOwnerClient {
                     notice = Some(action.complete_notice().into());
                 }
                 OwnerEvent::Lifecycle(_, Err(error)) => {
+                    self.action_pending = false;
+                    notice = Some(error);
+                }
+                OwnerEvent::Egress(purpose, Ok(())) => {
+                    self.action_pending = false;
+                    notice = Some(purpose.ready_notice().into());
+                    if let Err(error) = self.start_recovery() {
+                        notice = Some(error);
+                    }
+                }
+                OwnerEvent::Egress(_, Err(error)) => {
                     self.action_pending = false;
                     notice = Some(error);
                 }
