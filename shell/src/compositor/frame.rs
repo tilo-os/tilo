@@ -840,6 +840,12 @@ impl FrameBuilder {
         &mut self.host
     }
 
+    /// Replace desktop chrome with the trusted first-login identity ceremony.
+    pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.host.enable_onboarding(identity_dir);
+        self.rebuild_layout_tree();
+    }
+
     /// On-screen rectangle of the tile currently painting the foreign
     /// wayland surface `surface_id`, or `None` if no visible tile hosts it.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
@@ -945,6 +951,16 @@ impl FrameBuilder {
         root_obj: &ObjId,
         focus: &mut Option<NodeId>,
     ) -> bool {
+        // OOBE transitions replace the whole focusable subtree. Clear the
+        // native focus cursor before it can retain a node removed by the
+        // structural rebuild.
+        if self.host.take_focus_reset() {
+            if let Some(old_id) = focus.take()
+                && let Some(&widget) = self.node_map.get(&old_id)
+            {
+                unsafe { (*widget).set_focus(false) };
+            }
+        }
         let Some(child) = self.host_node() else {
             // No layout tree yet (see `host_node`'s doc) — nothing to
             // dispatch into.
