@@ -5,8 +5,9 @@
 > session service, per-launch audio proxy, portal installer intake, and Windows
 > Apps lifecycle client are wired. Wine/UMU programs can be installed, listed,
 > launched, retried, unregistered, vendor-uninstalled, and deleted. The
-> singleton VM delegate, pinned HTTPS guest bridge, and app-focused SPICE
-> fallback are composed by the session when the owner has provisioned Windows.
+> singleton VM delegate, pinned HTTPS guest bridge, app-focused SPICE fallback,
+> and managed guest install/publish/uninstall lifecycle are composed by the
+> session when the owner has provisioned Windows.
 > Route-policy mutation, snapshots, migration/reset, and automatic
 > failure-triggered fallback ordering remain unavailable and are shown as such.
 
@@ -76,7 +77,7 @@ launch kills both proxy processes, disconnecting any audio handles the Windows
 program still holds. The Windows Apps manager reports playback as available
 and microphone state through the standard qOS grants list.
 
-### Installing and opening user software (implemented for Wine/UMU)
+### Installing and opening user software
 
 Windows Apps uses the shared qOS/XDG file chooser for **Add Windows app…** and
 registers `.exe` and `.msi` open associations. A selected path is opened only
@@ -84,13 +85,30 @@ inside the portal-granted manager sandbox. The already-open descriptor then
 crosses the authenticated compatibility socket with `SCM_RIGHTS`; no host path,
 runner, prefix, command string, or capability record enters the request.
 
-The service bounds the file at 16 GiB, verifies the PE or MSI signature, hashes
-the exact descriptor bytes, then copies them into a descriptor-anchored capsule
-while hashing again. A changed source is rejected. Only that managed copy can
-run. EXE setup is a typed direct invocation; MSI setup is the fixed
-`msiexec.exe /i C:\qos-installers\<digest>.msi` argv shape. The catalogue resolves
-the installer digest before setup, unknown software receives a fresh Wine
-capsule, and a client cannot request Proton or the VM itself.
+The service bounds the file at 16 GiB, verifies the PE or MSI signature, and
+hashes the exact descriptor bytes. It then presents the catalogue's recommended
+destination and lets the owner explicitly choose a private Wine/Proton capsule
+or the one Windows appliance. The confirmation is short-lived and bound to the
+same open descriptor, display name, size, digest, and installer kind; changing
+or replacing the source is rejected. The client cannot submit a runner,
+prefix, guest path, command, or operation ID.
+
+For a capsule, the service copies the installer into descriptor-anchored state
+while hashing again. Only that managed copy can run. EXE setup is a typed
+direct invocation; MSI setup is the fixed
+`msiexec.exe /i C:\qos-installers\<digest>.msi` argv shape. Unknown desktop
+software is recommended a fresh Wine capsule, while Proton remains a
+catalogue-selected route.
+
+For the appliance, the service streams the same digest-pinned descriptor over
+the certificate-pinned, HMAC-authenticated host-only bridge. Guest staging is
+bounded, expiring, one-use, and private to the operation. Setup opens in the
+app-focused surface, and Windows Apps continues polling the server-owned
+operation if the viewer closes. Bounded Program Files discovery returns
+unpublished candidates; the owner chooses which become qOS launchers. Removing
+a launcher keeps the guest install. Vendor uninstall is offered only when the
+guest discovered a typed MSI product code, and always executes the fixed
+`msiexec /x <product-code>` form rather than a registry command string.
 
 Setup remains interactive as an ordinary qOS window while Windows Apps stays
 responsive and reports installing/failed/ready state. Discovery is bounded and
@@ -108,9 +126,10 @@ authenticated app/workspace preamble to a connected inherited descriptor. The
 service corroborates the launcher PID and kernel start time with a
 compositor-owned, single-use, short-lived registry record. Requests contain
 only bounded typed methods. Launch and remove-launcher use opaque server entry
-IDs. Install is the sole method allowed one descriptor; retry, vendor
-uninstall, and data deletion use an authorized capsule ID already present in
-the session snapshot.
+IDs. Installer inspection and either confirmed destination are the only
+methods allowed one descriptor. Retry, vendor uninstall, publication removal,
+and data deletion use opaque server-owned IDs already authorized for the
+session.
 
 Workspace grants are re-read from the canonical compositor tree for every
 operation. Application query, executable, capsule path, environment, VM
@@ -213,14 +232,18 @@ Lifecycle actions deliberately say what they remove:
   private capsule. It requires a second explicit click.
 
 The fixture catalogue exists only in the headless screenshot path; a missing
-live service shows an unavailable/repair state. Further management targets are:
+live service shows an unavailable/repair state. Implemented management
+information includes:
 
-- current layer, capsule/appliance identity, and catalogue explanation;
-- runner and Windows compatibility settings;
-- file, network, clipboard, and device grants using standard qOS controls;
-- active processes and other programs sharing the same state boundary;
-- snapshot, duplicate, export, reset, and runner-migration actions;
-- an explicit route override and a reset-to-catalogue action.
+- current layer, capsule/appliance identity, catalogue explanation, runner, and
+  prefix or guest-storage identity;
+- effective host access and the shared-appliance security boundary;
+- explicit route override and reset-to-catalogue controls;
+- separate publish, remove-launcher, vendor-uninstall, and private-data actions.
+
+Remaining management targets are snapshots, duplicate/export/reset, runner
+migration, active-process inspection, and richer links into the existing qOS
+grant controls.
 
 Route-policy and remaining mutation controls stay disabled until they have a
 trusted action handoff. VM launch appears only when the provisioned singleton,
