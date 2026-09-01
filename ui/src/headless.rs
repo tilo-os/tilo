@@ -500,7 +500,9 @@ impl FrameHarness {
         // Mirror the App's idle tick: a widget that asked for a commit gets
         // one, so undo boundaries and commit-time CRDT writes happen live.
         if self.root.needs_commit() {
-            self.state.commit_action(None, None);
+            let context = self.root.take_commit_context();
+            self.state
+                .commit_action_authored_with_context(None, None, None, context);
             self.root.on_commit();
         }
         self.relayout();

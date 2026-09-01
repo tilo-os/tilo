@@ -348,6 +348,21 @@ impl Widget for RegionPane {
             .collect()
     }
 
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        self.composed
+            .as_ref()
+            .is_some_and(|content| content.needs_commit())
+            .then(|| {
+                ui::qos_actions::ActionContext::for_resource(
+                    "Change region preferences",
+                    "settings.region",
+                    "settings.preference-pane",
+                    "Region & formats",
+                )
+                .with_app("org.qos.Settings", "Settings")
+            })
+    }
+
     fn name(&self) -> &'static str {
         "RegionPane"
     }

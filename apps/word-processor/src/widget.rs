@@ -7927,6 +7927,27 @@ impl Widget for WordProcessorWidget {
     fn needs_commit(&self) -> bool {
         self.needs_commit
     }
+    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+        self.needs_commit.then(|| {
+            let resource_id = self.path.as_ref().map_or_else(
+                || "word-processor.document:untitled".to_string(),
+                |path| format!("word-processor.document:{}", path.display()),
+            );
+            let resource_label = self
+                .path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("Untitled document");
+            qos_actions::ActionContext::for_resource(
+                "Edit document",
+                resource_id,
+                "word_processor.document",
+                resource_label,
+            )
+            .with_app("org.qos.Writer", "Writer")
+        })
+    }
     fn on_commit(&mut self) {
         self.needs_commit = false;
         self.modified = true;
@@ -9653,6 +9674,26 @@ mod tests {
     use std::fmt::Write as _;
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
+
+    #[test]
+    fn native_document_edit_has_writer_provenance() {
+        let mut wp = WordProcessorWidget::new();
+        wp.needs_commit = true;
+
+        let context = wp.take_commit_context().expect("native edit provenance");
+        assert_eq!(context.label, "Edit document");
+        assert_eq!(
+            context.app.as_ref().map(|app| app.id.as_str()),
+            Some("org.qos.Writer")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.kind.as_str()),
+            Some("word_processor.document")
+        );
+    }
 
     /// Two windows on two files are two records, each identified by its file's
     /// path — what the broker routes on, and what stops two people editing
