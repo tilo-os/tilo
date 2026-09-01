@@ -1804,7 +1804,7 @@ impl FirewallApp {
             let selected = *kind == self.selected_zone;
             let is_default = *kind == self.config.default_zone;
             if selected {
-                paint::fill_rrect(scene, t, *rect, 8.0, theme.tokens.colors.surface_white_10);
+                paint::fill_rrect(scene, t, *rect, 8.0, theme.tokens.colors.lift(0.72));
                 // Accent left bar.
                 let bar = Rect::new(rect.x0, rect.y0 + 5.0, rect.x0 + 3.0, rect.y1 - 5.0);
                 paint::fill_rrect(scene, t, bar, 2.0, theme.accent_primary);
@@ -2288,13 +2288,7 @@ impl FirewallApp {
     ) {
         let selected = self.selected_rule == Some(row.id);
         if selected {
-            paint::fill_rrect(
-                scene,
-                t,
-                row.rect,
-                8.0,
-                theme.tokens.colors.surface_white_10,
-            );
+            paint::fill_rrect(scene, t, row.rect, 8.0, theme.tokens.colors.lift(0.72));
             paint::stroke_rrect(scene, t, row.rect, 8.0, theme.accent_primary, 1.0);
         }
         let style = RowStyle::for_rule(theme, rule);
@@ -2583,7 +2577,7 @@ impl FirewallApp {
             };
             let on = z.has_service(def.id);
             if on {
-                paint::fill_rrect(scene, t, *row, 8.0, theme.tokens.colors.surface_white_5);
+                paint::fill_rrect(scene, t, *row, 8.0, theme.tokens.colors.lift(0.35));
             }
             paint::label(
                 tr,

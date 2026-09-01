@@ -100,16 +100,10 @@ impl MiniMonth {
             None,
         );
         if layout.previous.contains(pointer) {
-            fill_round(
-                scene,
-                transform,
-                colors.surface_white_5,
-                layout.previous,
-                6.0,
-            );
+            fill_round(scene, transform, colors.lift(0.35), layout.previous, 6.0);
         }
         if layout.next.contains(pointer) {
-            fill_round(scene, transform, colors.surface_white_5, layout.next, 6.0);
+            fill_round(scene, transform, colors.lift(0.35), layout.next, 6.0);
         }
         draw_chevron(
             scene,
@@ -170,7 +164,7 @@ impl MiniMonth {
                 fill_round(
                     scene,
                     transform,
-                    colors.surface_white_5,
+                    colors.lift(0.35),
                     cell.inflate(-3.0, -2.0),
                     7.0,
                 );

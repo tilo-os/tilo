@@ -29,10 +29,39 @@ pub struct VmPublishedApplication {
     pub app_id: String,
     pub published_application_id: String,
     pub display_name: String,
-    pub presentation: String,
+    /// The authenticated presentation selected by the appliance.  This is a
+    /// capability fact, not display text: only a native RAIL surface can
+    /// carry the portal's per-file redirector.
+    pub presentation: VmPresentation,
     /// Guest-persisted capability; it is never inferred from a transient
     /// installer operation or a host-side command.
     pub uninstall_available: bool,
+}
+
+/// Capability-relevant presentation of a published Windows application.
+///
+/// Keep this separate from the display string so clients cannot accidentally
+/// enable file opening merely because a human-facing runner name changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmPresentation {
+    NativeRail,
+    AppFocusedSpice,
+}
+
+impl VmPresentation {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NativeRail => "native RAIL",
+            Self::AppFocusedSpice => "app-focused whole-surface SPICE",
+        }
+    }
+
+    #[must_use]
+    pub const fn supports_portal_files(self) -> bool {
+        matches!(self, Self::NativeRail)
+    }
 }
 
 /// Read-only manager snapshot of the singleton appliance. Implementations
@@ -785,7 +814,7 @@ where
             resolved_capabilities: &resolved,
         })?;
         Ok(LaunchReceipt {
-            explanation: published_vm_explanation(&application.presentation),
+            explanation: published_vm_explanation(application.presentation.label()),
             success: running.process.exit_code == Some(0),
             exit_code: running.process.exit_code,
         })
@@ -820,7 +849,7 @@ where
             access,
         )?;
         Ok(LaunchReceipt {
-            explanation: published_vm_explanation(&application.presentation),
+            explanation: published_vm_explanation(application.presentation.label()),
             success: running.process.exit_code == Some(0),
             exit_code: running.process.exit_code,
         })
@@ -1894,7 +1923,7 @@ mod tests {
             app_id: "dev.qos.windows.vm.opaque".to_string(),
             published_application_id: "published-word".to_string(),
             display_name: "Word".to_string(),
-            presentation: "native RAIL".to_string(),
+            presentation: VmPresentation::NativeRail,
             uninstall_available: false,
         };
 

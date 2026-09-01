@@ -1,6 +1,6 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
-use crate::appliance_owner::{ApplianceOwnerClient, EgressPurpose, LicenseState, LifecycleAction};
+use crate::appliance_owner::{ApplianceOwnerClient, EgressPurpose, LifecycleAction};
 use crate::model::{Catalogue, Route};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
 use crate::strings;
@@ -18,11 +18,19 @@ use ui::widget::{Button, ButtonStyle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 const PAD: f64 = 20.0;
 const SIDEBAR_W: f64 = 296.0;
 const ROW_H: f64 = 72.0;
+
+fn compact_portal_reason(reason: &str) -> String {
+    if reason.chars().count() > 52 {
+        format!("{}…", reason.chars().take(51).collect::<String>())
+    } else {
+        reason.to_string()
+    }
+}
 
 fn installer_pick_request() -> PickRequest {
     PickRequest::open("Add a Windows application", "Install")
@@ -66,6 +74,11 @@ pub struct WindowsApp {
     selected: usize,
     area: Rect,
     mouse: Point,
+    /// The management card and catalogue share a deliberately bounded
+    /// sidebar viewport. Small windows scroll this complete column rather
+    /// than leaving the catalogue below an expanded appliance card.
+    sidebar_scroll: f64,
+    sidebar_content_bottom: f64,
     hits: Vec<(Rect, Hit)>,
     node: Option<NodeId>,
     notice: Option<String>,
@@ -85,11 +98,14 @@ pub struct WindowsApp {
     delete_data_button: Button,
     choose_windows_iso_button: Button,
     recovery_desktop_button: Button,
+    start_windows_button: Button,
     restart_windows_button: Button,
     suspend_windows_button: Button,
     resume_windows_button: Button,
     shutdown_windows_button: Button,
     connect_windows_button: Button,
+    update_windows_button: Button,
+    revoke_windows_connection_button: Button,
     route_signal: Rc<Cell<Option<Route>>>,
     reset_signal: Rc<Cell<bool>>,
     launch_signal: Rc<Cell<bool>>,
@@ -106,11 +122,14 @@ pub struct WindowsApp {
     delete_data_signal: Rc<Cell<bool>>,
     choose_windows_iso_signal: Rc<Cell<bool>>,
     recovery_desktop_signal: Rc<Cell<bool>>,
+    start_windows_signal: Rc<Cell<bool>>,
     restart_windows_signal: Rc<Cell<bool>>,
     suspend_windows_signal: Rc<Cell<bool>>,
     resume_windows_signal: Rc<Cell<bool>>,
     shutdown_windows_signal: Rc<Cell<bool>>,
     connect_windows_signal: Rc<Cell<bool>>,
+    update_windows_signal: Rc<Cell<bool>>,
+    revoke_windows_connection_signal: Rc<Cell<bool>>,
     portal_rx: Option<OpenFileChannel>,
     document_portal_rx: Option<OpenFileChannel>,
     document_target: Option<String>,
@@ -122,6 +141,11 @@ pub struct WindowsApp {
 }
 
 impl WindowsApp {
+    fn clamp_sidebar_scroll(&mut self) {
+        let max = (self.sidebar_content_bottom - self.area.y1).max(0.0);
+        self.sidebar_scroll = self.sidebar_scroll.clamp(0.0, max);
+    }
+
     pub fn new_live() -> Self {
         match LiveProvider::connect() {
             Ok(provider) => Self::with_provider(Box::new(provider)),
@@ -155,11 +179,14 @@ impl WindowsApp {
         let delete_data_signal = Rc::new(Cell::new(false));
         let choose_windows_iso_signal = Rc::new(Cell::new(false));
         let recovery_desktop_signal = Rc::new(Cell::new(false));
+        let start_windows_signal = Rc::new(Cell::new(false));
         let restart_windows_signal = Rc::new(Cell::new(false));
         let suspend_windows_signal = Rc::new(Cell::new(false));
         let resume_windows_signal = Rc::new(Cell::new(false));
         let shutdown_windows_signal = Rc::new(Cell::new(false));
         let connect_windows_signal = Rc::new(Cell::new(false));
+        let update_windows_signal = Rc::new(Cell::new(false));
+        let revoke_windows_connection_signal = Rc::new(Cell::new(false));
         let route_buttons = Route::ALL
             .iter()
             .map(|route| {
@@ -190,17 +217,22 @@ impl WindowsApp {
         let delete_data = Rc::clone(&delete_data_signal);
         let choose_windows_iso = Rc::clone(&choose_windows_iso_signal);
         let recovery_desktop = Rc::clone(&recovery_desktop_signal);
+        let start_windows = Rc::clone(&start_windows_signal);
         let restart_windows = Rc::clone(&restart_windows_signal);
         let suspend_windows = Rc::clone(&suspend_windows_signal);
         let resume_windows = Rc::clone(&resume_windows_signal);
         let shutdown_windows = Rc::clone(&shutdown_windows_signal);
         let connect_windows = Rc::clone(&connect_windows_signal);
+        let update_windows = Rc::clone(&update_windows_signal);
+        let revoke_windows_connection = Rc::clone(&revoke_windows_connection_signal);
         Self {
             provider,
             catalogue,
             selected: 0,
             area: Rect::ZERO,
             mouse: Point::ZERO,
+            sidebar_scroll: 0.0,
+            sidebar_content_bottom: 0.0,
             hits: Vec::new(),
             node: None,
             notice: None,
@@ -312,6 +344,14 @@ impl WindowsApp {
             .with_size(256.0, 32.0)
             .with_enabled(false)
             .on_click(move || recovery_desktop.set(true)),
+            start_windows_button: Button::new(
+                "windows-start-appliance",
+                "windows-start-appliance",
+                None,
+            )
+            .with_size(118.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || start_windows.set(true)),
             restart_windows_button: Button::new(
                 "windows-restart-appliance",
                 "windows-restart-appliance",
@@ -346,12 +386,28 @@ impl WindowsApp {
             .on_click(move || shutdown_windows.set(true)),
             connect_windows_button: Button::new(
                 "windows-connect-temporarily",
-                "windows-connect-temporarily",
+                "windows-connect-for-activation",
                 None,
             )
             .with_size(256.0, 32.0)
             .with_enabled(false)
             .on_click(move || connect_windows.set(true)),
+            update_windows_button: Button::new(
+                "windows-connect-for-update",
+                "windows-connect-for-update",
+                None,
+            )
+            .with_size(118.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || update_windows.set(true)),
+            revoke_windows_connection_button: Button::new(
+                "windows-revoke-temporary-connection",
+                "windows-revoke-temporary-connection",
+                None,
+            )
+            .with_size(256.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || revoke_windows_connection.set(true)),
             route_signal,
             reset_signal,
             launch_signal,
@@ -368,11 +424,14 @@ impl WindowsApp {
             delete_data_signal,
             choose_windows_iso_signal,
             recovery_desktop_signal,
+            start_windows_signal,
             restart_windows_signal,
             suspend_windows_signal,
             resume_windows_signal,
             shutdown_windows_signal,
             connect_windows_signal,
+            update_windows_signal,
+            revoke_windows_connection_signal,
             portal_rx: None,
             document_portal_rx: None,
             document_target: None,
@@ -406,11 +465,14 @@ impl WindowsApp {
         self.remove_launcher_button.set_enabled(false);
         self.vendor_uninstall_button.set_enabled(false);
         self.delete_data_button.set_enabled(false);
+        self.start_windows_button.set_enabled(false);
         self.restart_windows_button.set_enabled(false);
         self.suspend_windows_button.set_enabled(false);
         self.resume_windows_button.set_enabled(false);
         self.shutdown_windows_button.set_enabled(false);
         self.connect_windows_button.set_enabled(false);
+        self.update_windows_button.set_enabled(false);
+        self.revoke_windows_connection_button.set_enabled(false);
 
         self.route_signal.set(None);
         self.reset_signal.set(false);
@@ -425,11 +487,14 @@ impl WindowsApp {
         self.remove_launcher_signal.set(false);
         self.vendor_uninstall_signal.set(false);
         self.delete_data_signal.set(false);
+        self.start_windows_signal.set(false);
         self.restart_windows_signal.set(false);
         self.suspend_windows_signal.set(false);
         self.resume_windows_signal.set(false);
         self.shutdown_windows_signal.set(false);
         self.connect_windows_signal.set(false);
+        self.update_windows_signal.set(false);
+        self.revoke_windows_connection_signal.set(false);
     }
     fn queue_import_path(&mut self, path: &Path) {
         let source_name = path
@@ -597,6 +662,11 @@ impl WindowsApp {
         }
         for (signal, action, started) in [
             (
+                &self.start_windows_signal,
+                LifecycleAction::Start,
+                "windows-start-starting",
+            ),
+            (
                 &self.restart_windows_signal,
                 LifecycleAction::Restart,
                 "windows-restart-starting",
@@ -625,15 +695,23 @@ impl WindowsApp {
             }
         }
         if self.connect_windows_signal.replace(false) && !self.appliance_owner.busy() {
-            let purpose = if self.appliance_owner.status().license == LicenseState::Unlicensed {
-                EgressPurpose::Activation
-            } else {
-                EgressPurpose::WindowsUpdate
-            };
+            let purpose = EgressPurpose::Activation;
             self.notice = self.appliance_owner.open_temporary_egress(purpose).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-temporary-connection-starting"));
             }
+        }
+        if self.update_windows_signal.replace(false) && !self.appliance_owner.busy() {
+            self.notice = self
+                .appliance_owner
+                .open_temporary_egress(EgressPurpose::WindowsUpdate)
+                .err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-temporary-connection-starting"));
+            }
+        }
+        if self.revoke_windows_connection_signal.replace(false) && !self.appliance_owner.busy() {
+            self.notice = self.appliance_owner.revoke_temporary_egress().err();
         }
         if self.confirm_capsule_signal.replace(false)
             && self.catalogue.vm_install_confirmation.is_some()
@@ -661,7 +739,7 @@ impl WindowsApp {
             && self.document_portal_rx.is_none()
             && let Some(app) = self.selected_app()
             && app.route == Route::Vm
-            && app.launch_available
+            && app.portal_file_open_available
         {
             self.document_target = Some(app.id.clone());
             self.document_portal_rx = Some(windows_document_pick_request().send_open_file());
@@ -785,12 +863,20 @@ impl WindowsApp {
                     self.provider.vendor_uninstall(&management_id).err()
                 };
                 if self.notice.is_none() {
-                    self.notice = Some(strings::t("windows-uninstalling"));
+                    self.notice = Some(strings::t(if vm_application {
+                        "windows-vm-uninstalling"
+                    } else {
+                        "windows-uninstalling"
+                    }));
                 }
             } else {
                 self.confirm_vendor_uninstall = Some(management_id);
                 self.confirm_delete_data = None;
-                self.notice = Some(strings::t("windows-confirm-uninstall"));
+                self.notice = Some(strings::t(if vm_application {
+                    "windows-confirm-vm-uninstall"
+                } else {
+                    "windows-confirm-uninstall"
+                }));
             }
         }
         if self.delete_data_signal.replace(false)
@@ -927,13 +1013,22 @@ impl Widget for WindowsApp {
     ) {
         Self::fill(scene, t, self.area, theme.bg_app);
         self.hits.clear();
-        let sidebar = Rect::new(
+        let sidebar_view = Rect::new(
             self.area.x0,
             self.area.y0,
             (self.area.x0 + SIDEBAR_W).min(self.area.x1),
             self.area.y1,
         );
-        Self::fill(scene, t, sidebar, theme.bg_primary);
+        Self::fill(scene, t, sidebar_view, theme.bg_primary);
+        // All sidebar hit geometry follows the same translated content frame,
+        // so scrolling never paints rows at one location and clicks them at
+        // another. The window surface clips anything outside its viewport.
+        let sidebar = Rect::new(
+            sidebar_view.x0,
+            sidebar_view.y0 - self.sidebar_scroll,
+            sidebar_view.x1,
+            sidebar_view.y1 - self.sidebar_scroll,
+        );
         Self::text(
             tr,
             scene,
@@ -1092,6 +1187,18 @@ impl Widget for WindowsApp {
                 TextWeight::Regular,
             );
         }
+        if appliance.is_provisioned() {
+            Self::line(
+                tr,
+                scene,
+                t,
+                sidebar.x0 + PAD,
+                appliance_y + 66.0,
+                "Power",
+                appliance.power_state.label(),
+                theme,
+            );
+        }
         // The activation state intentionally exists only in this appliance
         // management card. A published application's launch and window
         // chrome never receive this status or an activation reminder.
@@ -1100,7 +1207,7 @@ impl Widget for WindowsApp {
                 tr,
                 scene,
                 t,
-                Point::new(sidebar.x0 + PAD, appliance_y + 64.0),
+                Point::new(sidebar.x0 + PAD, appliance_y + 84.0),
                 &strings::t("windows-activation-status"),
                 10.0,
                 theme.text_dim,
@@ -1110,7 +1217,7 @@ impl Widget for WindowsApp {
                 tr,
                 scene,
                 t,
-                Point::new(sidebar.x0 + PAD, appliance_y + 78.0),
+                Point::new(sidebar.x0 + PAD, appliance_y + 98.0),
                 appliance.license_label(),
                 10.0,
                 theme.text_primary,
@@ -1121,7 +1228,7 @@ impl Widget for WindowsApp {
                     tr,
                     scene,
                     t,
-                    Point::new(sidebar.x0 + PAD, appliance_y + 92.0),
+                    Point::new(sidebar.x0 + PAD, appliance_y + 112.0),
                     detail,
                     9.0,
                     theme.text_dim,
@@ -1133,7 +1240,7 @@ impl Widget for WindowsApp {
             tr,
             scene,
             t,
-            Point::new(sidebar.x0 + PAD, appliance_y + 110.0),
+            Point::new(sidebar.x0 + PAD, appliance_y + 132.0),
             &strings::t("windows-appliance-desktop-note"),
             10.0,
             theme.text_dim,
@@ -1142,9 +1249,9 @@ impl Widget for WindowsApp {
         if appliance.is_provisioned() {
             let recovery = Rect::new(
                 sidebar.x0 + PAD,
-                appliance_y + 122.0,
+                appliance_y + 144.0,
                 sidebar.x1 - PAD,
-                appliance_y + 154.0,
+                appliance_y + 176.0,
             );
             self.recovery_desktop_button.apply_layout_external(recovery);
             self.recovery_desktop_button.set_style(ButtonStyle::Neutral);
@@ -1152,48 +1259,118 @@ impl Widget for WindowsApp {
                 .set_enabled(appliance.recovery_available && !self.appliance_owner.busy());
             self.recovery_desktop_button
                 .draw(scene, t, tr, theme, presence);
-            let lifecycle_y = appliance_y + 160.0;
-            let lifecycle_buttons: [(&mut Button, f64, f64); 4] = [
+            let lifecycle_y = appliance_y + 182.0;
+            let lifecycle_buttons: [(&mut Button, LifecycleAction, f64, f64); 5] = [
                 (
                     &mut self.restart_windows_button,
+                    LifecycleAction::Restart,
                     sidebar.x0 + PAD,
                     lifecycle_y,
                 ),
                 (
                     &mut self.suspend_windows_button,
+                    LifecycleAction::Suspend,
                     sidebar.x0 + PAD + 124.0,
                     lifecycle_y,
                 ),
                 (
                     &mut self.resume_windows_button,
+                    LifecycleAction::Resume,
                     sidebar.x0 + PAD,
                     lifecycle_y + 36.0,
                 ),
                 (
                     &mut self.shutdown_windows_button,
+                    LifecycleAction::Shutdown,
                     sidebar.x0 + PAD + 124.0,
                     lifecycle_y + 36.0,
                 ),
+                (
+                    &mut self.start_windows_button,
+                    LifecycleAction::Start,
+                    sidebar.x0 + PAD,
+                    lifecycle_y + 72.0,
+                ),
             ];
-            for (button, x, y) in lifecycle_buttons {
+            for (button, action, x, y) in lifecycle_buttons {
                 button.apply_layout_external(Rect::new(x, y, x + 118.0, y + 32.0));
                 button.set_style(ButtonStyle::Neutral);
-                button.set_enabled(!self.appliance_owner.busy());
+                button.set_enabled(
+                    !self.appliance_owner.busy() && appliance.power_state.allows(action),
+                );
                 button.draw(scene, t, tr, theme, presence);
             }
             let connection = Rect::new(
                 sidebar.x0 + PAD,
-                lifecycle_y + 72.0,
+                lifecycle_y + 108.0,
                 sidebar.x1 - PAD,
-                lifecycle_y + 104.0,
+                lifecycle_y + 140.0,
             );
             self.connect_windows_button
                 .apply_layout_external(connection);
             self.connect_windows_button.set_style(ButtonStyle::Neutral);
-            self.connect_windows_button
-                .set_enabled(!self.appliance_owner.busy());
+            self.connect_windows_button.set_enabled(
+                !self.appliance_owner.busy()
+                    && appliance.temporary_egress.is_none()
+                    && appliance.power_state
+                        == crate::appliance_owner::AppliancePowerState::Running,
+            );
             self.connect_windows_button
                 .draw(scene, t, tr, theme, presence);
+            let update = Rect::new(
+                sidebar.x0 + PAD,
+                lifecycle_y + 144.0,
+                sidebar.x1 - PAD,
+                lifecycle_y + 176.0,
+            );
+            self.update_windows_button.apply_layout_external(update);
+            self.update_windows_button.set_style(ButtonStyle::Neutral);
+            self.update_windows_button.set_enabled(
+                !self.appliance_owner.busy()
+                    && appliance.temporary_egress.is_none()
+                    && appliance.power_state
+                        == crate::appliance_owner::AppliancePowerState::Running,
+            );
+            self.update_windows_button
+                .draw(scene, t, tr, theme, presence);
+            if appliance.power_state != crate::appliance_owner::AppliancePowerState::Running {
+                Self::text(
+                    tr,
+                    scene,
+                    t,
+                    Point::new(sidebar.x0 + PAD, lifecycle_y + 194.0),
+                    "Windows must be running to connect it temporarily.",
+                    10.0,
+                    theme.text_dim,
+                    TextWeight::Regular,
+                );
+            }
+            if let Some(lease) = &appliance.temporary_egress {
+                Self::text(
+                    tr,
+                    scene,
+                    t,
+                    Point::new(sidebar.x0 + PAD, lifecycle_y + 194.0),
+                    &format!("{} · {}", lease.purpose.label(), lease.expiry_label()),
+                    10.0,
+                    theme.text_dim,
+                    TextWeight::Regular,
+                );
+                let revoke = Rect::new(
+                    sidebar.x0 + PAD,
+                    lifecycle_y + 202.0,
+                    sidebar.x1 - PAD,
+                    lifecycle_y + 234.0,
+                );
+                self.revoke_windows_connection_button
+                    .apply_layout_external(revoke);
+                self.revoke_windows_connection_button
+                    .set_style(ButtonStyle::Neutral);
+                self.revoke_windows_connection_button
+                    .set_enabled(!self.appliance_owner.busy());
+                self.revoke_windows_connection_button
+                    .draw(scene, t, tr, theme, presence);
+            }
         } else {
             let choose_iso = Rect::new(
                 sidebar.x0 + PAD,
@@ -1212,7 +1389,15 @@ impl Widget for WindowsApp {
         }
         let mut y = appliance_y
             + if appliance.is_provisioned() {
-                282.0
+                if appliance.temporary_egress.is_some() {
+                    430.0
+                } else if appliance.power_state
+                    != crate::appliance_owner::AppliancePowerState::Running
+                {
+                    402.0
+                } else {
+                    382.0
+                }
             } else {
                 170.0
             };
@@ -1265,6 +1450,12 @@ impl Widget for WindowsApp {
             self.hits.push((row, Hit::App(index)));
             y += ROW_H;
         }
+        // `y` is in the translated paint frame; retain an unscrolled logical
+        // extent so a wheel move cannot shrink its own maximum on the next
+        // frame.
+        self.sidebar_content_bottom = y.max(appliance_y + 440.0) + self.sidebar_scroll;
+        let max_sidebar_scroll = (self.sidebar_content_bottom - sidebar_view.y1).max(0.0);
+        self.sidebar_scroll = self.sidebar_scroll.clamp(0.0, max_sidebar_scroll);
         let detail = Rect::new(
             sidebar.x1 + PAD,
             self.area.y0 + PAD,
@@ -1356,7 +1547,7 @@ impl Widget for WindowsApp {
         self.launch_button.set_enabled(app.launch_available);
         self.launch_button.set_style(ButtonStyle::Primary);
         self.launch_button.draw(scene, t, tr, theme, presence);
-        if app.route == Route::Vm && app.launch_available {
+        if app.route == Route::Vm {
             let open_file = Rect::new(
                 launch.x1 + 12.0,
                 status.y0 - 2.0,
@@ -1365,8 +1556,26 @@ impl Widget for WindowsApp {
             );
             self.open_file_button.apply_layout_external(open_file);
             self.open_file_button.set_style(ButtonStyle::Neutral);
-            self.open_file_button.set_enabled(true);
+            self.open_file_button
+                .set_enabled(app.portal_file_open_available);
             self.open_file_button.draw(scene, t, tr, theme, presence);
+            if let Some(reason) = app
+                .portal_file_open_unavailable_reason
+                .as_deref()
+                .filter(|_| !app.portal_file_open_available)
+            {
+                let compact_reason = compact_portal_reason(reason);
+                Self::text(
+                    tr,
+                    scene,
+                    t,
+                    Point::new(open_file.x1 + 10.0, open_file.y0 + 20.0),
+                    &compact_reason,
+                    10.0,
+                    theme.text_dim,
+                    TextWeight::Regular,
+                );
+            }
         }
         if app.route != Route::Vm && app.vm_fallback_available {
             let vm = Rect::new(
@@ -1451,11 +1660,25 @@ impl Widget for WindowsApp {
             self.reset_button.set_enabled(app.route_override_available);
             self.reset_button.draw(scene, t, tr, theme, presence);
         }
+        if let Some(reason) = &app.route_override_unavailable_reason
+            && !app.route_override_available
+        {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(detail.x0, routes_y + 42.0),
+                reason,
+                10.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+        }
         let info = Rect::new(
             detail.x0,
             routes_y + 48.0,
             detail.x1,
-            (routes_y + 226.0).min(detail.y1),
+            (routes_y + 292.0).min(detail.y1),
         );
         Self::pill(scene, t, info, theme.bg_primary);
         Self::text(
@@ -1472,12 +1695,26 @@ impl Widget for WindowsApp {
             theme.text_primary,
             TextWeight::Bold,
         );
+        let vm_shared_session = app.route == Route::Vm;
+        if vm_shared_session {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(info.x0 + PAD, info.y0 + 34.0),
+                &strings::t("windows-shared-session-trust"),
+                9.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+        }
+        let info_line_offset = if vm_shared_session { 8.0 } else { 0.0 };
         Self::line(
             tr,
             scene,
             t,
             info.x0 + PAD,
-            info.y0 + 46.0,
+            info.y0 + 46.0 + info_line_offset,
             &strings::t("windows-runner"),
             &app.runner,
             theme,
@@ -1487,7 +1724,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             info.x0 + PAD,
-            info.y0 + 71.0,
+            info.y0 + 71.0 + info_line_offset,
             &strings::t(if app.route == Route::Vm {
                 "windows-appliance"
             } else {
@@ -1501,7 +1738,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             info.x0 + PAD,
-            info.y0 + 96.0,
+            info.y0 + 96.0 + info_line_offset,
             &strings::t(if app.route == Route::Vm {
                 "windows-guest-storage"
             } else {
@@ -1515,28 +1752,75 @@ impl Widget for WindowsApp {
             scene,
             t,
             info.x0 + PAD,
-            info.y0 + 121.0,
+            info.y0 + 121.0 + info_line_offset,
             &strings::t(if app.route == Route::Vm {
                 "windows-current-shared-session-access"
             } else {
                 "windows-host-access"
             }),
-            &if app.route == Route::Vm && self.catalogue.vm.shared_session_active {
-                format!(
-                    "{} · {}",
-                    self.catalogue.vm.shared_session_grants.join(", "),
-                    self.catalogue.vm.shared_session_contributors.join(", ")
-                )
+            &if app.route == Route::Vm {
+                if self.catalogue.vm.shared_session_active {
+                    format!(
+                        "{} · {}",
+                        self.catalogue.vm.shared_session_grants.join(", "),
+                        self.catalogue.vm.shared_session_contributors.join(", ")
+                    )
+                } else {
+                    "No active host redirects".to_string()
+                }
             } else {
                 app.access_summary()
             },
             theme,
         );
+        let mut grant_y = info.y0 + 151.0 + info_line_offset;
+        for grant in &app.grants {
+            Self::line(
+                tr,
+                scene,
+                t,
+                info.x0 + PAD,
+                grant_y,
+                &grant.label,
+                &if vm_shared_session {
+                    format!(
+                        "{} · {}",
+                        if grant.enabled {
+                            "Host-authorized request"
+                        } else {
+                            "Not authorized"
+                        },
+                        grant.detail
+                    )
+                } else {
+                    format!(
+                        "{} · {}",
+                        if grant.enabled { "Enabled" } else { "Disabled" },
+                        grant.detail
+                    )
+                },
+                theme,
+            );
+            grant_y += 20.0;
+        }
+        if let Some(detail) = &app.installation_detail {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(info.x0 + PAD, grant_y + 4.0),
+                detail,
+                11.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+            grant_y += 24.0;
+        }
         Self::text(
             tr,
             scene,
             t,
-            Point::new(info.x0 + PAD, info.y0 + 151.0),
+            Point::new(info.x0 + PAD, grant_y + 4.0),
             &app.fallback_detail,
             12.0,
             theme.text_dim,
@@ -1672,6 +1956,8 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.recovery_desktop_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.start_windows_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.restart_windows_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.suspend_windows_button
@@ -1682,8 +1968,25 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.connect_windows_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.update_windows_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.revoke_windows_connection_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.apply_control_signals();
         match event {
+            WindowEvent::MouseWheel { delta, .. }
+                if self.mouse.x >= self.area.x0
+                    && self.mouse.x <= (self.area.x0 + SIDEBAR_W).min(self.area.x1) =>
+            {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / scale,
+                };
+                let before = self.sidebar_scroll;
+                self.sidebar_scroll += delta;
+                self.clamp_sidebar_scroll();
+                *handled |= (self.sidebar_scroll - before).abs() > f64::EPSILON;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x, position.y);
             }
@@ -1780,6 +2083,10 @@ impl Widget for WindowsApp {
             self.recovery_desktop_button.get_rect(),
         ));
         rects.push((
+            "windows-start-appliance".into(),
+            self.start_windows_button.get_rect(),
+        ));
+        rects.push((
             "windows-restart-appliance".into(),
             self.restart_windows_button.get_rect(),
         ));
@@ -1798,6 +2105,14 @@ impl Widget for WindowsApp {
         rects.push((
             "windows-connect-temporarily".into(),
             self.connect_windows_button.get_rect(),
+        ));
+        rects.push((
+            "windows-connect-for-update".into(),
+            self.update_windows_button.get_rect(),
+        ));
+        rects.push((
+            "windows-revoke-temporary-connection".into(),
+            self.revoke_windows_connection_button.get_rect(),
         ));
         rects
     }
@@ -1822,11 +2137,14 @@ impl Widget for WindowsApp {
         children.push(&self.delete_data_button);
         children.push(&self.choose_windows_iso_button);
         children.push(&self.recovery_desktop_button);
+        children.push(&self.start_windows_button);
         children.push(&self.restart_windows_button);
         children.push(&self.suspend_windows_button);
         children.push(&self.resume_windows_button);
         children.push(&self.shutdown_windows_button);
         children.push(&self.connect_windows_button);
+        children.push(&self.update_windows_button);
+        children.push(&self.revoke_windows_connection_button);
         children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1850,11 +2168,14 @@ impl Widget for WindowsApp {
         children.push(&mut self.delete_data_button);
         children.push(&mut self.choose_windows_iso_button);
         children.push(&mut self.recovery_desktop_button);
+        children.push(&mut self.start_windows_button);
         children.push(&mut self.restart_windows_button);
         children.push(&mut self.suspend_windows_button);
         children.push(&mut self.resume_windows_button);
         children.push(&mut self.shutdown_windows_button);
         children.push(&mut self.connect_windows_button);
+        children.push(&mut self.update_windows_button);
+        children.push(&mut self.revoke_windows_connection_button);
         children
     }
 }
@@ -2061,11 +2382,14 @@ mod tests {
                 "windows-delete-data",
                 "windows-choose-windows-iso",
                 "windows-open-recovery-desktop",
+                "windows-start-appliance",
                 "windows-restart-appliance",
                 "windows-suspend-appliance",
                 "windows-resume-appliance",
                 "windows-shutdown-appliance",
                 "windows-connect-temporarily",
+                "windows-connect-for-update",
+                "windows-revoke-temporary-connection",
             ]
         );
     }
@@ -2162,10 +2486,13 @@ mod tests {
         app.vendor_uninstall_button.set_enabled(true);
         app.delete_data_button.set_enabled(true);
         app.restart_windows_button.set_enabled(true);
+        app.start_windows_button.set_enabled(true);
         app.suspend_windows_button.set_enabled(true);
         app.resume_windows_button.set_enabled(true);
         app.shutdown_windows_button.set_enabled(true);
         app.connect_windows_button.set_enabled(true);
+        app.update_windows_button.set_enabled(true);
+        app.revoke_windows_connection_button.set_enabled(true);
         app.route_signal.set(Some(Route::Wine));
         app.reset_signal.set(true);
         app.launch_signal.set(true);
@@ -2176,10 +2503,13 @@ mod tests {
         app.vendor_uninstall_signal.set(true);
         app.delete_data_signal.set(true);
         app.restart_windows_signal.set(true);
+        app.start_windows_signal.set(true);
         app.suspend_windows_signal.set(true);
         app.resume_windows_signal.set(true);
         app.shutdown_windows_signal.set(true);
         app.connect_windows_signal.set(true);
+        app.update_windows_signal.set(true);
+        app.revoke_windows_connection_signal.set(true);
 
         let next = &mut app.catalogue.apps[1];
         next.route_override_available = false;
@@ -2202,10 +2532,13 @@ mod tests {
         assert!(!app.vendor_uninstall_button.is_enabled());
         assert!(!app.delete_data_button.is_enabled());
         assert!(!app.restart_windows_button.is_enabled());
+        assert!(!app.start_windows_button.is_enabled());
         assert!(!app.suspend_windows_button.is_enabled());
         assert!(!app.resume_windows_button.is_enabled());
         assert!(!app.shutdown_windows_button.is_enabled());
         assert!(!app.connect_windows_button.is_enabled());
+        assert!(!app.update_windows_button.is_enabled());
+        assert!(!app.revoke_windows_connection_button.is_enabled());
         assert_eq!(app.route_signal.get(), None);
         assert!(!app.reset_signal.get());
         assert!(!app.launch_signal.get());
@@ -2216,9 +2549,36 @@ mod tests {
         assert!(!app.vendor_uninstall_signal.get());
         assert!(!app.delete_data_signal.get());
         assert!(!app.restart_windows_signal.get());
+        assert!(!app.start_windows_signal.get());
         assert!(!app.suspend_windows_signal.get());
         assert!(!app.resume_windows_signal.get());
         assert!(!app.shutdown_windows_signal.get());
         assert!(!app.connect_windows_signal.get());
+        assert!(!app.update_windows_signal.get());
+        assert!(!app.revoke_windows_connection_signal.get());
+    }
+
+    #[test]
+    fn sidebar_scroll_keeps_expanded_management_and_catalogue_reachable_at_600px() {
+        let mut app = WindowsApp::new_offline();
+        app.area = Rect::new(0.0, 0.0, 900.0, 600.0);
+        // Expanded appliance controls plus two catalogue rows exceed the
+        // small viewport; scrolling reaches the final row without overshoot.
+        app.sidebar_content_bottom = 820.0;
+        app.sidebar_scroll = 10_000.0;
+        app.clamp_sidebar_scroll();
+        assert!((app.sidebar_scroll - 220.0).abs() < f64::EPSILON);
+        app.sidebar_scroll = -10.0;
+        app.clamp_sidebar_scroll();
+        assert!(app.sidebar_scroll.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn disabled_open_file_uses_the_typed_reason_not_a_rail_slogan() {
+        assert_eq!(
+            compact_portal_reason("Windows appliance is unavailable."),
+            "Windows appliance is unavailable."
+        );
+        assert!(compact_portal_reason(&"x".repeat(60)).ends_with('…'));
     }
 }

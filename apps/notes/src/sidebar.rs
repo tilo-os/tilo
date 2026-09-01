@@ -1008,7 +1008,7 @@ impl NoteTreeView {
         let btn_bg = if self.new_page_btn_hover {
             theme.accent_primary.with_alpha_factor(0.28)
         } else {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         };
         let btn = vello::kurbo::RoundedRect::from_rect(
             self.new_page_btn_rect,

@@ -492,14 +492,14 @@ fn draw_preview_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surface_white_10,
+        theme.tokens.colors.lift(0.72),
         None,
         &shape,
     );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        theme.tokens.colors.border_white_20,
+        ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 51),
         None,
         &shape,
     );

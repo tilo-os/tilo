@@ -176,7 +176,7 @@ impl DiagnosticsPanel {
             }
             let row = Rect::new(list.x0, y, list.x1, y + ROW_H);
             if Some(i) == self.hover {
-                scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &row);
+                scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &row);
             }
 
             // Severity dot.

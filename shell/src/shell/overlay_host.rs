@@ -9704,7 +9704,7 @@ impl ShellOverlayHost {
                 &rr,
             );
         } else if hover {
-            scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &rr);
+            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
         }
 
         let pad = 14.0_f64;
@@ -10344,13 +10344,7 @@ impl ShellOverlayHost {
         let add_hover = self.last_cursor.is_some_and(|c| add_rect.contains(c));
         let add_rr = RoundedRect::from_rect(add_rect, OVERVIEW_ROW_RADIUS_PX);
         if add_hover {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &add_rr,
-            );
+            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &add_rr);
         }
         let add_color = if add_hover { accent } else { colors.text_dim };
         let glyph = 18.0_f64;
@@ -10631,7 +10625,7 @@ impl ShellOverlayHost {
         }
 
         let chip_text_size = (tokens.typography.scale.xs).max(10.0);
-        let idle_fill = colors.surface_white_5;
+        let idle_fill = colors.lift(0.35);
         let active_fill = colors.accent[5];
         let active_text = colors.text_primary;
         let idle_text = colors.text_dim;
@@ -10741,14 +10735,14 @@ impl ShellOverlayHost {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &track_shape,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &track_shape,
         );
@@ -11014,7 +11008,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &RoundedRect::from_rect(clear, 10.0),
         );
@@ -11295,7 +11289,7 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let field = self.qs_password_field_rect();
         let field_shape = RoundedRect::from_rect(field, 10.0);
-        // Opaque, not the translucent `surface_white_5` wash the
+        // Opaque, not the former translucent surface wash the
         // popover's other cards use — that let the app underneath show
         // through the passphrase field.
         scene.fill(
@@ -11308,7 +11302,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &field_shape,
         );
