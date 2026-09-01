@@ -8,5 +8,8 @@ publish = false
 [dependencies]
 ui = { path = "../../../ui" }
 
+[build-dependencies]
+qos-dev = { path = "../qos-dev" }
+
 [lints]
 workspace = true

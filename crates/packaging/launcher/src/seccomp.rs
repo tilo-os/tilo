@@ -75,6 +75,41 @@ const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_setns,
     libc::SYS_bpf,
     libc::SYS_keyctl,
+    // High-risk kernel administration and dynamic kernel extension.
+    libc::SYS_kexec_load,
+    libc::SYS_finit_module,
+    libc::SYS_init_module,
+    libc::SYS_delete_module,
+    libc::SYS_reboot,
+    libc::SYS_swapon,
+    libc::SYS_swapoff,
+    // Attack surfaces an ordinary desktop app has no reason to reach.
+    libc::SYS_userfaultfd,
+    libc::SYS_perf_event_open,
+    libc::SYS_open_by_handle_at,
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+    libc::SYS_pidfd_getfd,
+    libc::SYS_fanotify_init,
+    libc::SYS_fsopen,
+    libc::SYS_fspick,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_move_mount,
+    libc::SYS_mount_setattr,
+    libc::SYS_quotactl,
+    libc::SYS_acct,
+];
+
+const CLONE_NAMESPACE_FLAGS: &[u64] = &[
+    libc::CLONE_NEWCGROUP as u64,
+    libc::CLONE_NEWIPC as u64,
+    libc::CLONE_NEWNET as u64,
+    libc::CLONE_NEWNS as u64,
+    libc::CLONE_NEWPID as u64,
+    libc::CLONE_NEWTIME as u64,
+    libc::CLONE_NEWUSER as u64,
+    libc::CLONE_NEWUTS as u64,
 ];
 
 /// Which named seccomp profile a package's `[sandbox] seccomp = "…"`
@@ -220,6 +255,24 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     for nr in BLANKET_DENIES {
         rules.insert(*nr, Vec::new());
     }
+
+    // pthreads still need clone(), but an app may not use it to manufacture
+    // another namespace boundary inside the one qOS constructed. One rule per
+    // bit expresses "any forbidden flag" because rules for a syscall are ORed.
+    rules.insert(
+        libc::SYS_clone,
+        CLONE_NAMESPACE_FLAGS
+            .iter()
+            .map(|flag| {
+                SeccompRule::new(vec![SeccompCondition::new(
+                    0,
+                    SeccompCmpArgLen::Qword,
+                    SeccompCmpOp::MaskedEq(*flag),
+                    *flag,
+                )?])
+            })
+            .collect::<Result<Vec<_>, BackendError>>()?,
+    );
 
     // Write-xor-execute. A page that is writable and executable at the
     // same time is what turns a heap or stack write into code execution:
@@ -495,6 +548,40 @@ mod tests {
             "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
              12 = the filter would not install"
         );
+    }
+
+    #[test]
+    fn baseline_refuses_kernel_introspection_and_fault_injection_syscalls() {
+        let filter = build_baseline_filter(SeccompProfile::QosDefault).expect("build filter");
+        let program: BpfProgram = filter.try_into().expect("compile filter");
+        // SAFETY: the child installs a filter, invokes raw syscalls with inert
+        // arguments, and exits without returning into the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if seccompiler::apply_filter(&program).is_err() {
+                unsafe { libc::_exit(12) };
+            }
+            for syscall in [
+                libc::SYS_userfaultfd,
+                libc::SYS_perf_event_open,
+                libc::SYS_pidfd_getfd,
+                libc::SYS_process_vm_readv,
+            ] {
+                // SAFETY: arguments are ignored because seccomp returns EPERM
+                // before the target syscall runs.
+                let result = unsafe { libc::syscall(syscall, -1_i64, 0_i64, 0_i64, 0_i64) };
+                if result != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                {
+                    unsafe { libc::_exit(10) };
+                }
+            }
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0_i32;
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
     }
 
     #[test]

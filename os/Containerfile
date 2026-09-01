@@ -68,6 +68,40 @@ FROM ${RPMS_REF} AS rpms
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 
+# ---- Pinned Windows compatibility runtimes -------------------------------
+# UMU is the upstream-supported way to run Proton outside Steam. Keep the
+# launcher and the default Proton build as independently pinned artifacts:
+# catalogues may select another installed runner, while a fresh image is still
+# able to create a game capsule without downloading Proton first. The Steam
+# Linux Runtime container remains UMU-owned and is populated in the capsule's
+# content-addressed cache when a game first needs that particular runtime.
+FROM ${BASE_REF} AS windows-compat-artifacts
+ADD --checksum=sha256:138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8 \
+    https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar \
+    /tmp/umu-launcher.tar
+ADD --checksum=sha256:62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69 \
+    https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz \
+    /tmp/umu-proton.tar.gz
+ADD --checksum=sha256:87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8 \
+    https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv \
+    /out/catalogues/umu-database.csv
+## Bottles' upstream program records improve catalogue matching. They are data,
+## never an instruction source: qOS imports identity/runner hints only and does
+## not execute a record's Steps, URLs, shell snippets, or dependencies.
+ADD --checksum=sha256:65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727 \
+    https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz \
+    /tmp/bottles-programs.tar.gz
+RUN mkdir -p /out/bin /out/proton \
+    && tar -xf /tmp/umu-launcher.tar -C /tmp \
+    && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
+    && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
+    && tar -xzf /tmp/umu-proton.tar.gz -C /out/proton \
+    && test -x /out/proton/UMU-Proton-10.0-4/proton \
+    && mkdir -p /out/catalogues/bottles-programs \
+    && tar -xzf /tmp/bottles-programs.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
+    && chmod -R a-w /out/catalogues/bottles-programs
+
+
 # ---- Modern AirPlay sender -------------------------------------------------
 # Doubletake's current protocol implementation is newer than its last binary
 # release: it includes the CoreUtils/HAP pairing path required by current
@@ -339,6 +373,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p settings \
+        -p windows-vm --bin qos-windows-vm-control --bin qos-windows-rail \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback -p qos-cli -p ush -p qos-projector \
@@ -368,6 +403,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-install \
           target/release/qos-cli-shim \
           target/release/qos-ush \
+          target/release/qos-windows-vm-control \
+          target/release/qos-windows-rail \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
            p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
@@ -635,6 +672,57 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fuse3 \
     cage \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+# Windows compatibility engines. Wine is the tested desktop-program baseline;
+# UMU + its pinned Proton build are copied below for non-Steam games. The
+# appliance packages provide one KVM-accelerated, TPM-backed Windows fallback.
+# The live presentation is app-focused, whole-surface SPICE; FreeRDP RemoteApp
+# is usable only after qOS has probed a compatible local RAIL surface.
+# Changing this list requires refreshing RPMS_REF (see the file header).
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    wine \
+    wine-dxvk \
+    gamescope \
+    qemu-kvm \
+    libvirt-client \
+    libvirt-daemon-kvm \
+    libvirt-daemon-config-nwfilter \
+    swtpm \
+    swtpm-tools \
+    edk2-ovmf \
+    virtio-win \
+    freerdp \
+    xwayland-satellite \
+    virt-viewer \
+    xorriso \
+    genisoimage \
+    udftools \
+    && dnf clean all && ${DROP_RPMDB_WAL}
+
+COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
+COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
+COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
+# The VM is defined only after an owner supplies installation media.  These
+# immutable host/guest contracts deliberately ship no Windows image or key.
+COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
+COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
+COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
+COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
+COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
+COPY --from=builder /out/qos-windows-rail /usr/libexec/qos-windows-rail
+COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
+COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
+COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
+COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
+COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service /usr/lib/systemd/system/qos-windows-vm-egress-reaper.service
+COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer /usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer
+COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
+COPY docs/windows-presentation.md /usr/share/doc/qos/windows-presentation.md
+RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
+              /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
+              /usr/libexec/qos-windows-rail \
+    && systemctl enable qos-windows-vm-network.service qos-windows-vm-egress-reaper.timer
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
@@ -1136,10 +1224,11 @@ RUN chmod 0755 /usr/libexec/qos-disk-encrypt
 # order wrong — keys enrolled, signing hook missing — is what leaves a machine
 # refusing its own kernel.
 COPY os/usr/libexec/qos-secureboot /usr/libexec/qos-secureboot
+COPY os/usr/libexec/qos-verified-boot-install-preflight /usr/libexec/qos-verified-boot-install-preflight
 COPY os/usr/lib/systemd/system/qos-secureboot-sign.service /usr/lib/systemd/system/qos-secureboot-sign.service
 COPY os/usr/lib/systemd/system/qos-secureboot-sign.path /usr/lib/systemd/system/qos-secureboot-sign.path
 COPY os/usr/lib/systemd/system/qos-secureboot-sign-shutdown.service /usr/lib/systemd/system/qos-secureboot-sign-shutdown.service
-RUN chmod 0755 /usr/libexec/qos-secureboot \
+RUN chmod 0755 /usr/libexec/qos-secureboot /usr/libexec/qos-verified-boot-install-preflight \
     && systemctl enable qos-secureboot-sign.service qos-secureboot-sign.path \
                         qos-secureboot-sign-shutdown.service
 

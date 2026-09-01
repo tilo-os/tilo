@@ -31,6 +31,7 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
                 "type": p.ty.label(),
                 "required": p.required,
                 "description": p.description,
+                "choices": p.choices,
             })
         })
         .collect()
@@ -416,7 +417,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         // Through the tree's entry point, not `grant_as` directly, so this answers
         // with the same authority the rest of the compositor grants under.
         let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
-            format!("{user} may not administer this room, so nothing was granted")
+            format!("{user} may not administer this workspace, so nothing was granted")
         })?;
         // Nothing past this point touches the tree.
         drop(tree);
@@ -446,7 +447,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let may = ws.may_administer(&user);
         if !may {
             return Err(format!(
-                "{user} may not administer this room, so nothing was revoked"
+                "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
         let removed = ws.revoke_as(&user, id);
@@ -2266,17 +2267,60 @@ pub fn run() -> ! {
                         match req {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
                             }
-                            PeerSyncRequest::IssueInviteFor { name, role } => bridge_net
-                                .issue_invite_named_with_role(
-                                    active,
-                                    INVITE_EXPIRY_SECONDS,
-                                    &name,
-                                    role,
-                                ),
+                            PeerSyncRequest::ExportIdentity => {
+                                bridge_net
+                                    .person_identity_card(active)
+                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+                            }
+                            PeerSyncRequest::IssueInviteFor {
+                                name,
+                                role,
+                                recipient_user_public_key,
+                            } => bridge_net.issue_invite_bound_with_role(
+                                active,
+                                INVITE_EXPIRY_SECONDS,
+                                &name,
+                                recipient_user_public_key,
+                                role,
+                            )
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
-                                .map(|room| room.to_string()),
+                                .map(|room| room.to_string())
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::ListPendingInvitations => {
+                                let room = bridge_tree
+                                    .read()
+                                    .active_workspace()
+                                    .map(|workspace| workspace.room)
+                                    .ok_or_else(|| "no active workspace".to_string())?;
+                                Ok(crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                                    bridge_net
+                                        .pending_invitations(room)
+                                        .into_iter()
+                                        .map(|invite| crate::shell::overlay_host::PendingInvitationSummary {
+                                            id: invite.id,
+                                            name: invite.name,
+                                            role: invite.role,
+                                            expiry_unix_seconds: invite.expiry_unix_seconds,
+                                        })
+                                        .collect(),
+                                ))
+                            }
+                            PeerSyncRequest::ResendInvitation(id) => bridge_net
+                                .resend_invitation(&id)
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::CancelInvitation(id) => {
+                                if bridge_net.cancel_invitation(&id) {
+                                    Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                                        "canceled".into(),
+                                    ))
+                                } else {
+                                    Err("invitation is no longer pending".into())
+                                }
+                            }
                         }
                     }));
                 Some(net)
@@ -2298,6 +2342,19 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+    if let Some(broker) = collab_broker.as_ref() {
+        let dispatcher = broker.follow_dispatcher();
+        frame_builder
+            .host_mut()
+            .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+                dispatcher.set(&room.to_string(), peer_id);
+            }));
+        if let Some(action_broker) = broker.app_action_broker() {
+            frame_builder
+                .host_mut()
+                .attach_app_action_broker(action_broker);
+        }
+    }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
@@ -2343,6 +2400,18 @@ pub fn run() -> ! {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    let _windows_compat = match crate::shell::windows_compat::spawn(
+        frame_builder.chrome_handle().borrow().tree_handle(),
+    ) {
+        Ok(service) => {
+            tracing::info!("windows compatibility session service ready");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "windows compatibility session service unavailable");
+            None
+        }
+    };
 
     if let Err(err) =
         event_loop

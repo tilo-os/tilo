@@ -41,6 +41,7 @@ use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 const SHOT_SCENARIOS: &[&str] = &[
+    "first_note",
     "drawer",
     "drag",
     "menu",

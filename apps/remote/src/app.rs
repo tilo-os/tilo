@@ -405,14 +405,16 @@ impl RemoteApp {
                 }
             }
             "session-rdp" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Rdp) {
-                    self.apply(Action::Connect(id), &mut doc);
-                }
+                self.dev_preview_session(
+                    ConnectionKind::Rdp,
+                    SessionStatus::Failed("RDP is not available in qOS yet".into()),
+                );
             }
             "session-qos" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Qos) {
-                    self.apply(Action::Connect(id), &mut doc);
-                }
+                self.dev_preview_session(
+                    ConnectionKind::Qos,
+                    SessionStatus::Failed("qOS Relay is not available in qOS yet".into()),
+                );
             }
             // Preview-only session states (no transport) for `--shots` grading
             // of the composed status surfaces.
@@ -599,6 +601,12 @@ impl RemoteApp {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
+        // Older documents may contain RDP or qOS Relay profiles. Keep them
+        // editable, but never make an unavailable transport look connectable.
+        if !c.kind.is_supported() {
+            self.selected = Some(id);
+            return;
+        }
         self.session_for = Some(id);
         self.fullscreen = false;
         self.fb_image = None;
@@ -1124,6 +1132,36 @@ impl Widget for RemoteApp {
     /// Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::REMOTE_CONNECT_OPERATION_TYPE
+        {
+            return Ok(false);
+        }
+        let encoded_id = std::str::from_utf8(payload)
+            .map_err(|_| "connection id payload is not UTF-8".to_string())?;
+        let Some(encoded_id) = encoded_id
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            return Err("connection id payload is not a JSON string".to_string());
+        };
+        let id = uuid::Uuid::parse_str(encoded_id)
+            .map_err(|_| "invalid Remote connection id".to_string())?;
+        if self.workspace.get(id).is_none() {
+            return Err("saved connection no longer exists".to_string());
+        }
+        self.open_session(id);
+        Ok(true)
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -2378,16 +2416,20 @@ impl RemoteApp {
             row.x1 - 16.0,
             row.center().y + 16.0,
         );
-        self.draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            connect,
-            "Connect",
-            true,
-        );
-        self.push_hit(connect, Action::Connect(c.id));
+        if c.kind.is_supported() {
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                connect,
+                "Connect",
+                true,
+            );
+            self.push_hit(connect, Action::Connect(c.id));
+        } else {
+            Self::draw_unavailable_button(scene, transform, text_renderer, theme, connect);
+        }
 
         let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
         self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
@@ -2461,6 +2503,41 @@ impl RemoteApp {
             .weight(TextWeight::Semibold);
         let face = if primary { face.primary() } else { face };
         Button::paint(scene, transform, text_renderer, theme, &face);
+    }
+
+    /// A non-interactive status, deliberately not styled like a secondary
+    /// action. It makes old profiles truthful without turning them into a
+    /// dead "Connect" button.
+    fn draw_unavailable_button(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let rr = RoundedRect::from_rect(rect, 8.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[2],
+            None,
+            &rr,
+        );
+        let label = "Unavailable";
+        let (width, _) = text_renderer.measure_weighted(label, 12.0, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            12.0,
+            theme.tokens.colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.center().x - f64::from(width) / 2.0,
+                    rect.center().y - 7.0,
+                )),
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     /// The text band inside a field box — where the shared input lives, and
@@ -2645,8 +2722,9 @@ impl RemoteApp {
             y,
             "Protocol",
         );
-        let seg_w = card_w / 4.0;
-        for (i, k) in ConnectionKind::all().into_iter().enumerate() {
+        let kinds = ConnectionKind::available_to_create();
+        let seg_w = card_w / kinds.len() as f64;
+        for (i, k) in kinds.into_iter().enumerate() {
             let seg = Rect::new(
                 card_x + i as f64 * seg_w,
                 y,
@@ -2663,7 +2741,7 @@ impl RemoteApp {
                 k.tag(),
                 active,
                 i == 0,
-                i == 3,
+                i.saturating_add(1) == kinds.len(),
             );
             self.push_hit(seg, Action::SetKind(k));
         }
@@ -4521,6 +4599,21 @@ mod tests {
         app.dev_set_screen("form-qos");
         assert!(matches!(app.screen, Screen::Form { .. }));
         assert_eq!(app.draft.kind, ConnectionKind::Qos);
+    }
+
+    #[test]
+    fn unavailable_transport_cannot_open_a_session() {
+        let mut app = RemoteApp::new_demo();
+        let mut state = AutoCommit::new();
+        let id = app
+            .first_of_kind(ConnectionKind::Rdp)
+            .expect("demo contains a legacy RDP profile");
+
+        app.apply(Action::Connect(id), &mut state);
+
+        assert_eq!(app.screen, Screen::List);
+        assert_eq!(app.selected, Some(id));
+        assert!(app.live.is_none());
     }
 
     #[test]

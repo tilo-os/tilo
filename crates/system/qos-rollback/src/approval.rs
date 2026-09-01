@@ -373,8 +373,9 @@ pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for a in approvals {
         let p = dir.join(a.file_name());
-        std::fs::write(&p, serde_json::to_string_pretty(a)?)
-            .with_context(|| format!("writing {}", p.display()))?;
+        let json = serde_json::to_string_pretty(a)?;
+        atomic_file::write_with_mode(&p, json.as_bytes(), 0o644)
+            .with_context(|| format!("atomically writing {}", p.display()))?;
         paths.push(p);
     }
     Ok(paths)

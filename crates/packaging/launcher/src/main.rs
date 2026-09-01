@@ -356,6 +356,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         no_services: args.no_services,
         runtime_root: args.runtime,
         bwrap_bin: None,
+        sandbox_shim_bin: None,
         minimal_libs: args.minimal_libs,
         landlock_enforce: true,
         mode: LaunchMode::Gui,
@@ -750,6 +751,7 @@ fn run_installed(
         no_services,
         runtime_root: None,
         bwrap_bin: None,
+        sandbox_shim_bin: None,
         minimal_libs,
         landlock_enforce,
         mode: LaunchMode::Cli {
