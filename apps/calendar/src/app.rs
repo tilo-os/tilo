@@ -37,7 +37,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, TextInput, Toggle, ToggleFace};
+use ui::widget::{BlockEditor, Checkbox, CheckboxFace, TextInput, Toggle, ToggleFace};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
@@ -4805,13 +4805,12 @@ pub(crate) fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
 }
 
 pub(crate) fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, done: bool) {
-    let c = &theme.tokens.colors;
-    if done {
-        fill_round(scene, t, c.accent[5], r, 4.0);
-        draw_check(scene, t, Color::WHITE, r);
-    } else {
-        stroke_round(scene, t, c.neutral[5], r, 4.0, 1.6);
-    }
+    Checkbox::paint(
+        scene,
+        t,
+        theme,
+        &CheckboxFace::new(r, done).transparent_unchecked(),
+    );
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.
@@ -5035,6 +5034,24 @@ fn elide(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn task_checkbox_paints_both_completion_states() {
+        let theme = Theme::dark();
+        let rect = Rect::new(4.0, 6.0, 22.0, 24.0);
+        let mut unchecked = Scene::new();
+        draw_checkbox(&mut unchecked, Affine::IDENTITY, &theme, rect, false);
+        let mut checked = Scene::new();
+        draw_checkbox(&mut checked, Affine::IDENTITY, &theme, rect, true);
+
+        let unchecked_tags = unchecked.encoding().draw_tags.len();
+        let checked_tags = checked.encoding().draw_tags.len();
+        assert!(unchecked_tags > 0, "unchecked state keeps its outline");
+        assert!(
+            checked_tags > unchecked_tags,
+            "checked state adds its fill and check mark"
+        );
+    }
 
     #[test]
     fn demo_app_seeds_model_and_selection() {
