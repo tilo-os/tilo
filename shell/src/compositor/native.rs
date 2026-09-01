@@ -2255,6 +2255,9 @@ pub fn run() -> ! {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                             }
+                            PeerSyncRequest::ExportIdentity => {
+                                bridge_net.person_identity_card(active)
+                            }
                             PeerSyncRequest::IssueInviteFor {
                                 name,
                                 role,

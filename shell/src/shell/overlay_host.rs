@@ -10744,6 +10744,7 @@ mod palette_dispatch_tests {
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
             PeerSyncRequest::IssueInviteFor { name, .. } => Ok(format!("token-for-{name}")),
             PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
+            PeerSyncRequest::ExportIdentity => Ok(format!("qos-identity:{}", "42".repeat(32))),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
         }));
         chrome
@@ -10934,6 +10935,10 @@ mod palette_dispatch_tests {
         assert!(
             names.contains(&"paste"),
             "the receiving side must offer Paste, got {names:?}"
+        );
+        assert!(
+            names.contains(&"copy-identity"),
+            "the recipient must be able to send a bindable identity card, got {names:?}"
         );
         assert!(names.contains(&"join"), "and still Join, got {names:?}");
 

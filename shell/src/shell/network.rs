@@ -966,6 +966,30 @@ impl ShellNetwork {
         addrs.first().cloned()
     }
 
+    /// Export the selected person identity as a non-secret card another qOS
+    /// user can paste into the recipient-bound invite composer.
+    pub fn person_identity_card(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+    ) -> Result<String, String> {
+        let room = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            replica
+                .tree
+                .read()
+                .room_of(local)
+                .ok_or_else(|| format!("no workspace {}", local.raw()))?
+        };
+        let cert = selected_device_cert(room, &self.keypair)?;
+        Ok(format!(
+            "qos-identity:{}",
+            hex::encode(cert.user_public_key)
+        ))
+    }
+
     /// Mint a signed invite to the workspace `local`, valid for
     /// `expiry_seconds_from_now`. Signs with this shell's own Iroh
     /// key and embeds the address the endpoint actually bound, so the
