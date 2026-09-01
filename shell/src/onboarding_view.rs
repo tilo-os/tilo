@@ -59,7 +59,27 @@ pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
+pub const KEY_TOUR_START: &str = "onboarding.tour.start";
+pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
+pub const KEY_TOUR_NEXT: &str = "onboarding.tour.next";
 pub const KEY_FINISH: &str = "onboarding.finish";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TourPage {
+    Navigate,
+    Organise,
+    Collaborate,
+}
+
+impl TourPage {
+    fn number(self) -> u8 {
+        match self {
+            Self::Navigate => 1,
+            Self::Organise => 2,
+            Self::Collaborate => 3,
+        }
+    }
+}
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
@@ -135,6 +155,7 @@ pub struct OnboardingView {
     error: Option<String>,
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
+    tour_page: Option<TourPage>,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
     invalidation: Invalidation,
@@ -264,6 +285,7 @@ impl OnboardingView {
             error: None,
             backup_error: None,
             backup_saved: None,
+            tour_page: None,
             finished: false,
             invalidation: Invalidation::Focus,
             composed: None,
@@ -302,6 +324,9 @@ impl OnboardingView {
     }
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
+        if let Some(page) = self.tour_page {
+            return self.build_tour_composition(theme, panel_height, page);
+        }
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
             Screen::Connect | Screen::NoRecovery => (2, "Protect"),
@@ -371,6 +396,142 @@ impl OnboardingView {
                 .with_content_gutter(spacing.s3)
                 .with_child(Box::new(content)),
         )
+    }
+
+    fn build_tour_composition(
+        &self,
+        theme: &Theme,
+        panel_height: f32,
+        page: TourPage,
+    ) -> Box<dyn Widget> {
+        let number = page.number();
+        let stage = match page {
+            TourPage::Navigate => "Move",
+            TourPage::Organise => "Arrange",
+            TourPage::Collaborate => "Share",
+        };
+        let progress = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s2)
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Text::new("qOS  •  DESKTOP TOUR")
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Text::new(&format!("{stage}  ·  {number} of 3"))
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
+                    )),
+            ))
+            .push(Box::new(
+                ProgressBar::new(f32::from(number) / 3.0)
+                    .with_label(format!("Desktop tour, step {number} of 3: {stage}")),
+            ));
+        let content = Column::new()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s6)
+            .push(Box::new(progress))
+            .push(self.tour_page(theme, page));
+        Box::new(
+            Scrollable::new_vertical()
+                .with_height(panel_height)
+                .with_content_gutter(theme.tokens.spacing.s3)
+                .with_child(Box::new(content)),
+        )
+    }
+
+    fn tour_page(&self, theme: &Theme, page: TourPage) -> Box<dyn Widget> {
+        let (title, intro, cards): (&str, &str, &[(&str, &str)]) = match page {
+            TourPage::Navigate => (
+                "Everything is a gesture away",
+                "qOS keeps the desktop calm until you ask for something. These three moves are enough to get anywhere.",
+                &[
+                    (
+                        "Search  ·  Super",
+                        "Type to open apps, files, settings, or actions without hunting through menus.",
+                    ),
+                    (
+                        "Overview  ·  Super+W",
+                        "Swipe up with three fingers to see every workspace and window group.",
+                    ),
+                    (
+                        "Move  ·  three-finger swipe",
+                        "Travel horizontally along a strip. Windows tile instead of hiding underneath each other.",
+                    ),
+                ],
+            ),
+            TourPage::Organise => (
+                "A place for each kind of work",
+                "The layout is simple once its three levels have names. qOS remembers the arrangement for you.",
+                &[
+                    (
+                        "Workspace",
+                        "A durable place for a project, its people, permissions, apps, and history.",
+                    ),
+                    (
+                        "Strip",
+                        "A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.",
+                    ),
+                    (
+                        "Window group",
+                        "Tabs that belong together share one tiled frame. Drag a tab to reorganise without overlapping windows.",
+                    ),
+                ],
+            ),
+            TourPage::Collaborate => (
+                "Sharing stays deliberate",
+                "Collaboration is built into the workspace, not bolted onto individual apps. Nothing becomes shared merely because it is open.",
+                &[
+                    (
+                        "Invite from Workspace Settings",
+                        "Choose a role and review exactly which workspace the invitation opens.",
+                    ),
+                    (
+                        "Follow only when you choose",
+                        "People keep their own focus and view. Follow is an explicit, reversible action.",
+                    ),
+                    (
+                        "Undo and permissions are system features",
+                        "History follows authorship, and apps ask qOS for capabilities instead of receiving ambient access.",
+                    ),
+                ],
+            ),
+        };
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s6)
+            .push(heading(title, theme))
+            .push(paragraph(intro, theme));
+        for (card_title, copy) in cards {
+            body = body.push(Box::new(Card::titled(*card_title, paragraph(copy, theme))));
+        }
+        let primary_label = if page == TourPage::Collaborate {
+            "Enter qOS"
+        } else {
+            "Continue"
+        };
+        let primary_key = if page == TourPage::Collaborate {
+            KEY_FINISH
+        } else {
+            KEY_TOUR_NEXT
+        };
+        Box::new(body.push(actions(vec![
+            Box::new(
+                Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
+                    .with_icon(ui::icons::Icon::ArrowLeft),
+            ),
+            Box::new(
+                Button::new("onboarding.tour.next.button", primary_label, Some(primary_key))
+                    .with_icon(ui::icons::Icon::ArrowRight)
+                    .with_style(ui::widget::ButtonStyle::Primary),
+            ),
+        ])))
     }
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -890,6 +1051,7 @@ impl Widget for OnboardingView {
     )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
+        let tour_before = self.tour_page;
 
         // Pull widget-local edits (notably passphrases) into their process-local
         // buffers before interpreting action keys from the same input frame.
@@ -1067,6 +1229,32 @@ impl Widget for OnboardingView {
             }
         }
 
+        if read_bool(state, root, KEY_TOUR_START) {
+            let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
+            if self.flow.is_done() {
+                self.tour_page = Some(TourPage::Navigate);
+            }
+        }
+
+        if read_bool(state, root, KEY_TOUR_BACK) {
+            let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
+            self.tour_page = match self.tour_page {
+                Some(TourPage::Navigate) => None,
+                Some(TourPage::Organise) => Some(TourPage::Navigate),
+                Some(TourPage::Collaborate) => Some(TourPage::Organise),
+                None => None,
+            };
+        }
+
+        if read_bool(state, root, KEY_TOUR_NEXT) {
+            let _ = state.put(root, KEY_TOUR_NEXT, ScalarValue::Boolean(false));
+            self.tour_page = match self.tour_page {
+                Some(TourPage::Navigate) => Some(TourPage::Organise),
+                Some(TourPage::Organise) => Some(TourPage::Collaborate),
+                page => page,
+            };
+        }
+
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             self.finished = self.flow.is_done();
@@ -1077,8 +1265,10 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.flow.screen() != before {
-            self.transition_direction = if screen_order(self.flow.screen()) < screen_order(before) {
+        if self.flow.screen() != before || self.tour_page != tour_before {
+            self.transition_direction = if view_order(self.flow.screen(), self.tour_page)
+                < view_order(before, tour_before)
+            {
                 -1.0
             } else {
                 1.0
@@ -1282,6 +1472,15 @@ fn screen_order(screen: Screen) -> u8 {
     }
 }
 
+fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
+    match tour {
+        Some(TourPage::Navigate) => 3,
+        Some(TourPage::Organise) => 4,
+        Some(TourPage::Collaborate) => 5,
+        None => screen_order(screen),
+    }
+}
+
 /// OOBE is trusted compositor chrome, so its chooser follows the user rather
 /// than an application's capability scope. Keep roots narrow: the home tree
 /// plus conventional removable-media mount roots, never the whole filesystem.
@@ -1470,6 +1669,39 @@ mod tests {
         press(&mut doc, KEY_FINISH);
         v.sync(&mut doc, &automerge::ROOT);
         assert!(v.finished());
+    }
+
+    #[test]
+    fn desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_BEGIN);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_UNDERSTOOD);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_CREATE);
+        view.sync(&mut doc, &automerge::ROOT);
+
+        press(&mut doc, KEY_TOUR_START);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Navigate));
+        assert!(!view.finished());
+
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+
+        press(&mut doc, KEY_TOUR_BACK);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished());
     }
 
     #[test]
