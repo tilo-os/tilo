@@ -11,6 +11,7 @@
 //! event so typing and Enter work without the desktop stealing focus.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
@@ -60,6 +61,27 @@ use crate::shell::workspace_settings::{
     CapEdit, DefaultAppsCtx, EXPIRY_CHOICES, default_app_rows, draw_default_apps_pane,
     draw_members_pane, draw_permissions_pane, members_pane_rows, permissions_pane_layout,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HistoryTargetAddress {
+    File(PathBuf),
+    Uri(String),
+    App,
+}
+
+/// Resolve only addresses the action explicitly declared. Semantic resource
+/// ids such as `notes.page:abc` are labels within an app, not record ids or
+/// URIs; treating them as either would make History's Open control navigate
+/// somewhere other than the selected action.
+fn history_target_address(target: &ui::HistoryResourceTarget) -> HistoryTargetAddress {
+    if let Some(path) = target.id.strip_prefix("file:") {
+        return HistoryTargetAddress::File(PathBuf::from(path));
+    }
+    if target.id.contains("://") && crate::shell::uri_open::resource_for_uri(&target.id).is_ok() {
+        return HistoryTargetAddress::Uri(target.id.clone());
+    }
+    HistoryTargetAddress::App
+}
 
 /// The Permissions tab's grant-composer controls, as painted. Cached on
 /// the host each frame the composer is on screen so the click router
@@ -4631,13 +4653,25 @@ impl ShellOverlayHost {
             if let Some(target) = outcome.open_target {
                 let app_id = target.app_id.as_deref();
                 let workspace = chrome.borrow().tree().active_workspace().cloned();
-                let path = ui::RecordId::parse(&target.id).and_then(|id| id.file_path());
                 if let (Some(app_id), Some(workspace)) = (app_id, workspace) {
-                    if let Err(error) = crate::shell::launcher::launch_document_in_workspace(
-                        app_id,
-                        &workspace,
-                        path.as_deref(),
-                    ) {
+                    let result = match history_target_address(&target) {
+                        HistoryTargetAddress::File(path) => {
+                            crate::shell::launcher::launch_document_in_workspace(
+                                app_id,
+                                &workspace,
+                                Some(&path),
+                            )
+                        }
+                        HistoryTargetAddress::Uri(uri) => {
+                            crate::shell::launcher::launch_uri_in_workspace(
+                                app_id, &workspace, &uri,
+                            )
+                        }
+                        HistoryTargetAddress::App => {
+                            crate::shell::launcher::launch_in_workspace(app_id, &workspace)
+                        }
+                    };
+                    if let Err(error) = result {
                         chrome.borrow_mut().push_notification(
                             format!("Couldn't open {}", target.label),
                             error.to_string(),
@@ -13821,6 +13855,32 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::{ChromeState, WsTab};
     use crate::shell::state::WorkspaceTree;
+
+    fn history_target(id: &str) -> ui::HistoryResourceTarget {
+        ui::HistoryResourceTarget {
+            app_id: Some("org.qos.Notes".to_string()),
+            app_label: Some("Notes".to_string()),
+            id: id.to_string(),
+            kind: "page".to_string(),
+            label: "Launch notes".to_string(),
+        }
+    }
+
+    #[test]
+    fn history_open_distinguishes_files_links_and_semantic_ids() {
+        assert_eq!(
+            history_target_address(&history_target("file:/workspace/brief.md")),
+            HistoryTargetAddress::File(PathBuf::from("/workspace/brief.md"))
+        );
+        assert_eq!(
+            history_target_address(&history_target("tube://watch/launch")),
+            HistoryTargetAddress::Uri("tube://watch/launch".to_string())
+        );
+        assert_eq!(
+            history_target_address(&history_target("notes.page:launch")),
+            HistoryTargetAddress::App
+        );
+    }
     use std::collections::HashMap as StdHashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
