@@ -101,6 +101,13 @@ pub struct DiffMergeApp {
     /// A human-readable reason the last host-portal open failed, surfaced in
     /// the status bar. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    pending_resource_paths: Option<(
+        qos_actions::InvocationId,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    )>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
     dirty: bool,
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
@@ -176,6 +183,9 @@ impl DiffMergeApp {
             portal_rx: None,
             pending_left: None,
             load_error: None,
+            resource_invocation: None,
+            pending_resource_paths: None,
+            resource_result: None,
             dirty: true,
             structure_dirty: false,
             actions: ui::ActionHost::new(),
@@ -329,19 +339,60 @@ impl DiffMergeApp {
                     PortalOutcome::Opened(path) => {
                         // A `true` return means the left file just landed and
                         // the right one is still needed — fire a fresh request.
-                        if self.consume_pick(&path) {
-                            self.request_open_via_portal();
+                        match self.consume_pick(&path) {
+                            Ok(true) => self.request_open_via_portal(),
+                            Ok(false) => {
+                                if let Some(invocation) = self.resource_invocation.take() {
+                                    self.resource_result =
+                                        Some(qos_actions::InvocationUpdate::Succeeded {
+                                            invocation,
+                                            output: qos_actions::ActionOutput::default(),
+                                        });
+                                }
+                            }
+                            Err(reason) => {
+                                self.load_error = Some(reason.clone());
+                                if let Some(invocation) = self.resource_invocation.take() {
+                                    self.resource_result =
+                                        Some(qos_actions::InvocationUpdate::Failed {
+                                            invocation,
+                                            error: qos_actions::ActionFailure {
+                                                code: "diffmerge.open_failed".into(),
+                                                message: reason,
+                                                details: None,
+                                                retryable: false,
+                                            },
+                                        });
+                                }
+                            }
                         }
                         self.dirty = true;
                     }
                     // A cancel abandons an in-progress two-file selection.
                     PortalOutcome::Cancelled => {
                         self.pending_left = None;
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                                invocation,
+                                message: Some("file selection cancelled".into()),
+                            });
+                        }
                         self.dirty = true;
                     }
                     PortalOutcome::Failed(reason) => {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "diffmerge.open_failed".into(),
+                                    message: reason,
+                                    details: None,
+                                    retryable: false,
+                                },
+                            });
+                        }
                         self.dirty = true;
                     }
                 }
@@ -359,27 +410,45 @@ impl DiffMergeApp {
     /// the second file completes the diff and switches to Diff mode, returning
     /// `false`. Pure w.r.t. the portal (reads the file, mutates model state) so
     /// the two-file flow is unit-testable without a host dialog.
-    fn consume_pick(&mut self, path: &Path) -> bool {
+    fn consume_pick(&mut self, path: &Path) -> Result<bool, String> {
         let label = path.file_name().map_or_else(
             || path.display().to_string(),
             |n| n.to_string_lossy().to_string(),
         );
-        let content = fs::read_to_string(path)
-            .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()));
+        let content = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         match self.pending_left.take() {
             None => {
                 // First file picked — stash and ask for the second.
                 self.pending_left = Some((label, content));
-                true
+                Ok(true)
             }
             Some((left_label, left_content)) => {
                 self.diff
                     .set_inputs(&left_label, &left_content, &label, &content);
                 self.mode = Mode::Diff;
                 self.structure_dirty = true;
-                false
+                Ok(false)
             }
         }
+    }
+
+    fn load_paths(&mut self, left: &Path, right: &Path) -> Result<(), String> {
+        let left_content =
+            fs::read_to_string(left).map_err(|e| format!("{}: {e}", left.display()))?;
+        let right_content =
+            fs::read_to_string(right).map_err(|e| format!("{}: {e}", right.display()))?;
+        let label = |path: &Path| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        };
+        self.diff
+            .set_inputs(&label(left), &left_content, &label(right), &right_content);
+        self.mode = Mode::Diff;
+        self.structure_dirty = true;
+        self.dirty = true;
+        Ok(())
     }
 
     fn draw_toolbar(
@@ -652,13 +721,100 @@ impl Widget for DiffMergeApp {
             DiffmergeOperation::ShowMerge => Action::ModeMerge,
             DiffmergeOperation::PreviousChange => Action::PrevChange,
             DiffmergeOperation::NextChange => Action::NextChange,
-            DiffmergeOperation::OpenFiles => Action::Open,
+            DiffmergeOperation::OpenFiles { .. } => Action::Open,
             DiffmergeOperation::LoadSample => Action::LoadSample,
         });
         Ok(true)
     }
 
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let crate::actions::DiffmergeOperation::OpenFiles { left, right } = operation else {
+            let encoded = serde_json::to_vec(&operation).map_err(|e| e.to_string())?;
+            return self
+                .invoke_resource_operation_v2(kind, type_id, &encoded, doc, path)
+                .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+        };
+        if self.resource_invocation.is_some() || self.pending_resource_paths.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                self.pending_resource_paths = Some((invocation, left.into(), right.into()))
+            }
+            (None, None) => {
+                self.resource_invocation = Some(invocation);
+                self.request_open_via_portal();
+            }
+            _ => return Err("left and right paths must be supplied together".into()),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .pending_resource_paths
+                .as_ref()
+                .is_some_and(|(id, _, _)| *id == invocation)
+        {
+            self.pending_resource_paths = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("cancelled before files were read".into()),
+            });
+        }
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.portal_rx = None;
+            self.pending_left = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            });
+        }
+        self.resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+            .then(|| self.resource_result.take())
+            .flatten()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some((invocation, left, right)) = self.pending_resource_paths.take() {
+            let result = self.load_paths(&left, &right);
+            self.resource_result = Some(match result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "diffmerge.open_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
@@ -929,6 +1085,38 @@ mod tests {
         path
     }
 
+    #[test]
+    fn direct_pair_is_accepted_then_succeeds() {
+        let (mut app, mut state) = app_with_state();
+        let left = write_temp("direct-left.txt", "left\n");
+        let right = write_temp("direct-right.txt", "right\n");
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::DiffmergeOperation::OpenFiles {
+            left: Some(left.display().to_string()),
+            right: Some(right.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::DIFFMERGE_OPERATION_TYPE,
+            &payload,
+            &state.doc,
+            &state.root,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
+        app.sync(&mut state.doc, &state.root);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &state.doc, &state.root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        std::fs::remove_dir_all(left.parent().unwrap()).ok();
+        std::fs::remove_dir_all(right.parent().unwrap()).ok();
+    }
+
     /// The "Open files" toolbar action must reach the host portal, never an
     /// in-app dialog. A sentinel channel is pre-armed so applying Open cannot
     /// launch a real host dialog; the in-flight guard must preserve it.
@@ -950,7 +1138,7 @@ mod tests {
     fn first_pick_stashes_left_and_asks_for_the_right() {
         let (mut app, _st) = app_with_state();
         let left = write_temp("left.txt", "alpha\nbeta\ngamma\n");
-        let needs_right = app.consume_pick(&left);
+        let needs_right = app.consume_pick(&left).unwrap();
         assert!(
             needs_right,
             "after the left file, the right one is still needed"
@@ -1130,7 +1318,10 @@ mod tests {
         let conflict = resources[0]
             .children
             .iter()
-            .find(|r| r.id.as_str() == format!("diffmerge.conflict:{hunk}"))
+            .find(|r| r.actions.iter().find(|a| a.id == "take-theirs").is_some_and(|spec| {
+                let qos_actions::ActionInput::Immediate(encoded) = &spec.input else { return false };
+                matches!(serde_json::from_slice::<crate::actions::DiffmergeAction>(&encoded.payload), Ok(crate::actions::DiffmergeAction::ResolveHunk { hunk: target, .. }) if target == hunk as u64)
+            }))
             .expect("the conflict resource");
         let spec = conflict
             .actions

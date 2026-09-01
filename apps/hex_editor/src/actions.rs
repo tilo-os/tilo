@@ -33,8 +33,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::HexDoc;
@@ -44,10 +45,10 @@ use crate::model::BufferEdit;
 pub const HEX_EDITOR_ACTION_TYPE: &str = "hex_editor.action";
 pub const HEX_EDITOR_OPERATION_TYPE: &str = "hex_editor.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HexOperation {
-    Open,
-    Save,
+    Open { path: Option<String> },
+    Save { path: Option<String> },
     Search,
     GotoOffset,
 }
@@ -227,26 +228,71 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
         ctx.label.clone(),
     );
 
-    let open = ActionSpec::operation(
+    let open = ActionSpec::typed_operation(
         "open",
         "Open file",
+        "path (omit to use the system file picker)",
         OperationKind::Effect,
         HEX_EDITOR_OPERATION_TYPE,
-        &HexOperation::Open,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "file to open",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                HEX_EDITOR_OPERATION_TYPE,
+                &HexOperation::Open {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned),
+                },
+            )
+            .expect("HexOperation is always serializable")
+        },
     )
-    .expect("HexOperation is always serializable")
-    .destructive();
+    .destructive()
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job);
     root = root.with_action(open);
+    let save = ActionSpec::typed_operation(
+        "save",
+        "Save file",
+        "path (omit to save in place or use the system file picker)",
+        OperationKind::Effect,
+        HEX_EDITOR_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "save destination",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                HEX_EDITOR_OPERATION_TYPE,
+                &HexOperation::Save {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned),
+                },
+            )
+            .expect("HexOperation is always serializable")
+        },
+    )
+    .destructive()
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job);
+    root = root.with_action(if ctx.has_file {
+        save
+    } else {
+        save.unavailable("no_file", "Open a file first")
+    });
     for (id, label, value) in [
-        ("save", "Save file", HexOperation::Save),
         ("search", "Search bytes", HexOperation::Search),
         ("goto-offset", "Go to offset", HexOperation::GotoOffset),
     ] {
-        let kind = if value == HexOperation::Save {
-            OperationKind::Effect
-        } else {
-            OperationKind::View
-        };
+        let kind = OperationKind::View;
         let mut spec = ActionSpec::operation(id, label, kind, HEX_EDITOR_OPERATION_TYPE, &value)
             .expect("HexOperation is always serializable");
         if kind == OperationKind::View {
@@ -332,6 +378,41 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn open_and_save_publish_direct_paths_as_confirmed_jobs() {
+        let resources = provide_resources(&HexResourceCtx {
+            label: "x.bin".into(),
+            cursor: 0,
+            len: 1,
+            selection: None,
+            has_file: true,
+        });
+        for id in ["open", "save"] {
+            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            assert_eq!(spec.params()[0].name, "path");
+            assert!(matches!(
+                spec.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            ));
+            assert_eq!(spec.contract.result, ResultSpec::Job);
+            assert!(!matches!(
+                spec.contract.confirmation,
+                qos_actions::ConfirmationPolicy::None
+            ));
+            let args = serde_json::json!({"path": "/tmp/x.bin"})
+                .as_object()
+                .unwrap()
+                .clone();
+            let encoded = spec.build_json(&args).unwrap();
+            assert!(matches!(
+                decode_operation(HEX_EDITOR_OPERATION_TYPE, &encoded.payload)
+                    .unwrap()
+                    .unwrap(),
+                HexOperation::Open { path: Some(_) } | HexOperation::Save { path: Some(_) }
+            ));
+        }
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {

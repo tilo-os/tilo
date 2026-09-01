@@ -57,6 +57,13 @@ enum PendingIo {
     ExportPdf,
 }
 
+#[derive(Clone, Debug)]
+enum ResourceIo {
+    Open(PathBuf),
+    Save(PathBuf),
+    ExportPdf(PathBuf),
+}
+
 fn typ_filter() -> FileFilter {
     FileFilter::new("Typst source").glob("*.typ")
 }
@@ -180,6 +187,9 @@ pub struct TypstApp {
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    pending_resource_io: Option<(qos_actions::InvocationId, ResourceIo)>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -324,6 +334,9 @@ impl TypstApp {
             documents,
             current,
             io: None,
+            resource_invocation: None,
+            pending_resource_io: None,
+            resource_result: None,
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
@@ -547,7 +560,7 @@ impl TypstApp {
 
     /// Core: write the current source to `path`. Split out so the portal drain
     /// and tests drive it against a real file.
-    fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) {
+    fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
         let src = self.read_source(doc);
         match std::fs::write(path, src) {
             Ok(()) => {
@@ -562,8 +575,12 @@ impl TypstApp {
                 ) {
                     cur.name = name;
                 }
+                Ok(())
             }
-            Err(e) => self.set_flash(format!("Save failed: {e}")),
+            Err(e) => {
+                self.set_flash(format!("Save failed: {e}"));
+                Err(e.to_string())
+            }
         }
     }
 
@@ -638,12 +655,16 @@ impl TypstApp {
     /// Core: load the `.typ` file at `path` into the editor as the current
     /// document. Split out so the portal drain and tests drive it against a
     /// real file.
-    fn open_typ_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+    fn open_typ_from(
+        &mut self,
+        doc: &mut AutoCommit,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
         let src = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
                 self.set_flash(format!("Open failed: {e}"));
-                return;
+                return Err(e.to_string());
             }
         };
         let name = path
@@ -671,6 +692,7 @@ impl TypstApp {
             self.documents.len() - 1
         };
         self.load_document(doc, idx);
+        Ok(())
     }
 
     /// Drain a finished Open / Save / Export file dialog, if one landed since
@@ -682,19 +704,42 @@ impl TypstApp {
         match rx.try_recv() {
             Ok(outcome) => {
                 self.io = None;
-                match outcome {
+                let result = match outcome {
                     PortalOutcome::Opened(path) => match op {
                         PendingIo::OpenTyp => self.open_typ_from(doc, &path),
                         PendingIo::SaveTyp => self.save_typ_to(doc, &path),
-                        PendingIo::ExportPdf => match self.export_pdf_to_path(doc, &path) {
-                            Ok(()) => self.set_flash(format!("Exported {}", path.display())),
-                            Err(e) => self.set_flash(format!("Export failed: {e}")),
-                        },
+                        PendingIo::ExportPdf => self
+                            .export_pdf_to_path(doc, &path)
+                            .inspect(|()| self.set_flash(format!("Exported {}", path.display()))),
                     },
-                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Cancelled => Err("cancelled".into()),
                     PortalOutcome::Failed(e) => {
                         self.set_flash(format!("File chooser unavailable: {e}"));
+                        Err(e)
                     }
+                };
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(match result {
+                        Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        },
+                        Err(message) if message == "cancelled" => {
+                            qos_actions::InvocationUpdate::Cancelled {
+                                invocation,
+                                message: Some(message),
+                            }
+                        }
+                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "typst.io_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    });
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -753,15 +798,18 @@ impl TypstApp {
             TbAction::Compile => {
                 self.perform_resource_operation(crate::actions::TypstOperation::Compile, doc)
             }
-            TbAction::Save => {
-                self.perform_resource_operation(crate::actions::TypstOperation::Save, doc)
-            }
-            TbAction::Open => {
-                self.perform_resource_operation(crate::actions::TypstOperation::Open, doc)
-            }
-            TbAction::ExportPdf => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ExportPdf, doc)
-            }
+            TbAction::Save => self.perform_resource_operation(
+                crate::actions::TypstOperation::Save { path: None },
+                doc,
+            ),
+            TbAction::Open => self.perform_resource_operation(
+                crate::actions::TypstOperation::Open { path: None },
+                doc,
+            ),
+            TbAction::ExportPdf => self.perform_resource_operation(
+                crate::actions::TypstOperation::ExportPdf { path: None },
+                doc,
+            ),
             TbAction::ZoomOut => {
                 self.perform_resource_operation(crate::actions::TypstOperation::ZoomOut, doc);
                 self.set_compact_view(CompactPane::Preview);
@@ -797,9 +845,9 @@ impl TypstApp {
         use crate::actions::TypstOperation;
         match operation {
             TypstOperation::Compile => self.force_recompile(doc),
-            TypstOperation::Save => self.save(doc),
-            TypstOperation::Open => self.open(doc),
-            TypstOperation::ExportPdf => self.export_pdf(doc),
+            TypstOperation::Save { .. } => self.save(doc),
+            TypstOperation::Open { .. } => self.open(doc),
+            TypstOperation::ExportPdf { .. } => self.export_pdf(doc),
             TypstOperation::ZoomOut => self.preview.zoom_out(),
             TypstOperation::ZoomIn => self.preview.zoom_in(),
             TypstOperation::FitWidth => self.preview.fit_width(),
@@ -1716,7 +1764,118 @@ impl Widget for TypstApp {
         Ok(true)
     }
 
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        use crate::actions::TypstOperation;
+        let resource = match operation {
+            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
+            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
+            TypstOperation::ExportPdf { path: Some(path) } => {
+                Some(ResourceIo::ExportPdf(path.into()))
+            }
+            TypstOperation::Open { path: None } => {
+                self.open(doc);
+                None
+            }
+            TypstOperation::Save { path: None } => {
+                self.save(doc);
+                None
+            }
+            TypstOperation::ExportPdf { path: None } => {
+                self.export_pdf(doc);
+                None
+            }
+            other => {
+                return self
+                    .invoke_resource_operation_v2(
+                        kind,
+                        type_id,
+                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
+                        doc,
+                        path,
+                    )
+                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        };
+        if let Some(resource) = resource {
+            self.pending_resource_io = Some((invocation, resource));
+        } else {
+            self.resource_invocation = Some(invocation);
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested {
+            if self
+                .pending_resource_io
+                .as_ref()
+                .is_some_and(|(id, _)| *id == invocation)
+            {
+                self.pending_resource_io = None;
+                return Some(qos_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("cancelled before file I/O".into()),
+                });
+            }
+            if self.resource_invocation == Some(invocation) {
+                self.resource_invocation = None;
+                self.io = None;
+                return Some(qos_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("file selection cancelled".into()),
+                });
+            }
+        }
+        self.resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+            .then(|| self.resource_result.take())
+            .flatten()
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some((invocation, operation)) = self.pending_resource_io.take() {
+            let result = match operation {
+                ResourceIo::Open(path) => self.open_typ_from(doc, &path),
+                ResourceIo::Save(path) => self.save_typ_to(doc, &path),
+                ResourceIo::ExportPdf(path) => self.export_pdf_to_path(doc, &path),
+            };
+            self.resource_result = Some(match result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "typst.io_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
         let src_id = self.ensure_source_obj(doc);
         self.source_id = Some(src_id.clone());
         // Land a finished Open/Save/Export file dialog before reading the
@@ -2258,6 +2417,38 @@ mod tests {
         // Drive one sync to seed + compile the first demo document.
         app.sync(&mut doc, &ROOT);
         (app, doc)
+    }
+
+    #[test]
+    fn direct_save_is_accepted_then_succeeds() {
+        let (mut app, mut doc) = fresh();
+        let dir = unique_dir("direct-lifecycle");
+        std::fs::create_dir_all(&dir).unwrap();
+        let destination = dir.join("saved.typ");
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::TypstOperation::Save {
+            path: Some(destination.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::OPERATION_TYPE,
+            &payload,
+            &doc,
+            &ROOT,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
+        app.sync(&mut doc, &ROOT);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert!(destination.exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     fn device_id() -> DeviceId {

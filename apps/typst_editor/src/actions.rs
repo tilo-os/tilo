@@ -31,17 +31,20 @@
 //! is exported as an effect and local navigation/zoom as view operations.
 
 use automerge::AutoCommit;
-use qos_actions::{ActionContract, ActionSpec, OperationKind, Resource, RetryPolicy};
+use qos_actions::{
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
+};
 use serde::{Deserialize, Serialize};
 
 pub const OPERATION_TYPE: &str = "typst.operation";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypstOperation {
     Compile,
-    Save,
-    Open,
-    ExportPdf,
+    Save { path: Option<String> },
+    Open { path: Option<String> },
+    ExportPdf { path: Option<String> },
     ZoomOut,
     ZoomIn,
     FitWidth,
@@ -55,8 +58,11 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) 
         .expect("TypstOperation is always serializable");
     match value {
         TypstOperation::Compile => spec.retry_policy(RetryPolicy::Idempotent),
-        TypstOperation::Save | TypstOperation::Open => spec.destructive(),
-        TypstOperation::ExportPdf => spec.destructive(),
+        TypstOperation::Save { .. }
+        | TypstOperation::Open { .. }
+        | TypstOperation::ExportPdf { .. } => spec
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job),
         TypstOperation::ZoomOut | TypstOperation::ZoomIn => {
             spec.with_contract(ActionContract::view())
         }
@@ -67,32 +73,57 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) 
     }
 }
 
+fn path_operation(
+    id: &'static str,
+    label: &'static str,
+    variant: fn(Option<String>) -> TypstOperation,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "path (omit to use the system file picker)",
+        OperationKind::Effect,
+        OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "filesystem path",
+        )],
+        move |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                OPERATION_TYPE,
+                &variant(
+                    args.text("path")
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned),
+                ),
+            )
+            .expect("TypstOperation is always serializable")
+        },
+    )
+    .destructive()
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job)
+}
+
 pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
     let mut document = Resource::new("typst.current", "typst.document", "Current document");
+    document = document
+        .with_action(path_operation("save", "Save Typst file", |path| {
+            TypstOperation::Save { path }
+        }))
+        .with_action(path_operation("open", "Open Typst file", |path| {
+            TypstOperation::Open { path }
+        }))
+        .with_action(path_operation("export-pdf", "Export PDF", |path| {
+            TypstOperation::ExportPdf { path }
+        }));
     for (id, label, kind, op) in [
         (
             "compile",
             "Recompile",
             OperationKind::Effect,
             TypstOperation::Compile,
-        ),
-        (
-            "save",
-            "Save Typst file",
-            OperationKind::Effect,
-            TypstOperation::Save,
-        ),
-        (
-            "open",
-            "Open Typst file",
-            OperationKind::Effect,
-            TypstOperation::Open,
-        ),
-        (
-            "export-pdf",
-            "Export PDF",
-            OperationKind::Effect,
-            TypstOperation::ExportPdf,
         ),
         (
             "zoom-in",
@@ -147,6 +178,7 @@ pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<TypstOperation>, S
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::app::TypstApp;
     use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
     use taffy::{NodeId, TaffyTree};
@@ -228,6 +260,37 @@ mod tests {
         match doc.get(&ROOT, "source").unwrap() {
             Some((Value::Object(ObjType::Text), _)) => {}
             other => panic!("root[\"source\"] must be an Automerge Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_effects_bind_direct_paths_and_keep_job_confirmation_contracts() {
+        let resources = resources(&AutoCommit::new());
+        for id in ["open", "save", "export-pdf"] {
+            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            assert_eq!(spec.params()[0].name, "path");
+            assert!(matches!(
+                spec.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            ));
+            assert_eq!(spec.contract.result, ResultSpec::Job);
+            assert!(!matches!(
+                spec.contract.confirmation,
+                qos_actions::ConfirmationPolicy::None
+            ));
+            let args = serde_json::json!({"path": format!("/tmp/{id}")})
+                .as_object()
+                .unwrap()
+                .clone();
+            let encoded = spec.build_json(&args).unwrap();
+            let decoded = decode(OPERATION_TYPE, &encoded.payload).unwrap().unwrap();
+            let path = match decoded {
+                TypstOperation::Open { path }
+                | TypstOperation::Save { path }
+                | TypstOperation::ExportPdf { path } => path,
+                _ => unreachable!(),
+            };
+            assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
         }
     }
 
