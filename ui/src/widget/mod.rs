@@ -868,7 +868,7 @@ pub use spinner::Spinner;
 pub mod date_picker;
 pub use date_picker::DatePicker;
 pub mod time_picker;
-pub use time_picker::TimePicker;
+pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub use color_picker::ColorPicker;
 pub mod popover_widget;
