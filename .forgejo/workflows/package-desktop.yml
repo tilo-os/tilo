@@ -176,6 +176,7 @@ jobs:
           "${{ matrix.revision }}"
       - uses: actions/upload-artifact@v4
         id: artifact-upload
+        if: always()
         with:
           name: ${{ matrix.id }}-${{ matrix.arch }}
           path: dist/ci-output/${{ matrix.id }}-${{ matrix.arch }}/*
