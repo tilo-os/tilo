@@ -27,6 +27,9 @@ Usage:
   pkexec /usr/libexec/qos-windows-owner import-iso < portal-selected-windows.iso
   pkexec /usr/libexec/qos-windows-owner recovery-start
   pkexec /usr/libexec/qos-windows-owner consume-recovery
+  pkexec /usr/libexec/qos-windows-owner lifecycle {status|start|shutdown|force-shutdown|restart|suspend|resume}
+  pkexec /usr/libexec/qos-windows-owner egress-open {activation|windows-update} [ttl-seconds]
+  pkexec /usr/libexec/qos-windows-owner egress-close <lease-id>
 
 Only `import-iso`, `recovery-start`, and internal `consume-recovery` are
 privileged actions. The ISO is read from the inherited portal descriptor on
@@ -38,8 +41,12 @@ EOF
 
 require_root() { [ "${EUID}" -eq 0 ] || die 'must be invoked by pkexec'; }
 require_exact_action() {
-    [ "$#" -eq 1 ] || { usage; exit 2; }
-    case "$1" in import-iso|recovery-start|consume-recovery) ;; *) usage; exit 2 ;; esac
+    [ "$#" -ge 1 ] || { usage; exit 2; }
+    case "$1" in import-iso|recovery-start|consume-recovery) [ "$#" -eq 1 ] || { usage; exit 2; } ;;
+        lifecycle) [ "$#" -eq 2 ] || { usage; exit 2; }; case "$2" in status|start|shutdown|force-shutdown|restart|suspend|resume) ;; *) usage; exit 2 ;; esac ;;
+        egress-open) [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { usage; exit 2; }; case "$2" in activation|windows-update) ;; *) usage; exit 2; esac; [ "$#" -eq 2 ] || [[ "$3" =~ ^[0-9]+$ ]] || { usage; exit 2; } ;;
+        egress-close) [ "$#" -eq 2 ] && [[ "$2" =~ ^egress-[A-Za-z0-9-]+$ ]] || { usage; exit 2; } ;;
+        *) usage; exit 2 ;; esac
 }
 
 # Return the pkexec caller only when it is an ordinary numeric account.  This
@@ -173,6 +180,23 @@ consume_recovery() {
     printf '%s\n' '{"result":"recovery_authorisation_consumed"}'
 }
 
+lifecycle() {
+    require_root
+    case "$1" in status|start|shutdown|force-shutdown|restart|suspend|resume) ;; *) die 'invalid lifecycle action' ;; esac
+    exec "$VM_CONTROL" "$1"
+}
+
+egress_open() {
+    require_root
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die 'invalid egress-open arguments'
+    exec "$VM_CONTROL" egress-open "$@"
+}
+
+egress_close() {
+    require_root
+    exec "$VM_CONTROL" egress-close "$1"
+}
+
 status() {
     # Read-only status is intentionally usable without pkexec.  The appliance
     # state is group-readable by the normal qOS owner; callers without that
@@ -249,12 +273,15 @@ case "${1:-}" in
         [ "$#" -eq 1 ] || { usage; exit 2; }
         status
         ;;
-    import-iso|recovery-start|consume-recovery)
+    import-iso|recovery-start|consume-recovery|lifecycle|egress-open|egress-close)
         require_exact_action "$@"
         case "$1" in
             import-iso) import_iso ;;
             recovery-start) recovery_start ;;
             consume-recovery) consume_recovery ;;
+            lifecycle) shift; lifecycle "$@" ;;
+            egress-open) shift; egress_open "$@" ;;
+            egress-close) shift; egress_close "$@" ;;
         esac
         ;;
     -h|--help|'') usage ;;
