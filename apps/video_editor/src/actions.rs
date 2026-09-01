@@ -734,6 +734,24 @@ pub struct VideoResourceCtx {
 fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
     ActionSpec::immediate(id, label, VIDEO_EDITOR_ACTION_TYPE, action)
         .expect("encode video-editor action")
+        .reversible()
+}
+
+/// Publish the undo and consequence semantics the editor already implements.
+/// Every exported operation is one atomic document transaction. Removing a
+/// track, clip, effect, marker, or bin source is additionally destructive and
+/// therefore requires confirmation when invoked headlessly.
+fn annotate_contracts(resource: &mut Resource) {
+    for action in &mut resource.actions {
+        action.contract.reversible = true;
+        if action.id.starts_with("delete-") || action.id.starts_with("remove-") {
+            let old = action.clone();
+            *action = old.destructive();
+        }
+    }
+    for child in &mut resource.children {
+        annotate_contracts(child);
+    }
 }
 
 /// Every spelling `EffectKind::from_str` accepts, in the exact form a caller
@@ -2214,6 +2232,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         root = root.with_child(mr);
     }
 
+    annotate_contracts(&mut root);
     vec![root]
 }
 
@@ -4278,5 +4297,21 @@ mod tests {
         let words = sp.description.unwrap_or_default();
         assert!(words.contains("+4.0 dB over"), "how far over: {words}");
         assert!(words.contains("1 place"), "and in how many places: {words}");
+    }
+
+    #[test]
+    fn exported_edits_declare_undo_and_destructive_removals() {
+        let (ctx, _) = ctx_fixture();
+        let specs = all_specs(&ctx);
+        assert!(specs.iter().all(|(_, action)| action.contract.reversible));
+        let (_, delete) = specs
+            .iter()
+            .find(|(_, action)| action.id == "delete-clip")
+            .expect("fixture clip exports deletion");
+        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(
+            delete.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
     }
 }
