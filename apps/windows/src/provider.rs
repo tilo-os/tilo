@@ -38,9 +38,21 @@ pub trait CompatibilityProvider: Send {
     ///
     /// Returns an error when the worker cannot accept the descriptor.
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns an error if the confirmed portal descriptor is unavailable.
     fn confirm_capsule_install(&mut self) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns an error if the confirmed portal descriptor or appliance is unavailable.
     fn confirm_vm_install(&mut self) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns an error if the server-owned candidate is unavailable.
     fn publish_vm_candidate(&mut self, entry_id: &str) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns an error if the server-owned guest uninstaller is unavailable.
     fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String>;
     /// Retry setup from the retained digest-pinned installer.
     ///
@@ -785,11 +797,11 @@ fn worker(
                 install_destination_request(
                     &mut client,
                     events,
-                    ProtocolRequest::InstallInCapsule {
+                    &ProtocolRequest::InstallInCapsule {
                         version: PROTOCOL_VERSION,
                         source_name,
                     },
-                    source,
+                    &source,
                     "Private capsule setup started.",
                 );
             }
@@ -800,11 +812,11 @@ fn worker(
                 install_destination_request(
                     &mut client,
                     events,
-                    ProtocolRequest::InstallInVm {
+                    &ProtocolRequest::InstallInVm {
                         version: PROTOCOL_VERSION,
                         source_name,
                     },
-                    source,
+                    &source,
                     "Windows setup finished or is still running in its integrated app surface.",
                 );
             }
@@ -881,11 +893,11 @@ fn worker(
 fn install_destination_request(
     client: &mut SessionClient,
     events: &Sender<WorkerEvent>,
-    request: ProtocolRequest,
-    source: File,
+    request: &ProtocolRequest,
+    source: &File,
     success: &str,
 ) {
-    let event = match client.request_with_file(&request, &source) {
+    let event = match client.request_with_file(request, source) {
         Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Notice(receipt.detail),
         Ok(ProtocolResponse::VmInstallStarted { installation }) => {
             WorkerEvent::Notice(installation.detail)
