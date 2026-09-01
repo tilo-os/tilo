@@ -17,7 +17,8 @@
 //! never a flag to ignore.
 
 use crate::action::{EncodedAction, ExecutionLocus};
-use crate::executor::{ActionTransport, Dispatched, dispatch_by};
+use crate::context::ActionContext;
+use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{ActionInput, ActionSpec, Collects, KEY_SEP, Resource};
 
@@ -281,12 +282,63 @@ pub fn invoke(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
+    invoke_with_context(
+        doc, resources, address, argument, actor, registry, transport, None,
+    )
+}
+
+/// [`invoke`] with ambient task/session provenance. The resource's concrete
+/// action label and address remain authoritative; app, purpose, group, and
+/// facets fill only fields the resource did not supply.
+pub fn invoke_with_context(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    argument: Option<&str>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+    ambient: Option<&ActionContext>,
+) -> Result<Dispatched, DoorError> {
+    let resource = find_resource(resources, &address.resource)
+        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    let spec = resource
+        .actions
+        .iter()
+        .find(|candidate| candidate.id == address.action)
+        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    let mut context = ActionContext::for_resource(
+        &spec.label,
+        resource.id.as_str(),
+        &resource.kind,
+        &resource.label,
+    );
+    if let Some(ambient) = ambient {
+        context = context.enriched_by(ambient);
+    }
     let encoded = encode(resources, address, argument)?;
     let action = registry
         .decode(&encoded)
         .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
-    dispatch_by(doc, action.as_ref(), encoded, transport, Some(actor))
-        .map_err(|e| DoorError::Failed(e.to_string()))
+    dispatch_by_with_context(
+        doc,
+        action.as_ref(),
+        encoded,
+        transport,
+        Some(actor),
+        context,
+    )
+    .map_err(|e| DoorError::Failed(e.to_string()))
+}
+
+fn find_resource<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
+    fn walk<'a>(resource: &'a Resource, id: &str) -> Option<&'a Resource> {
+        if resource.id.as_str() == id {
+            return Some(resource);
+        }
+        resource.children.iter().find_map(|child| walk(child, id))
+    }
+    resources.iter().find_map(|resource| walk(resource, id))
 }
 
 #[cfg(test)]
@@ -573,10 +625,26 @@ mod tests {
         assert!(dispatched.mutated_local());
         let env = dispatched.envelope().clone();
         assert_eq!(env.actor.as_deref(), Some(caller));
+        let context = env.context.as_ref().expect("door supplies provenance");
+        assert_eq!(context.action_label, "Star");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("notes.note:1")
+        );
 
         let heads = doc.get_heads();
         let change = doc.get_change_by_hash(&heads[0]).unwrap();
         assert_eq!(change.actor_id().to_bytes(), caller);
+        assert_eq!(
+            change
+                .message()
+                .and_then(|message| ActionContext::from_change_message(message)),
+            env.context,
+            "semantic provenance survives as part of the durable change"
+        );
         assert_ne!(change.actor_id(), &app_actor, "not the app's own actor");
         assert_ne!(
             change.actor_id().to_bytes(),
@@ -591,6 +659,42 @@ mod tests {
             "attribution must not cost the identical replay"
         );
         assert_eq!(transport.replicated.len(), 1);
+    }
+
+    #[test]
+    fn ambient_task_context_reaches_door_actions_without_overwriting_resource() {
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+        let ambient = ActionContext::default()
+            .with_app("org.qos.Notes", "Notes")
+            .with_purpose("Prepare launch")
+            .with_group("issue:42", "Launch", "issue");
+        let dispatched = invoke_with_context(
+            &mut doc,
+            &open(),
+            &star(),
+            None,
+            b"agent:ada",
+            &registry(),
+            &mut transport,
+            Some(&ambient),
+        )
+        .expect("door action");
+
+        let context = dispatched.envelope().context.as_ref().expect("context");
+        assert_eq!(context.action_label, "Star");
+        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            context.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("notes.note:1")
+        );
     }
 
     /// Resource ids carry colons, so the address separator has to be something

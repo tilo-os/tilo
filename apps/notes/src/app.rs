@@ -788,8 +788,12 @@ impl NotesApp {
     /// the caller for immediate UI feedback and reconciled from the document on
     /// the next `sync`. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &NotesAction) {
-        self.actions
-            .dispatch(doc, actions::NOTES_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::NOTES_ACTION_TYPE,
+            action,
+            actions::history_context(action),
+        );
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page

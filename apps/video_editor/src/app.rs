@@ -757,13 +757,21 @@ impl VideoEditorApp {
     // remembers it for the covenant test. There is no per-edit `needs_commit`
     // flag any more — the host records exactly one undo boundary per event.
 
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::VideoEditorAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.VideoEditor", "Video Editor", action),
+        );
+    }
+
     /// Dispatch a whole-clip write for `id` — the single path add / move / trim
     /// / grade all funnel through. Carries the clip's final shape, so it replays
     /// deterministically with no per-frame churn.
     fn dispatch_clip(&mut self, doc: &mut AutoCommit, id: ClipId) {
         if let Some(c) = self.project.clip(id).cloned() {
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_clip_action(&c));
+            self.perform_action(doc, &upsert_clip_action(&c));
         }
     }
 
@@ -773,11 +781,7 @@ impl VideoEditorApp {
             let left = self.project.clip(id).cloned();
             let right = self.project.clip(rid).cloned();
             if let (Some(left), Some(right)) = (left, right) {
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &split_clip_action(&left, &right),
-                );
+                self.perform_action(doc, &split_clip_action(&left, &right));
             }
             self.selected = Some(rid);
         }
@@ -786,8 +790,7 @@ impl VideoEditorApp {
     fn delete_selected(&mut self, doc: &mut AutoCommit) {
         let Some(id) = self.selected else { return };
         self.project.delete_clip(id);
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &delete_clip_action(&id));
+        self.perform_action(doc, &delete_clip_action(&id));
         self.selected = None;
     }
 
@@ -802,11 +805,7 @@ impl VideoEditorApp {
             .iter()
             .filter_map(|m| self.project.clip(*m).cloned())
             .collect();
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &ripple_delete_action(&id, &moved),
-        );
+        self.perform_action(doc, &ripple_delete_action(&id, &moved));
         self.selected = None;
     }
 
@@ -980,8 +979,7 @@ impl VideoEditorApp {
             locked: false,
         };
         let id = track.id;
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.perform_action(doc, &upsert_track_action(&track));
         self.project.tracks.push(track);
         id
     }
@@ -1205,8 +1203,7 @@ impl VideoEditorApp {
             locked: false,
         };
         let id = track.id;
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.perform_action(doc, &upsert_track_action(&track));
         self.project.tracks.push(track);
         id
     }
@@ -1225,11 +1222,7 @@ impl VideoEditorApp {
         {
             self.selected = None;
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &crate::actions::delete_track_action(&tid, &clip_ids),
-        );
+        self.perform_action(doc, &crate::actions::delete_track_action(&tid, &clip_ids));
     }
 
     /// Toggle a track's mute flag (the header pill), dispatched as an action.
@@ -1237,8 +1230,7 @@ impl VideoEditorApp {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.muted = !next.muted;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            self.perform_action(doc, &upsert_track_action(&next));
         }
     }
 
@@ -1268,8 +1260,7 @@ impl VideoEditorApp {
             }
             let mut next = m.clone();
             next.name = trimmed.to_string();
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+            self.perform_action(doc, &upsert_media_action(&next));
         }
     }
 
@@ -1288,11 +1279,7 @@ impl VideoEditorApp {
         {
             self.selected = None;
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &remove_media_action(&mid, &clip_ids),
-        );
+        self.perform_action(doc, &remove_media_action(&mid, &clip_ids));
         if self.selected_media == Some(mid) {
             self.selected_media = None;
         }
@@ -1382,8 +1369,7 @@ impl VideoEditorApp {
         };
         let id = item.id;
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.perform_action(doc, &upsert_media_action(&item));
         self.selected_media = Some(id);
         true
     }

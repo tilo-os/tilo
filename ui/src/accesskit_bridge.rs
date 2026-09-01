@@ -33,6 +33,7 @@ use crate::widget::Widget;
 /// — see [`widget_node_id`].
 pub const ROOT_ID: AkNodeId = AkNodeId(0);
 const TEXT_RUN_ID_BASE: u64 = 1u64 << 62;
+pub const SYNTHETIC_ID_BASE: u64 = 1u64 << 48;
 
 /// E.g. [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
 /// [`Role::ToggleButton`] becomes [`AkRole::Button`] carrying `toggled` state.
@@ -146,7 +147,7 @@ fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
         // 1<<48 keeps fallback ids well clear of any realistic taffy id
         // range, and `walk_index` is bounded by the number of widgets
         // walked in one tree.
-        None => AkNodeId((1u64 << 48).saturating_add(walk_index)),
+        None => AkNodeId(SYNTHETIC_ID_BASE.saturating_add(walk_index)),
     }
 }
 
@@ -346,6 +347,69 @@ fn visit_synthetic(
     parent_children.push(id);
 }
 
+/// Resolve a high-range AccessKit id back to the widget that published the
+/// synthetic `AccessNode` and its child-index path. This repeats the same DFS
+/// counter used by `build_tree_update`, so immediate-mode controls can be
+/// focused and activated without pretending they are taffy widgets.
+pub fn resolve_synthetic_target<'a>(
+    root: &'a dyn Widget,
+    target: AkNodeId,
+) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+    if target.0 < SYNTHETIC_ID_BASE || target.0 >= TEXT_RUN_ID_BASE {
+        return None;
+    }
+    fn visit_widget<'a>(
+        widget: &'a dyn Widget,
+        target: u64,
+        counter: &mut u64,
+    ) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+        let access = widget.accessibility();
+        *counter = counter.saturating_add(1);
+        if let Some(access) = access {
+            for child in widget.children() {
+                if let Some(found) = visit_widget(child, target, counter) {
+                    return Some(found);
+                }
+            }
+            for (index, child) in access.children.iter().enumerate() {
+                if let Some(found) = visit_child(widget, child, vec![index], target, counter) {
+                    return Some(found);
+                }
+            }
+        } else {
+            for child in widget.children() {
+                if let Some(found) = visit_widget(child, target, counter) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    fn visit_child<'a>(
+        owner: &'a dyn Widget,
+        child: &AccessNode,
+        path: Vec<usize>,
+        target: u64,
+        counter: &mut u64,
+    ) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+        let id = SYNTHETIC_ID_BASE.saturating_add(*counter);
+        *counter = counter.saturating_add(1);
+        if id == target {
+            return Some((std::ptr::from_ref(owner), path));
+        }
+        for (index, nested) in child.children.iter().enumerate() {
+            let mut nested_path = path.clone();
+            nested_path.push(index);
+            if let Some(found) = visit_child(owner, nested, nested_path, target, counter) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    visit_widget(root, target.0, &mut 0)
+}
+
 fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: f64) {
     apply_semantics_common(ak, access);
 
@@ -395,7 +459,20 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if access.state.focusable && !access.state.disabled {
         ak.add_action(AkAction::Focus);
     }
-    if !access.state.disabled {
+    if !access.state.disabled
+        && matches!(
+            access.role,
+            Role::Button
+                | Role::ToggleButton
+                | Role::Checkbox
+                | Role::RadioButton
+                | Role::Switch
+                | Role::Tab
+                | Role::MenuItem
+                | Role::ListItem
+                | Role::Link
+        )
+    {
         ak.add_action(AkAction::Click);
     }
     match access.role {
@@ -1004,5 +1081,29 @@ mod tests {
         assert!(update.tree.is_some());
         assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
         assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
+    }
+
+    #[test]
+    fn synthetic_accesskit_id_resolves_to_owner_and_child_path() {
+        let mut access = AccessNode::new(Role::Dialog).with_name("History");
+        access.children.push(
+            AccessNode::new(Role::Button)
+                .with_name("Compare")
+                .with_state(AccessState::new().focusable(true)),
+        );
+        let mut root = TestWidget::new(Some(access));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let button_id = update
+            .nodes
+            .iter()
+            .find_map(|(id, node)| (node.role() == AkRole::Button).then_some(*id))
+            .unwrap();
+        let (owner, path) = resolve_synthetic_target(&root, button_id).unwrap();
+        assert_eq!(path, vec![0]);
+        assert!(std::ptr::addr_eq(
+            owner,
+            std::ptr::from_ref::<dyn Widget>(&root)
+        ));
     }
 }

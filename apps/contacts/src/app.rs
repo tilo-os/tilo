@@ -785,8 +785,12 @@ impl ContactsApp {
     /// caller for immediate UI feedback and reconciled from the document on the
     /// next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::ContactsAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CONTACTS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CONTACTS_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant

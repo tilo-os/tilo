@@ -68,6 +68,24 @@ pub enum CodeEditorAction {
     CreateBuffer { node: u64, seed: String },
 }
 
+/// Durable, browseable history metadata for a Code mutation.
+pub fn history_context(action: &CodeEditorAction, file_name: &str) -> qos_actions::ActionContext {
+    let mut context = qos_actions::ActionContext::for_action("org.qos.Code", "Code", action);
+    let CodeEditorAction::CreateBuffer { node, .. } = action;
+    context.action_label = "Create file".to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("code_editor.file:{node}"),
+        kind: "code_editor.file".to_string(),
+        label: file_name.to_string(),
+    });
+    if let Some(extension) = file_name.rsplit_once('.').map(|(_, extension)| extension) {
+        context
+            .facets
+            .push(qos_actions::ActionFacet::new("file-type", extension));
+    }
+    context
+}
+
 impl Action for CodeEditorAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
