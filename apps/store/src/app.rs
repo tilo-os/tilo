@@ -41,6 +41,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{Column, Container, Row, Spacer, Text, TextInput, ToggleGroup, Widget};
 use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -88,6 +89,37 @@ pub enum RemoteIntent {
     Refresh,
     Add { name: String, url: String },
     Remove(String),
+}
+
+fn action_code(action: ActionKind) -> &'static str {
+    match action {
+        ActionKind::Open => "open",
+        ActionKind::Remove => "remove",
+        ActionKind::Update => "update",
+        ActionKind::MarkInstalled => "pin",
+        ActionKind::Unmark => "unpin",
+        ActionKind::FlatpakInstall => "flatpak-install",
+        ActionKind::FlatpakUpdate => "flatpak-update",
+        ActionKind::FlatpakOpen => "flatpak-open",
+        ActionKind::FlatpakRemove => "flatpak-remove",
+        ActionKind::NeedsFlatpakHost => "flatpak-setup",
+    }
+}
+
+fn action_from_code(code: &str) -> Option<ActionKind> {
+    Some(match code {
+        "open" => ActionKind::Open,
+        "remove" => ActionKind::Remove,
+        "update" => ActionKind::Update,
+        "pin" => ActionKind::MarkInstalled,
+        "unpin" => ActionKind::Unmark,
+        "flatpak-install" => ActionKind::FlatpakInstall,
+        "flatpak-update" => ActionKind::FlatpakUpdate,
+        "flatpak-open" => ActionKind::FlatpakOpen,
+        "flatpak-remove" => ActionKind::FlatpakRemove,
+        "flatpak-setup" => ActionKind::NeedsFlatpakHost,
+        _ => return None,
+    })
 }
 
 /// Root widget.
@@ -877,6 +909,40 @@ fn take_bool_edge(state: &mut AutoCommit, path: &ObjId, key: &str) -> bool {
 }
 
 impl Widget for StoreApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("store", "store.catalog", "App Store");
+        if let Ok(refresh) = ActionSpec::operation("refresh", "Refresh catalog", OperationKind::Effect, "store.refresh", &"") {
+            root.actions.push(refresh);
+        }
+        for item in &self.items {
+            let action = item.action_kind(self.flatpak_available);
+            let code = action_code(action);
+            let payload = vec![item.id.clone(), code.to_string()];
+            let mut resource = Resource::new(format!("app:{}", item.id), "store.app", item.name.clone());
+            if let Ok(spec) = ActionSpec::operation(code, action.label(), OperationKind::Effect, "store.app", &payload) {
+                resource.actions.push(spec);
+            }
+            if let Some(remove) = item.remove_action() {
+                let payload = vec![item.id.clone(), action_code(remove).to_string()];
+                if let Ok(spec) = ActionSpec::operation("remove", "Remove", OperationKind::Effect, "store.app", &payload) { resource.actions.push(spec); }
+            }
+            root.children.push(resource);
+        }
+        vec![root]
+    }
+
+    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
+        if kind != OperationKind::Effect { return Ok(false); }
+        if type_id == "store.refresh" { self.pending_refresh = true; return Ok(true); }
+        if type_id != "store.app" { return Ok(false); }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let id = args.first().ok_or_else(|| "missing app id".to_string())?.clone();
+        let action = action_from_code(args.get(1).map(String::as_str).unwrap_or(""))
+            .ok_or_else(|| "unknown store action".to_string())?;
+        self.pending_actions.push((id, action));
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // A source-filter chip parked its segment index in the shared
         // cell during the last `handle_event`; adopt it now.

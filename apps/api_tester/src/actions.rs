@@ -17,8 +17,9 @@
 //!
 //! The migrated collaborative doc mutations are the **saved requests** and the
 //! **collections** that hold them, the **environments** and their **variables**,
-//! and the **selected environment**. Everything else is either presentation or
-//! an external side effect and never becomes an action:
+//! and the **selected environment**. Local presentation stays out of the
+//! document action stream, while external effects are exported explicitly as
+//! resource operations:
 //!
 //! - **Presentation** (per-peer, out of the document): which saved request is
 //!   loaded into the builder, the active request-builder tab, the response
@@ -27,9 +28,10 @@
 //!   [`TextInput`](ui::widget::TextInput)s — character-level collaboration, not
 //!   a discrete action. A whole-request **save** into a collection *is* an
 //!   action.
-//! - **External** (non-deterministic, off the wire): actually *sending* the HTTP
-//!   request and the live response it returns. Only user gestures that manage the
-//!   persisted workspace cross the executor; the network round-trip never does.
+//! - **External** (non-deterministic, off the document wire): actually *sending*
+//!   an HTTP request is an [`OperationKind::Effect`] owned by this app. It is
+//!   addressable through the same resource/action surface as the Send button,
+//!   but its response is deliberately local and is never replayed as a CRDT edit.
 //!
 //! ## Determinism contract
 //!
@@ -46,7 +48,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::ApiDoc;
@@ -54,6 +56,34 @@ use crate::model::{Collection, Environment, KeyValue, Request};
 
 /// Registry `type_id` for every API Tester action.
 pub const API_TESTER_ACTION_TYPE: &str = "api_tester.action";
+
+/// Operation type for API Tester's non-document resource operations.
+pub const API_TESTER_OPERATION_TYPE: &str = "api_tester.operation";
+
+/// Effects which are meaningful on an API Tester resource but must never be
+/// replayed as document mutations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ApiTesterOperation {
+    SendRequest {
+        collection_id: String,
+        request_id: String,
+    },
+}
+
+pub fn send_request_operation(collection_id: Uuid, request_id: Uuid) -> ActionSpec {
+    ActionSpec::operation(
+        "send",
+        "Send request",
+        OperationKind::Effect,
+        API_TESTER_OPERATION_TYPE,
+        &ApiTesterOperation::SendRequest {
+            collection_id: collection_id.to_string(),
+            request_id: request_id.to_string(),
+        },
+    )
+    .expect("ApiTesterOperation is always serializable")
+    .with_description("Send this saved request using the active environment")
+}
 
 /// Every collaborative operation the API tester exports on its shared workspace.
 ///
@@ -410,6 +440,7 @@ fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> Ac
             label,
             description: None,
             locus: action.locus(),
+            kind: qos_actions::OperationKind::Document,
             input: ActionInput::Immediate(encode(action)),
         }
     })
@@ -550,7 +581,8 @@ fn add_collection_children(
                 "delete",
                 "Delete request",
                 &delete_request_action(cid, rid),
-            ));
+            ))
+            .with_action(send_request_operation(cid, rid));
             node = node.with_child(child);
         }
         root = root.with_child(node);
@@ -724,6 +756,19 @@ mod tests {
         let req_actions: Vec<&str> = req.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(req_actions.contains(&"rename"), "{req_actions:?}");
         assert!(req_actions.contains(&"delete"), "{req_actions:?}");
+        assert!(req_actions.contains(&"send"), "{req_actions:?}");
+        let send = req
+            .actions
+            .iter()
+            .find(|action| action.id == "send")
+            .expect("saved requests export their network effect");
+        assert_eq!(send.kind, OperationKind::Effect);
+        let encoded = immediate_encode(send);
+        assert_eq!(encoded.type_id, API_TESTER_OPERATION_TYPE);
+        assert!(matches!(
+            serde_json::from_slice::<ApiTesterOperation>(&encoded.payload).unwrap(),
+            ApiTesterOperation::SendRequest { .. }
+        ));
 
         let env_node = root
             .children
