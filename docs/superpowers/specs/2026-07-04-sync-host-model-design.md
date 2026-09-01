@@ -187,7 +187,7 @@ hydration once SP2/SP3 give it multiple peers/hosts/workspaces to prioritize.
   host" is the deferred compute-node model. For v1, hosted workspaces are **data**
   (you edit locally; results sync), not a streamed running session.
 - The **calling media pipeline** (capture/codec/transport) is a separate track (see
-  `apps/MISSING.md` chat audit); hosts become its relay/SFU later.
+  the historical chat audit, since removed); hosts become its relay/SFU later.
 
 ## 12. Grounding index (read before implementing)
 

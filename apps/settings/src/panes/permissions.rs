@@ -553,9 +553,9 @@ mod tests {
 
     fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
         if w.name() == "Button"
-            && let Some(label) = w.test_id()
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
         {
-            labels.push(label.to_string());
+            labels.push(label);
         }
         for c in w.children() {
             button_labels(c, labels);

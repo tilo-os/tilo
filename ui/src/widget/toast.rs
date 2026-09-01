@@ -309,6 +309,16 @@ pub struct ToastCard<'a> {
     /// Draw an "actionable" chevron at the trailing edge (the card carries
     /// activatable actions).
     pub actionable: bool,
+    /// Optional left/secondary and right/primary actions. These use the same
+    /// immediate-mode [`Button`] painter as ordinary retained controls, so a
+    /// notification can ask for a decision without inventing a second button
+    /// language. Empty labels omit the action row entirely.
+    pub secondary_action: &'a str,
+    pub secondary_action_icon: Option<crate::icons::Icon>,
+    pub secondary_action_hovered: bool,
+    pub primary_action: &'a str,
+    pub primary_action_icon: Option<crate::icons::Icon>,
+    pub primary_action_hovered: bool,
 }
 
 impl<'a> ToastCard<'a> {
@@ -322,6 +332,12 @@ impl<'a> ToastCard<'a> {
             closable: false,
             close_hovered: false,
             actionable: false,
+            secondary_action: "",
+            secondary_action_icon: None,
+            secondary_action_hovered: false,
+            primary_action: "",
+            primary_action_icon: None,
+            primary_action_hovered: false,
         }
     }
     #[must_use]
@@ -354,6 +370,27 @@ impl<'a> ToastCard<'a> {
         self.actionable = v;
         self
     }
+    /// Add a standard two-choice action row. The secondary action is painted
+    /// neutral on the left; the primary action is painted with the theme's
+    /// primary face on the right.
+    #[must_use]
+    pub fn actions(
+        mut self,
+        secondary: &'a str,
+        secondary_icon: crate::icons::Icon,
+        secondary_hovered: bool,
+        primary: &'a str,
+        primary_icon: crate::icons::Icon,
+        primary_hovered: bool,
+    ) -> Self {
+        self.secondary_action = secondary;
+        self.secondary_action_icon = Some(secondary_icon);
+        self.secondary_action_hovered = secondary_hovered;
+        self.primary_action = primary;
+        self.primary_action_icon = Some(primary_icon);
+        self.primary_action_hovered = primary_hovered;
+        self
+    }
 }
 
 /// Geometry [`paint_card`] hands back so callers hit-test the card's
@@ -364,6 +401,10 @@ pub struct ToastCardHit {
     pub card_rect: Rect,
     /// The dismiss (`X`) button rect. `Rect::ZERO` when `closable` was unset.
     pub close_rect: Rect,
+    /// Left/secondary action rect. `Rect::ZERO` when the card has no actions.
+    pub secondary_action_rect: Rect,
+    /// Right/primary action rect. `Rect::ZERO` when the card has no actions.
+    pub primary_action_rect: Rect,
 }
 
 /// Paint a toast / notification card into `rect` and return the geometry a
@@ -442,6 +483,16 @@ pub fn paint_card(
 
     // Text column: optional attribution caption, then the title, then the
     // optional body.
+    let action_top = paint_card_actions(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        rect,
+        card,
+        a,
+        &mut hit,
+    );
     paint_card_text(
         scene,
         transform,
@@ -450,6 +501,7 @@ pub fn paint_card(
         rect,
         card,
         text_right,
+        action_top.unwrap_or(rect.y1),
         a,
     );
 
@@ -469,6 +521,65 @@ pub fn paint_card(
     }
 
     hit
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "private immediate-mode helper forwarding the shared card painter context"
+)]
+fn paint_card_actions(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    card: &ToastCard<'_>,
+    alpha: f32,
+    hit: &mut ToastCardHit,
+) -> Option<f64> {
+    if card.secondary_action.is_empty() || card.primary_action.is_empty() {
+        return None;
+    }
+    let left = rect.x0 + CARD_PAD_X;
+    let right = rect.x1 - CARD_PAD_X;
+    let gap = 8.0;
+    let y1 = rect.y1 - CARD_PAD_Y;
+    let y0 = y1 - 30.0;
+    let mid = (left + right - gap) / 2.0;
+    let secondary = Rect::new(left, y0, mid, y1);
+    let primary = Rect::new(mid + gap, y0, right, y1);
+    hit.secondary_action_rect = secondary;
+    hit.primary_action_rect = primary;
+
+    let faded = alpha < 0.999;
+    if faded {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            transform,
+            &RoundedRect::from_rect(Rect::new(left, y0, right, y1), 8.0),
+        );
+    }
+    let mut secondary_face = ButtonFace::new(secondary, card.secondary_action)
+        .hovered(card.secondary_action_hovered)
+        .text_size(12.0);
+    if let Some(icon) = card.secondary_action_icon {
+        secondary_face = secondary_face.icon(icon);
+    }
+    Button::paint(scene, transform, text_renderer, theme, &secondary_face);
+    let mut primary_face = ButtonFace::new(primary, card.primary_action)
+        .primary()
+        .hovered(card.primary_action_hovered)
+        .text_size(12.0);
+    if let Some(icon) = card.primary_action_icon {
+        primary_face = primary_face.icon(icon);
+    }
+    Button::paint(scene, transform, text_renderer, theme, &primary_face);
+    if faded {
+        scene.pop_layer();
+    }
+    Some(y0 - 4.0)
 }
 
 /// Paint a single-line transient toast near the bottom of `area`.
@@ -584,6 +695,7 @@ fn paint_card_text(
     rect: Rect,
     card: &ToastCard<'_>,
     text_right: f64,
+    text_bottom: f64,
     alpha: f32,
 ) {
     let text_x = rect.x0 + CARD_PAD_X;
@@ -602,7 +714,8 @@ fn paint_card_text(
     let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
     let body_h = if has_body { f64::from(body_size) } else { 0.0 };
     let block_h = cap_h + title_h + body_h;
-    let mut ty = rect.y0 + ((rect.height() - block_h) / 2.0).max(CARD_PAD_Y);
+    let text_height = (text_bottom - rect.y0).max(0.0);
+    let mut ty = rect.y0 + ((text_height - block_h) / 2.0).max(CARD_PAD_Y);
 
     let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
@@ -849,6 +962,36 @@ mod tests {
             hit.close_rect.y0 >= rect.y0 && hit.close_rect.y1 < rect.center().y,
             "close rect sits at the top of the card",
         );
+    }
+
+    #[test]
+    fn paint_card_actions_use_two_standard_non_overlapping_buttons() {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let card_rect = Rect::new(20.0, 30.0, 374.0, 142.0);
+        let hit = paint_card(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            card_rect,
+            &ToastCard::new("No visible video", ToastKind::Warning)
+                .caption("Picture in Picture")
+                .actions(
+                    "Float page",
+                    crate::icons::Icon::PictureInPicture2,
+                    false,
+                    "Select area",
+                    crate::icons::Icon::MousePointer2,
+                    false,
+                ),
+        );
+        assert!(hit.secondary_action_rect.area() > 0.0);
+        assert!(hit.primary_action_rect.area() > 0.0);
+        assert!(hit.secondary_action_rect.x1 < hit.primary_action_rect.x0);
+        assert!(card_rect.contains(hit.secondary_action_rect.center()));
+        assert!(card_rect.contains(hit.primary_action_rect.center()));
     }
 
     #[test]

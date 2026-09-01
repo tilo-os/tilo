@@ -697,11 +697,19 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.content]
+        if self.open {
+            vec![&self.content]
+        } else {
+            Vec::new()
+        }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.content]
+        if self.open {
+            vec![&mut self.content]
+        } else {
+            Vec::new()
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -1226,6 +1234,44 @@ mod tests {
             Widget::children(&d).len(),
             1,
             "the dialog body must be reachable as a child for the a11y tree",
+        );
+    }
+
+    #[test]
+    fn closed_dialog_prunes_content_from_the_production_accessibility_tree() {
+        use crate::accesskit_bridge::build_tree_update;
+        use crate::widget::Button;
+        use accesskit::Role as AccessKitRole;
+
+        let mut d = ModalDialog::new(
+            "Confirm",
+            Button::new("modal-child", "Confirm action", None),
+        )
+        .open(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+
+        let open = build_tree_update(&d, &node_map, None, 1.0);
+        assert!(
+            open.nodes
+                .iter()
+                .any(|(_, node)| node.role() == AccessKitRole::Button),
+            "test precondition: open dialog exports its content button",
+        );
+
+        d.set_open(false);
+        let closed = build_tree_update(&d, &node_map, None, 1.0);
+        assert!(
+            closed
+                .nodes
+                .iter()
+                .all(|(_, node)| node.role() != AccessKitRole::Button),
+            "a closed dialog must not leave content controls in the production accessibility tree",
+        );
+        assert!(
+            Widget::children_mut(&mut d).is_empty(),
+            "closed modal content must also be pruned from mutable propagation",
         );
     }
 

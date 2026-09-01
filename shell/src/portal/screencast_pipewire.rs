@@ -2,17 +2,17 @@
 //!
 //! [`ScreenCastStreamProvisioner`] is the surface the portal calls into to
 //! allocate a Pipewire node and return its id + properties to the
-//! frontend. [`MockScreenCastProvisioner`] is the default implementor,
-//! used by tests and the `pipewire`-feature-disabled build, returning a
-//! synthetic node id without touching the system daemon.
+//! frontend. Production uses [`UnavailableScreenCastProvisioner`] until a
+//! consuming capture producer is integrated; it fails explicitly rather than
+//! returning a synthetic node. [`MockScreenCastProvisioner`] is test-only.
 //! `RealPipewireProvisioner` (behind the `pipewire` Cargo feature) opens
 //! a connection to the system daemon, creates a video stream of the
 //! workspace's composed scene at the negotiated dimensions, and returns
 //! the real node id, which the compositor's frame loop pushes buffers into.
 //!
 //! Pipewire is a C-library system dep not guaranteed on every build host
-//! (CI, distrobox, dev laptops), so the crate is optional and the mock
-//! ships by default; production OS builds turn the feature on.
+//! (CI, distrobox, dev laptops), so the crate is optional. Tests inject the
+//! mock; neither native nor hosted production paths do.
 //!
 //! The current stream carries only the workspace owner's own composed
 //! scene; compositing in peers or the overlay layer is future work.
@@ -111,10 +111,11 @@ pub enum ProvisioningError {
     /// Stream creation failed mid-handshake — usually a format rejection by the daemon.
     #[error("pipewire stream setup failed: {0}")]
     StreamSetup(String),
-    /// Generic "provisioner not available" — used when the `pipewire`
-    /// feature isn't compiled in; falls through to a synthetic id from the mock provisioner.
-    #[error("provisioner not implemented")]
-    NotImplemented,
+    /// The compositor has no real PipeWire producer wired in. Production uses
+    /// this error instead of returning a synthetic node that no client can
+    /// consume; the mock provisioner is reserved for tests.
+    #[error("screen capture is unavailable: {0}")]
+    NotImplemented(String),
 }
 
 /// Host-side contract: provision a Pipewire stream the frontend can
@@ -152,6 +153,35 @@ pub struct ScreenCastStreamProvisionerHandle {
     inner: Arc<dyn ScreenCastStreamProvisioner>,
 }
 
+/// Honest production fallback for builds without a compositor-to-PipeWire
+/// producer. It never advertises an inert node id or `/dev/null` as a remote.
+/// Keeping this separate from [`MockScreenCastProvisioner`] makes it difficult
+/// to accidentally ship the test double again.
+pub struct UnavailableScreenCastProvisioner {
+    reason: String,
+}
+
+impl UnavailableScreenCastProvisioner {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl ScreenCastStreamProvisioner for UnavailableScreenCastProvisioner {
+    fn provision_stream(
+        &self,
+        _req: &PipewireStreamRequest,
+    ) -> Result<PipewireStreamInfo, ProvisioningError> {
+        Err(ProvisioningError::NotImplemented(self.reason.clone()))
+    }
+
+    fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
+        Err(ProvisioningError::NotImplemented(self.reason.clone()))
+    }
+}
+
 impl ScreenCastStreamProvisionerHandle {
     pub fn new(inner: Arc<dyn ScreenCastStreamProvisioner>) -> Self {
         Self { inner }
@@ -179,7 +209,7 @@ impl ScreenCastStreamProvisionerHandle {
     }
 }
 
-/// Mock provisioner — returns a fixed node id, used by the `pipewire`-disabled build and by all tests.
+/// Mock provisioner — returns a fixed node id for portal protocol tests.
 pub struct MockScreenCastProvisioner {
     next_node: Mutex<u32>,
     /// Tracks the requests seen so tests can assert on the caller + dimensions the backend forwarded.
@@ -332,6 +362,30 @@ mod tests {
         let m = MockScreenCastProvisioner::new_with_node(1, "test");
         let fd = m.open_remote_fd().expect("mock opens a real fd");
         assert!(fd.as_raw_fd() >= 0, "must be a valid OS fd");
+    }
+
+    #[test]
+    fn unavailable_provisioner_never_returns_a_synthetic_stream_or_fd() {
+        let p = UnavailableScreenCastProvisioner::new("capture producer missing");
+        let req = PipewireStreamRequest {
+            caller: PortalCaller::new(WorkspaceId(8), "org.example"),
+            width: 1280,
+            height: 720,
+            framerate: 30,
+            source_type: 1,
+            cursor_mode: 2,
+        };
+
+        assert!(matches!(
+            p.provision_stream(&req),
+            Err(ProvisioningError::NotImplemented(reason))
+                if reason == "capture producer missing"
+        ));
+        assert!(matches!(
+            p.open_remote_fd(),
+            Err(ProvisioningError::NotImplemented(reason))
+                if reason == "capture producer missing"
+        ));
     }
 
     #[test]

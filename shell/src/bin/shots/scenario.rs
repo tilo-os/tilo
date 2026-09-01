@@ -53,6 +53,13 @@ pub enum Action {
         to: Point,
         steps: u32,
     },
+    /// Press + drag + release with the middle button. Used to prove that
+    /// oversized capture surfaces can be navigated without drawing on them.
+    MiddleDrag {
+        from: Point,
+        to: Point,
+        steps: u32,
+    },
     /// Synthesise a `WindowEvent::MouseWheel { LineDelta(dx, dy) }`.
     /// The host's wheel handlers gate on `last_cursor`, so the caller
     /// is expected to have dispatched a recent `MoveCursor` to align
@@ -117,6 +124,45 @@ pub enum Action {
     /// setup steps where dispatching real events would be brittle —
     /// e.g. opening the palette before typing a query).
     OpenPalette,
+    /// Mark the capture studio as actively recording, so its persistent Stop
+    /// state can be reviewed without starting a filesystem encoder in the
+    /// deterministic visual harness.
+    CaptureRecordingActive(bool),
+    /// Pin the launch-to-top-bar recorder transition for visual review. The
+    /// live shell uses elapsed time; shots use permille so every phase remains
+    /// inspectable even under a slow software renderer.
+    CaptureRecordingTransition(u16),
+    /// Pin the selected-pixels-to-PiP morph for deterministic visual review.
+    /// PNG rendering can be slower than the live animation, so wall-clock
+    /// snapshot sequences cannot faithfully expose its intermediate frames.
+    CapturePipTransition(u16),
+    /// Toggle the visual recorder session between live and paused without
+    /// starting an encoder, for deterministic indicator review.
+    CaptureRecordingPaused(bool),
+    /// Pin pause/resume label and icon morphs under slow software rendering.
+    CaptureRecordingStateTransition(u16),
+    /// Transition the active pill through the same compositor-confirmed save
+    /// receipt used after a successful file flush.
+    CaptureRecordingFinished,
+    /// Pin the saved receipt entrance under slow software rendering.
+    CaptureRecordingReceiptTransition(u16),
+    CaptureReplayActive(bool),
+    CaptureReplayBuffered(u8),
+    CaptureReplaySaved,
+    CaptureScreenshotFinished {
+        copied: bool,
+    },
+    /// Pin the selected-pixels-to-screenshot-receipt morph for deterministic
+    /// visual review under the software renderer.
+    CaptureScreenshotTransition(u16),
+    /// Pin the receipt-thumbnail-to-editor handoff for visual review.
+    ScreenshotMarkupTransition(u16),
+    /// Expose or hide real system-audio recording controls in deterministic
+    /// visuals without probing the host PipeWire session.
+    CaptureAudioAvailable(bool),
+    /// Run queued capture intents through the production compositor executor.
+    /// Opt-in avoids filesystem work in unrelated deterministic scenarios.
+    CaptureExecutionEnabled(bool),
     /// Seed real collaborative room changes and open one of the two history
     /// surfaces. `explore = false` captures outcome-first Catch up;
     /// `true` captures the full three-panel browser.
@@ -285,6 +331,11 @@ pub enum Action {
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
     LoneWindow(usize),
+    /// Replace one live shell-hosted window with a long Notes document. This
+    /// exercises complete semantic App capture through the same provider and
+    /// shared card path used by the real shell, without typing hundreds of
+    /// deterministic key events into the visual harness.
+    SeedLongNotes(usize),
     /// Resize every window in the active strip to `permille` of the
     /// display's usable width — what dragging the resize handles gets
     /// you.
@@ -418,6 +469,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             ),
         },
         Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
+        Action::MiddleDrag { from, to, steps } => driver.middle_drag(*from, *to, *steps),
         Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
         Action::Relayout => driver.relayout(),
         Action::MoveCursor(p) => driver.move_cursor(*p),
@@ -472,6 +524,58 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::CONTROL);
             driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
+        }
+        Action::CaptureRecordingActive(active) => {
+            driver.set_capture_recording_active(*active);
+        }
+        Action::CaptureRecordingTransition(permille) => {
+            driver.set_capture_recording_transition_progress(*permille);
+        }
+        Action::CapturePipTransition(permille) => {
+            driver.set_capture_pip_transition_progress(*permille);
+        }
+        Action::CaptureRecordingPaused(paused) => {
+            driver.set_capture_recording_paused(*paused);
+        }
+        Action::CaptureRecordingStateTransition(permille) => {
+            driver.set_capture_recording_state_transition_progress(*permille);
+        }
+        Action::CaptureRecordingFinished => {
+            driver.set_capture_recording_finished();
+        }
+        Action::CaptureRecordingReceiptTransition(permille) => {
+            driver.set_capture_recording_receipt_transition_progress(*permille);
+        }
+        Action::CaptureReplayActive(active) => {
+            driver.set_capture_replay_active(
+                *active,
+                if *active {
+                    ui::widget::AudioCaptureMode::SystemAndMicrophone
+                } else {
+                    ui::widget::AudioCaptureMode::None
+                },
+            );
+        }
+        Action::CaptureReplayBuffered(seconds) => {
+            driver.set_capture_replay_buffered_seconds(*seconds);
+        }
+        Action::CaptureReplaySaved => {
+            driver.set_capture_replay_saved();
+        }
+        Action::CaptureScreenshotFinished { copied } => {
+            driver.set_capture_screenshot_finished(*copied);
+        }
+        Action::CaptureScreenshotTransition(permille) => {
+            driver.set_capture_screenshot_transition_progress(*permille);
+        }
+        Action::ScreenshotMarkupTransition(permille) => {
+            driver.set_screenshot_markup_transition_progress(*permille);
+        }
+        Action::CaptureAudioAvailable(available) => {
+            driver.set_capture_audio_available(*available);
+        }
+        Action::CaptureExecutionEnabled(enabled) => {
+            driver.set_capture_execution_enabled(*enabled);
         }
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
@@ -1031,6 +1135,34 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                 st.bump();
             });
         }
+        Action::SeedLongNotes(group_idx) => {
+            let strip_id = {
+                let chrome = driver.chrome();
+                let tree = chrome.tree();
+                tree.active_workspace()
+                    .and_then(|workspace| workspace.strips.first())
+                    .map(|strip| strip.id)
+            };
+            if let Some(strip_id) = strip_id
+                && let Some(host) = driver
+                    .host_mut()
+                    .group_at_for_tests(strip_id, *group_idx)
+                    .and_then(|group| group.active_host_mut())
+            {
+                let body = (1..=52)
+                    .map(|line| {
+                        format!(
+                            "Complete capture {line:02} — the document continues beyond the physical display while the live Notes window stays exactly where it is."
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                host.replace_content(ui::widget::TileContent::App(Box::new(
+                    shell::shell::notes_app::NotesApp::with_seed(body),
+                )));
+                driver.relayout();
+            }
+        }
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
                 let mut tree = st.tree_mut();
@@ -1323,6 +1455,24 @@ fn escape_json_str(s: &str) -> String {
 /// dumps these; `--scenario NAME` looks NAME up here.
 pub fn catalogue() -> Vec<Scenario> {
     vec![
+        capture_studio(),
+        capture_selection_editing(),
+        capture_countdown(),
+        capture_screenshot_receipt(),
+        capture_screenshot_markup(),
+        capture_screenshot_markup_full_app(),
+        capture_screenshot_full_app(),
+        capture_recording_audio(),
+        capture_recording_full_app(),
+        capture_recording_active(),
+        capture_recording_dock_midpoint(),
+        capture_recording_receipt_actions(),
+        capture_replay_active(),
+        capture_replay_shortcut(),
+        capture_pip_shortcut(),
+        capture_pip_region(),
+        capture_pip_full_app(),
+        capture_pip_multi(),
         palette_typing(),
         palette_close_anim(),
         tab_drag(),
@@ -2220,6 +2370,732 @@ fn palette_close_anim() -> Scenario {
                 frames: 10,
                 gap_frames: 1,
             },
+        ],
+    }
+}
+
+fn capture_studio() -> Scenario {
+    Scenario {
+        name: "capture_studio",
+        description: "Open the shared screenshot, recording and PiP selector.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::Drag {
+                from: Point::new(360.0, 220.0),
+                to: Point::new(980.0, 590.0),
+                steps: 8,
+            },
+            Action::Snapshot("capture-studio"),
+            Action::MoveCursor(Point::new(650.0, 50.0)),
+            Action::Snapshot("capture-mode-hover"),
+            Action::MoveCursor(Point::new(837.0, 50.0)),
+            Action::Snapshot("capture-source-hover"),
+        ],
+    }
+}
+
+fn capture_selection_editing() -> Scenario {
+    Scenario {
+        name: "capture_selection_editing",
+        description: "A screenshot region is moved, resized from its live handle, and nudged precisely without being redrawn.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::Drag {
+                from: Point::new(360.0, 220.0),
+                to: Point::new(980.0, 590.0),
+                steps: 8,
+            },
+            Action::Snapshot("selection-initial"),
+            Action::MoveCursorNamed("capture.selection.0.move"),
+            Action::MousePress,
+            Action::MoveCursor(Point::new(760.0, 355.0)),
+            Action::Snapshot("selection-moving"),
+            Action::MouseRelease,
+            Action::Snapshot("selection-moved"),
+            Action::MoveCursorNamed("capture.selection.0.se"),
+            Action::MousePress,
+            Action::MoveCursor(Point::new(1_160.0, 690.0)),
+            Action::Snapshot("selection-resizing"),
+            Action::MouseRelease,
+            Action::Snapshot("selection-resized"),
+            Action::Modifiers(ModifiersState::SHIFT),
+            Action::Key(Key::Named(NamedKey::ArrowLeft)),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Snapshot("selection-nudged-10px"),
+        ],
+    }
+}
+
+fn capture_countdown() -> Scenario {
+    Scenario {
+        name: "capture_countdown",
+        description: "Undimmed, input-transparent delayed-capture countdown and its compact timer control.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.screen"),
+            Action::ClickNamed("capture.delay"),
+            Action::Snapshot("countdown-armed"),
+            Action::ClickNamed("capture.save"),
+            Action::Snapshot("countdown-live"),
+        ],
+    }
+}
+
+fn capture_screenshot_receipt() -> Scenario {
+    Scenario {
+        name: "capture_screenshot_receipt",
+        description: "Selected pixels collapse into a visual, non-modal screenshot receipt.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::Drag {
+                from: Point::new(360.0, 220.0),
+                to: Point::new(980.0, 590.0),
+                steps: 8,
+            },
+            Action::CaptureScreenshotFinished { copied: false },
+            Action::CaptureScreenshotTransition(0),
+            Action::Snapshot("receipt-enter-000"),
+            Action::CaptureScreenshotTransition(250),
+            Action::Snapshot("receipt-enter-250"),
+            Action::CaptureScreenshotTransition(500),
+            Action::Snapshot("receipt-enter-500"),
+            Action::CaptureScreenshotTransition(750),
+            Action::Snapshot("receipt-enter-750"),
+            Action::CaptureScreenshotTransition(1_000),
+            Action::Snapshot("receipt-enter-1000"),
+            Action::MoveCursorNamed("capture.open-screenshot"),
+            Action::Snapshot("receipt-open-hover"),
+            Action::MoveCursorNamed("capture.pin-screenshot"),
+            Action::Snapshot("receipt-pin-hover"),
+            Action::MoveCursorNamed("capture.copy-screenshot"),
+            Action::Snapshot("receipt-copy-hover"),
+            Action::MoveCursorNamed("capture.show-screenshot"),
+            Action::Snapshot("receipt-reveal-hover"),
+            Action::ClickNamed("capture.dismiss-screenshot"),
+            Action::Snapshot("receipt-dismissed"),
+        ],
+    }
+}
+
+fn capture_recording_audio() -> Scenario {
+    Scenario {
+        name: "capture_recording_audio",
+        description: "Recording setup with independently editable desktop and microphone tracks.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::CaptureAudioAvailable(true),
+            Action::Wait(12),
+            Action::ClickNamed("capture.record"),
+            Action::ClickNamed("capture.screen"),
+            Action::ClickNamed("capture.system-audio"),
+            Action::ClickNamed("capture.microphone"),
+            Action::ClickNamed("capture.delay"),
+            Action::Snapshot("record-audio-ready"),
+        ],
+    }
+}
+
+fn capture_screenshot_full_app() -> Scenario {
+    Scenario {
+        name: "capture_screenshot_full_app",
+        description: "A complete off-screen app flows through the real compositor into a saved image.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.current",
+                surface_id: 5411,
+            },
+            Action::Wait(20),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.next",
+                surface_id: 5412,
+            },
+            Action::Wait(20),
+            Action::SetWindowWidths(1_000),
+            Action::SelectGroup(Some(2)),
+            Action::Wait(24),
+            Action::Relayout,
+            Action::SeedLongNotes(0),
+            Action::Wait(2),
+            Action::Relayout,
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.window"),
+            Action::ClickNamed("capture.picker:Notes"),
+            Action::ClickNamed("capture.extent.full-app"),
+            Action::Snapshot("shot-full-app-ready"),
+            Action::CaptureExecutionEnabled(true),
+            Action::ClickNamed("capture.save"),
+            Action::Wait(1),
+            Action::CaptureScreenshotTransition(1_000),
+            Action::Snapshot("shot-full-app-saved"),
+            Action::MoveCursorNamed("capture.pin-screenshot"),
+            Action::Snapshot("shot-full-app-pin-hover"),
+            Action::ClickNamed("capture.pin-screenshot"),
+            Action::CapturePipTransition(0),
+            Action::Snapshot("shot-full-app-pin-handoff-000"),
+            Action::CapturePipTransition(100),
+            Action::Snapshot("shot-full-app-pin-handoff-100"),
+            Action::CapturePipTransition(200),
+            Action::Snapshot("shot-full-app-pin-handoff-200"),
+            Action::CapturePipTransition(300),
+            Action::Snapshot("shot-full-app-pin-handoff-300"),
+            Action::CapturePipTransition(400),
+            Action::Snapshot("shot-full-app-pin-handoff-400"),
+            Action::CapturePipTransition(500),
+            Action::Snapshot("shot-full-app-pin-handoff-500"),
+            Action::CapturePipTransition(600),
+            Action::Snapshot("shot-full-app-pin-handoff-600"),
+            Action::CapturePipTransition(700),
+            Action::Snapshot("shot-full-app-pin-handoff-700"),
+            Action::CapturePipTransition(800),
+            Action::Snapshot("shot-full-app-pin-handoff-800"),
+            Action::CapturePipTransition(900),
+            Action::Snapshot("shot-full-app-pin-handoff-900"),
+            Action::CapturePipTransition(1_000),
+            Action::Snapshot("shot-full-app-pin-handoff-1000"),
+        ],
+    }
+}
+
+fn capture_screenshot_markup() -> Scenario {
+    Scenario {
+        name: "capture_screenshot_markup",
+        description: "A real saved capture opens in the native exact-pixel markup workspace.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::Drag {
+                from: Point::new(320.0, 180.0),
+                to: Point::new(1_180.0, 650.0),
+                steps: 8,
+            },
+            Action::CaptureExecutionEnabled(true),
+            Action::ClickNamed("capture.save"),
+            Action::Wait(1),
+            Action::CaptureScreenshotTransition(1_000),
+            Action::ClickNamed("capture.open-screenshot"),
+            Action::Wait(1),
+            Action::Relayout,
+            Action::ScreenshotMarkupTransition(0),
+            Action::Snapshot("markup-enter-000"),
+            Action::ScreenshotMarkupTransition(250),
+            Action::Snapshot("markup-enter-250"),
+            Action::ScreenshotMarkupTransition(500),
+            Action::Snapshot("markup-enter-500"),
+            Action::ScreenshotMarkupTransition(750),
+            Action::Snapshot("markup-enter-750"),
+            Action::ScreenshotMarkupTransition(1_000),
+            Action::Snapshot("markup-clean"),
+            Action::MoveCursor(Point::new(500.0, 300.0)),
+            Action::MouseWheel { dx: 0.0, dy: 4.0 },
+            Action::Snapshot("markup-zoom"),
+            Action::ClickNamed("markup.fit"),
+            Action::Snapshot("markup-fit"),
+            Action::Drag {
+                from: Point::new(300.0, 220.0),
+                to: Point::new(600.0, 360.0),
+                steps: 18,
+            },
+            Action::Snapshot("markup-pen"),
+            Action::ClickNamed("markup.tool"),
+            Action::Snapshot("markup-tool-picker"),
+            Action::ClickNamed("markup.tool-highlighter"),
+            Action::ClickNamed("markup.color-yellow"),
+            Action::Drag {
+                from: Point::new(320.0, 400.0),
+                to: Point::new(620.0, 400.0),
+                steps: 18,
+            },
+            Action::Snapshot("markup-highlighter"),
+            Action::ClickNamed("markup.undo"),
+            Action::Snapshot("markup-undo"),
+            Action::ClickNamed("markup.tool"),
+            Action::ClickNamed("markup.tool-arrow"),
+            Action::Drag {
+                from: Point::new(280.0, 390.0),
+                to: Point::new(520.0, 250.0),
+                steps: 18,
+            },
+            Action::Snapshot("markup-arrow"),
+            Action::ClickNamed("markup.tool"),
+            Action::ClickNamed("markup.tool-rectangle"),
+            Action::ClickNamed("markup.color-blue"),
+            Action::Drag {
+                from: Point::new(250.0, 270.0),
+                to: Point::new(470.0, 405.0),
+                steps: 18,
+            },
+            Action::Snapshot("markup-rectangle"),
+            Action::ClickNamed("markup.tool"),
+            Action::ClickNamed("markup.tool-redact"),
+            Action::Drag {
+                from: Point::new(270.0, 318.0),
+                to: Point::new(550.0, 342.0),
+                steps: 12,
+            },
+            Action::Snapshot("markup-redact"),
+            Action::MoveCursorNamed("markup.save"),
+            Action::Snapshot("markup-save-hover"),
+            Action::ClickNamed("markup.save"),
+            Action::Wait(1),
+            Action::Relayout,
+            Action::Snapshot("markup-saved"),
+        ],
+    }
+}
+
+fn capture_screenshot_markup_full_app() -> Scenario {
+    Scenario {
+        name: "capture_screenshot_markup_full_app",
+        description: "A taller-than-screen app opens in markup, then zooms and pans without altering its pixels.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.current",
+                surface_id: 5421,
+            },
+            Action::Wait(20),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.next",
+                surface_id: 5422,
+            },
+            Action::Wait(20),
+            Action::SetWindowWidths(1_000),
+            Action::SelectGroup(Some(2)),
+            Action::Wait(24),
+            Action::Relayout,
+            Action::SeedLongNotes(0),
+            Action::Wait(2),
+            Action::Relayout,
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.window"),
+            Action::ClickNamed("capture.picker:Notes"),
+            Action::ClickNamed("capture.extent.full-app"),
+            Action::CaptureExecutionEnabled(true),
+            Action::ClickNamed("capture.save"),
+            Action::Wait(1),
+            Action::CaptureScreenshotTransition(1_000),
+            Action::ClickNamed("capture.open-screenshot"),
+            Action::Wait(1),
+            Action::Relayout,
+            Action::ScreenshotMarkupTransition(1_000),
+            Action::Snapshot("full-app-markup-fit"),
+            Action::MoveCursor(Point::new(800.0, 430.0)),
+            Action::MouseWheel { dx: 0.0, dy: 5.0 },
+            Action::Snapshot("full-app-markup-zoom"),
+            Action::MiddleDrag {
+                from: Point::new(800.0, 430.0),
+                to: Point::new(800.0, 650.0),
+                steps: 18,
+            },
+            Action::Snapshot("full-app-markup-pan"),
+            Action::ClickNamed("markup.fit"),
+            Action::Snapshot("full-app-markup-refit"),
+        ],
+    }
+}
+
+fn capture_recording_full_app() -> Scenario {
+    Scenario {
+        name: "capture_recording_full_app",
+        description: "Recording controls targeting a complete app beyond the visible monitor.",
+        actions: vec![
+            // Put Notes outside the current physical viewport while keeping
+            // it alive on the continuous strip. The picker must still offer
+            // and capture it without first dragging it back on screen.
+            Action::LoneWindow(0),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.current",
+                surface_id: 5401,
+            },
+            Action::Wait(20),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.next",
+                surface_id: 5402,
+            },
+            Action::Wait(20),
+            // With three wide groups and the last selected, Notes remains
+            // live on the strip but is wholly beyond the physical output.
+            Action::SetWindowWidths(1000),
+            Action::SelectGroup(Some(2)),
+            Action::Wait(24),
+            Action::Relayout,
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.record"),
+            Action::ClickNamed("capture.window"),
+            Action::ClickNamed("capture.picker:Notes"),
+            Action::ClickNamed("capture.extent.full-app"),
+            Action::Snapshot("record-full-app"),
+            Action::ClickNamed("capture.save"),
+            Action::Snapshot("record-full-app-preparing"),
+            Action::CaptureRecordingActive(true),
+            Action::Snapshot("record-full-app-start"),
+            Action::CaptureRecordingTransition(250),
+            Action::Snapshot("record-full-app-flight-25"),
+            Action::CaptureRecordingTransition(500),
+            Action::Snapshot("record-full-app-flight-50"),
+            Action::CaptureRecordingTransition(750),
+            Action::Snapshot("record-full-app-flight-75"),
+            Action::CaptureRecordingTransition(1_000),
+            Action::Snapshot("record-full-app-pill"),
+        ],
+    }
+}
+
+fn capture_recording_active() -> Scenario {
+    Scenario {
+        name: "capture_recording_active",
+        description: "Recorder start, pause/resume, and the compositor-confirmed saved receipt.",
+        actions: vec![
+            // Establish a real source before simulating compositor success so
+            // the first frames also exercise the undimmed scope confirmation.
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.record"),
+            Action::ClickNamed("capture.screen"),
+            Action::ClickNamed("capture.save"),
+            Action::Snapshot("recording-preparing"),
+            Action::CaptureRecordingActive(true),
+            Action::Snapshot("recording-start"),
+            Action::CaptureRecordingTransition(250),
+            Action::Snapshot("recording-flight-25"),
+            Action::CaptureRecordingTransition(500),
+            Action::Snapshot("recording-flight-50"),
+            Action::CaptureRecordingTransition(750),
+            Action::Snapshot("recording-flight-75"),
+            Action::CaptureRecordingTransition(1_000),
+            Action::Snapshot("recording-pill"),
+            Action::MoveCursorNamed("capture.recording-status"),
+            Action::Snapshot("recording-status-detail"),
+            Action::MoveCursor(Point::new(20.0, 300.0)),
+            Action::CaptureRecordingPaused(true),
+            Action::CaptureRecordingStateTransition(0),
+            Action::Snapshot("recording-pause-000"),
+            Action::CaptureRecordingStateTransition(250),
+            Action::Snapshot("recording-pause-250"),
+            Action::CaptureRecordingStateTransition(500),
+            Action::Snapshot("recording-pause-500"),
+            Action::CaptureRecordingStateTransition(750),
+            Action::Snapshot("recording-pause-750"),
+            Action::CaptureRecordingStateTransition(1_000),
+            Action::Snapshot("recording-paused"),
+            Action::CaptureRecordingPaused(false),
+            Action::CaptureRecordingStateTransition(0),
+            Action::Snapshot("recording-resume-000"),
+            Action::CaptureRecordingStateTransition(250),
+            Action::Snapshot("recording-resume-250"),
+            Action::CaptureRecordingStateTransition(500),
+            Action::Snapshot("recording-resume-500"),
+            Action::CaptureRecordingStateTransition(750),
+            Action::Snapshot("recording-resume-750"),
+            Action::CaptureRecordingStateTransition(1_000),
+            Action::Snapshot("recording-resumed"),
+            Action::CaptureRecordingFinished,
+            Action::CaptureRecordingReceiptTransition(0),
+            Action::Snapshot("recording-saved-000"),
+            Action::CaptureRecordingReceiptTransition(250),
+            Action::Snapshot("recording-saved-250"),
+            Action::CaptureRecordingReceiptTransition(500),
+            Action::Snapshot("recording-saved-500"),
+            Action::CaptureRecordingReceiptTransition(750),
+            Action::Snapshot("recording-saved-750"),
+            Action::CaptureRecordingReceiptTransition(1_000),
+            Action::Snapshot("recording-saved-1000"),
+            Action::MoveCursorNamed("capture.play-recording"),
+            Action::Snapshot("recording-saved-play-hover"),
+            Action::MoveCursorNamed("capture.show-recording"),
+            Action::Snapshot("recording-saved-folder-hover"),
+            Action::MoveCursorNamed("capture.dismiss-recording"),
+            Action::Snapshot("recording-saved-dismiss-hover"),
+            // Release the pin by starting a fresh live receipt, then prove the
+            // normal three-second lifecycle still hands the clock back.
+            Action::CaptureRecordingActive(true),
+            Action::CaptureRecordingFinished,
+            Action::Wait(200),
+            Action::Snapshot("recording-receipt-dismissed"),
+        ],
+    }
+}
+
+fn capture_recording_dock_midpoint() -> Scenario {
+    Scenario {
+        name: "capture_recording_dock_midpoint",
+        description: "The recorder's sentence-to-timer rolling handoff at its most overlap-prone frame.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.record"),
+            Action::ClickNamed("capture.screen"),
+            Action::ClickNamed("capture.save"),
+            Action::CaptureRecordingActive(true),
+            Action::CaptureRecordingTransition(500),
+            Action::Snapshot("recording-dock-midpoint"),
+        ],
+    }
+}
+
+fn capture_recording_receipt_actions() -> Scenario {
+    Scenario {
+        name: "capture_recording_receipt_actions",
+        description: "The saved recording receipt teaches play, reveal, and dismiss without reopening a modal.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.record"),
+            Action::ClickNamed("capture.screen"),
+            Action::ClickNamed("capture.save"),
+            Action::CaptureRecordingActive(true),
+            Action::CaptureRecordingFinished,
+            Action::CaptureRecordingReceiptTransition(1_000),
+            Action::MoveCursorNamed("capture.play-recording"),
+            Action::Snapshot("recording-receipt-play"),
+            Action::MoveCursorNamed("capture.show-recording"),
+            Action::Snapshot("recording-receipt-reveal"),
+            Action::MoveCursorNamed("capture.dismiss-recording"),
+            Action::Snapshot("recording-receipt-dismiss"),
+        ],
+    }
+}
+
+fn capture_replay_active() -> Scenario {
+    Scenario {
+        name: "capture_replay_active",
+        description: "Explicit recent-capture warmup, ready state, save feedback, and privacy-visible audio sources.",
+        actions: vec![
+            Action::CaptureReplayActive(true),
+            Action::CaptureReplayBuffered(4),
+            Action::Snapshot("replay-warming"),
+            Action::SnapshotSequence {
+                prefix: "replay-settle",
+                frames: 5,
+                gap_frames: 4,
+            },
+            Action::CaptureReplayBuffered(30),
+            Action::Snapshot("replay-ready"),
+            Action::MoveCursorNamed("capture.replay-status"),
+            Action::Snapshot("replay-status-detail"),
+            Action::MoveCursor(Point::new(24.0, 180.0)),
+            Action::CaptureReplaySaved,
+            Action::Snapshot("replay-saved"),
+            Action::MoveCursorNamed("capture.play-replay"),
+            Action::Snapshot("replay-saved-play-hover"),
+            Action::MoveCursorNamed("capture.show-replay"),
+            Action::Snapshot("replay-saved-folder-hover"),
+            Action::CaptureReplayActive(false),
+            Action::Snapshot("replay-off"),
+        ],
+    }
+}
+
+fn capture_replay_shortcut() -> Scenario {
+    Scenario {
+        name: "capture_replay_shortcut",
+        description: "The global replay chord opens directly in recording setup and teaches its instant-save reuse.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("r".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::MoveCursorNamed("capture.start-replay"),
+            Action::Snapshot("replay-shortcut-setup"),
+        ],
+    }
+}
+
+fn capture_pip_shortcut() -> Scenario {
+    Scenario {
+        name: "capture_pip_shortcut",
+        description: "The global PiP chord lands directly in a fast live-area picker and teaches the reusable shortcut.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("p".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::MoveCursor(Point::new(500.0, 300.0)),
+            Action::Snapshot("pip-shortcut-ready"),
+            Action::MoveCursorNamed("capture.pip"),
+            Action::Snapshot("pip-shortcut-setup"),
+        ],
+    }
+}
+
+fn capture_pip_multi() -> Scenario {
+    Scenario {
+        name: "capture_pip_multi",
+        description: "Fast multi-region selection composed into one floating PiP surface.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.pip"),
+            Action::ClickNamed("capture.multi"),
+            Action::Drag {
+                from: Point::new(250.0, 180.0),
+                to: Point::new(500.0, 330.0),
+                steps: 7,
+            },
+            Action::Drag {
+                from: Point::new(520.0, 300.0),
+                to: Point::new(740.0, 470.0),
+                steps: 7,
+            },
+            Action::ClickNamed("capture.pip.grid"),
+            Action::Snapshot("pip-multi-grid"),
+            Action::CaptureExecutionEnabled(true),
+            Action::ClickNamed("capture.create-pip"),
+            // Give the production executor one paint to create the live
+            // mirror, then freeze representative phases immediately before
+            // each software-rendered PNG.
+            Action::Wait(1),
+            Action::CapturePipTransition(0),
+            Action::Snapshot("pip-handoff-000"),
+            Action::CapturePipTransition(200),
+            Action::Snapshot("pip-handoff-200"),
+            Action::CapturePipTransition(400),
+            Action::Snapshot("pip-handoff-400"),
+            Action::CapturePipTransition(600),
+            Action::Snapshot("pip-handoff-600"),
+            Action::CapturePipTransition(700),
+            Action::Snapshot("pip-handoff-700-reflow"),
+            Action::CapturePipTransition(800),
+            Action::Snapshot("pip-handoff-800"),
+            Action::CapturePipTransition(1_000),
+            Action::Snapshot("pip-handoff-1000"),
+            Action::Snapshot("pip-live"),
+            Action::MoveCursor(Point::new(20.0, 320.0)),
+            Action::Wait(90),
+            Action::Snapshot("pip-resting-clean"),
+            Action::MoveCursorNamed("floating.chrome"),
+            Action::Wait(12),
+            Action::Snapshot("pip-controls-hover"),
+            Action::MoveCursorNamed("floating.close"),
+            Action::Snapshot("pip-close-hover"),
+        ],
+    }
+}
+
+fn capture_pip_region() -> Scenario {
+    Scenario {
+        name: "capture_pip_region",
+        description: "A selected live area peels into a persistent floating PiP without a first-frame jump.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.pip"),
+            Action::Drag {
+                // Span the live Notes focal content at compact and wide
+                // viewports; a tiny fixed-left sample becomes empty at 1600.
+                from: Point::new(330.0, 160.0),
+                to: Point::new(1_050.0, 620.0),
+                steps: 7,
+            },
+            Action::Snapshot("pip-region-ready"),
+            Action::CaptureExecutionEnabled(true),
+            Action::ClickNamed("capture.create-pip"),
+            Action::Wait(1),
+            Action::CapturePipTransition(0),
+            Action::Snapshot("pip-region-handoff-000"),
+            Action::CapturePipTransition(400),
+            Action::Snapshot("pip-region-handoff-400"),
+            Action::CapturePipTransition(800),
+            Action::Snapshot("pip-region-handoff-800"),
+            Action::CapturePipTransition(1_000),
+            Action::Snapshot("pip-region-live"),
+            Action::MoveCursor(Point::new(20.0, 320.0)),
+            Action::Wait(90),
+            Action::Snapshot("pip-region-clean"),
+            Action::MoveCursorNamed("floating.chrome"),
+            Action::Wait(12),
+            Action::Snapshot("pip-region-controls-hover"),
+        ],
+    }
+}
+
+fn capture_pip_full_app() -> Scenario {
+    Scenario {
+        name: "capture_pip_full_app",
+        description: "A complete app outside the physical monitor enters PiP from its virtual-desktop edge.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.current",
+                surface_id: 5421,
+            },
+            Action::Wait(20),
+            Action::SelectGroup(None),
+            Action::OpenWindow {
+                app_id: "org.example.next",
+                surface_id: 5422,
+            },
+            Action::Wait(20),
+            Action::SetWindowWidths(1_000),
+            Action::SelectGroup(Some(2)),
+            Action::Wait(24),
+            Action::Relayout,
+            Action::SeedLongNotes(0),
+            Action::Wait(2),
+            Action::Relayout,
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.pip"),
+            Action::ClickNamed("capture.window"),
+            Action::ClickNamed("capture.picker:Notes"),
+            Action::ClickNamed("capture.extent.full-app"),
+            Action::Snapshot("pip-full-app-ready"),
+            Action::CaptureExecutionEnabled(true),
+            Action::ClickNamed("capture.create-pip"),
+            Action::Wait(1),
+            Action::CapturePipTransition(0),
+            Action::Snapshot("pip-full-app-edge-000"),
+            Action::CapturePipTransition(400),
+            Action::Snapshot("pip-full-app-edge-400"),
+            Action::CapturePipTransition(800),
+            Action::Snapshot("pip-full-app-edge-800"),
+            Action::CapturePipTransition(1_000),
+            Action::Snapshot("pip-full-app-live"),
         ],
     }
 }
