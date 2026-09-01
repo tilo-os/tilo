@@ -481,11 +481,9 @@ impl YuvConverter {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        // The fullscreen conversion pass overwrites every
-                        // pixel. Transparent is the semantic initialization
-                        // value if validation ever exposes an uncovered edge;
-                        // this intermediate texture is video data, not themed
-                        // application chrome.
+                        // This is an off-screen conversion target, not an app
+                        // surface. A transparent clear is deterministic and
+                        // the fullscreen pass replaces it with opaque video.
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },

@@ -204,28 +204,30 @@ impl HistoryView {
             TextWeight::Medium,
         );
 
-        // Author + time + short hash on the meta line.
+        // Author + time + short hash on the meta line. Author identity is
+        // carried by the avatar; keeping the name neutral avoids implying
+        // that the author's hue is a status/severity colour like graph lanes
+        // and file badges.
         let meta_y = sy + 18.0;
-        let acolor = draw::author_color(theme, &commit.author_email);
         draw::text(
             scene,
             tr,
             t,
             &commit.author_name,
-            11.0,
-            acolor,
+            12.0,
+            c.text_primary,
             sx,
             meta_y,
             None,
         );
-        let aw = f64::from(tr.measure(&commit.author_name, 11.0, None).0);
+        let aw = f64::from(tr.measure(&commit.author_name, 12.0, None).0);
         let meta = format!("·  {}", commit.when);
         draw::text(
             scene,
             tr,
             t,
             &meta,
-            11.0,
+            11.5,
             c.text_dim,
             sx + aw + 8.0,
             meta_y,
@@ -234,14 +236,14 @@ impl HistoryView {
 
         // Short hash, right-aligned.
         let short: String = commit.id.chars().take(7).collect();
-        let hw = f64::from(draw::mono_width(tr, &short, 11.5));
+        let hw = f64::from(draw::mono_width(tr, &short, 12.0));
         draw::mono(
             scene,
             tr,
             t,
             &short,
-            11.5,
-            c.neutral[5],
+            12.0,
+            c.text_dim,
             area.x1 - hw - 14.0,
             y + 10.0,
         );
@@ -281,7 +283,16 @@ impl HistoryView {
     ) {
         let c = &theme.tokens.colors;
         if row == selected {
-            draw::fill_rect(scene, t, rrect, c.accent[2]);
+            // Keep the selected commit legible and calm. The accent rail is
+            // enough to identify selection while preserving graph lane
+            // colours for topology rather than state.
+            draw::fill_rect(scene, t, rrect, c.surface_white_10);
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(rrect.x0, rrect.y0, rrect.x0 + 3.0, rrect.y1),
+                theme.accent_primary,
+            );
         }
         Self::draw_commit_dot(scene, t, theme, area, layout, commit, row, y);
         Self::draw_commit_row_text(scene, tr, t, theme, area, commit, y, text_x);
@@ -403,7 +414,7 @@ impl HistoryView {
             tr,
             t,
             &commit.author_email,
-            11.5,
+            12.0,
             c.text_dim,
             x + 42.0,
             y + 17.0,
@@ -570,13 +581,13 @@ impl HistoryView {
                 Some(w - 80.0),
             );
             let counts = format!("+{} -{}", f.additions, f.deletions);
-            let cw = f64::from(draw::mono_width(tr, &counts, 10.5));
+            let cw = f64::from(draw::mono_width(tr, &counts, 11.5));
             draw::mono(
                 scene,
                 tr,
                 t,
                 &counts,
-                10.5,
+                11.5,
                 c.text_dim,
                 area.x1 - pad - cw,
                 y + 1.0,
@@ -603,7 +614,7 @@ fn meta_row(
     mono: bool,
 ) -> f64 {
     let c = &theme.tokens.colors;
-    draw::text(scene, tr, t, label, 11.5, c.text_dim, x, y, None);
+    draw::text(scene, tr, t, label, 12.0, c.text_dim, x, y, None);
     if mono {
         draw::mono(scene, tr, t, value, 12.0, c.text_primary, x + 70.0, y);
     } else {

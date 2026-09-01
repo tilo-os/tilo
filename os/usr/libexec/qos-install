@@ -97,14 +97,22 @@ kernel_lockdown_active() {
 # firmware trust enrollment and measured-target validation are integrated.
 target_verified_boot_ready() {
   local preflight=/usr/libexec/qos-verified-boot-install-preflight
-  [ -x "$preflight" ] && "$preflight"
+  [ -x "$preflight" ] && "$preflight" "$@"
 }
 
 verified_tpm() {
   { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
     && secure_boot_enabled \
     && kernel_lockdown_active \
-    && target_verified_boot_ready
+    && target_verified_boot_ready --capability
+}
+
+verified_tpm_target() {
+  local target_root="$1"
+  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
+    && secure_boot_enabled \
+    && kernel_lockdown_active \
+    && target_verified_boot_ready --prepare-target "$target_root"
 }
 
 # Updates are signature-required only for the official qOS repository in the
@@ -551,7 +559,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
-  verified_tpm || ENROL_ARGS+=(--passphrase)
+  if verified_tpm; then
+    verified_tpm_target "$ENC_MNT" \
+      || die "the installed target did not preserve verified boot; refusing to enroll a short PIN"
+  else
+    ENROL_ARGS+=(--passphrase)
+  fi
   if [ "$WANT_PIN" -eq 1 ]; then
     PIN_FILE=/run/qos-install/pin
     install -d -m 0700 /run/qos-install

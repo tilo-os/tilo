@@ -1304,6 +1304,13 @@ impl Workspace {
     /// list, and the capability is what replicates and what `decide` reads.
     pub fn set_owner(&mut self, user: impl Into<UserId>) {
         let user = user.into();
+        let owner_capability_id = format!("owner-{}", self.id.raw());
+        // The owner capability has a stable id because the replicated map is
+        // keyed by capability id.  Remove its previous in-memory value before
+        // changing the subject: `grant_capability` deliberately merges only
+        // identical subjects, and would otherwise leave the former owner with
+        // a second local Admin grant until the next document rebuild.
+        self.revoke_capability(&owner_capability_id);
         self.owner = Some(user.clone());
         self.grant_capability(
             CapOverride::membership(
@@ -1311,8 +1318,26 @@ impl Workspace {
                 self.room.to_string(),
                 Verb::Admin,
             )
-            .with_id(format!("owner-{}", self.id.raw())),
+            .with_id(owner_capability_id),
         );
+    }
+
+    /// Transfer the structural owner role.
+    ///
+    /// This is intentionally stricter than ordinary role administration:
+    /// delegated administrators cannot transfer ownership, and the recipient
+    /// must already be an administrator.  The latter makes transfer an
+    /// explicit two-step ceremony (promote, then transfer) and avoids handing
+    /// the workspace to a mistyped or stale identity.
+    pub fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
+        if current_owner == new_owner
+            || self.owner.as_ref() != Some(current_owner)
+            || self.role_of(new_owner) != Some(CapRole::Owner)
+        {
+            return false;
+        }
+        self.set_owner(new_owner.clone());
+        true
     }
 
     /// Give up administration because this workspace joined a room it
@@ -1620,9 +1645,9 @@ pub struct WorkspaceTree {
     /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default)]
     pub active_group: HashMap<StripId, GroupId>,
-    /// Tree-level roster, fallback for chrome when the active workspace
-    /// has nobody of its own. `#[serde(skip)]` — reloading it would show
-    /// people who are not there.
+    /// Legacy session-wide presence cache. Ordinary chrome must read the
+    /// active workspace's roster instead: a person present elsewhere is not
+    /// present here. `#[serde(skip)]` prevents stale presence after reload.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
@@ -3042,52 +3067,12 @@ impl WorkspaceTree {
         };
         let is_local = |id: u64| peer_salt_of(id) == local_salt;
 
-        // Read before the workspace is borrowed mutably: both live on
-        // the tree rather than on the workspace.
-        let host_strip = self
-            .workspaces
-            .iter()
-            .find(|w| w.room == room)
-            .and_then(|w| {
-                let active = self.active_strip.get(&w.id).copied();
-                active
-                    .filter(|id| w.strips.iter().any(|s| s.id == *id && is_local(id.raw())))
-                    .or_else(|| w.strips.iter().find(|s| is_local(s.id.raw())).map(|s| s.id))
-            });
-
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let mut changed = false;
         let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
             replicated.into_iter().map(|s| (s.id, s)).collect();
-
-        // **Which strip a peer's windows land in is this machine's
-        // business** — taking a peer's strip id literally would mint a
-        // second strip that stacks below ours; instead their groups
-        // merge into the strip we're using, keeping their own ids.
-        let foreign: Vec<u64> = by_strip
-            .keys()
-            .copied()
-            .filter(|id| !is_local(*id))
-            .collect();
-        let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
-        for sid in foreign {
-            // `sid` came from `by_strip.keys()` just above and `BTreeMap`
-            // keys don't repeat, so this always finds an entry — but
-            // `continue` rather than `.expect()` costs nothing and can't
-            // panic if that invariant ever slips.
-            let Some(rep) = by_strip.remove(&sid) else {
-                continue;
-            };
-            peer_groups.extend(rep.groups);
-        }
-        // No strip of ours to put them in, so one is made.
-        if !peer_groups.is_empty() && host_strip.is_none() {
-            ws.strips.push(Strip::new(StripId::from(next_id()), "Main"));
-            changed = true;
-        }
-        let host_strip = host_strip.or_else(|| ws.strips.last().map(|s| s.id));
 
         // `(order, id, strip)` so local-only strips keep a position too.
         let mut out: Vec<(u64, u64, Strip)> = Vec::new();
@@ -3096,16 +3081,10 @@ impl WorkspaceTree {
         // snapshot, since `ws.strips` is about to be overwritten with the
         // merged result.
         let mut vanished: Vec<StripId> = Vec::new();
-        let mut peer_groups = Some(peer_groups);
         for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
             let sid = strip.id.raw();
-            // Everybody else's windows join this one.
-            let adopting = (Some(strip.id) == host_strip)
-                .then(|| peer_groups.take())
-                .flatten()
-                .filter(|g| !g.is_empty());
             let published = by_strip.remove(&sid);
-            if published.is_none() && adopting.is_none() {
+            if published.is_none() {
                 if is_local(sid) {
                     // Ours and simply not published; the document has
                     // no say over it.
@@ -3117,7 +3096,7 @@ impl WorkspaceTree {
                 }
                 continue;
             }
-            let mut rep = published.unwrap_or_else(|| ReplicatedStrip {
+            let rep = published.unwrap_or_else(|| ReplicatedStrip {
                 id: sid,
                 order: i as u64,
                 name: None,
@@ -3126,9 +3105,6 @@ impl WorkspaceTree {
             // Ours keeps our cache's position — taking it from the
             // document would undo a local reorder until re-projected.
             let order = if is_local(sid) { i as u64 } else { rep.order };
-            if let Some(extra) = adopting {
-                rep.groups.extend(extra);
-            }
             out.push((
                 order,
                 sid,
@@ -4669,6 +4645,44 @@ impl WorkspaceTree {
         true
     }
 
+    /// Transfer structural ownership and persist the owner record together
+    /// with its replacement Admin capability.
+    ///
+    /// Only the exact current owner may do this; an Admin delegation is not
+    /// equivalent to the root authority. The recipient must already be an
+    /// Admin, so callers have a reviewable promotion step before this
+    /// irreversible governance operation.
+    pub fn transfer_workspace_ownership(
+        &mut self,
+        workspace_id: WorkspaceId,
+        current_owner: &UserId,
+        new_owner: &UserId,
+    ) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+            return false;
+        };
+        if !ws.transfer_owner_as(current_owner, new_owner) {
+            return false;
+        }
+        let owner_capability_id = format!("owner-{}", workspace_id.raw());
+        let owner_capability = ws
+            .capabilities
+            .iter()
+            .find(|cap| cap.id == owner_capability_id)
+            .cloned()
+            .expect("owner transfer always installs its root capability");
+        self.doc_set_owner(workspace_id, new_owner);
+        self.doc_insert_capability(workspace_id, &owner_capability);
+        self.flush_to_disk();
+        true
+    }
+
     /// Mirror a capability grant into the automerge doc so peer-sync
     /// ships it and a restart reloads it. Capabilities live as a **map
     /// keyed by capability id**, not a list — deleting a map key
@@ -5745,21 +5759,18 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     assigned
 }
 
-/// Peer count for the active workspace, excluding the local user,
-/// falling back to the tree-level roster when it has none of its own —
-/// matches `TopBarChrome::sync_from_tree`'s precedence.
+/// Present collaborator count for the active workspace, excluding the local
+/// user. Presence is workspace-scoped; the legacy tree-level cache must never
+/// make somebody from another workspace appear here.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // Somebody named but not yet arrived is not counted. This drives the
     // avatar cluster's `+N` chip and the wheel disc's presence dot, and
     // both are claims that people are *in* the workspace — an invitation
     // that has not been redeemed is not one of them.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
-    let active = tree.active_workspace();
-    let per_ws = active.map_or(0, |w| w.collaborators.iter().filter(present).count());
-    if per_ws > 0 {
-        return per_ws;
-    }
-    tree.collaborators.iter().filter(present).count()
+    tree.active_workspace().map_or(0, |workspace| {
+        workspace.collaborators.iter().filter(present).count()
+    })
 }
 
 #[cfg(test)]
@@ -6317,12 +6328,12 @@ mod automerge_foundation_tests {
         (host, guest, room)
     }
 
-    /// A window somebody else opened lands *beside* yours, not
-    /// underneath — groups scroll horizontally within a strip, so a
-    /// peer's window becoming its own strip would stack vertically
-    /// on a desktop that doesn't do that.
+    /// A peer's strip is shared layout, not an instruction to pour its
+    /// windows into whichever strip this machine happened to focus. Both
+    /// strips appear, while the receiving person's active strip remains
+    /// their own local view state.
     #[test]
-    fn a_peers_window_lands_beside_yours_and_not_below_it() {
+    fn a_peers_window_arrives_in_its_shared_strip_without_moving_local_focus() {
         const HOST: u16 = 0x2222;
         const GUEST: u16 = 0x3333;
         let (mut host, mut guest, room) = two_in_a_room();
@@ -6357,6 +6368,21 @@ mod automerge_foundation_tests {
             tree.sync_room_doc(room);
         }
 
+        let guest_workspace = guest
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("guest workspace")
+            .id;
+        let guest_strip = guest
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .and_then(|workspace| workspace.strips.first())
+            .expect("guest strip")
+            .id;
+        guest.active_strip.insert(guest_workspace, guest_strip);
+
         ship(&mut host, &mut guest, room, 1);
 
         let ws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
@@ -6373,19 +6399,26 @@ mod automerge_foundation_tests {
         );
         assert_eq!(
             ws.strips.len(),
-            1,
-            "both windows belong in one horizontally-scrolling strip; \
-             {} strips means they are stacked vertically, with strips {:?}",
-            ws.strips.len(),
+            2,
+            "each shared strip must remain addressable instead of folding \
+             its windows into a local strip; got {:?}",
             ws.strips
                 .iter()
                 .map(|s| (s.id.raw(), s.window_groups.len()))
                 .collect::<Vec<_>>(),
         );
+        assert!(
+            ws.strips.iter().all(|strip| strip.window_groups.len() == 1),
+            "each owner keeps one group in its own strip: {:?}",
+            ws.strips
+                .iter()
+                .map(|strip| (strip.id.raw(), strip.window_groups.len()))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
-            ws.strips[0].window_groups.len(),
-            2,
-            "one group each, side by side",
+            guest.active_strip.get(&guest_workspace),
+            Some(&guest_strip),
+            "layout is shared; personal focus is not",
         );
     }
 
@@ -9007,5 +9040,59 @@ mod peer_window_merge_tests {
             other => panic!("expected the new app, got {other:?}"),
         }
         assert!(changed);
+    }
+
+    #[test]
+    fn replacing_owner_removes_the_previous_root_capability() {
+        let mut ws = Workspace::new(WorkspaceId(0x5151), "Security review");
+        ws.set_owner("alice");
+        ws.set_owner("bob");
+
+        assert_eq!(ws.owner.as_deref(), Some("bob"));
+        assert_eq!(ws.role_of(&"bob".to_string()), Some(CapRole::Owner));
+        assert_eq!(ws.role_of(&"alice".to_string()), None);
+        assert_eq!(
+            ws.capabilities
+                .iter()
+                .filter(|cap| cap.id == format!("owner-{}", ws.id.raw()))
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
+    fn ownership_transfer_requires_exact_owner_and_preexisting_admin() {
+        let mut tree = WorkspaceTree::default();
+        let workspace_id = tree.append_empty_workspace("Security review");
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let delegated_admin = "mallory".to_string();
+        tree.adopt_ownerless_workspaces(&alice);
+
+        assert!(!tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
+
+        for person in [&bob, &delegated_admin] {
+            tree.grant_in_workspace(
+                workspace_id,
+                &alice,
+                CapOverride::membership(
+                    Subject::Principal(Principal::Person(person.clone())),
+                    tree.room_of(workspace_id).unwrap().to_string(),
+                    Verb::Admin,
+                ),
+            )
+            .expect("owner may promote a collaborator");
+        }
+
+        assert!(!tree.transfer_workspace_ownership(workspace_id, &delegated_admin, &bob));
+        assert!(tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == workspace_id)
+            .unwrap();
+        assert_eq!(ws.owner.as_ref(), Some(&bob));
+        assert_eq!(ws.role_of(&alice), None);
+        assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
     }
 }

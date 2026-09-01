@@ -146,11 +146,6 @@ enum DragUnit {
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
 
-struct LocalTextBinding {
-    state: crate::LocalState<String>,
-    observed_revision: u64,
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -190,7 +185,7 @@ pub struct TextInput {
     last_notified_text: String,
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
-    local_state: Option<LocalTextBinding>,
+    local_state: Option<crate::local_state::LocalBinding<String>>,
     /// A programmatic/model change can alter multiline measurement without
     /// pretending to be a user edit through `take_dirty`.
     model_layout_dirty: bool,
@@ -789,12 +784,9 @@ impl TextInput {
     /// Selecting a document or external-buffer binding later replaces this
     /// process-local binding explicitly.
     pub fn from_state(state: &crate::LocalState<String>) -> Self {
-        let value = state.get();
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
         let mut input = Self::local().with_initial_value(&value);
-        input.local_state = Some(LocalTextBinding {
-            state: state.clone(),
-            observed_revision: state.revision(),
-        });
+        input.local_state = Some(binding);
         input
     }
 
@@ -886,11 +878,8 @@ impl TextInput {
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state
-            && binding.state.with(|value| value != &self.text)
-        {
-            binding.state.set(self.text.clone());
-            binding.observed_revision = binding.state.revision();
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.text);
         }
     }
 
@@ -3371,14 +3360,10 @@ impl Widget for TextInput {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let local_value = self.local_state.as_mut().and_then(|binding| {
-            let revision = binding.state.revision();
-            if revision == binding.observed_revision {
-                return None;
-            }
-            binding.observed_revision = revision;
-            Some(binding.state.get())
-        });
+        let local_value = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll);
         if let Some(value) = local_value {
             self.set_text(&value);
         }

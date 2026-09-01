@@ -1,0 +1,48 @@
+name: Security fuzzing
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: security-fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: code.sandbox.example/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      # cargo-fuzz requires sanitizer instrumentation exposed by nightly. Both
+      # tool and compiler are pinned so a moving installer cannot silently
+      # change the security gate.
+      - name: Install pinned fuzz toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-25 --profile minimal
+          cargo +nightly-2026-08-25 install cargo-fuzz --locked --version 0.13.1
+
+      - name: Fuzz qpkg ingress
+        run: cargo +nightly-2026-08-25 fuzz run qpkg_ingress -- -max_total_time=900 -timeout=10
+
+      - name: Fuzz collaboration invite chains
+        run: cargo +nightly-2026-08-25 fuzz run collab_invite_chain -- -max_total_time=900 -timeout=10
+
+      - name: Fuzz identity wire formats
+        run: cargo +nightly-2026-08-25 fuzz run identity_wire -- -max_total_time=900 -timeout=10
+
+      - name: Fuzz sandbox policy parsing
+        run: cargo +nightly-2026-08-25 fuzz run sandbox_policy -- -max_total_time=900 -timeout=10
