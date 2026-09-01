@@ -9,7 +9,7 @@ license=('AGPL-3.0-only')
 arch=('x86_64' 'aarch64')
 makedepends=(
   'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto' 'git'
-  'libxkbcommon' 'wayland' 'libseat' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
+  'libxkbcommon' 'wayland' 'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
   'pipewire' 'dbus' 'openssl' 'fontconfig' 'freetype2' 'harfbuzz' 'fuse3'
   'gstreamer' 'gst-plugins-base-libs'
 )
@@ -27,7 +27,7 @@ build() {
 package_qos-session() {
   depends=(
     'glibc' 'pam' 'vulkan-icd-loader' 'libglvnd' 'libxkbcommon' 'wayland'
-    'libseat' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
+    'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
     'openssl' 'fontconfig' 'freetype2' 'harfbuzz'
   )
   optdepends=('vulkan-mesa-layers: Mesa Vulkan support' 'xdg-desktop-portal: sandbox portals' 'greetd: display manager')

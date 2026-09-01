@@ -31,7 +31,7 @@ fedora)
 arch)
     pacman -Syu --noconfirm \
         nodejs git curl base-devel rustup clang cmake pkgconf capnproto file \
-        libxkbcommon wayland libseat libinput systemd-libs libdrm mesa \
+        libxkbcommon wayland seatd libinput systemd-libs libdrm mesa \
         pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3 \
         gstreamer gst-plugins-base-libs
     ;;
