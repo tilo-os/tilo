@@ -69,7 +69,7 @@ impl Template {
             Self::Async => "Restartable background task with cancellation",
             Self::Document => "Durable synchronized editor with undo",
             Self::Qr => "IME input to accessible generated QR output",
-            Self::Workspace => "Resizable master-detail workspace with durable item editing",
+            Self::Workspace => "Responsive master-detail workspace with durable item editing",
         }
     }
 }
@@ -6497,7 +6497,7 @@ fn prompt_component_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Resizable master-detail app with durable item editing"
+        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
     )
     .context("showing template choices")?;
     loop {
@@ -6772,6 +6772,7 @@ workspace-title-placeholder = Untitled item\n\
 workspace-notes-label = Notes\n\
 workspace-notes-placeholder = Add project notes…\n\
 workspace-preview-heading = Live preview\n\
+workspace-back = Back\n\
 workspace-share = Share\n",
     )
 }
@@ -6793,7 +6794,6 @@ fn app_test(spec: &AppSpec) -> String {
 fn starter_app_test(crate_name: &str) -> String {
     format!(
         r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-
 #[test]
 fn app_responds_to_semantic_input() {{
     let mut app = ui::headless::Driver::new(
@@ -7059,6 +7059,10 @@ fn document_fields_are_synchronized_and_undoable() {{
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single format template keeps the generated workspace behavior test reviewable as one artifact"
+)]
 fn workspace_app_test(crate_name: &str) -> String {
     format!(
         r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
@@ -7070,7 +7074,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         {crate_name}::app_root(),
         (1000, 640),
     );
-
     let targets = app.targets();
     for target in [
         "workspace-selected-item",
@@ -7082,7 +7085,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         assert!(rect.width() > 0.0 && rect.height() > 0.0, "{{target}}: {{rect:?}}");
         assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{{target}}: {{rect:?}}");
     }}
-
     app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
         .expect("select the design-system project");
     app.expect(
@@ -7109,7 +7111,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
             .name("Design tokens"),
     )
     .expect("the detail preview shares the document binding");
-
     app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
         .expect("switch to another project");
     app.expect(
@@ -7126,7 +7127,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
     assert!(app.perform_undo(), "detail edits use standard document undo");
     let snapshot = app.inspection_json().expect("undone workspace snapshot");
     assert!(!snapshot.contains("Desktop refresh"), "{{snapshot}}");
-
     app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
         .expect("return to the first project");
     app.expect(
@@ -7136,6 +7136,37 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
     )
     .expect("the first project's persisted view remains synchronized");
     assert!(app.dump_json().contains("workspace-item-4-title"));
+    let mut compact = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (460, 820),
+    );
+    compact.expect(
+        &SemanticExpectation::named("workspace-shell")
+            .semantic_target("back")
+            .role(Role::Button)
+            .name("Back"),
+    )
+    .expect("compact detail exposes accessible Back");
+    compact.perform_semantic_named("workspace-shell", Some("back"), &Action::Activate)
+        .expect("return to compact navigation");
+    compact.expect(
+        &SemanticExpectation::named("workspace-tree").role(Role::Tree),
+    )
+    .expect("compact navigation uses the full-width tree pane");
+    compact.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("choose a compact navigation row");
+    compact.expect(
+        &SemanticExpectation::named("workspace-selected-item")
+            .role(Role::Heading {{ level: 1 }})
+            .name("Design system"),
+    )
+    .expect("compact selection navigates to full-width detail");
+    let issues = compact.accessibility_audit();
+    assert!(
+        issues.issues.is_empty(),
+        "compact workspace audit: {{issues:#?}}"
+    );
 }}
 "#
     )
@@ -7435,7 +7466,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Workspace {
         let _ = writeln!(
             out,
-            "\nThe workspace starter composes a resizable master-detail shell from ordinary retained widgets. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
+            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
         );
     }
     let _ = writeln!(
@@ -10363,7 +10394,9 @@ mod tests {
             template: Template::Workspace,
         };
         let source = app_lib(&spec);
-        assert!(source.contains("ResizableSplit::new"));
+        assert!(source.contains("AppShell::new"));
+        assert!(source.contains("with_narrow_screen_state"));
+        assert!(source.contains("workspace-back"));
         assert!(source.contains("ModelView::from_state(&selected"));
         assert!(source.contains(".on_select"));
         assert!(source.contains("TextInput::from_document_string"));
@@ -10371,7 +10404,7 @@ mod tests {
         let test = app_test(&spec);
         assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
         assert!(test.contains("perform_undo"));
-        assert!(app_readme(&spec).contains("resizable master-detail shell"));
+        assert!(app_readme(&spec).contains("responsive master-detail shell"));
     }
 
     #[test]

@@ -59,6 +59,7 @@ workspace-title-placeholder = Untitled item\n\
 workspace-notes-label = Notes\n\
 workspace-notes-placeholder = Add project notes…\n\
 workspace-preview-heading = Live preview\n\
+workspace-back = Back\n\
 workspace-share = Share\n";
 
     pub const IDS: &[&str] = &["de-DE", "en-US"];
@@ -484,6 +485,38 @@ mod tests {
         )
         .expect("the original detail remains synchronized");
         assert!(app.dump_json().contains("workspace-item-4-title"));
+
+        let mut compact =
+            ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (460, 820));
+        compact
+            .expect(
+                &SemanticExpectation::named("workspace-shell")
+                    .semantic_target("back")
+                    .role(Role::Button)
+                    .name("Back"),
+            )
+            .expect("compact detail exposes accessible Back");
+        compact
+            .perform_semantic_named("workspace-shell", Some("back"), &Action::Activate)
+            .expect("return to compact navigation");
+        compact
+            .expect(&SemanticExpectation::named("workspace-tree").role(Role::Tree))
+            .expect("compact navigation uses the full-width tree pane");
+        compact
+            .perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+            .expect("choose a compact navigation row");
+        compact
+            .expect(
+                &SemanticExpectation::named("workspace-selected-item")
+                    .role(Role::Heading { level: 1 })
+                    .name("Design system"),
+            )
+            .expect("compact selection navigates to full-width detail");
+        let issues = compact.accessibility_audit();
+        assert!(
+            issues.issues.is_empty(),
+            "compact workspace audit: {issues:#?}"
+        );
     }
 
     #[test]
