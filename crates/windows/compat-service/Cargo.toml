@@ -1,0 +1,27 @@
+[package]
+name = "compat-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "qOS broker for default-deny Wine, UMU/Proton, and Windows VM launches"
+
+[lib]
+name = "compat_service"
+path = "src/lib.rs"
+
+[dependencies]
+collab-types = { path = "../../collab/collab-types" }
+compat-catalogue = { path = "../compat-catalogue" }
+launcher = { path = "../../packaging/launcher" }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+windows-vm = { path = "../../system/windows-vm" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

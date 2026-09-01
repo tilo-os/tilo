@@ -28,6 +28,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/windows/compat-service",
     "crates/system/qos-rollback",
     "crates/system/qos-cli",
     "crates/system/tinker",
