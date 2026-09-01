@@ -107,6 +107,15 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             cc -O2 -Wall -Wextra -o "$tools_dir/qemu-argv0-wrapper" \
                 "$repo_root/dist/ci/qemu-argv0-wrapper.c"
             docker export "$container" | tar --extract --directory "$rootfs"
+            # docker export deliberately omits declared volumes. Copy their
+            # initialized contents (notably Nix's /nix store) from the stopped
+            # container so the exported userspace remains executable.
+            while IFS= read -r volume; do
+                [[ -z $volume ]] && continue
+                mkdir -p "$rootfs$volume"
+                docker cp "$container:$volume/." "$rootfs$volume/"
+            done < <(docker inspect --format \
+                '{{range .Mounts}}{{println .Destination}}{{end}}' "$container")
             mkdir -p "$rootfs/artifacts"
             if [[ $distro == ubuntu-24.04 || $distro == debian-13 ]]; then
                 install -Dm755 "$repo_root/dist/ci/proot-apt-key" \
@@ -230,6 +239,9 @@ arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
     # not expose it; Arch documents DisableSandbox specifically for this case.
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+    # Empty directories are not represented in an OCI layer and can disappear
+    # when the ARM image is exported rather than started by Docker.
+    mkdir -p /var/lib/pacman
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
     stage=prepare-arch-builder
