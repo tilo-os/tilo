@@ -58,12 +58,12 @@ sudo apt update
 sudo apt install qos-session
 ```
 
-Use `trixie` instead of `noble` on Debian 13. Fedora 42 users can add the RPM
+Use `trixie` instead of `noble` on Debian 13. Fedora 44 users can add the RPM
 registry and install directly with `dnf`:
 
 ```bash
 sudo dnf config-manager addrepo \
-  --from-repofile=https://code.sandbox.example/api/packages/qos/rpm/fedora/42.repo
+  --from-repofile=https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo
 sudo dnf install qos-session
 ```
 
