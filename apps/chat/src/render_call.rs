@@ -851,8 +851,7 @@ impl ChatApp {
         reason = "one deterministic layout pass must keep wrapped call controls, their hit targets and the returned bar bounds identical"
     )]
     pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<OverlayButton>) {
-        let sharing = self.sharing_screen();
-        let specs: [(&'static str, bool, bool, bool, Hit); 6] = [
+        let specs: [(&'static str, bool, bool, bool, Hit); 5] = [
             (
                 if self.call.muted { "Unmute" } else { "Mute" },
                 self.call.muted,
@@ -877,19 +876,6 @@ impl ChatApp {
                 false,
                 self.call_allows(crate::call::CallAction::Camera),
                 Hit::CallAudioOnly,
-            ),
-            (
-                if sharing {
-                    "Stop share"
-                } else {
-                    "Share screen"
-                },
-                sharing,
-                false,
-                // Stop remains available after a permission downgrade so the
-                // person can always cease a transmission they already began.
-                sharing || self.call_allows(crate::call::CallAction::ShareScreen),
-                Hit::CallShareScreen,
             ),
             ("Collapse", false, false, true, Hit::CallExpand),
             ("Leave", false, true, true, Hit::CallLeave),
