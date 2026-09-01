@@ -168,6 +168,17 @@ where
     C: CapabilityBroker,
     L: RemoteAppLauncher,
 {
+    /// Returns the provisioned state which gates normal application launches.
+    ///
+    /// This deliberately does not boot the guest or attach a viewer.  The
+    /// Windows appliance is a fallback resource, so a manager refresh must
+    /// not wake it merely to paint an availability badge.  [`Self::launch`]
+    /// performs the authenticated guest/presentation probe immediately before
+    /// an explicit launch.
+    pub fn launch_readiness(&self) -> Result<ApplianceState, LaunchError> {
+        self.ready_state()
+    }
+
     /// Refreshes the app catalogue only through the authenticated guest
     /// bridge. An RDP server alone is never enough to publish applications.
     pub fn catalog(&self) -> Result<Catalog, LaunchError> {
