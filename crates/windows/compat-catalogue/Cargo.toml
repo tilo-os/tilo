@@ -1,0 +1,21 @@
+[package]
+name = "compat-catalogue"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "qOS Windows compatibility catalogue and deterministic Wine/Proton/VM route resolver"
+
+[lib]
+name = "compat_catalogue"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true
