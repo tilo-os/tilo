@@ -119,6 +119,9 @@ pub struct WindowsApp {
     confirm_escalate_to_vm: Option<String>,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_waits_for_appliance: bool,
+    resource_result: Option<qos_actions::InvocationUpdate>,
 }
 
 impl WindowsApp {
@@ -381,10 +384,43 @@ impl WindowsApp {
             confirm_escalate_to_vm: None,
             confirm_vendor_uninstall: None,
             confirm_delete_data: None,
+            resource_invocation: None,
+            resource_waits_for_appliance: false,
+            resource_result: None,
         }
     }
     fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
         self.catalogue.apps.get(self.selected)
+    }
+    fn finish_resource_operation(&mut self, result: Result<(), String>) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.resource_result = Some(match result {
+            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+            Err(message) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "windows.operation_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        });
+    }
+
+    fn cancel_resource_operation(&mut self, message: &str) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: Some(message.into()),
+        });
     }
     /// Conditional controls are retained widgets, while the detail pane is
     /// immediate-mode. Clear their interactive state whenever the selected
@@ -477,14 +513,17 @@ impl WindowsApp {
             }
             Ok(OpenFileOutcome::Cancelled) => {
                 self.portal_rx = None;
+                self.cancel_resource_operation("installer selection was cancelled");
             }
             Ok(OpenFileOutcome::Failed(error)) => {
                 self.portal_rx = None;
+                self.finish_resource_operation(Err(error.clone()));
                 self.notice = Some(format!("Could not open the file picker: {error}"));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
+                self.finish_resource_operation(Err(strings::t("windows-picker-disconnected")));
                 self.notice = Some(strings::t("windows-picker-disconnected"));
             }
         }
@@ -503,14 +542,19 @@ impl WindowsApp {
                     Err(error) => self.notice = Some(error),
                 }
             }
-            Ok(OpenFileOutcome::Cancelled) => self.iso_portal_rx = None,
+            Ok(OpenFileOutcome::Cancelled) => {
+                self.iso_portal_rx = None;
+                self.cancel_resource_operation("Windows ISO selection was cancelled");
+            }
             Ok(OpenFileOutcome::Failed(error)) => {
                 self.iso_portal_rx = None;
+                self.finish_resource_operation(Err(error.clone()));
                 self.notice = Some(format!("Could not open the Windows ISO picker: {error}"));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.iso_portal_rx = None;
+                self.finish_resource_operation(Err(strings::t("windows-picker-disconnected")));
                 self.notice = Some(strings::t("windows-picker-disconnected"));
             }
         }
@@ -538,28 +582,43 @@ impl WindowsApp {
             Ok(OpenFileOutcome::Cancelled) => {
                 self.document_portal_rx = None;
                 self.document_target = None;
+                self.cancel_resource_operation("document selection was cancelled");
             }
             Ok(OpenFileOutcome::Failed(error)) => {
                 self.document_portal_rx = None;
                 self.document_target = None;
+                self.finish_resource_operation(Err(error.clone()));
                 self.notice = Some(format!("Could not open the file picker: {error}"));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.document_portal_rx = None;
                 self.document_target = None;
+                self.finish_resource_operation(Err(strings::t("windows-picker-disconnected")));
                 self.notice = Some(strings::t("windows-picker-disconnected"));
             }
         }
     }
     fn refresh(&mut self) {
         if let Some(notice) = self.appliance_owner.drain() {
-            self.notice = Some(notice);
+            self.notice = Some(notice.clone());
+        }
+        if self.resource_invocation.is_some()
+            && self.resource_waits_for_appliance
+            && let Some(result) = self.appliance_owner.take_action_result()
+        {
+            self.finish_resource_operation(result.map(|_| ()));
         }
         self.deactivate_selection_controls();
         self.catalogue = self.provider.catalogue();
         if let Some(notice) = self.provider.take_notice() {
-            self.notice = Some(notice);
+            self.notice = Some(notice.clone());
+        }
+        if self.resource_invocation.is_some()
+            && !self.resource_waits_for_appliance
+            && let Some(result) = self.provider.take_operation_result()
+        {
+            self.finish_resource_operation(result.map(|_| ()));
         }
         if self.selected >= self.catalogue.apps.len() {
             self.selected = 0;
@@ -882,6 +941,20 @@ impl Widget for WindowsApp {
             "windows.launch",
             "windows.launch-vm-fallback",
             "windows.publish",
+            "windows.retry-install",
+            "windows.escalate-install",
+            "windows.remove-launcher",
+            "windows.uninstall",
+            "windows.delete-data",
+            "windows.open-file",
+            "windows.install",
+            "windows.import-iso",
+            "windows.recovery",
+            "windows.restart",
+            "windows.suspend",
+            "windows.resume",
+            "windows.shutdown",
+            "windows.temporary-network",
         ]
     }
 
@@ -1733,6 +1806,88 @@ impl Widget for WindowsApp {
         if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
         }
+        match type_id {
+            "windows.install" => {
+                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                if path.trim().is_empty() {
+                    if self.portal_rx.is_some() {
+                        return Err("an installer picker is already open".into());
+                    }
+                    self.portal_rx = Some(installer_pick_request().send_open_file());
+                } else {
+                    let path = std::path::PathBuf::from(path);
+                    let source_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| "installer path has no valid file name".to_string())?;
+                    let source = File::open(&path)
+                        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+                    self.provider.install(source, source_name)?;
+                }
+                return Ok(true);
+            }
+            "windows.import-iso" => {
+                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                if path.trim().is_empty() {
+                    if self.iso_portal_rx.is_some() {
+                        return Err("a Windows ISO picker is already open".into());
+                    }
+                    self.iso_portal_rx = Some(windows_iso_pick_request().send_open_file());
+                } else {
+                    let path = std::path::PathBuf::from(path);
+                    let source = File::open(&path)
+                        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+                    self.appliance_owner.import_iso(source)?;
+                }
+                return Ok(true);
+            }
+            "windows.open-file" => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let app_id = args
+                    .first()
+                    .ok_or_else(|| "missing Windows app id".to_string())?;
+                let file_path = args.get(1).map(String::as_str).unwrap_or("");
+                if file_path.trim().is_empty() {
+                    if self.document_portal_rx.is_some() {
+                        return Err("a document picker is already open".into());
+                    }
+                    self.document_target = Some(app_id.clone());
+                    self.document_portal_rx =
+                        Some(windows_document_pick_request().send_open_file());
+                } else {
+                    let source = File::open(file_path)
+                        .map_err(|e| format!("could not open {file_path}: {e}"))?;
+                    self.provider.launch_vm_with_file(app_id, source)?;
+                }
+                return Ok(true);
+            }
+            "windows.recovery" => self.appliance_owner.open_recovery()?,
+            "windows.restart" => self.appliance_owner.lifecycle(LifecycleAction::Restart)?,
+            "windows.suspend" => self.appliance_owner.lifecycle(LifecycleAction::Suspend)?,
+            "windows.resume" => self.appliance_owner.lifecycle(LifecycleAction::Resume)?,
+            "windows.shutdown" => self.appliance_owner.lifecycle(LifecycleAction::Shutdown)?,
+            "windows.temporary-network" => {
+                let purpose = if self.appliance_owner.status().license == LicenseState::Unlicensed {
+                    EgressPurpose::Activation
+                } else {
+                    EgressPurpose::WindowsUpdate
+                };
+                self.appliance_owner.open_temporary_egress(purpose)?;
+            }
+            _ => {}
+        }
+        if matches!(
+            type_id,
+            "windows.recovery"
+                | "windows.restart"
+                | "windows.suspend"
+                | "windows.resume"
+                | "windows.shutdown"
+                | "windows.temporary-network"
+        ) {
+            return Ok(true);
+        }
         let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         let app = self
             .catalogue
@@ -1792,8 +1947,69 @@ impl Widget for WindowsApp {
             _ => return Ok(false),
         }
         self.notice = Some("Operation requested".into());
-        self.refresh();
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        if self.resource_invocation.is_some() {
+            return Err("another Windows operation is still running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        let deferred = self.portal_rx.is_some()
+            || self.document_portal_rx.is_some()
+            || self.iso_portal_rx.is_some()
+            || self.appliance_owner.busy()
+            || !self.provider.operations_complete_on_return();
+        if deferred {
+            self.resource_invocation = Some(invocation);
+            self.resource_waits_for_appliance = matches!(
+                type_id,
+                "windows.import-iso"
+                    | "windows.recovery"
+                    | "windows.restart"
+                    | "windows.suspend"
+                    | "windows.resume"
+                    | "windows.shutdown"
+                    | "windows.temporary-network"
+            );
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.refresh();
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
     }
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
