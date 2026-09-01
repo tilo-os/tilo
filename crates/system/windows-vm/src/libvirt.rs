@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     APPLIANCE_DOMAIN_NAME, ApplianceConfig, CommandError, CommandOutput, CommandRequest,
-    CommandRunner, ConfigError, CpuMode,
+    CommandRunner, ConfigError, CpuMode, GraphicsAssignment,
 };
 
 const LIBVIRT_URI: &str = "qemu:///system";
@@ -161,6 +161,80 @@ impl<R: CommandRunner> LibvirtBackend<R> {
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
             })
         }
+    }
+
+    /// Persistently attach one already-prepared GPU partition. The VM must be
+    /// off; the caller has separately proved this exact VF/mdev through the
+    /// read-only capability probe and an owner-authorised boundary.
+    pub fn attach_graphics(
+        &self,
+        config: &ApplianceConfig,
+        assignment: &GraphicsAssignment,
+    ) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        if self.state(config)? != DomainState::ShutOff {
+            return Err(VmBackendError::GraphicsRequiresShutoff);
+        }
+        let xml = assignment
+            .domain_xml()
+            .ok_or(VmBackendError::InvalidGraphicsAssignment)?;
+        let request = CommandRequest::new(self.virsh.clone())
+            .args([
+                "--connect",
+                LIBVIRT_URI,
+                "attach-device",
+                APPLIANCE_DOMAIN_NAME,
+                "/dev/stdin",
+                "--config",
+            ])
+            .stdin_secret(xml.as_bytes());
+        let output = self.runner.run(&request)?;
+        if output.success {
+            return Ok(());
+        }
+        Err(VmBackendError::Virsh {
+            code: output.code,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+
+    /// Detach only the exact partition recorded by qOS at attachment time.
+    pub fn detach_graphics(
+        &self,
+        config: &ApplianceConfig,
+        assignment: &GraphicsAssignment,
+    ) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        if self.state(config)? != DomainState::ShutOff {
+            return Err(VmBackendError::GraphicsRequiresShutoff);
+        }
+        let xml = assignment
+            .domain_xml()
+            .ok_or(VmBackendError::InvalidGraphicsAssignment)?;
+        let request = CommandRequest::new(self.virsh.clone())
+            .args([
+                "--connect",
+                LIBVIRT_URI,
+                "detach-device",
+                APPLIANCE_DOMAIN_NAME,
+                "/dev/stdin",
+                "--config",
+            ])
+            .stdin_secret(xml.as_bytes());
+        let output = self.runner.run(&request)?;
+        if output.success {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_ascii_lowercase();
+        if stderr.contains("not found") || stderr.contains("no matching") {
+            return Ok(());
+        }
+        Err(VmBackendError::Virsh {
+            code: output.code,
+            stderr,
+        })
     }
 }
 
@@ -449,6 +523,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <devices><emulator>/usr/bin/qemu-system-x86_64</emulator>\
 <controller type='sata' index='0'/>\
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
+<controller type='virtio-serial' index='0'/>\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' detect_zeroes='unmap'/>\
 <source file='{disk}'/><target dev='sda' bus='scsi'/><serial>qos-windows-system</serial></disk>\
 <!-- Setup media use Windows-inbox SATA; only the installed system disk uses virtio-scsi. -->\
@@ -461,7 +536,8 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <vsock model='virtio'><cid auto='no' address='{}'/></vsock>\
 <tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
-<video><model type='virtio' heads='1' primary='yes'/></video>\
+<!-- Windows virtio-gpu is a paravirtual 2D fallback; do not infer a Linux virgl 3D path. -->\
+<video><model type='virtio' heads='1' primary='yes'><acceleration accel3d='no'/></model></video>\
 <graphics type='spice' autoport='yes'><listen type='none'/><clipboard copypaste='no'/><filetransfer enable='no'/></graphics>\
 <sound model='ich9'><codec type='micro'/><audio id='1'/></sound>\
 <audio id='1' type='spice'/>\
@@ -514,6 +590,10 @@ pub enum VmBackendError {
     InvalidEgressTtl,
     #[error("egress lease identifier is invalid")]
     InvalidEgressLease,
+    #[error("graphics partitions can be changed only while the Windows appliance is shut off")]
+    GraphicsRequiresShutoff,
+    #[error("graphics assignment is not a canonical SR-IOV VF or mediated-device identifier")]
+    InvalidGraphicsAssignment,
     #[error("libvirt paths must be valid UTF-8")]
     NonUtf8Path,
 }
@@ -570,6 +650,8 @@ mod tests {
         assert!(xml.contains("<listen type='none'/>"));
         assert!(xml.contains("<sound model='ich9'>"));
         assert!(xml.contains("name='com.redhat.spice.0'"));
+        assert!(xml.contains("<controller type='virtio-serial' index='0'/>"));
+        assert!(xml.contains("<acceleration accel3d='no'/>"));
         assert!(xml.contains("<clipboard copypaste='no'/>"));
         assert!(xml.contains("<filetransfer enable='no'/>"));
         assert!(xml.contains("<audio id='1' type='spice'/>"));
@@ -611,6 +693,54 @@ mod tests {
         assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
         assert!(String::from_utf8_lossy(&requests[1].stdin).contains("<domain type='kvm'>"));
         drop(requests);
+    }
+
+    #[test]
+    fn an_explicit_partition_is_attached_persistently_only_while_shut_off() {
+        let domain = render_domain_xml(&config()).unwrap();
+        let runner = Runner::new(vec![
+            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful(domain.as_str()),
+            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("shut off\n"),
+            CommandOutput::successful("Device attached\n"),
+        ]);
+        let backend = LibvirtBackend::new(runner);
+        backend
+            .attach_graphics(
+                &config(),
+                &GraphicsAssignment::SriovVf {
+                    pci_address: "0000:03:00.1".to_string(),
+                },
+            )
+            .unwrap();
+        let requests = backend.runner.requests.lock().unwrap();
+        let attach = requests.last().unwrap();
+        assert!(attach.args.iter().any(|arg| arg == "attach-device"));
+        assert!(attach.args.iter().any(|arg| arg == "--config"));
+        assert!(!attach.args.iter().any(|arg| arg == "--live"));
+        assert!(String::from_utf8_lossy(&attach.stdin).contains("managed='no'"));
+    }
+
+    #[test]
+    fn graphics_attachment_refuses_a_running_guest() {
+        let domain = render_domain_xml(&config()).unwrap();
+        let runner = Runner::new(vec![
+            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful(domain.as_str()),
+            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("running\n"),
+        ]);
+        let backend = LibvirtBackend::new(runner);
+        assert!(matches!(
+            backend.attach_graphics(
+                &config(),
+                &GraphicsAssignment::MediatedDevice {
+                    uuid: "53764d0e-85a0-42b4-af5c-2046b460b1dc".to_string(),
+                },
+            ),
+            Err(VmBackendError::GraphicsRequiresShutoff)
+        ));
     }
 
     #[test]

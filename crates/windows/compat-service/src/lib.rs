@@ -78,5 +78,6 @@ pub use store::{
 pub use vm_adapter::{
     AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, CanonicalRailCapabilityBroker,
     CanonicalRailPortalAuthority, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority,
-    LiveVmDelegate, SharedSessionCapabilityBroker, VmPortalAuthority, VmSharedSessionTracker,
+    LiveVmDelegate, PortalRailPortalAuthority, SharedSessionCapabilityBroker, VmPortalAuthority,
+    VmSharedSessionTracker,
 };

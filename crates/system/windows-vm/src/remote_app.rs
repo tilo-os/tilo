@@ -73,20 +73,26 @@ impl<R> FreeRdpLauncher<R> {
                 "/cert:fingerprint:sha256:{}",
                 guest.endpoint.certificate_sha256
             ))
-            .arg(format!("/app:program:{}", guest.remote_app_alias))
-            .arg("/dynamic-resolution")
+            // FreeRDP and Microsoft's .rdp format distinguish an allow-list
+            // alias from an executable path with the leading `||`. Omitting
+            // it makes client-Windows RAIL especially prone to failing with
+            // no application window even though authentication succeeded.
+            .arg(format!("/app:program:||{}", guest.remote_app_alias))
+            // A brief compositor/display interruption should reconnect the
+            // existing RDP session, but an invalid guest or credential must
+            // not create an unbounded retry loop.
+            .arg("+auto-reconnect")
+            .arg("/auto-reconnect-max-retries:3")
             // This is always a host-only, single-hop connection. Advertising
             // LAN characteristics avoids FreeRDP's WAN-oriented visual and
-            // latency trade-offs while dynamic resolution lets every RAIL
-            // toplevel follow the qOS tile size.
+            // latency trade-offs.
             .arg("/network:lan")
             .arg("/gfx:AVC444")
             .arg("/compression-level:2")
-            .arg("+window-drag")
-            .arg("+fonts")
-            .arg("+themes")
-            .arg("+aero")
-            .arg("-wallpaper")
+            // Desktop sizing and appearance flags (`+dynamic-resolution`,
+            // window-drag, wallpaper, themes, aero) do not describe RAIL
+            // windows and have caused resize faults in recent FreeRDP/X11
+            // combinations. RAIL carries each remote window's own geometry.
             .arg("-grab-keyboard")
             .arg(format!("/wm-class:qos-windows-{}", guest.remote_app_alias))
             // Playback is output-only; the Pulse endpoint may itself be a
@@ -399,8 +405,16 @@ mod tests {
             request
                 .args
                 .iter()
-                .any(|arg| arg == "/app:program:qos-word")
+                .any(|arg| arg == "/app:program:||qos-word")
         );
+        assert!(request.args.iter().any(|arg| arg == "+auto-reconnect"));
+        assert!(
+            request
+                .args
+                .iter()
+                .any(|arg| arg == "/auto-reconnect-max-retries:3")
+        );
+        assert!(!request.args.iter().any(|arg| arg == "/dynamic-resolution"));
     }
 
     #[test]

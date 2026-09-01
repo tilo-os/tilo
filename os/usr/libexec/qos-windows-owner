@@ -24,18 +24,21 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   qos-windows-owner status
+  qos-windows-owner graphics-capabilities
   pkexec /usr/libexec/qos-windows-owner import-iso < portal-selected-windows.iso
   pkexec /usr/libexec/qos-windows-owner recovery-start
   pkexec /usr/libexec/qos-windows-owner consume-recovery
   pkexec /usr/libexec/qos-windows-owner lifecycle {status|start|shutdown|force-shutdown|restart|suspend|resume}
   pkexec /usr/libexec/qos-windows-owner egress-open {activation|windows-update} [ttl-seconds]
   pkexec /usr/libexec/qos-windows-owner egress-close <lease-id>
+  pkexec /usr/libexec/qos-windows-owner graphics-attach {sriov-vf|mdev} <canonical-id>
+  pkexec /usr/libexec/qos-windows-owner graphics-detach
 
-Only `import-iso`, `recovery-start`, and internal `consume-recovery` are
-privileged actions. The ISO is read from the inherited portal descriptor on
-stdin; this command never accepts a host pathname. `recovery-start` authorises
-only a one-time unprivileged viewer attachment and never opens a desktop as
-root.
+Mutating actions are separately authorised by polkit. The ISO is read from the
+inherited portal descriptor on stdin; this command never accepts a host
+pathname. `recovery-start` authorises only a one-time unprivileged viewer
+attachment. Graphics attach accepts only a probe-proven VFIO partition and can
+run only while the singleton is shut off.
 EOF
 }
 
@@ -46,6 +49,15 @@ require_exact_action() {
         lifecycle) [ "$#" -eq 2 ] || { usage; exit 2; }; case "$2" in status|start|shutdown|force-shutdown|restart|suspend|resume) ;; *) usage; exit 2 ;; esac ;;
         egress-open) [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { usage; exit 2; }; case "$2" in activation|windows-update) ;; *) usage; exit 2; esac; [ "$#" -eq 2 ] || [[ "$3" =~ ^[0-9]+$ ]] || { usage; exit 2; } ;;
         egress-close) [ "$#" -eq 2 ] && [[ "$2" =~ ^egress-[A-Za-z0-9-]+$ ]] || { usage; exit 2; } ;;
+        graphics-attach)
+            [ "$#" -eq 3 ] || { usage; exit 2; }
+            case "$2" in
+                sriov-vf) [[ "$3" =~ ^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]$ ]] || { usage; exit 2; } ;;
+                mdev) [[ "$3" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || { usage; exit 2; } ;;
+                *) usage; exit 2 ;;
+            esac
+            ;;
+        graphics-detach) [ "$#" -eq 1 ] || { usage; exit 2; } ;;
         *) usage; exit 2 ;; esac
 }
 
@@ -197,6 +209,16 @@ egress_close() {
     exec "$VM_CONTROL" egress-close "$1"
 }
 
+graphics_attach() {
+    require_root
+    exec "$VM_CONTROL" graphics-attach "$1" "$2"
+}
+
+graphics_detach() {
+    require_root
+    exec "$VM_CONTROL" graphics-detach
+}
+
 status() {
     # Read-only status is intentionally usable without pkexec.  The appliance
     # state is group-readable by the normal qOS owner; callers without that
@@ -273,7 +295,11 @@ case "${1:-}" in
         [ "$#" -eq 1 ] || { usage; exit 2; }
         status
         ;;
-    import-iso|recovery-start|consume-recovery|lifecycle|egress-open|egress-close)
+    graphics-capabilities)
+        [ "$#" -eq 1 ] || { usage; exit 2; }
+        exec "$VM_CONTROL" graphics-capabilities
+        ;;
+    import-iso|recovery-start|consume-recovery|lifecycle|egress-open|egress-close|graphics-attach|graphics-detach)
         require_exact_action "$@"
         case "$1" in
             import-iso) import_iso ;;
@@ -282,6 +308,8 @@ case "${1:-}" in
             lifecycle) shift; lifecycle "$@" ;;
             egress-open) shift; egress_open "$@" ;;
             egress-close) shift; egress_close "$@" ;;
+            graphics-attach) shift; graphics_attach "$@" ;;
+            graphics-detach) graphics_detach ;;
         esac
         ;;
     -h|--help|'') usage ;;

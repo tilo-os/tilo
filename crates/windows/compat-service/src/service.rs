@@ -388,6 +388,18 @@ pub trait VmDelegate: Send + Sync {
         &self,
         request: VmRouteRequest<'_>,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError>;
+
+    fn launch_with_portal_file(
+        &self,
+        request: VmRouteRequest<'_>,
+        _source: File,
+        _access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        let _ = request;
+        Err(windows_vm::LaunchError::CapabilityBroker(
+            "portal file handoff is unavailable".to_string(),
+        ))
+    }
 }
 
 impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
@@ -455,6 +467,15 @@ impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
         request: VmRouteRequest<'_>,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
         (**self).launch(request)
+    }
+
+    fn launch_with_portal_file(
+        &self,
+        request: VmRouteRequest<'_>,
+        source: File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        (**self).launch_with_portal_file(request, source, access)
     }
 }
 
@@ -763,6 +784,35 @@ where
             capabilities,
             resolved_capabilities: &resolved,
         })?;
+        Ok(LaunchReceipt {
+            explanation: published_vm_explanation(&application.presentation),
+            success: running.process.exit_code == Some(0),
+            exit_code: running.process.exit_code,
+        })
+    }
+
+    pub fn launch_published_vm_with_portal_file(
+        &self,
+        application: &VmPublishedApplication,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+        source: File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<LaunchReceipt, ServiceError> {
+        let resolved = CapabilityPlan::for_app(&application.app_id, capabilities, now_unix);
+        let running = self.vm.launch_with_portal_file(
+            VmRouteRequest {
+                route: RouteKind::Vm,
+                app_id: &application.app_id,
+                workspace_id,
+                published_application_id: &application.published_application_id,
+                capabilities,
+                resolved_capabilities: &resolved,
+            },
+            source,
+            access,
+        )?;
         Ok(LaunchReceipt {
             explanation: published_vm_explanation(&application.presentation),
             success: running.process.exit_code == Some(0),
