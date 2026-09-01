@@ -1,0 +1,124 @@
+#!/usr/bin/bash
+# Prepare, but never silently install, qOS's singleton Windows fallback.
+#
+# qOS does not redistribute Windows or collect product keys.  The owner gives
+# this command an ISO; Windows Setup receives its licence directly in the
+# explicit provisioning console.  A product key must never be passed on argv,
+# stored in the manifest, or copied into the guest-tools ISO.
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+readonly ROOT='/var/lib/qos/windows'
+readonly GUEST_SOURCE='/usr/share/qos/windows/guest'
+readonly DISK="$ROOT/system.qcow2"
+readonly INSTALL_MEDIA="$ROOT/install-media.iso"
+readonly TOOLS_MEDIA="$ROOT/qos-guest-tools.iso"
+readonly STATE="$ROOT/state.json"
+readonly UUID_FILE="$ROOT/domain.uuid"
+readonly SECRET="$ROOT/bridge/bootstrap.secret"
+stage=''
+
+die() { printf '%s\n' "qos-windows-provision: $*" >&2; exit 1; }
+usage() {
+    cat <<'EOF'
+Usage: qos-windows-provision prepare --iso /absolute/path/to/windows.iso
+       qos-windows-provision assert
+
+`prepare` creates the one protected appliance disk and a guest-tools ISO. It
+does not launch Windows, transmit an ISO over the network, or accept a licence
+key.  Attach the two generated ISOs only through the owner-authorised
+provisioning/recovery action, complete Windows Setup there, and type a product
+key directly into Windows if one is required.
+EOF
+}
+
+require_root() { [ "${EUID}" -eq 0 ] || die 'must run as root'; }
+canonical_regular_file() {
+    local path
+    path="$(readlink -f -- "$1")" || die 'could not canonicalize ISO path'
+    [ "${path#/}" != "$path" ] && [ -f "$path" ] && [ -r "$path" ] \
+        || die 'ISO must be a readable regular file at an absolute path'
+    printf '%s\n' "$path"
+}
+
+prepare() {
+    [ "$#" -eq 2 ] && [ "$1" = '--iso' ] || { usage >&2; return 2; }
+    local source_iso digest uuid
+    case "$2" in /*) ;; *) die 'ISO argument must be an absolute path' ;; esac
+    source_iso="$(canonical_regular_file "$2")"
+    [ -d "$GUEST_SOURCE" ] || die "missing immutable guest setup payload"
+    command -v qemu-img >/dev/null || die 'qemu-img is not installed'
+    command -v xorriso >/dev/null || die 'xorriso is not installed'
+
+    install -d -m 0700 -o root -g root "$ROOT" "$ROOT/bridge"
+    # A second appliance would merge two Windows security domains. Refuse both
+    # partial and complete prior state; this tool never resets an appliance.
+    [ ! -e "$DISK" ] && [ ! -e "$INSTALL_MEDIA" ] && [ ! -e "$STATE" ] \
+        || die 'an appliance already exists; qOS does not reset it from this tool'
+
+    umask 077
+    stage="$(mktemp -d "$ROOT/.guest-tools.XXXXXX")"
+    trap 'rm -rf -- "${stage:-}"' EXIT
+    cp -- "$GUEST_SOURCE/Install-qOSRemoteApp.ps1" "$stage/"
+    cp -- "$GUEST_SOURCE/Start-qOSGuestBridge.ps1" "$stage/"
+    head -c 32 /dev/urandom > "$stage/qos-bridge.secret"
+    install -m 0600 -o root -g root "$stage/qos-bridge.secret" "$SECRET"
+    cat > "$stage/qos-bridge.json" <<'EOF'
+{"protocolMajor":1,"bridgePort":49888,"hostOnlyGateway":"192.168.251.1","network":"192.168.251.0/24"}
+EOF
+
+    # qcow2 is allocated lazily and discard-capable; guest installation remains
+    # the only writer.  The user ISO is copied once so removable media cannot
+    # change underneath an in-progress installation.
+    qemu-img create -f qcow2 -o compat=1.1,lazy_refcounts=on "$DISK" 128G >/dev/null
+    install -m 0600 -o root -g root "$source_iso" "$INSTALL_MEDIA"
+    xorriso -as mkisofs -quiet -iso-level 3 -R -J -V QOS_GUEST_TOOLS \
+        -o "$TOOLS_MEDIA" "$stage"
+    rm -rf -- "$stage"
+    stage=''
+    trap - EXIT
+    chmod 0600 "$TOOLS_MEDIA"
+    digest="$(sha256sum "$INSTALL_MEDIA" | awk '{print $1}')"
+    uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    printf '%s\n' "$uuid" > "$UUID_FILE"
+    chmod 0600 "$UUID_FILE"
+    printf '{"schema_version":1,"phase":{"installing":{"media_digest":"%s"}},"license":"unknown","catalog_generation":0}\n' "$digest" > "$STATE"
+    chmod 0600 "$STATE"
+
+    cat <<EOF
+Prepared the singleton Windows appliance.
+  disk: $DISK
+  install media: $INSTALL_MEDIA
+  guest tools: $TOOLS_MEDIA
+  domain UUID: $uuid
+
+Next: use the owner-authorised provisioning console to attach both ISOs and
+complete Windows Setup. Product keys and organisation activation stay inside
+Windows; qOS has not read or retained either.
+EOF
+}
+
+assert_state() {
+    require_root
+    [ -f "$DISK" ] && [ -f "$INSTALL_MEDIA" ] && [ -f "$TOOLS_MEDIA" ] \
+        && [ -f "$STATE" ] && [ -f "$UUID_FILE" ] && [ -f "$SECRET" ] \
+        || die 'appliance preparation is incomplete'
+    local item mode owner
+    for item in "$DISK" "$INSTALL_MEDIA" "$TOOLS_MEDIA" "$STATE" "$UUID_FILE" "$SECRET"; do
+        mode="$(stat -c '%a' "$item")"; owner="$(stat -c '%U:%G' "$item")"
+        [ "$mode" = 600 ] && [ "$owner" = root:root ] \
+            || die "private appliance state has unsafe ownership or mode: $item"
+    done
+    grep -Fq '"license":"unknown"' "$STATE" \
+        || die 'host provisioning state must not contain a Windows licence'
+    grep -Fq '"installing"' "$STATE" || die 'unexpected provisioning state'
+    printf '%s\n' 'qOS Windows appliance preparation is private and awaiting guest setup'
+}
+
+require_root
+case "${1:-}" in
+    prepare) shift; prepare "$@" ;;
+    assert) shift; [ "$#" -eq 0 ] || { usage >&2; exit 2; }; assert_state ;;
+    -h|--help|'') usage ;;
+    *) usage >&2; exit 2 ;;
+esac

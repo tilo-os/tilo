@@ -1,0 +1,22 @@
+#!/usr/bin/bash
+# This is intentionally not a launcher: the Windows desktop is only available
+# after the qOS owner-authorised recovery action has selected it. It is a
+# session-side viewer, never a privileged domain-management helper.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+[ "${EUID}" -ne 0 ] || {
+    echo 'qos-windows-recovery-console: refuses to run a Wayland GUI as root' >&2
+    echo 'The owner-authorised backend manages libvirt; invoke this viewer as the active owner session.' >&2
+    exit 1
+}
+[ "${1:-}" = '--owner-authorized' ] || {
+    cat >&2 <<'EOF'
+This opens the full Windows guest desktop for recovery/provisioning only.
+It is not a normal app-launch route. Invoke it solely through the
+owner-authorised qOS recovery action.
+EOF
+    exit 2
+}
+
+exec remote-viewer --connect qemu:///system --attach qos-windows-appliance
