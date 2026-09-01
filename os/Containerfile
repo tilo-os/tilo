@@ -68,6 +68,31 @@ FROM ${RPMS_REF} AS rpms
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 
+# ---- Pinned Windows compatibility runtimes -------------------------------
+# UMU is the upstream-supported way to run Proton outside Steam. Keep the
+# launcher and the default Proton build as independently pinned artifacts:
+# catalogues may select another installed runner, while a fresh image is still
+# able to create a game capsule without downloading Proton first. The Steam
+# Linux Runtime container remains UMU-owned and is populated in the capsule's
+# content-addressed cache when a game first needs that particular runtime.
+FROM ${BASE_REF} AS windows-compat-artifacts
+ADD --checksum=sha256:138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8 \
+    https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar \
+    /tmp/umu-launcher.tar
+ADD --checksum=sha256:62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69 \
+    https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz \
+    /tmp/umu-proton.tar.gz
+ADD --checksum=sha256:87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8 \
+    https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv \
+    /out/catalogues/umu-database.csv
+RUN mkdir -p /out/bin /out/proton \
+    && tar -xf /tmp/umu-launcher.tar -C /tmp \
+    && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
+    && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
+    && tar -xzf /tmp/umu-proton.tar.gz -C /out/proton \
+    && test -x /out/proton/UMU-Proton-10.0-4/proton
+
+
 # ---- Modern AirPlay sender -------------------------------------------------
 # Doubletake's current protocol implementation is newer than its last binary
 # release: it includes the CoreUtils/HAP pairing path required by current
@@ -631,6 +656,31 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fuse3 \
     cage \
     && dnf clean all && ${DROP_RPMDB_WAL}
+
+# Windows compatibility engines. Wine is the tested desktop-program baseline;
+# UMU + its pinned Proton build are copied below for non-Steam games. The
+# appliance packages provide one KVM-accelerated, TPM-backed Windows fallback
+# whose normal presentation is FreeRDP RemoteApp rather than a nested desktop.
+# Changing this list requires refreshing RPMS_REF (see the file header).
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    wine \
+    wine-dxvk \
+    gamescope \
+    qemu-kvm \
+    libvirt-client \
+    libvirt-daemon-kvm \
+    libvirt-daemon-config-nwfilter \
+    swtpm \
+    swtpm-tools \
+    edk2-ovmf \
+    virtio-win \
+    freerdp \
+    && dnf clean all && ${DROP_RPMDB_WAL}
+
+COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
+COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
+COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
