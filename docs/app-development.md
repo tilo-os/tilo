@@ -651,29 +651,52 @@ State has two deliberate levels:
 - transient presentation state such as hover, an open popover, or a scroll
   offset lives on the widget and never enters the shared document.
 
-That is less magical than implicit two-way binding: the storage boundary is
-visible in types and debuggable as an ordinary document. Reusable actions go
-through `ActionHost`, so a button, command palette entry, agent action, and
-undo history can invoke the same operation.
+The storage boundary stays visible in types: durable fields name a document
+path, while process-local fields bind an explicit typed handle. Reusable
+actions go through `ActionHost`, so a button, command palette entry, agent
+action, and undo history can invoke the same operation.
 
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
-the value, while `Text::from_state` observes its revision and only reruns the
-formatter after a mutation. A complete retained form needs no custom widget:
+the value. `TextInput::from_state` is a true two-way binding: every input edit
+updates the handle, and a mutation through any clone updates every bound input
+on the ordinary synchronization pass. `Text::from_state` observes the same
+revision and only reruns its formatter after a mutation. A complete retained
+form needs no snapshots, callbacks, or custom widget:
 
 ```rust
 let query = LocalState::new(String::from("status:open"));
+let live_updates = LocalState::new(true);
+let opacity = LocalState::new(0.8);
+let region = LocalState::new(String::from("Europe/Berlin"));
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
-let input = TextInput::local()
-    .with_initial_value(&query.get())
+let input = TextInput::from_state(&query)
     .with_id("filter-input")
-    .with_accessible_name("Filter")
-    .on_change(query.text_sink());
+    .with_accessible_name("Filter");
+let updates = labeled_check(
+    "live-updates-label",
+    Checkbox::from_state(&live_updates).with_id("live-updates"),
+);
+let opacity_field = NumberInput::from_state(&opacity)
+    .with_range(0.0, 1.0)
+    .with_step(0.05);
+let opacity_slider = Slider::from_state(&opacity);
+let region_field = Dropdown::from_state(
+    vec![String::from("Europe/Berlin"), String::from("Asia/Tokyo")],
+    &region,
+);
 ```
 
-`set` replaces a local value and `update` mutates it in place. A bound text
-change invalidates rendering, intrinsic measurement, and accessibility in the
-same synchronization pass. Use `Text::dynamic` when the value comes from an
-existing local owner instead of `LocalState`.
+`TextInput`, `Checkbox`, `Toggle`, `NumberInput`, `Slider`, and `Dropdown` all
+offer `from_state` with the same explicit typed contract. `set` replaces a
+local value and `update` mutates it in place. A bound text change invalidates
+rendering, multiline intrinsic measurement, and accessibility in the same
+synchronization pass without being misreported as a user edit. Bind several
+controls to the same handle for synchronized master/detail or inspector views;
+the `opacity_field` and `opacity_slider` above stay synchronized without
+app-owned fan-out. An optional `on_change` callback observes committed user
+edits without owning synchronization; programmatic setters and model
+synchronization do not invoke it. Use `Text::dynamic` when the value comes from
+an existing local owner instead of `LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app

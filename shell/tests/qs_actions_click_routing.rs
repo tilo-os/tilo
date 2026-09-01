@@ -460,25 +460,14 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
 }
 
 #[test]
-fn workspace_settings_copy_button_mints_and_copies_a_signed_invite() {
+fn workspace_settings_invite_button_opens_the_signed_composer() {
     use shell::shell::chrome_state::WsTab;
 
-    let tree = minimal_tree();
+    let mut tree = minimal_tree();
+    tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
-    let expected = "opaque-signed-invite".to_string();
-    let returned = expected.clone();
-    host.set_peer_sync_bridge(std::rc::Rc::new(move |request| {
-        assert_eq!(
-            request,
-            shell::shell::overlay_host::PeerSyncRequest::IssueInvite
-        );
-        Ok(returned.clone())
-    }));
     {
         let mut st = chrome.borrow_mut();
-        let owner = st.local_user_id.clone();
-        st.tree_mut().adopt_ownerless_workspaces(&owner);
-        st.peer_sync_enabled = true;
         st.overlays.ws_settings = true;
         st.ws_settings_tab = WsTab::General;
         st.bump();
@@ -489,30 +478,26 @@ fn workspace_settings_copy_button_mints_and_copies_a_signed_invite() {
     // real frame before any click arrives.
     let _ = &taffy;
 
-    let btn = host.ws_settings_copy_rect_for_tests();
-    assert!(btn.area() > 0.0, "the Copy button has no geometry to click");
+    let btn = host.ws_settings_invite_rect_for_tests();
     assert!(
-        host.ws_invite_copied_at_for_tests().is_none(),
-        "nothing should have been copied before the click"
+        btn.area() > 0.0,
+        "the Create button has no geometry to click"
     );
+    assert!(!host.peer_sync_card_visible());
 
     let c = btn.center();
     click_at(&mut host, &taffy, host_node, c.x, c.y);
 
     assert!(
-        host.ws_invite_copied_at_for_tests().is_some(),
-        "clicking Create & copy did not mint and copy an invite"
+        host.peer_sync_card_visible(),
+        "clicking Create did not open the signed invite composer"
     );
-    assert_eq!(
-        host.peer_sync_snapshot().invite_token.as_deref(),
-        Some(expected.as_str()),
-        "the copied value must be the opaque token returned by the signed invite path"
-    );
+    assert!(!chrome.borrow().overlays.ws_settings);
 }
 
 /// Guards against a hit rect widened until it swallows the rest of the tab.
 #[test]
-fn a_click_beside_the_copy_button_does_not_copy() {
+fn a_click_beside_the_invite_button_does_not_open_the_composer() {
     use shell::shell::chrome_state::WsTab;
 
     let tree = minimal_tree();
@@ -526,14 +511,14 @@ fn a_click_beside_the_copy_button_does_not_copy() {
     let (taffy, host_node) = layout_host(&mut host);
     host.force_ws_settings_settled();
 
-    let btn = host.ws_settings_copy_rect_for_tests();
+    let btn = host.ws_settings_invite_rect_for_tests();
     // Well left of the button, still inside the modal body.
     let p = Point::new(btn.x0 - 160.0, btn.center().y);
     click_at(&mut host, &taffy, host_node, p.x, p.y);
 
     assert!(
-        host.ws_invite_copied_at_for_tests().is_none(),
-        "a click beside the Copy button copied anyway"
+        !host.peer_sync_card_visible(),
+        "a click beside the Create button opened the composer anyway"
     );
 }
 
