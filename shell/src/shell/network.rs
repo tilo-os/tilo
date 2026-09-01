@@ -818,12 +818,6 @@ impl ShellNetwork {
         self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee), role)
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "ws is fully chained from tree (via replica's lock); nothing to drop \
-                  earlier without cloning the tree data out for no real gain, and the \
-                  block already ends right after ws is cloned out"
-    )]
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -831,25 +825,33 @@ impl ShellNetwork {
         invitee: Option<&str>,
         role: crate::network::invite::InviteRole,
     ) -> Result<String, String> {
+        let ws = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let ws = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == local)
+                .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
+            let actor = crate::shell::state::local_user_id_for_room(&ws.room);
+            if !tree.governs_room(ws.room)
+                || !ws.allows(
+                    &ws.actor_for_person(&actor),
+                    &crate::shell::state::ResourceRef::Workspace,
+                    crate::shell::state::Verb::Invite,
+                )
+            {
+                return Err("only this workspace's governing owner can create invitations".into());
+            }
+            ws.clone()
+        };
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
-            let ws = {
-                let replica = self
-                    .replica
-                    .lock()
-                    .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-                let tree = replica.tree.read();
-                tree.workspaces
-                    .iter()
-                    .find(|w| w.id == local)
-                    .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?
-                    .clone()
-            };
-            // Clone `ws` out and drop both guards above before the
-            // (unrelated) hosts lock and the invite-signing work below —
-            // neither needs the replica/tree lock held.
             let hosts = self
                 .host_addrs
                 .lock()
@@ -1149,6 +1151,23 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
             return;
         }
+        if self.require_peer_identity && !matches!(&msg, NeighbourMsg::IdentityHello { .. }) {
+            let required = if matches!(&msg, NeighbourMsg::SyncResp { .. }) {
+                crate::shell::state::Verb::Write
+            } else {
+                crate::shell::state::Verb::Read
+            };
+            let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
+            if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
+                tracing::warn!(
+                    peer = %peer,
+                    workspace_topic = ws,
+                    ?required,
+                    "dropping collaboration message without workspace authority"
+                );
+                return;
+            }
+        }
         match msg {
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
             NeighbourMsg::PresenceMoved {
@@ -1207,6 +1226,70 @@ impl ShellNetwork {
             ),
             other => self.dispatch_to_replica(peer, &other),
         }
+    }
+
+    /// Resolve a transport shard to exactly one local room. Although a room
+    /// topic is derived from a UUID, it is only 64 bits; an ambiguous collision
+    /// must not let membership in one room authorize traffic for another.
+    fn unique_room_for_topic(&self, workspace_topic: u64) -> Option<RoomId> {
+        let replica = self.replica.lock().ok()?;
+        let tree = replica.tree.read();
+        let mut matching = tree
+            .rooms()
+            .into_iter()
+            .filter(|room| room_topic_id(*room) == workspace_topic);
+        let room = matching.next()?;
+        matching.next().is_none().then_some(room)
+    }
+
+    /// Authenticate the transport device as a person and then authorize that
+    /// person against the room capability model. Device authentication alone
+    /// is deliberately insufficient: any valid qOS identity can possess a
+    /// certificate without being a member of this workspace.
+    fn peer_room_allows(
+        &self,
+        origin: &crate::shell::state::PeerOrigin,
+        workspace_topic: u64,
+        required: crate::shell::state::Verb,
+        pinned_authority_may_bootstrap: bool,
+    ) -> bool {
+        let Some(identity) = self.peer_identities.get(origin) else {
+            return false;
+        };
+        let Some(room) = self.unique_room_for_topic(workspace_topic) else {
+            return false;
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return false;
+        };
+        let tree = replica.tree.read();
+        // A newly joined guest has not received the owner's governance yet,
+        // so it cannot derive the owner's membership locally. The invite pins
+        // that exact transport peer as authority; allow only its SyncResp to
+        // bootstrap the signed-invite room. The replica still checks that it
+        // is the pinned governance writer before accepting the candidate.
+        if pinned_authority_may_bootstrap
+            && tree.room_authority(room) == crate::shell::state::RoomAuthority::Peer(origin.clone())
+        {
+            return true;
+        }
+        let person = collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        )
+        .id()
+        .to_string();
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+        else {
+            return false;
+        };
+        workspace.allows(
+            &workspace.actor_for_person(&person),
+            &crate::shell::state::ResourceRef::Workspace,
+            required,
+        )
     }
 
     /// `AppPresenceV2`: app-level presence crossing the host boundary.
@@ -1456,7 +1539,6 @@ impl ShellNetwork {
         if envelope.artifact != artifact
             || envelope.attestation_id
                 != collab_types::document_attestation_id(app_id, cluster_id, record_id)
-            || envelope.op_class != collab_types::OpClass::Splice
             || envelope.encryption.is_some()
             || collab_types::DocumentMutation::decode(&envelope.payload).is_err()
         {
@@ -1470,7 +1552,10 @@ impl ShellNetwork {
             kind: collab_types::ArtifactKind::Note,
             instance: artifact,
         };
-        let allowed = workspace.allows(&actor, &resource, collab_types::Verb::Write);
+        let required = collab_types::caps::verb_for_opclass(envelope.op_class);
+        let allowed =
+            collab_types::role_permits(role, collab_types::ArtifactKind::Note, envelope.op_class)
+                && workspace.allows(&actor, &resource, required);
         drop(tree);
         allowed.then_some(role)
     }
@@ -1742,6 +1827,79 @@ mod tests {
             ),
             Some(collab_types::Role::Editor),
         );
+        assert!(net.peer_room_allows(
+            &origin,
+            room_topic_id(room),
+            crate::shell::state::Verb::Read,
+            false,
+        ));
+        assert!(net.peer_room_allows(
+            &origin,
+            room_topic_id(room),
+            crate::shell::state::Verb::Write,
+            false,
+        ));
+
+        let mut moved = envelope.clone();
+        moved.op_class = collab_types::OpClass::Move;
+        collab_types::sign_op(&mut moved, &signing).expect("signed move");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &moved,
+            ),
+            Some(collab_types::Role::Editor),
+            "document authorization must use the declared action class, not hard-code text splice",
+        );
+
+        {
+            let replica = net.replica.lock().expect("replica");
+            let mut tree = replica.tree.write();
+            let workspace = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("workspace");
+            workspace.capabilities.retain(|capability| {
+                !matches!(
+                    &capability.subject,
+                    collab_types::Subject::Principal(collab_types::Principal::Person(member))
+                        if member == &person
+                )
+            });
+            workspace.grant_capability(collab_types::CapOverride::membership(
+                collab_types::Subject::person(person.clone()),
+                room.to_string(),
+                collab_types::Verb::Comment,
+            ));
+        }
+        let mut comment = envelope.clone();
+        comment.op_class = collab_types::OpClass::Comment;
+        collab_types::sign_op(&mut comment, &signing).expect("signed comment");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &comment,
+            ),
+            Some(collab_types::Role::Commenter),
+        );
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),
+            None,
+            "a commenter must not smuggle a splice through the generic document route",
+        );
 
         let mut revoked = RevocationEntry {
             user_public_key: cert.user_public_key,
@@ -1833,6 +1991,78 @@ mod tests {
             "admission must enforce the signed invite role"
         );
         assert!(!joined.may_administer(&person));
+        drop(tree);
+        drop(replica);
+        assert!(net.peer_room_allows(
+            &origin,
+            room_topic_id(room),
+            crate::shell::state::Verb::Read,
+            false,
+        ));
+        assert!(
+            !net.peer_room_allows(
+                &origin,
+                room_topic_id(room),
+                crate::shell::state::Verb::Write,
+                false,
+            ),
+            "a viewer may request/read room state but must not publish room mutations"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        let device = iroh::SecretKey::from_bytes(&[92; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Inviting device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).expect("certificate");
+
+        let room = RoomId::new();
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace("Joining");
+        assert!(tree.set_room(local, room));
+        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
+        assert!(tree.pin_room_authority(room, origin.clone()));
+        let (net, _commands) = shell_network_for_test(tree.shared(), 92);
+        net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+
+        assert!(
+            !net.peer_room_allows(
+                &origin,
+                room_topic_id(room),
+                crate::shell::state::Verb::Write,
+                false,
+            ),
+            "before governance arrives the inviter is not yet in the local roster"
+        );
+        assert!(net.peer_room_allows(
+            &origin,
+            room_topic_id(room),
+            crate::shell::state::Verb::Write,
+            true,
+        ));
+
+        let stranger = crate::shell::state::PeerOrigin::peer(&iroh::SecretKey::generate().public());
+        assert!(
+            !net.peer_room_allows(
+                &stranger,
+                room_topic_id(room),
+                crate::shell::state::Verb::Write,
+                true,
+            ),
+            "bootstrap authority is pinned to one authenticated transport peer"
+        );
     }
 
     #[test]
@@ -2236,6 +2466,38 @@ mod tests {
             cmd_rx.try_recv().is_err(),
             "one room joined is one request — the guest must not ask about \
              anything else",
+        );
+    }
+
+    #[test]
+    fn a_guest_cannot_mint_an_apparently_authoritative_room_invite() {
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace("Joined room");
+        let room = tree.room_of(local).expect("room");
+        tree.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("workspace")
+            .set_owner("remote-owner");
+        tree.room_authority.insert(
+            room,
+            crate::shell::state::RoomAuthority::Peer(crate::shell::state::PeerOrigin::peer(
+                &iroh::SecretKey::generate().public(),
+            )),
+        );
+        let (net, _commands) = shell_network_for_test(tree.shared(), 0x1234);
+
+        let error = net
+            .issue_invite_named_with_role(
+                local,
+                3600,
+                "Mallory",
+                crate::network::invite::InviteRole::Editor,
+            )
+            .expect_err("a guest must not sign invites for somebody else's room");
+        assert!(
+            error.contains("governing owner"),
+            "unexpected error: {error}"
         );
     }
 

@@ -26,9 +26,11 @@ silently replaced.
 Native qOS and the legacy-host compatibility route deliberately have different
 trust models. A normal qOS installation creates identity through the dedicated
 OOBE and requires a LUKS2-encrypted system before that identity is created.
-Machines with TPM2 and verified boot use one required startup PIN bound to the
-TPM; machines without either part of that boundary require a normal disk
-passphrase. That same credential is the local
+Machines with TPM2 use one required startup PIN only after a dedicated preflight
+proves verified boot continues from the live medium through the installed
+target. Secure Boot state on the installer alone is not enough. Machines
+without every part of that boundary require one normal disk passphrase. That
+same credential is the local
 session-unlock credential, and successful disk authentication hands directly
 to the installed user's first session rather than immediately prompting for a
 second password. Native provisioning remains responsible for protected-key
@@ -60,6 +62,22 @@ presents its person-signed device certificate, the workspace authority turns
 that signed choice into the ordinary room-membership capability. From then on
 the same role checks gate app actions whether peers connect directly, through
 a home host, or through hosted infrastructure.
+
+Every inbound room message is authorized after device-certificate
+authentication. Membership with `Read` is required to request or receive room
+state and presence; publishing room mutations requires `Write`. The sole
+bootstrap exception accepts the first governance snapshot only from the exact
+authority endpoint signed into the invite. Topic ids are treated as lossy
+routing hints, so a collision is rejected rather than selecting an arbitrary
+room.
+
+Only the locally governing owner can mint an invite or change membership and
+capabilities. Ordinary role controls expose Viewer, Commenter, and Editor;
+Owner is structural governance authority and is never created or transferred
+by cycling a role chip. Document actions use their signed semantic class across
+apps: comments require `Comment`, edits/moves/deletes require `Write`, and
+governance/compaction/redaction require `Admin`, with the static role table and
+live capability restrictions both enforced before signing and on receipt.
 
 ## Workspace hosts
 
