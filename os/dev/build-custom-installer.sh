@@ -68,9 +68,28 @@ else
 fi
 
 msg "2/3 podman build $QOS_INSTALLER_IMAGE (rootless)"
+# Assemble one exact rootfs overlay so the Containerfile needs a single COPY
+# layer. On overlay-backed bootc images, committing every tiny file as its own
+# layer repeatedly scans the multi-gigabyte base and turns an iterative
+# installer build into an hour-long job.
+INSTALLER_CONTEXT="$(mktemp -d /tmp/qos-installer-context.XXXXXX)"
+cleanup_installer_context() { rm -rf "$INSTALLER_CONTEXT"; }
+trap cleanup_installer_context EXIT
+mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
+         "$INSTALLER_CONTEXT/rootfs/etc/greetd" \
+         "$INSTALLER_CONTEXT/rootfs/usr/share/qos"
+cp -a "$QOS_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
+install -Dm0755 "$QOS_OS_DIR/qos-installer" \
+  "$INSTALLER_CONTEXT/rootfs/usr/bin/qos-installer"
+install -Dm0644 "$QOS_OS_DIR/etc/greetd/config.toml" \
+  "$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"
+install -Dm0644 "$QOS_OS_DIR/etc/greetd/config.installer.toml" \
+  "$INSTALLER_CONTEXT/rootfs/etc/greetd/config.toml"
 podman build \
   --build-arg "QOS_INSTALLER_DEV_SSH=$DEV_LOGIN" \
-  -t "$QOS_INSTALLER_IMAGE" -f "$QOS_OS_DIR/Containerfile.installer" "$QOS_OS_DIR"
+  -t "$QOS_INSTALLER_IMAGE" -f "$QOS_OS_DIR/Containerfile.installer" "$INSTALLER_CONTEXT"
+cleanup_installer_context
+trap - EXIT
 
 msg "3/3 disk image -> installer qcow2"
 # The live root is sized generously: the self-install model copies the booted
