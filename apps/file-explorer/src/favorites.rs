@@ -107,7 +107,7 @@ impl Favorite {
 fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind) {
     let kind = kind_of(dirs, path, home);
     if kind == FavKind::Home {
-        return ("Home".to_string(), true, kind);
+        return (crate::i18n::t("files-place-home"), true, kind);
     }
     let label = path.file_name().map_or_else(
         || path.display().to_string(),
@@ -122,7 +122,7 @@ fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind
 /// subfolder of `home` so the sidebar is never missing a standard place.
 pub fn defaults(home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
     let mut favs = vec![Favorite {
-        label: "Home".to_string(),
+        label: crate::i18n::t("files-place-home"),
         path: home.to_path_buf(),
         is_home: true,
         kind: FavKind::Home,
