@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -100,6 +100,21 @@ enum AddCommand {
         /// Common component shape to scaffold.
         #[arg(long, value_enum, default_value = "display")]
         template: ComponentTemplateArg,
+        /// Also insert the first instance into this serialized graph screen.
+        #[arg(long)]
+        mount: Option<String>,
+        /// Stable mounted node id. Defaults to a unique component-name id.
+        #[arg(long, requires = "mount")]
+        id: Option<String>,
+        /// Mounted node parent. Defaults to root.
+        #[arg(long, requires = "mount")]
+        parent: Option<String>,
+        /// Mounted child position. Defaults to appending.
+        #[arg(long, requires = "mount")]
+        index: Option<usize>,
+        /// Mounted component props as one JSON object. Defaults to starter copy.
+        #[arg(long, requires = "mount")]
+        props: Option<String>,
         #[command(flatten)]
         options: AddOptions,
     },
@@ -211,6 +226,24 @@ enum UiCommand {
         index: usize,
         #[command(flatten)]
         source: NodeSourceArgs,
+    },
+    /// Insert an app-owned component without hand-writing a complete node.
+    Component {
+        file: PathBuf,
+        /// Registered kebab-case component factory name.
+        name: String,
+        /// Stable semantic node id. Defaults to the component name, made unique.
+        #[arg(long)]
+        id: Option<String>,
+        /// Row or column that receives the component.
+        #[arg(long, default_value = "root")]
+        parent: String,
+        /// Child position. Defaults to appending to the parent.
+        #[arg(long)]
+        index: Option<usize>,
+        /// Component props as one JSON object.
+        #[arg(long, default_value = "{}")]
+        props: String,
     },
     /// Remove a node and its subtree.
     Remove {
@@ -660,21 +693,38 @@ fn run_add(args: AddArgs) -> Result<()> {
         AddCommand::Component {
             name,
             template,
+            mount,
+            id,
+            parent,
+            index,
+            props,
             options,
-        } => (
-            qos_dev::AddArtifact::Component {
-                name,
-                template: match template {
-                    ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
-                    ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
-                    ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
-                    ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
-                    ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
-                    ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
-                },
-            },
-            options,
-        ),
+        } => {
+            let template = match template {
+                ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
+                ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
+                ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
+                ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
+                ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
+                ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
+            };
+            let artifact = if let Some(screen) = mount {
+                if template != qos_dev::ComponentTemplate::Display {
+                    anyhow::bail!("--mount currently requires --template display");
+                }
+                let mut mount = qos_dev::ComponentMount::display(screen, &name);
+                mount.id = id;
+                mount.parent = parent.unwrap_or_else(|| "root".into());
+                mount.index = index;
+                if let Some(props) = props {
+                    mount.props = props;
+                }
+                qos_dev::AddArtifact::GraphComponent { name, mount }
+            } else {
+                qos_dev::AddArtifact::Component { name, template }
+            };
+            (artifact, options)
+        }
     };
     let start = options.app.map_or_else(std::env::current_dir, Ok)?;
     let outcome = qos_dev::add_app_artifact(qos_dev::AddRequest {
@@ -744,6 +794,23 @@ fn run_ui(args: UiArgs) -> Result<()> {
             )?;
             println!("Updated {}", file.display());
         }
+        UiCommand::Component {
+            file,
+            name,
+            id,
+            parent,
+            index,
+            props,
+        } => run_ui_component(
+            &file,
+            qos_dev::UiComponentInsert {
+                name,
+                id,
+                parent,
+                index,
+                props,
+            },
+        )?,
         UiCommand::Remove { file, id } => {
             qos_dev::edit_ui_graph(&file, qos_dev::UiGraphEdit::Remove { id })?;
             println!("Updated {}", file.display());
@@ -780,15 +847,24 @@ fn run_ui(args: UiArgs) -> Result<()> {
             qos_dev::edit_ui_graph(&file, graph_edit)?;
             println!("Updated {}", file.display());
         }
-        UiCommand::Apply { file, edits } => {
-            let source = std::fs::read_to_string(&edits)
-                .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
-            let edits = qos_dev::parse_ui_graph_edits(&source)?;
-            let count = edits.len();
-            qos_dev::edit_ui_graph_batch(&file, edits)?;
-            println!("Applied {count} edits to {}", file.display());
-        }
+        UiCommand::Apply { file, edits } => run_ui_apply(&file, &edits)?,
     }
+    Ok(())
+}
+
+fn run_ui_component(file: &Path, request: qos_dev::UiComponentInsert) -> Result<()> {
+    let id = qos_dev::insert_ui_component(file, request)?;
+    println!("Inserted {id} in {}", file.display());
+    Ok(())
+}
+
+fn run_ui_apply(file: &Path, edits: &Path) -> Result<()> {
+    let source = std::fs::read_to_string(edits)
+        .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
+    let edits = qos_dev::parse_ui_graph_edits(&source)?;
+    let count = edits.len();
+    qos_dev::edit_ui_graph_batch(file, edits)?;
+    println!("Applied {count} edits to {}", file.display());
     Ok(())
 }
 
@@ -1052,6 +1128,7 @@ mod tests {
                     name,
                     template,
                     options,
+                    ..
                 }),
         }) = component.command
         else {
@@ -1096,6 +1173,51 @@ mod tests {
         let Command::Add(AddArgs { command: None }) = wizard.command else {
             panic!("expected interactive add command");
         };
+    }
+
+    #[test]
+    fn add_component_mount_options_are_explicit_and_scoped() {
+        let mounted = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "activity-card",
+            "--mount",
+            "main",
+            "--id",
+            "summary",
+            "--parent",
+            "content",
+            "--index",
+            "1",
+            "--props",
+            r#"{"title":"Recent","detail":"Ready"}"#,
+        ])
+        .expect("mounted component command");
+        assert!(matches!(
+            mounted.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    mount: Some(screen),
+                    id: Some(id),
+                    parent: Some(parent),
+                    index: Some(1),
+                    props: Some(_),
+                    ..
+                })
+            }) if screen == "main" && id == "summary" && parent == "content"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "add",
+                "component",
+                "activity-card",
+                "--parent",
+                "content",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -1465,6 +1587,37 @@ mod tests {
         assert_eq!(index, 2);
         assert!(source.node.is_some());
         assert!(source.node_file.is_none());
+
+        let component = Cli::try_parse_from([
+            "qos-dev",
+            "ui",
+            "component",
+            "ui/main.json",
+            "profile-card",
+            "--props",
+            r#"{"title":"Ada","detail":"Owner"}"#,
+        ])
+        .expect("UI component command");
+        let Command::Ui(UiArgs {
+            command:
+                UiCommand::Component {
+                    file,
+                    name,
+                    id,
+                    parent,
+                    index,
+                    props,
+                },
+        }) = component.command
+        else {
+            panic!("expected UI component command");
+        };
+        assert_eq!(file, PathBuf::from("ui/main.json"));
+        assert_eq!(name, "profile-card");
+        assert_eq!(id, None);
+        assert_eq!(parent, "root");
+        assert_eq!(index, None);
+        assert!(props.contains("Ada"));
 
         assert!(
             Cli::try_parse_from(["qos-dev", "ui", "replace", "ui/main.json", "--id", "body",])
