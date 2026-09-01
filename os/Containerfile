@@ -85,12 +85,21 @@ ADD --checksum=sha256:62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab
 ADD --checksum=sha256:87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8 \
     https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv \
     /out/catalogues/umu-database.csv
+## Bottles' upstream program records improve catalogue matching. They are data,
+## never an instruction source: qOS imports identity/runner hints only and does
+## not execute a record's Steps, URLs, shell snippets, or dependencies.
+ADD --checksum=sha256:65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727 \
+    https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz \
+    /tmp/bottles-programs.tar.gz
 RUN mkdir -p /out/bin /out/proton \
     && tar -xf /tmp/umu-launcher.tar -C /tmp \
     && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
     && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
     && tar -xzf /tmp/umu-proton.tar.gz -C /out/proton \
-    && test -x /out/proton/UMU-Proton-10.0-4/proton
+    && test -x /out/proton/UMU-Proton-10.0-4/proton \
+    && mkdir -p /out/catalogues/bottles-programs \
+    && tar -xzf /tmp/bottles-programs.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
+    && chmod -R a-w /out/catalogues/bottles-programs
 
 
 # ---- Modern AirPlay sender -------------------------------------------------
@@ -675,12 +684,25 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     edk2-ovmf \
     virtio-win \
     freerdp \
+    virt-viewer \
+    xorriso \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
 COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
+# The VM is defined only after an owner supplies installation media.  These
+# immutable host/guest contracts deliberately ship no Windows image or key.
+COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
+COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
+COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
+COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
+COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
+COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
+RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision \
+              /usr/libexec/qos-windows-recovery-console \
+    && systemctl enable qos-windows-vm-network.service
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our

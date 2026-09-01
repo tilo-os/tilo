@@ -10,7 +10,7 @@ fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-ovmf virtio-win freerdp; do
+for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-ovmf virtio-win freerdp virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"
@@ -39,5 +39,12 @@ grep -q 'umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv'
   && grep -q 'COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/' "$CF" \
   && ok 'UMU compatibility catalogue is commit-pinned, checksummed, and installed' \
   || bad 'UMU compatibility catalogue is not reproducibly installed'
+
+grep -q 'bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz' "$CF" \
+  && grep -q 'sha256:65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727' "$CF" \
+  && grep -q '/out/catalogues/bottles-programs' "$CF" \
+  && grep -q 'chmod -R a-w /out/catalogues/bottles-programs' "$CF" \
+  && ok 'Bottles program metadata is commit-pinned, read-only, and imported as catalogue data' \
+  || bad 'Bottles program metadata pin, read-only store, or catalogue path is missing'
 
 exit "$fail"
