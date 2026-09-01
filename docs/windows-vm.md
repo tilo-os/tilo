@@ -115,6 +115,15 @@ Set-ExecutionPolicy RemoteSigned -Scope Process
 & D:\Install-qOSRemoteApp.ps1 -BootstrapRoot D:\ -ApplicationsPath C:\Admin\qos-published-applications.json
 ```
 
+The setup script finds `virtio-win-guest-tools.exe` on the separately attached
+Fedora `virtio-win` CD, requires its SHA-256 to match the installer from the
+host's digest-pinned RPM payload, requires a Windows-valid Authenticode
+publisher signature, runs the visible passive installer, and verifies the
+`vdservice` SPICE agent. This
+provides the paravirtual display driver, automatic SPICE resize, and cursor
+integration without a network download. `-SkipSpiceGuestTools` is for guided
+repair only and leaves those integrations unavailable.
+
 The script accepts only existing executables under `C:\Program Files`,
 `C:\Program Files (x86)`, or `C:\Windows`; it writes the native RemoteApp
 allow-list and keeps each published alias stable. On Server this is consumed

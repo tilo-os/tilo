@@ -16,6 +16,8 @@ $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | Conver
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
 $railJobsRoot = Join-Path $root 'rail-jobs'
+$networkProxyStatePath = Join-Path $root 'network-proxy-state.json'
+$networkProxyHelper = Join-Path $root 'Start-qOSNetworkProxy.ps1'
 $managedSessionPath = Join-Path $root 'managed-session.json'
 $installerRoot = 'C:\ProgramData\qOS\InstallerSession'
 $processJobHelper = Join-Path $installerRoot 'qOS-ProcessJob.ps1'
@@ -148,6 +150,23 @@ function Start-FocusedApplication($app) {
     return @{ user = $user; taskName = $taskName; applicationId = $app.id }
 }
 
+function Ensure-SharedNetworkProxy($networkProxy) {
+    if ($null -eq $networkProxy) { return }
+    $existing = $null
+    if (Test-Path -LiteralPath $networkProxyStatePath -PathType Leaf) {
+        try { $existing = Get-Content -Raw -LiteralPath $networkProxyStatePath | ConvertFrom-Json } catch { Remove-Item -LiteralPath $networkProxyStatePath -Force -ErrorAction SilentlyContinue }
+    }
+    if ($null -ne $existing -and ([string]$existing.networkProxy.endpoint -cne [string]$networkProxy.endpoint -or [string]$existing.networkProxy.token -cne [string]$networkProxy.token)) {
+        if ([int]$existing.pid -gt 0) { Stop-Process -Id ([int]$existing.pid) -Force -ErrorAction SilentlyContinue }
+        $existing = $null
+    }
+    if ($null -eq $existing -or -not (Get-Process -Id ([int]$existing.pid) -ErrorAction SilentlyContinue)) {
+        Write-AdminJson $networkProxyStatePath @{ networkProxy = $networkProxy; pid = 0 }
+        $proxy = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', $networkProxyHelper, '-JobPath', $networkProxyStatePath) -PassThru -WindowStyle Hidden
+        Write-AdminJson $networkProxyStatePath @{ networkProxy = $networkProxy; pid = $proxy.Id }
+    }
+}
+
 function Start-RailApplication($app, $networkProxy, [string]$launchNonce) {
     $managed = Get-ManagedSession
     $path = Resolve-ManagedExecutable $app
@@ -159,6 +178,7 @@ function Start-RailApplication($app, $networkProxy, [string]$launchNonce) {
         # one alias has exactly one pending operation.
         throw 'a qOS RemoteApp operation is already pending for this application'
     }
+    Ensure-SharedNetworkProxy $networkProxy
     $job = @{ applicationId = [string]$app.id; launchNonce = $launchNonce; expiresAtUnix = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 120); executable = $path; arguments = [string]$app.arguments; networkProxy = $networkProxy }
     $job | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $jobPath -Encoding UTF8 -NoNewline
     # The wrapper runs as the one managed identity. It gets only this one
