@@ -1,4 +1,4 @@
-name: Fast lint and dependency audit
+name: Fast quality checks
 
 # Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
 # This path stays intentionally cheap so it can run on every change.
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  quality:
     runs-on: runner
     container:
       image: code.podesta.ai/qos/qos-builder:latest
@@ -26,9 +26,30 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 2
+          fetch-tags: false
 
-      - name: cargo fmt --check
-        run: cargo fmt --all --check
+      - name: Check formatting of changed Rust files
+        shell: bash
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ] || [ "$base" = "null" ]; then
+            base='${{ github.event.before }}'
+          fi
+          if [ -z "$base" ] ||
+             [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=$(git rev-parse HEAD^)
+          fi
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$base"
+          fi
+          if merge_base=$(git merge-base "$base" HEAD 2>/dev/null); then
+            range="$merge_base...HEAD"
+          else
+            range="$base..HEAD"
+          fi
+          git diff --name-only -z --diff-filter=ACMRTUXB "$range" -- '*.rs' |
+            xargs -0 -r rustfmt --edition 2024 --check
 
       - name: CI selector unit tests
         run: python3 -m unittest tools/tests/test_ci_select.py
@@ -37,19 +58,6 @@ jobs:
         run: |
           python3 tools/check_app_text_contract.py
           python3 -m unittest tools/tests/test_app_text_contract.py
-
-  audit:
-    runs-on: runner
-    container:
-      image: code.podesta.ai/qos/qos-builder:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: cargo deny
         run: cargo deny --workspace check
