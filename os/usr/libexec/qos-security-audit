@@ -107,7 +107,7 @@ else
 fi
 case "$sb" in
   *enabled*) ok "Secure Boot: $sb" ;;
-  *) note "Secure Boot: $sb — kernel lockdown stays advisory and the LUKS PCR 7 binding attests an unverified chain (see /usr/share/doc/qos/boot-chain.md)" ;;
+  *) note "Secure Boot: $sb — native qOS will not create a TPM short-PIN slot until verified boot and kernel lockdown are active (see /usr/share/doc/qos/boot-chain.md)" ;;
 esac
 
 # Owner-enrolled Secure Boot: are the keys there, and will the next deployment's
