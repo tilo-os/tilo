@@ -56,7 +56,7 @@ diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
 With no name, `qos-dev new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents eight
+name, window title, application ID, and starter shape. It presents nine
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
@@ -77,7 +77,17 @@ cargo run -p qos-dev -- new activity-feed --template list
 cargo run -p qos-dev -- new qr-code --template qr
 cargo run -p qos-dev -- new repo-scan --template async
 cargo run -p qos-dev -- new notes --template document
+cargo run -p qos-dev -- new project-workspace --template workspace
 ```
+
+Use `--template workspace` for a composed professional starting point rather
+than an isolated widget example. It creates a resizable master-detail shell
+with stable tree selection, a keyed detail view, and directly document-bound
+fields for each item. Switching items preserves independent edits, while the
+standard app document supplies persistence, collaboration, inspection, and
+undo without app-owned synchronization callbacks. The generated headless
+scenario exercises navigation and editing, and the normal generated test
+includes the initial accessibility audit.
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
