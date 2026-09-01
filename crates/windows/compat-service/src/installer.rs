@@ -52,9 +52,10 @@ pub fn inspect_installer(
     }
 
     source.seek(SeekFrom::Start(0))?;
-    let mut header = vec![0_u8; MAX_PE_HEADER_BYTES];
-    let header_len = source.read(&mut header)?;
-    header.truncate(header_len);
+    let mut header = Vec::with_capacity(MAX_PE_HEADER_BYTES);
+    Read::by_ref(source)
+        .take(MAX_PE_HEADER_BYTES as u64)
+        .read_to_end(&mut header)?;
     let (kind, machine) = if header.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
         (InstallerKind::Msi, None)
     } else {
