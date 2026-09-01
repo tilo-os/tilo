@@ -713,7 +713,9 @@ fn run_add(args: AddArgs) -> Result<()> {
                     qos_dev::ComponentTemplate::Display => {
                         qos_dev::ComponentMount::display(screen, &name)
                     }
-                    qos_dev::ComponentTemplate::Form => qos_dev::ComponentMount::form(screen),
+                    qos_dev::ComponentTemplate::Form => {
+                        qos_dev::ComponentMount::form(screen, &name)
+                    }
                     _ => anyhow::bail!(
                         "--mount supports --template display and --template form; tree, list, table, and text templates must be constructed from Rust"
                     ),

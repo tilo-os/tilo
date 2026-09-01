@@ -86,7 +86,7 @@ qos-dev add component profile-card --template form
 qos-dev add component activity-card --mount main \
   --props '{"title":"Recent activity","detail":"Nothing pending"}'
 qos-dev add component profile-form --template form --mount main \
-  --props '{"value":"Ada","enabled":true}'
+  --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
 qos-dev add component project-tree --template tree
 qos-dev add component activity-list --template list
 qos-dev add component results-table --template table
@@ -107,8 +107,9 @@ source route (defaulting to `main` when present). Component setup offers a
 typed-props display, a typed-state form, a source-agnostic virtualized tree, a
 sparse variable-height list, a model-backed table, or advanced text. The wizard
 offers to place a display or form component directly into a generated graph
-screen, including typed initial props. It reviews the resolved artifact before
-entering the same atomic publication path as the explicit commands.
+screen, including typed display props or form document-binding paths. It reviews
+the resolved artifact before entering the same atomic publication path as the
+explicit commands.
 Scripts and CI should continue to use the fully specified subcommands.
 
 `add component profile-card --template form` creates
@@ -127,9 +128,15 @@ The instance ID prefixes every semantic control ID, allowing the same component
 to appear more than once. Its text and checkbox use two-way `LocalState`
 bindings, visible/accessibility labels share generated Fluent messages, and a
 headless component test exercises both controls. In a generated graph app,
-`--mount main` also creates a graph adapter whose `value` string and `enabled`
-boolean initialize independent retained state for each instance. The `display`
-template instead generates a typed props struct plus a heading/detail view.
+`--mount main` also creates a graph adapter whose `value_path` and
+`enabled_path` bind both controls directly to the shared app document. Reuse a
+path to keep multiple component instances or ordinary graph controls in sync;
+use distinct paths for independent values. These edits therefore participate
+in persistence, collaboration, and document undo without app-owned fan-out.
+Without explicit `--props`, the paths default to `<component>-value` and
+`<component>-enabled`; the wizard lets you choose both.
+The `display` template instead generates a typed props struct plus a
+heading/detail view.
 Component source, registry, library wiring, and locale updates publish as one
 rollback-safe batch; an app-owned registry or existing component is protected
 unless replacement is explicit. Even with `--force`, changing a generated
@@ -722,7 +729,7 @@ validated graph adapter, then insert an instance without writing JSON by hand:
 qos-dev add component profile-card --mount main \
   --props '{"title":"Ada","detail":"Workspace owner"}'
 qos-dev add component profile-form --template form --mount main \
-  --props '{"value":"Ada","enabled":true}'
+  --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
 ```
 
 That one command generates the typed Rust component, updates its module and
@@ -759,13 +766,16 @@ let app = screens::router_with(
 
 The generated display `from_ui_graph` function converts `title` and `detail`
 into the same typed `ProfileCardProps` used by ordinary Rust callers. The form
-adapter validates `value` and `enabled`, then creates independent local state
-for the mounted controls. Both return precise field errors, and `qos-dev doctor`
-checks those generated prop contracts before compilation. Older generated graph
-roots are migrated when their original router call is still intact; customized
+adapter validates non-empty `value_path` and `enabled_path` strings, then builds
+the controls with the same document bindings used by built-in graph inputs and
+checkboxes. Both return precise field errors, and `qos-dev doctor` checks those
+generated prop contracts before compilation. Already-generated v1 form adapters
+and their snapshot props remain recognized by `doctor`; regenerating a form uses
+document bindings. Older generated graph roots are migrated when their original
+router call is still intact; customized
 app roots are never rewritten. For a custom component shape, write the
-equivalent small function from `UiComponentRequest` to `Element` and register it with
-`UiBuildContext::with_component` or extend the app-owned context explicitly.
+equivalent small function from `UiComponentRequest` to `Element` and register it
+with `UiBuildContext::with_component` or extend the app-owned context explicitly.
 
 The factory returns an ordinary retained widget, so its child controls, model
 bindings, focus, accessibility, inspection, and headless scenarios work exactly
