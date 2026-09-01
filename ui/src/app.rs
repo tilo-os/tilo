@@ -147,6 +147,12 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
 /// wire rate at ~30 Hz, fluid enough without becoming the bottleneck.
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
+#[derive(Clone, Copy, Debug)]
+struct DirectedInvocation {
+    wire_id: u64,
+    cancellation_requested: bool,
+}
+
 /// Public-in-crate so the throttle decision is unit-testable without a real
 /// event loop.
 pub(crate) fn pointer_broadcast_allowed(
@@ -332,6 +338,12 @@ pub struct App {
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
     last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
+    /// Background/streaming operations admitted by the retained widget tree.
+    /// They remain here until the widget reports exactly one terminal update.
+    directed_invocations: std::collections::HashMap<qos_actions::InvocationId, DirectedInvocation>,
+    /// Same lifecycle for actions started from this window rather than by the
+    /// broker; terminal state is reflected by the owning widget's UI.
+    local_invocations: std::collections::HashSet<qos_actions::InvocationId>,
     semantic_tree: crate::a11y_tree::SemanticTree,
 
     profiler: Option<crate::profiling::FrameProfiler>,
@@ -441,6 +453,8 @@ impl App {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             last_published_actions: None,
+            directed_invocations: std::collections::HashMap::new(),
+            local_invocations: std::collections::HashSet::new(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
@@ -498,7 +512,22 @@ impl App {
             &[],
         );
         resources.extend(semantics.action_resources());
-        resources
+        let mut operation_handlers = self.root_widget.resource_operation_handlers();
+        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        let violations =
+            qos_actions::validate_surface(&resources, &self.action_registry, &operation_handlers);
+        if violations.is_empty() {
+            resources
+        } else {
+            for violation in violations {
+                tracing::error!(
+                    address = %violation.address,
+                    reason = %violation.reason,
+                    "refusing an invalid resource/action surface"
+                );
+            }
+            Vec::new()
+        }
     }
 
     fn invoke_semantic_operation_encoded(
@@ -525,7 +554,36 @@ impl App {
         if !self.collab_manager.is_connected() {
             return;
         }
-        let descriptors = qos_actions::door::survey(&self.collect_resources());
+        let resources = self.collect_resources();
+        let mut operation_handlers = self.root_widget.resource_operation_handlers();
+        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
+        let violations =
+            qos_actions::validate_surface(&resources, &self.action_registry, &operation_handlers);
+        if !violations.is_empty() {
+            for violation in &violations {
+                tracing::error!(
+                    address = %violation.address,
+                    reason = %violation.reason,
+                    "refusing to publish an invalid resource/action surface"
+                );
+            }
+            // Withdraw anything previously published. A stale, apparently
+            // valid catalogue is more dangerous than an empty one.
+            if self
+                .last_published_actions
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+            {
+                return;
+            }
+            self.collab_manager.send(CollabRequest::PublishActions {
+                app_id: crate::collaboration::local_app_id(),
+                actions: Vec::new(),
+            });
+            self.last_published_actions = Some(Vec::new());
+            return;
+        }
+        let descriptors = qos_actions::door::survey(&resources);
         if self.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
@@ -540,6 +598,7 @@ impl App {
                 description: descriptor.description.clone(),
                 operation_kind: descriptor.kind.as_str().to_string(),
                 params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
+                contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
                 input: match &descriptor.input {
                     qos_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
                     qos_actions::InputSpec::Text {
@@ -570,13 +629,42 @@ impl App {
         actor: String,
     ) {
         let address = qos_actions::ActionAddress::new(resource, action);
-        let result = self.invoke_resource_action(&address, argument.as_deref(), &actor);
-        let (code, message) = match result {
-            Ok(()) => (String::new(), String::new()),
-            Err(error) => (error.code().to_string(), error.to_string()),
+        // Arrival on this directed stream means the broker already performed
+        // permission and one-use confirmation-token checks.
+        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let result = self.invoke_resource_action(
+            &address,
+            argument.as_deref(),
+            &actor,
+            true,
+            Some(invocation),
+        );
+        let update = match result {
+            Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
+                qos_actions::InvocationUpdate::Succeeded { invocation, output }
+            }
+            Ok(crate::widget::ResourceOperationStart::Accepted) => {
+                self.directed_invocations.insert(
+                    invocation,
+                    DirectedInvocation {
+                        wire_id: id,
+                        cancellation_requested: false,
+                    },
+                );
+                qos_actions::InvocationUpdate::Accepted { invocation }
+            }
+            Err(error) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: error.code().to_string(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
+                },
+            },
         };
         self.collab_manager
-            .send(CollabRequest::CompleteInvocation { id, code, message });
+            .send(CollabRequest::UpdateInvocation { id, update });
     }
 
     fn invoke_resource_action(
@@ -584,7 +672,9 @@ impl App {
         address: &qos_actions::ActionAddress,
         argument: Option<&str>,
         actor: &str,
-    ) -> Result<(), qos_actions::DoorError> {
+        confirmed_by_broker: bool,
+        invocation: Option<qos_actions::InvocationId>,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
         let resources = self.collect_resources();
         let typed_arguments = argument
             .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
@@ -593,14 +683,21 @@ impl App {
                     .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
             })
             .transpose()?;
-        let kind = qos_actions::door::resolve(&resources, address)
-            .map(|spec| spec.kind)
-            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()));
-        kind.and_then(|kind| {
+        let resolved = qos_actions::door::resolve(&resources, address)
+            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
+        if !matches!(
+            resolved.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        ) && !confirmed_by_broker
+        {
+            return Err(qos_actions::DoorError::ConfirmationRequired);
+        }
+        let kind = resolved.kind;
+        (|| {
             if kind == qos_actions::OperationKind::Document {
                 let before = self.state.doc.get_heads();
                 let dispatched = if let Some(arguments) = &typed_arguments {
-                    qos_actions::door::invoke_json(
+                    qos_actions::door::invoke_json_confirmed(
                         &mut self.state.doc,
                         &resources,
                         address,
@@ -610,7 +707,7 @@ impl App {
                         self.action_transport.as_mut(),
                     )?
                 } else {
-                    qos_actions::door::invoke(
+                    qos_actions::door::invoke_confirmed(
                         &mut self.state.doc,
                         &resources,
                         address,
@@ -630,7 +727,9 @@ impl App {
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
-                Ok(())
+                Ok(crate::widget::ResourceOperationStart::Completed(
+                    qos_actions::ActionOutput::default(),
+                ))
             } else {
                 let encoded = if let Some(arguments) = &typed_arguments {
                     qos_actions::door::encode_json(&resources, address, arguments)?
@@ -647,11 +746,15 @@ impl App {
                     self.commit_action();
                     self.needs_sync = true;
                     self.layout_dirty = true;
-                    return Ok(());
+                    return Ok(crate::widget::ResourceOperationStart::Completed(
+                        qos_actions::ActionOutput::default(),
+                    ));
                 }
-                let handled = self
+                let operation_invocation = invocation.unwrap_or_default();
+                let started = self
                     .root_widget
-                    .invoke_resource_operation(
+                    .start_resource_operation(
+                        operation_invocation,
                         kind,
                         &encoded.type_id,
                         &encoded.payload,
@@ -659,23 +762,153 @@ impl App {
                         &self.state.root,
                     )
                     .map_err(qos_actions::DoorError::Failed)?;
-                if !handled {
+                let Some(started) = started else {
                     return Err(qos_actions::DoorError::Unknown(address.clone()));
+                };
+                if matches!(started, crate::widget::ResourceOperationStart::Accepted)
+                    && matches!(
+                        resolved.contract.execution,
+                        qos_actions::ExecutionMode::Immediate
+                    )
+                {
+                    return Err(qos_actions::DoorError::Failed(
+                        "an immediate operation cannot remain pending".into(),
+                    ));
+                }
+                if invocation.is_none()
+                    && matches!(started, crate::widget::ResourceOperationStart::Accepted)
+                {
+                    self.local_invocations.insert(operation_invocation);
+                }
+                if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+                    // Queued widget work advances from `sync`; admission must
+                    // therefore schedule a model pass even if no document
+                    // mutation or input event accompanied the invocation.
+                    self.needs_sync = true;
+                }
+                if let crate::widget::ResourceOperationStart::Completed(output) = &started {
+                    resolved
+                        .contract
+                        .result
+                        .validate(output)
+                        .map_err(qos_actions::DoorError::Failed)?;
                 }
                 self.layout_dirty = true;
-                Ok(())
+                Ok(started)
             }
-        })
+        })()
+    }
+
+    fn request_invocation_cancellation(&mut self, wire_id: u64) {
+        if let Some(pending) = self
+            .directed_invocations
+            .values_mut()
+            .find(|pending| pending.wire_id == wire_id)
+        {
+            pending.cancellation_requested = true;
+        }
+    }
+
+    /// Give retained widgets a non-blocking lifecycle tick and forward every
+    /// progress/item/terminal update to the broker. A terminal update removes
+    /// the job before it is sent, making terminal delivery at-most-once even
+    /// if a widget accidentally returns the same update again.
+    fn poll_directed_invocations(&mut self) -> bool {
+        let invocations = self
+            .directed_invocations
+            .iter()
+            .map(|(invocation, pending)| (*invocation, *pending))
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for (invocation, pending) in invocations {
+            let Some(mut update) = self.root_widget.poll_resource_operation(
+                invocation,
+                pending.cancellation_requested,
+                &self.state.doc,
+                &self.state.root,
+            ) else {
+                continue;
+            };
+            if update.invocation() != invocation
+                || matches!(update, qos_actions::InvocationUpdate::Accepted { .. })
+            {
+                update = qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "qos.invalid_lifecycle_update".into(),
+                        message: "operation handler returned an invalid lifecycle update".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                };
+            }
+            if update.is_terminal() {
+                self.directed_invocations.remove(&invocation);
+            }
+            self.collab_manager.send(CollabRequest::UpdateInvocation {
+                id: pending.wire_id,
+                update,
+            });
+            changed = true;
+        }
+        let local_invocations = self.local_invocations.iter().copied().collect::<Vec<_>>();
+        for invocation in local_invocations {
+            let Some(update) = self.root_widget.poll_resource_operation(
+                invocation,
+                false,
+                &self.state.doc,
+                &self.state.root,
+            ) else {
+                continue;
+            };
+            if update.is_terminal() || update.invocation() != invocation {
+                self.local_invocations.remove(&invocation);
+            }
+            changed = true;
+        }
+        changed
     }
 
     pub fn open_action_palette(&mut self) {
-        let resources = self.collect_resources();
+        let resources = self
+            .collect_resources()
+            .into_iter()
+            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+            .collect::<Vec<_>>();
         let providers = self.root_widget.search_providers();
         let mut palette = crate::action_palette::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.set_providers(providers);
         palette.open();
         self.action_palette = Some(palette);
+    }
+
+    fn filter_resource_for_local_actor(
+        &self,
+        mut resource: qos_actions::Resource,
+    ) -> Option<qos_actions::Resource> {
+        use collab_types::caps::Verb;
+        resource.actions.retain(|action| {
+            let verb = match action.contract.permission {
+                qos_actions::PermissionRequirement::None => return true,
+                qos_actions::PermissionRequirement::Read => Verb::Read,
+                qos_actions::PermissionRequirement::Comment => Verb::Comment,
+                qos_actions::PermissionRequirement::Write => Verb::Write,
+                qos_actions::PermissionRequirement::Invite => Verb::Invite,
+                qos_actions::PermissionRequirement::Admin => Verb::Admin,
+            };
+            self.permission_ctx
+                .check(&crate::permissions::PermissionScope::app(
+                    crate::collaboration::local_app_id(),
+                    verb,
+                ))
+        });
+        resource.children = resource
+            .children
+            .into_iter()
+            .filter_map(|child| self.filter_resource_for_local_actor(child))
+            .collect();
+        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
     }
 
     pub fn close_action_palette(&mut self) {
@@ -1640,6 +1873,9 @@ impl App {
                     argument,
                     actor,
                 } => self.invoke_published_action(id, resource, action, argument, actor),
+                CollabEvent::InvocationCancellation { id } => {
+                    self.request_invocation_cancellation(id);
+                }
             }
         }
         any
@@ -1730,6 +1966,9 @@ impl App {
                 argument,
                 actor,
             } => self.invoke_published_action(id, resource, action, argument, actor),
+            CollabEvent::InvocationCancellation { id } => {
+                self.request_invocation_cancellation(id);
+            }
             _ => {}
         }
     }
@@ -2247,9 +2486,19 @@ impl App {
                 })
             }
             if let Some(address) = find_resource_action(&resources, target) {
+                let confirmation = qos_actions::door::resolve(&resources, &address)
+                    .map(|spec| spec.contract.confirmation.clone())
+                    .unwrap_or_default();
+                if !matches!(confirmation, qos_actions::ConfirmationPolicy::None) {
+                    self.open_action_palette();
+                    if let Some(palette) = self.action_palette.as_mut() {
+                        palette.activate_address(&address.resource, &address.action);
+                    }
+                    return None;
+                }
                 let actor = crate::collaboration::local_user_id().0;
                 if self
-                    .invoke_resource_action(&address, argument, &actor)
+                    .invoke_resource_action(&address, argument, &actor, false, None)
                     .is_ok()
                 {
                     self.needs_sync = true;
@@ -4341,6 +4590,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
         if app.pump_collab_presence() {
+            window.request_redraw();
+        }
+        if app.poll_directed_invocations() {
+            app.needs_sync = true;
+            app.layout_dirty = true;
             window.request_redraw();
         }
 
@@ -7247,7 +7501,7 @@ mod semantic_tree_app_tests {
     }
 
     #[test]
-    fn projected_control_is_invokable_through_the_resource_door() {
+    fn effectful_control_is_not_exported_without_a_domain_contract() {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
         let button = Button::new("drive-me", "Drive me", None).on_click(move || {
@@ -7259,11 +7513,13 @@ mod semantic_tree_app_tests {
         let resource = app
             .collect_resources()
             .into_iter()
-            .find(|resource| resource.kind == "qos.ui.control" && resource.label == "Drive me")
-            .expect("semantic button is in the published catalogue");
-        let address = qos_actions::ActionAddress::new(resource.id.0, "activate");
-        app.invoke_resource_action(&address, None, "agent:test")
-            .expect("the resource door invokes the same button action");
-        assert_eq!(presses.get(), 1);
+            .find(|resource| resource.kind == "qos.ui.control" && resource.label == "Drive me");
+        assert!(resource.is_none_or(|resource| {
+            resource
+                .actions
+                .iter()
+                .all(|action| action.id != "activate")
+        }));
+        assert_eq!(presses.get(), 0);
     }
 }

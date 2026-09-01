@@ -197,10 +197,15 @@ struct RuleRow {
 }
 
 #[derive(Clone, Copy)]
-enum PendingFirewallEffect {
+enum FirewallEffect {
     Apply,
     SetEnabled(bool),
     SetPanic(bool),
+}
+
+struct PendingFirewallEffect {
+    invocation: qos_actions::InvocationId,
+    effect: FirewallEffect,
 }
 
 pub struct FirewallApp {
@@ -239,6 +244,7 @@ pub struct FirewallApp {
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
     actions: ui::ActionHost,
     pending_effect: Option<PendingFirewallEffect>,
+    completed_effect: Option<qos_actions::InvocationUpdate>,
 }
 
 impl Default for FirewallApp {
@@ -291,6 +297,7 @@ impl FirewallApp {
             available,
             actions: ui::ActionHost::new(),
             pending_effect: None,
+            completed_effect: None,
         }
     }
 
@@ -776,39 +783,37 @@ impl FirewallApp {
 
     fn toggle_panic(&mut self, state: &mut AutoCommit) {
         let on = !self.config.panic_mode;
-        self.set_panic_and_apply(state, on);
+        let _ = self.set_panic_and_apply(state, on);
     }
 
     fn toggle_enabled(&mut self, state: &mut AutoCommit) {
         let on = !self.config.enabled;
-        self.set_enabled_and_apply(state, on);
+        let _ = self.set_enabled_and_apply(state, on);
     }
 
-    fn set_panic_and_apply(&mut self, state: &mut AutoCommit, on: bool) {
+    fn set_panic_and_apply(&mut self, state: &mut AutoCommit, on: bool) -> Result<(), String> {
         self.perform_action(state, &crate::actions::set_panic_action(on));
-        self.apply();
-        if !self.status.starts_with("Apply failed") {
-            self.status = if on {
-                "PANIC MODE ON — all traffic dropped".to_string()
-            } else {
-                "Panic mode off".to_string()
-            };
-        }
+        self.apply()?;
+        self.status = if on {
+            "PANIC MODE ON — all traffic dropped".to_string()
+        } else {
+            "Panic mode off".to_string()
+        };
+        Ok(())
     }
 
-    fn set_enabled_and_apply(&mut self, state: &mut AutoCommit, on: bool) {
+    fn set_enabled_and_apply(&mut self, state: &mut AutoCommit, on: bool) -> Result<(), String> {
         self.perform_action(state, &crate::actions::set_enabled_action(on));
-        self.apply();
-        if !self.status.starts_with("Apply failed") {
-            self.status = if on {
-                "Firewall enabled".to_string()
-            } else {
-                "Firewall stopped".to_string()
-            };
-        }
+        self.apply()?;
+        self.status = if on {
+            "Firewall enabled".to_string()
+        } else {
+            "Firewall stopped".to_string()
+        };
+        Ok(())
     }
 
-    fn apply(&mut self) {
+    fn apply(&mut self) -> Result<(), String> {
         match self.backend.apply(&self.config) {
             Ok(()) => {
                 let n = self.backend.last_plan().len();
@@ -818,8 +823,12 @@ impl FirewallApp {
                         format!("Dry-run: {n} commands planned (set QOS_FIREWALL_APPLY=1)")
                     }
                 };
+                Ok(())
             }
-            Err(e) => self.status = format!("Apply failed: {e}"),
+            Err(e) => {
+                self.status = format!("Apply failed: {e}");
+                Err(e)
+            }
         }
     }
 
@@ -859,6 +868,14 @@ fn alpha(c: Color, a: u8) -> Color {
 }
 
 impl Widget for FirewallApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "firewall.apply",
+            "firewall.set-enabled",
+            "firewall.set-panic",
+        ]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             // Adopt an existing shared config, or publish the one we read
@@ -883,11 +900,26 @@ impl Widget for FirewallApp {
             return;
         }
         if let Some(effect) = self.pending_effect.take() {
-            match effect {
-                PendingFirewallEffect::Apply => self.apply(),
-                PendingFirewallEffect::SetEnabled(on) => self.set_enabled_and_apply(state, on),
-                PendingFirewallEffect::SetPanic(on) => self.set_panic_and_apply(state, on),
-            }
+            let result = match effect.effect {
+                FirewallEffect::Apply => self.apply(),
+                FirewallEffect::SetEnabled(on) => self.set_enabled_and_apply(state, on),
+                FirewallEffect::SetPanic(on) => self.set_panic_and_apply(state, on),
+            };
+            self.completed_effect = Some(match result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation: effect.invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation: effect.invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "firewall.apply_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            });
         }
         // Adopt genuine remote edits (collab).
         if let Some(json) = FirewallDoc::load_json(state)
@@ -1079,6 +1111,8 @@ impl Widget for FirewallApp {
                     confirmation: qos_actions::ConfirmationPolicy::Confirm,
                     retry: qos_actions::RetryPolicy::Idempotent,
                     discovery: qos_actions::DiscoveryScope::Launchable,
+                    execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                    result: qos_actions::ResultSpec::Job,
                     ..qos_actions::ActionContract::default()
                 }),
             );
@@ -1090,27 +1124,80 @@ impl Widget for FirewallApp {
         &mut self,
         kind: qos_actions::OperationKind,
         type_id: &str,
-        payload: &[u8],
+        _payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
         }
+        match type_id {
+            "firewall.apply" | "firewall.set-enabled" | "firewall.set-panic" => {
+                Err("firewall effects require the lifecycle-capable operation host".into())
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(None);
+        }
         if !self.available {
             return Err("Firewall service is unavailable".into());
         }
-        self.pending_effect = Some(match type_id {
-            "firewall.apply" => PendingFirewallEffect::Apply,
-            "firewall.set-enabled" => PendingFirewallEffect::SetEnabled(
+        if self.pending_effect.is_some() {
+            return Err("another firewall operation is still running".into());
+        }
+        let effect = match type_id {
+            "firewall.apply" => FirewallEffect::Apply,
+            "firewall.set-enabled" => FirewallEffect::SetEnabled(
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?,
             ),
-            "firewall.set-panic" => PendingFirewallEffect::SetPanic(
+            "firewall.set-panic" => FirewallEffect::SetPanic(
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?,
             ),
-            _ => return Ok(false),
-        });
-        Ok(true)
+            _ => return Ok(None),
+        };
+        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .pending_effect
+                .as_ref()
+                .is_some_and(|pending| pending.invocation == invocation)
+        {
+            self.pending_effect = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("cancelled before firewall changes were applied".into()),
+            });
+        }
+        if self
+            .completed_effect
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_effect.take();
+        }
+        None
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -1328,7 +1415,7 @@ impl FirewallApp {
             return true;
         }
         if l.apply_btn.contains(p) {
-            self.apply();
+            let _ = self.apply();
             *handled = true;
             self.set_form_focus(None);
             return true;
@@ -3138,5 +3225,60 @@ mod tests {
             dispatched, spec_encoded,
             "button and palette are one action"
         );
+    }
+
+    #[test]
+    fn exported_effect_is_accepted_then_completes_after_sync() {
+        let mut app = FirewallApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let invocation = qos_actions::InvocationId::new();
+        let started = app
+            .start_resource_operation(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                "firewall.apply",
+                &serde_json::to_vec(&"").unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert_eq!(
+            started,
+            Some(ui::widget::ResourceOperationStart::Accepted),
+            "queue admission must not be reported as success"
+        );
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn cancellation_before_sync_prevents_firewall_effect() {
+        let mut app = FirewallApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let invocation = qos_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            "firewall.apply",
+            &serde_json::to_vec(&"").unwrap(),
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        assert!(matches!(
+            app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(app.pending_effect.is_none());
     }
 }
