@@ -66,6 +66,7 @@ struct PublishedAction {
     action_label: String,
     description: String,
     operation_kind: String,
+    params_json: String,
     input: PublishedInput,
 }
 
@@ -284,6 +285,7 @@ impl channel_handle::Server for FakeChannel {
                     action_label: a.get_action_label()?.to_str()?.to_owned(),
                     description: a.get_description()?.to_str()?.to_owned(),
                     operation_kind: a.get_operation_kind()?.to_str()?.to_owned(),
+                    params_json: a.get_params_json()?.to_str()?.to_owned(),
                     input,
                 });
             }
@@ -533,6 +535,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             action_label: "Save".into(),
                             description: None,
                             operation_kind: "effect".into(),
+                            params_json: "[]".into(),
                             input: ExportedInput::None,
                         },
                         ExportedAction {
@@ -543,6 +546,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             action_label: "Insert image".into(),
                             description: Some("Place an image at the caret".into()),
                             operation_kind: "document".into(),
+                            params_json: "[]".into(),
                             input: ExportedInput::Text {
                                 prompt: "Which image?".into(),
                                 placeholder: "content hash".into(),
@@ -565,6 +569,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
             // so `None` has to arrive as the empty string.
             assert_eq!(rows[0].description, "");
             assert_eq!(rows[0].operation_kind, "effect");
+            assert_eq!(rows[0].params_json, "[]");
             assert_eq!(rows[0].input, PublishedInput::None);
 
             assert_eq!(rows[1].action, "insert-image");
@@ -572,6 +577,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
             assert_eq!(rows[1].action_label, "Insert image");
             assert_eq!(rows[1].description, "Place an image at the caret");
             assert_eq!(rows[1].operation_kind, "document");
+            assert_eq!(rows[1].params_json, "[]");
             assert_eq!(
                 rows[1].input,
                 PublishedInput::Text {

@@ -22,12 +22,12 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
@@ -4736,22 +4736,52 @@ impl FileExplorerWidget {
 
 impl Widget for FileExplorerWidget {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
-        let mut folder = Resource::new(format!("folder:{}", self.current_path.display()), "files.folder", self.current_path.display().to_string());
-        if let Ok(spec) = ActionSpec::operation("refresh", "Refresh folder", OperationKind::Effect, "files.refresh", &"") { folder.actions.push(spec); }
+        let mut folder = Resource::new(
+            format!("folder:{}", self.current_path.display()),
+            "files.folder",
+            self.current_path.display().to_string(),
+        );
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh folder",
+            OperationKind::Effect,
+            "files.refresh",
+            &"",
+        ) {
+            folder.actions.push(spec);
+        }
         folder.actions.push(ActionSpec::prompted_operation(
-            "navigate", "Open location", "Folder path", "/path/to/folder", OperationKind::View,
-            |path| EncodedAction::encode_operation("files.navigate", &path).expect("string payload"),
+            "navigate",
+            "Open location",
+            "Folder path",
+            "/path/to/folder",
+            OperationKind::View,
+            |path| {
+                EncodedAction::encode_operation("files.navigate", &path).expect("string payload")
+            },
         ));
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
-            let mut resource = Resource::new(format!("entry:{path}"), "files.entry", entry.name.clone());
-            if let Ok(spec) = ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path) { resource.actions.push(spec); }
+            let mut resource =
+                Resource::new(format!("entry:{path}"), "files.entry", entry.name.clone());
+            if let Ok(spec) =
+                ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
+            {
+                resource.actions.push(spec);
+            }
             folder.children.push(resource);
         }
         vec![folder]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &automerge::AutoCommit, _path: &automerge::ObjId) -> Result<bool, String> {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
             (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {

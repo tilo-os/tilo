@@ -111,6 +111,7 @@ pub struct ExportedAction {
     pub action_label: String,
     pub description: Option<String>,
     pub operation_kind: String,
+    pub params_json: String,
     pub input: ExportedInput,
 }
 
@@ -1728,6 +1729,7 @@ async fn dispatch_sdk_request(
                     action_label: action.action_label,
                     description: action.description,
                     operation_kind: action.operation_kind,
+                    params_json: action.params_json,
                     input: match action.input {
                         ExportedInput::None => runtime_collab::ExportedInput::None,
                         ExportedInput::Text {
