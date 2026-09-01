@@ -15,9 +15,11 @@ pub struct HistoryFacetIndex {
     pub people: BTreeMap<String, usize>,
     pub apps: BTreeMap<String, usize>,
     pub resource_kinds: BTreeMap<String, usize>,
+    pub resources: BTreeMap<String, usize>,
     pub facets: BTreeMap<String, BTreeMap<String, usize>>,
     pub operations: BTreeMap<String, usize>,
     pub work_groups: BTreeMap<String, usize>,
+    pub unclassified: usize,
 }
 
 impl HistoryFacetIndex {
@@ -27,6 +29,7 @@ impl HistoryFacetIndex {
             bump(&mut index.people, &entry.author.name);
             bump(&mut index.operations, op_label(entry.op_class));
             let Some(context) = entry.context.as_ref() else {
+                index.unclassified = index.unclassified.saturating_add(1);
                 continue;
             };
             if let Some(app) = context.app.as_ref() {
@@ -34,6 +37,7 @@ impl HistoryFacetIndex {
             }
             if let Some(resource) = context.resource.as_ref() {
                 bump(&mut index.resource_kinds, &resource.kind);
+                bump(&mut index.resources, &resource.label);
             }
             if let Some(group) = context.group.as_ref() {
                 bump(&mut index.work_groups, &group.label);
@@ -105,7 +109,9 @@ mod tests {
         assert_eq!(index.people.get("Ada"), Some(&2));
         assert_eq!(index.apps.get("Files"), Some(&1));
         assert_eq!(index.resource_kinds.get("file"), Some(&1));
+        assert_eq!(index.resources.get("brief.md"), Some(&1));
         assert_eq!(index.facets["file-type"].get("Markdown"), Some(&1));
         assert_eq!(index.work_groups.get("Launch brief"), Some(&1));
+        assert_eq!(index.unclassified, 1);
     }
 }
