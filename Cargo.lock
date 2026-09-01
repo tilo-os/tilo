@@ -2410,6 +2410,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "compat-catalogue"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "compat-service"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "compat-catalogue",
+ "launcher",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "windows-vm",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13125,6 +13150,7 @@ dependencies = [
  "cli",
  "collab-fixtures",
  "collab-types",
+ "compat-service",
  "desktop-policy",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
@@ -17076,8 +17102,10 @@ name = "windows-app"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "compat-service",
  "qos-actions",
  "runtime-dylib",
+ "runtime-portal",
  "serde",
  "taffy",
  "ui",
@@ -17362,6 +17390,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "windows-vm"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
