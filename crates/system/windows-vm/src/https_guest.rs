@@ -152,6 +152,41 @@ pub struct PreparedInstallation {
     pub(crate) presentation: GuestLaunch,
 }
 
+/// Opaque handle for one discovered Windows Installer removal operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UninstallationOperationId(String);
+
+impl UninstallationOperationId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, AgentError> {
+        let value = value.into();
+        if valid_identifier(&value) && value.len() >= 16 {
+            Ok(Self(value))
+        } else {
+            Err(AgentError::InvalidInstaller)
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug)]
+pub struct PreparedUninstallation {
+    pub operation_id: UninstallationOperationId,
+    pub(crate) presentation: GuestLaunch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UninstallationStatus {
+    pub operation_id: UninstallationOperationId,
+    pub state: InstallationState,
+    pub exit_code: Option<u32>,
+    /// Set only after a successful removal also retracts its publication.
+    pub catalog_generation: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallationState {
@@ -526,6 +561,39 @@ impl HttpsGuestBridge {
         result.validate(application_id, expected_generation)
     }
 
+    /// Starts only a previously discovered, administrator-stored uninstall
+    /// record. The caller supplies no executable, product code, or arguments.
+    pub fn begin_uninstallation(
+        &self,
+        application_id: &str,
+    ) -> Result<PreparedUninstallation, AgentError> {
+        if !valid_identifier(application_id) {
+            return Err(AgentError::InvalidInstaller);
+        }
+        let operation_id = nonce();
+        let body = serde_json::to_vec(&WireBeginUninstallation {
+            application_id,
+            operation_id: &operation_id,
+        })
+        .map_err(|error| AgentError::Transport(format!("uninstall request JSON: {error}")))?;
+        let accepted: WireUninstallationAccepted =
+            deserialize(&self.request("POST", "/v1/uninstallations", &body)?)?;
+        self.require_enrolled_certificate(&accepted.certificate_sha256)?;
+        accepted.into_prepared(&operation_id, application_id)
+    }
+
+    pub fn uninstallation_status(
+        &self,
+        operation: &UninstallationOperationId,
+    ) -> Result<UninstallationStatus, AgentError> {
+        if !valid_identifier(operation.as_str()) {
+            return Err(AgentError::InvalidInstaller);
+        }
+        let path = format!("/v1/uninstallations/{}", operation.as_str());
+        let status: WireUninstallationStatus = deserialize(&self.request("GET", &path, &[])?)?;
+        status.validate(operation)
+    }
+
     fn request(&self, method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>, AgentError> {
         let client = self.client()?;
         let (response_body, response) = self.request_with(&client, method, path, body)?;
@@ -731,6 +799,24 @@ impl GuestAgent for HttpsGuestBridge {
         require_session(session)?;
         HttpsGuestBridge::remove_publication(self, application_id, expected_generation)
     }
+
+    fn begin_uninstallation(
+        &self,
+        session: &GuestSession,
+        application_id: &str,
+    ) -> Result<PreparedUninstallation, AgentError> {
+        require_session(session)?;
+        HttpsGuestBridge::begin_uninstallation(self, application_id)
+    }
+
+    fn uninstallation_status(
+        &self,
+        session: &GuestSession,
+        operation: &UninstallationOperationId,
+    ) -> Result<UninstallationStatus, AgentError> {
+        require_session(session)?;
+        HttpsGuestBridge::uninstallation_status(self, operation)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -887,6 +973,85 @@ struct WireRemovePublicationRequest<'a> {
 struct WirePublicationResult {
     application_id: String,
     catalog_generation: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBeginUninstallation<'a> {
+    application_id: &'a str,
+    operation_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireUninstallationAccepted {
+    application_id: String,
+    operation_id: String,
+    endpoint: String,
+    remote_app_alias: String,
+    launch_nonce: String,
+    certificate_sha256: String,
+    presentation_backend: String,
+}
+
+impl WireUninstallationAccepted {
+    fn into_prepared(
+        self,
+        expected_operation: &str,
+        expected_application: &str,
+    ) -> Result<PreparedUninstallation, AgentError> {
+        if self.operation_id != expected_operation || self.application_id != expected_application {
+            return Err(AgentError::Authentication);
+        }
+        let presentation = WireLaunch {
+            endpoint: self.endpoint,
+            username: None,
+            password: None,
+            remote_app_alias: self.remote_app_alias,
+            launch_nonce: self.launch_nonce,
+            certificate_sha256: self.certificate_sha256,
+            presentation_backend: self.presentation_backend,
+        }
+        .into_guest_launch(expected_operation, ApplicationPresentation::AppFocusedSpice)?;
+        Ok(PreparedUninstallation {
+            operation_id: UninstallationOperationId(expected_operation.to_string()),
+            presentation,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireUninstallationStatus {
+    operation_id: String,
+    state: InstallationState,
+    exit_code: Option<u32>,
+    catalog_generation: Option<u64>,
+}
+
+impl WireUninstallationStatus {
+    fn validate(
+        self,
+        expected: &UninstallationOperationId,
+    ) -> Result<UninstallationStatus, AgentError> {
+        let terminal_success = self.state == InstallationState::Completed;
+        if self.operation_id != expected.as_str()
+            || (matches!(
+                self.state,
+                InstallationState::Starting | InstallationState::Running
+            ) && (self.exit_code.is_some() || self.catalog_generation.is_some()))
+            || (terminal_success && (self.exit_code.is_none() || self.catalog_generation.is_none()))
+            || (self.state == InstallationState::Failed && self.catalog_generation.is_some())
+        {
+            return Err(AgentError::Authentication);
+        }
+        Ok(UninstallationStatus {
+            operation_id: expected.clone(),
+            state: self.state,
+            exit_code: self.exit_code,
+            catalog_generation: self.catalog_generation,
+        })
+    }
 }
 
 impl WirePublicationResult {
@@ -1356,6 +1521,31 @@ mod tests {
             ApplicationPresentation::AppFocusedSpice
         );
         assert!(prepared.presentation.endpoint.username.is_empty());
+    }
+
+    #[test]
+    fn uninstallation_status_binds_success_to_a_catalog_generation() {
+        let operation = UninstallationOperationId::parse("e".repeat(48)).unwrap();
+        assert!(
+            WireUninstallationStatus {
+                operation_id: operation.as_str().to_string(),
+                state: InstallationState::Completed,
+                exit_code: Some(0),
+                catalog_generation: None,
+            }
+            .validate(&operation)
+            .is_err()
+        );
+        assert!(
+            WireUninstallationStatus {
+                operation_id: operation.as_str().to_string(),
+                state: InstallationState::Completed,
+                exit_code: Some(0),
+                catalog_generation: Some(9),
+            }
+            .validate(&operation)
+            .is_ok()
+        );
     }
 
     #[test]

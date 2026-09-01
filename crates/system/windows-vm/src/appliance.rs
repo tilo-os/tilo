@@ -10,8 +10,9 @@ use crate::remote_app::validate_share_path;
 use crate::{
     AgentError, ApplianceConfig, ApplianceState, Catalog, CatalogError, DomainState, GuestAgent,
     InstallationOperationId, InstallationStatus, InstallerPackage, PreparedInstallation,
-    ProvisioningError, ProvisioningStore, PublicationResult, RemoteAppError, RemoteAppLauncher,
-    RemoteAppProcess, StagedInstaller, VmBackend,
+    PreparedUninstallation, ProvisioningError, ProvisioningStore, PublicationResult,
+    RemoteAppError, RemoteAppLauncher, RemoteAppProcess, StagedInstaller,
+    UninstallationOperationId, UninstallationStatus, VmBackend,
 };
 
 pub const HOST_PROTOCOL_MAJOR: u16 = 1;
@@ -296,6 +297,47 @@ where
                 .remove_publication(&session, application_id, expected_generation)?;
         self.accept_publication_catalog(state, &session, &removed)?;
         Ok(removed)
+    }
+
+    pub fn begin_uninstallation(
+        &self,
+        application_id: &str,
+    ) -> Result<PreparedUninstallation, LaunchError> {
+        let (_, session) = self.installer_session()?;
+        self.agent
+            .begin_uninstallation(&session, application_id)
+            .map_err(Into::into)
+    }
+
+    pub fn present_uninstallation(
+        &self,
+        prepared: &PreparedUninstallation,
+    ) -> Result<RemoteAppProcess, LaunchError> {
+        if prepared.presentation.presentation != crate::ApplicationPresentation::AppFocusedSpice
+            || prepared.presentation.remote_app_alias != prepared.operation_id.as_str()
+        {
+            return Err(LaunchError::PublicationChanged);
+        }
+        let lease_id = format!("uninstall-{}", prepared.operation_id.as_str());
+        self.launcher
+            .launch(&prepared.presentation, &BrokeredLaunch::deny_all(lease_id))
+            .map_err(Into::into)
+    }
+
+    pub fn uninstallation_status(
+        &self,
+        operation: &UninstallationOperationId,
+    ) -> Result<UninstallationStatus, LaunchError> {
+        let (state, session) = self.installer_session()?;
+        let status = self.agent.uninstallation_status(&session, operation)?;
+        if let Some(generation) = status.catalog_generation {
+            let catalog = self.agent.catalog(&session)?;
+            if catalog.generation != generation {
+                return Err(LaunchError::PublicationChanged);
+            }
+            self.accept_catalog(state, &catalog)?;
+        }
+        Ok(status)
     }
 
     /// Starts one allow-listed `RemoteApp`. The capability lease is revoked on
@@ -588,6 +630,7 @@ mod tests {
                         kind: AssociationKind::Extension,
                         value: ".docx".to_string(),
                     }],
+                    uninstall_available: false,
                 }],
             })
         }
@@ -796,6 +839,7 @@ mod tests {
                 remote_app_alias: "qos-word".to_string(),
                 icon_sha256: None,
                 associations: Vec::new(),
+                uninstall_available: false,
             }],
         };
         appliance
