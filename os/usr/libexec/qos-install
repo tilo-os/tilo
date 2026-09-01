@@ -12,24 +12,25 @@
 #     --timezone <Area/City>          IANA time zone (default: system default / UTC)
 #     --keymap <xkb-layout>           keyboard layout, e.g. us, de (default: us)
 #     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
-#     --encrypt                       LUKS2 full-disk encryption on the root
-#     --pin                           unlock secret on stdin line 2: a TPM2 PIN
-#                                     where there is a TPM, otherwise the boot
-#                                     passphrase (requires --encrypt)
+#     --encrypt                       accepted for UI compatibility; native qOS
+#                                     always uses LUKS2 full-disk encryption
+#     --pin                           required unlock secret on stdin line 2: a TPM2 PIN
+#                                     only with verified boot + kernel lockdown,
+#                                     otherwise the boot passphrase (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #     --alongside --root-partition P --efi-partition P
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
 #                                     and reuse (never format) its existing ESP
 #
-# (These are optional so an older UI that omits them still works.) We:
+# An older UI may omit `--encrypt`, but the backend still encrypts. It must
+# provide `--pin`; otherwise installation fails closed. We:
 #
 #   1. copy the currently-booted bootc image into local container storage
 #      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
 #   2. install from that copied image, in a privileged podman container, onto
-#      the target disk (wipes it, --filesystem layout). Without --encrypt that
-#      is `bootc install to-disk`; with it, qos-disk-encrypt builds the
-#      GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
+#      the target disk (wipes it, --filesystem layout). qos-disk-encrypt builds
+#      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
 #      `--block-setup tpm2-luks`,
 #   3. create the user account: `bootc install` does NOT make users, so we
@@ -69,6 +70,42 @@ DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+secure_boot_enabled() {
+  local variable value
+  for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
+    [ -f "$variable" ] || continue
+    value="$(od -An -tu1 -j4 -N1 "$variable" 2>/dev/null | tr -d ' \n')"
+    [ "$value" = "1" ] && return 0
+  done
+  return 1
+}
+
+kernel_lockdown_active() {
+  local state
+  state="$(cat /sys/kernel/security/lockdown 2>/dev/null || true)"
+  case "$state" in
+    *'[integrity]'*|*'[confidentiality]'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Securely booting the live medium does not prove that the freshly installed
+# target will boot an equally sealed and trusted UKI. Short-PIN mode is enabled
+# only when a dedicated target-chain preflight exists and verifies that full
+# handoff. It is deliberately absent until installation-time UKI signing,
+# firmware trust enrollment and measured-target validation are integrated.
+target_verified_boot_ready() {
+  local preflight=/usr/libexec/qos-verified-boot-install-preflight
+  [ -x "$preflight" ] && "$preflight"
+}
+
+verified_tpm() {
+  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
+    && secure_boot_enabled \
+    && kernel_lockdown_active \
+    && target_verified_boot_ready
+}
 
 # Updates are signature-required only for the official qOS repository in the
 # shipped containers policy. Do not let a live-session environment override
@@ -164,8 +201,8 @@ HOSTNAME_VAL="qos"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
-ENCRYPT=0            # --encrypt → bootc --block-setup tpm2-luks (else direct)
-WANT_PIN=0           # --pin → enroll a TPM2+PIN keyslot (PIN read on stdin line 2)
+ENCRYPT=1            # Native qOS is always installed into a LUKS2 root.
+WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 ALONGSIDE=0
 ROOT_PARTITION=""
@@ -230,10 +267,11 @@ esac
 # Encryption does NOT require a TPM. The volume is created with a recovery key
 # and the TPM is one more slot on top of it, so a machine without one still gets
 # an encrypted disk that it unlocks by typing a secret. See qos-disk-encrypt.
-# The extra factors only make sense on an encrypted disk.
-if [ "$ENCRYPT" -eq 0 ] && { [ "$WANT_PIN" -eq 1 ] || [ "$WANT_FIDO2" -eq 1 ]; }; then
-  die "--pin/--fido2 require --encrypt"
-fi
+# A startup secret is mandatory. Short-PIN mode requires TPM2 plus verified boot
+# of both the live medium and installed target; otherwise the same input is a
+# normal, stronger disk passphrase.
+[ "$WANT_PIN" -eq 1 ] \
+  || die "native qOS requires --pin for its encrypted startup boundary"
 
 # Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
@@ -368,6 +406,16 @@ IFS= read -r PASSWORD || true
 if [ "$WANT_PIN" -eq 1 ]; then
   IFS= read -r PIN || true
   [ -n "$PIN" ] || die "--pin set but no PIN received on stdin (line 2)"
+  if verified_tpm; then
+    case "$PIN" in
+      *[!0-9]*) die "startup PIN must contain only digits" ;;
+    esac
+    [ "${#PIN}" -ge 6 ] && [ "${#PIN}" -le 12 ] \
+      || die "startup PIN must be 6 to 12 digits"
+  else
+    [ "${#PIN}" -ge 12 ] \
+      || die "disk passphrase must contain at least 12 characters without verified TPM2 boot"
+  fi
 fi
 
 log "qOS installer"
@@ -503,6 +551,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
+  verified_tpm || ENROL_ARGS+=(--passphrase)
   if [ "$WANT_PIN" -eq 1 ]; then
     PIN_FILE=/run/qos-install/pin
     install -d -m 0700 /run/qos-install
@@ -579,13 +628,15 @@ fi
 # bootc above; restoring greetd and removing the transient privilege drop-in
 # completes the boundary between installer and target.
 install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
+printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
+  "$USERNAME" >> "$DEPLOY_ETC/greetd/config.toml"
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base qOS image
 # leaves sshd disabled but unmasked.
 rm -f "$DEPLOY_ETC/systemd/system/sshd.service" \
       "$DEPLOY_ETC/systemd/system/multi-user.target.wants/sshd.service"
-log "  restored the normal greeter configuration"
+log "  configured encrypted-startup handoff to the '$USERNAME' session"
 
 # NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
 # files in the live medium. Preserve those profiles so a connection made in
