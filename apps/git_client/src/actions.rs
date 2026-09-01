@@ -289,6 +289,7 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
                 "Commit message",
                 "summary",
                 OperationKind::Effect,
+                GIT_CLIENT_OPERATION_TYPE,
                 |message| {
                     EncodedAction::encode_operation(
                         GIT_CLIENT_OPERATION_TYPE,

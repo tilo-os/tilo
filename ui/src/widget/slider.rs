@@ -600,6 +600,7 @@ impl Widget for Slider {
             .filter(|n| !n.is_empty());
         Some(
             AccessNode::new(Role::Slider)
+                .with_semantic_key(&self._id)
                 .with_optional_name(name)
                 .with_value(format!("{pct}%"))
                 .with_state(AccessState {
