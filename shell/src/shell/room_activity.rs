@@ -99,8 +99,11 @@ enum ActivityFocus {
     View(ActivityView),
     Period(Period),
     Author(Option<String>),
+    MorePeople,
     Brief(usize),
+    MoreBriefs,
     Lens(LensSelection),
+    MoreLenses,
     Detail(DetailAction),
     ExplorerPane(ExplorerPane),
 }
@@ -110,6 +113,8 @@ enum DetailAction {
     Open,
     Compare,
     Undo,
+    Split,
+    Merge,
 }
 
 impl DetailAction {
@@ -118,6 +123,8 @@ impl DetailAction {
             Self::Open => "Open",
             Self::Compare => "Compare",
             Self::Undo => "Undo",
+            Self::Split => "Split",
+            Self::Merge => "Merge",
         }
     }
 }
@@ -273,6 +280,9 @@ pub struct RoomActivityPane {
     /// Cleared whenever the pane isn't painted, so a stale click can't trip them.
     period_rects: Vec<(Period, Rect)>,
     author_rects: Vec<(Option<String>, Rect)>,
+    author_more_rect: Option<Rect>,
+    author_more_advance: usize,
+    author_offset: usize,
     room_name: String,
     total_entries: usize,
     /// Outcome-first reduction of the currently scoped rows. The full
@@ -291,10 +301,16 @@ pub struct RoomActivityPane {
     view: ActivityView,
     view_rects: Vec<(ActivityView, Rect)>,
     brief_rects: Vec<(usize, Rect)>,
+    brief_more_rect: Option<Rect>,
+    brief_more_advance: usize,
+    brief_offset: usize,
     expanded_brief: Option<usize>,
     facet_index: HistoryFacetIndex,
     lens: LensSelection,
     lens_rects: Vec<(LensSelection, Rect)>,
+    lens_more_rect: Option<Rect>,
+    lens_more_advance: usize,
+    lens_offset: usize,
     keyboard_focus: Option<ActivityFocus>,
     detail_action_rects: Vec<(DetailAction, Rect)>,
     comparison: Option<HistoryComparison>,
@@ -351,6 +367,9 @@ impl RoomActivityPane {
             sheet: Rect::ZERO,
             period_rects: Vec::new(),
             author_rects: Vec::new(),
+            author_more_rect: None,
+            author_more_advance: 0,
+            author_offset: 0,
             room_name: String::new(),
             total_entries: 0,
             digest: ActivityDigest::default(),
@@ -362,10 +381,16 @@ impl RoomActivityPane {
             view: ActivityView::default(),
             view_rects: Vec::new(),
             brief_rects: Vec::new(),
+            brief_more_rect: None,
+            brief_more_advance: 0,
+            brief_offset: 0,
             expanded_brief: None,
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
             lens_rects: Vec::new(),
+            lens_more_rect: None,
+            lens_more_advance: 0,
+            lens_offset: 0,
             keyboard_focus: None,
             detail_action_rects: Vec::new(),
             comparison: None,
@@ -572,6 +597,10 @@ impl RoomActivityPane {
         &mut self.timeline
     }
 
+    pub fn has_comparison(&self) -> bool {
+        self.comparison.is_some()
+    }
+
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
         let range = self.timeline.selection()?;
         let mut detail = HistorySelectionDetail::from_range(self.timeline.entries(), range)?;
@@ -603,6 +632,141 @@ impl RoomActivityPane {
     fn clear_comparison(&mut self) {
         self.comparison = None;
         self.comparison_selection.clear();
+    }
+
+    fn advance_people(&mut self) {
+        let next = self.author_offset.saturating_add(self.author_more_advance);
+        self.author_offset = if next < self.contributors.len() {
+            next
+        } else {
+            0
+        };
+    }
+
+    fn advance_briefs(&mut self) {
+        let next = self.brief_offset.saturating_add(self.brief_more_advance);
+        self.brief_offset = if next < self.digest.briefs.len() {
+            next
+        } else {
+            0
+        };
+        self.expanded_brief = None;
+    }
+
+    fn advance_lenses(&mut self) {
+        let next = self.lens_offset.saturating_add(self.lens_more_advance);
+        self.lens_offset = if next < self.lens_candidates().len() {
+            next
+        } else {
+            0
+        };
+    }
+
+    fn entry_position(&self, id: &HistoryEntryId) -> Option<usize> {
+        self.timeline
+            .entries()
+            .iter()
+            .position(|entry| entry.id == *id)
+    }
+
+    fn named_positions(&self) -> Vec<(&NamedRange, usize, usize)> {
+        let last = self.timeline.entries().len().saturating_sub(1);
+        let mut ranges = self
+            .named
+            .iter()
+            .filter_map(|range| {
+                let start = self.entry_position(&range.start)?;
+                let end = range
+                    .end
+                    .as_ref()
+                    .and_then(|id| self.entry_position(id))
+                    .unwrap_or(last);
+                Some((range, start.min(end), start.max(end)))
+            })
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|(_, start, _)| *start);
+        ranges
+    }
+
+    fn split_candidate(&self) -> Option<(&NamedRange, HistoryEntryId, HistoryEntryId)> {
+        let (selected, _) = self.timeline.selection()?;
+        let (range, start, end) = self
+            .named_positions()
+            .into_iter()
+            .find(|(_, start, end)| *start < selected && selected <= *end)?;
+        let left_end = self.timeline.entries().get(selected.checked_sub(1)?)?.id;
+        let right_start = self.timeline.entries().get(selected)?.id;
+        debug_assert!(start < selected && selected <= end);
+        Some((range, left_end, right_start))
+    }
+
+    fn merge_candidate(&self) -> Option<(Vec<String>, HistoryEntryId, HistoryEntryId, String)> {
+        let (selected_start, selected_end) = self.timeline.selection()?;
+        let ranges = self
+            .named_positions()
+            .into_iter()
+            .filter(|(_, start, end)| *end >= selected_start && *start <= selected_end)
+            .collect::<Vec<_>>();
+        if ranges.len() < 2 {
+            return None;
+        }
+        let first = ranges.first()?;
+        let last = ranges.last()?;
+        Some((
+            ranges
+                .iter()
+                .map(|(range, _, _)| range.id.clone())
+                .collect(),
+            self.timeline.entries().get(first.1)?.id,
+            self.timeline.entries().get(last.2)?.id,
+            first.0.label.clone(),
+        ))
+    }
+
+    fn split_selection_group(&mut self, tree: &mut WorkspaceTree) -> bool {
+        let Some((range, left_end, right_start)) = self.split_candidate() else {
+            return false;
+        };
+        let record_id = range.id.clone();
+        let label = range.label.clone();
+        let right_label = format!("{label} — continued");
+        if ui::history_groups::split_named_range(
+            &mut tree.doc,
+            &record_id,
+            &left_end,
+            &right_start,
+            &label,
+            &right_label,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        tree.commit_room_change();
+        self.last_heads.clear();
+        self.refresh(tree);
+        true
+    }
+
+    fn merge_selection_groups(&mut self, tree: &mut WorkspaceTree) -> bool {
+        let Some((records, start, end, label)) = self.merge_candidate() else {
+            return false;
+        };
+        if ui::history_groups::merge_named_ranges(
+            &mut tree.doc,
+            &records,
+            &start,
+            Some(&end),
+            &label,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        tree.commit_room_change();
+        self.last_heads.clear();
+        self.refresh(tree);
+        true
     }
 
     /// Materialize the exact before/after document for the current selection.
@@ -1055,6 +1219,8 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         self.lens_rects.clear();
+        self.lens_more_rect = None;
+        self.lens_more_advance = 0;
         self.detail_action_rects.clear();
         let compact = self.sheet.width() < 900.0;
         if compact && self.explorer_pane == ExplorerPane::Timeline {
@@ -1109,126 +1275,28 @@ impl RoomActivityPane {
                 ui::text_render::TextWeight::Medium,
             );
             let mut y = left.y0 + 38.0;
-            self.draw_lens_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                &LensSelection::All,
-                "Everything",
-                &mut y,
-                left,
-            );
-            let apps: Vec<(String, usize)> = self
-                .facet_index
-                .apps
-                .iter()
-                .map(|(label, count)| (label.clone(), *count))
-                .collect();
-            for (label, count) in apps.into_iter().take(4) {
-                let lens = LensSelection::App(label.clone());
-                self.draw_lens_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &lens,
-                    &format!("{label}  {count}"),
-                    &mut y,
-                    left,
-                );
+            let candidates = self.lens_candidates();
+            if self.lens_offset >= candidates.len() {
+                self.lens_offset = 0;
             }
-            let kinds: Vec<(String, usize)> = self
-                .facet_index
-                .resource_kinds
-                .iter()
-                .map(|(label, count)| (label.clone(), *count))
-                .collect();
-            for (label, count) in kinds.into_iter().take(4) {
-                let lens = LensSelection::ResourceKind(label.clone());
-                self.draw_lens_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &lens,
-                    &format!("{label}  {count}"),
-                    &mut y,
-                    left,
-                );
+            let capacity = (((left.y1 - 6.0 - y) / 32.0).floor() as usize).max(1);
+            let remaining = candidates.len().saturating_sub(self.lens_offset);
+            let shown = remaining.min(if remaining > capacity {
+                capacity.saturating_sub(1).max(1)
+            } else {
+                capacity
+            });
+            for (lens, label) in candidates.iter().skip(self.lens_offset).take(shown) {
+                self.draw_lens_row(scene, transform, tr, theme, lens, label, &mut y, left);
             }
-            let resources: Vec<(String, usize)> = self
-                .facet_index
-                .resources
-                .iter()
-                .map(|(label, count)| (label.clone(), *count))
-                .collect();
-            for (label, count) in resources.into_iter().take(3) {
-                let lens = LensSelection::Resource(label.clone());
-                self.draw_lens_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &lens,
-                    &format!("{label}  {count}"),
-                    &mut y,
-                    left,
-                );
-            }
-            let groups: Vec<(String, usize)> = self
-                .facet_index
-                .work_groups
-                .iter()
-                .map(|(label, count)| (label.clone(), *count))
-                .collect();
-            for (label, count) in groups.into_iter().take(2) {
-                let lens = LensSelection::WorkGroup(label.clone());
-                self.draw_lens_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &lens,
-                    &format!("{label}  {count}"),
-                    &mut y,
-                    left,
-                );
-            }
-            let facets: Vec<(String, String, usize)> = self
-                .facet_index
-                .facets
-                .iter()
-                .flat_map(|(key, values)| {
-                    values
-                        .iter()
-                        .map(|(value, count)| (key.clone(), value.clone(), *count))
-                })
-                .collect();
-            for (key, value, count) in facets.into_iter().take(3) {
-                let lens = LensSelection::Facet(key.clone(), value.clone());
-                self.draw_lens_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &lens,
-                    &format!("{key}: {value}  {count}"),
-                    &mut y,
-                    left,
-                );
-            }
-            if self.facet_index.unclassified > 0 {
-                self.draw_lens_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &LensSelection::Unclassified,
-                    &format!("Unclassified  {}", self.facet_index.unclassified),
-                    &mut y,
-                    left,
-                );
+            if shown < remaining || self.lens_offset > 0 {
+                let label = if shown < remaining {
+                    "More lenses…"
+                } else {
+                    "First lenses…"
+                };
+                self.lens_more_rect = draw_more_row(scene, transform, tr, theme, left, y, label);
+                self.lens_more_advance = shown;
             }
         }
 
@@ -1290,20 +1358,29 @@ impl RoomActivityPane {
                     Some(width),
                 );
                 let mut x = right.x0 + 12.0;
+                let mut action_y = right.y0 + 170.0;
                 for action in [
                     DetailAction::Open,
                     DetailAction::Compare,
                     DetailAction::Undo,
+                    DetailAction::Split,
+                    DetailAction::Merge,
                 ] {
                     let enabled = match action {
                         DetailAction::Open => !detail.resources.is_empty(),
                         DetailAction::Compare => detail.can_compare,
                         DetailAction::Undo => detail.can_undo,
+                        DetailAction::Split => self.split_candidate().is_some(),
+                        DetailAction::Merge => self.merge_candidate().is_some(),
                     };
                     if !enabled {
                         continue;
                     }
-                    let rect = Rect::new(x, right.y0 + 170.0, x + 60.0, right.y0 + 198.0);
+                    if x + 60.0 > right.x1 - 12.0 {
+                        x = right.x0 + 12.0;
+                        action_y += 34.0;
+                    }
+                    let rect = Rect::new(x, action_y, x + 60.0, action_y + 28.0);
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -1344,7 +1421,7 @@ impl RoomActivityPane {
                         &lines.join("\n"),
                         size,
                         theme.tokens.colors.text_dim,
-                        at(transform, right.x0 + 12.0, right.y0 + 214.0),
+                        at(transform, right.x0 + 12.0, right.y0 + 246.0),
                         Some(width),
                     );
                 }
@@ -1396,6 +1473,54 @@ impl RoomActivityPane {
         *y += 32.0;
     }
 
+    fn lens_candidates(&self) -> Vec<(LensSelection, String)> {
+        let mut rows = vec![(LensSelection::All, "Everything".to_string())];
+        rows.extend(self.facet_index.apps.iter().map(|(label, count)| {
+            (
+                LensSelection::App(label.clone()),
+                format!("{label}  {count}"),
+            )
+        }));
+        rows.extend(
+            self.facet_index
+                .resource_kinds
+                .iter()
+                .map(|(label, count)| {
+                    (
+                        LensSelection::ResourceKind(label.clone()),
+                        format!("{label}  {count}"),
+                    )
+                }),
+        );
+        rows.extend(self.facet_index.resources.iter().map(|(label, count)| {
+            (
+                LensSelection::Resource(label.clone()),
+                format!("{label}  {count}"),
+            )
+        }));
+        rows.extend(self.facet_index.work_groups.iter().map(|(label, count)| {
+            (
+                LensSelection::WorkGroup(label.clone()),
+                format!("{label}  {count}"),
+            )
+        }));
+        rows.extend(self.facet_index.facets.iter().flat_map(|(key, values)| {
+            values.iter().map(move |(value, count)| {
+                (
+                    LensSelection::Facet(key.clone(), value.clone()),
+                    format!("{key}: {value}  {count}"),
+                )
+            })
+        }));
+        if self.facet_index.unclassified > 0 {
+            rows.push((
+                LensSelection::Unclassified,
+                format!("Unclassified  {}", self.facet_index.unclassified),
+            ));
+        }
+        rows
+    }
+
     fn draw_view_tabs(
         &mut self,
         scene: &mut Scene,
@@ -1428,6 +1553,8 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         self.brief_rects.clear();
+        self.brief_more_rect = None;
+        self.brief_more_advance = 0;
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
         let x0 = self.sheet.x0 + 12.0;
         let x1 = self.sheet.x1 - 12.0;
@@ -1442,10 +1569,22 @@ impl RoomActivityPane {
             );
             return;
         }
-        for (index, brief) in self.digest.briefs.iter().enumerate() {
+        if self.brief_offset >= self.digest.briefs.len() {
+            self.brief_offset = 0;
+        }
+        let mut shown = 0usize;
+        for (index, brief) in self
+            .digest
+            .briefs
+            .iter()
+            .enumerate()
+            .skip(self.brief_offset)
+        {
             let expanded = self.expanded_brief == Some(index);
             let height = if expanded { 112.0 } else { 70.0 };
-            if y + height > self.sheet.y1 - 10.0 {
+            let more_room = 34.0;
+            let has_later = index + 1 < self.digest.briefs.len() || self.brief_offset > 0;
+            if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
             let rect = Rect::new(x0, y, x1, y + height);
@@ -1497,6 +1636,29 @@ impl RoomActivityPane {
                 );
             }
             y += height + 8.0;
+            shown += 1;
+        }
+        let remaining = self
+            .digest
+            .briefs
+            .len()
+            .saturating_sub(self.brief_offset + shown);
+        if remaining > 0 || self.brief_offset > 0 {
+            let label = if remaining > 0 {
+                "More outcomes…"
+            } else {
+                "First outcomes…"
+            };
+            self.brief_more_rect = draw_more_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                Rect::new(x0, y, x1, self.sheet.y1 - 8.0),
+                y,
+                label,
+            );
+            self.brief_more_advance = shown.max(1);
         }
     }
 
@@ -1679,13 +1841,19 @@ impl RoomActivityPane {
             |p| *p == selected,
         );
 
-        let mut people: Vec<(Option<String>, String)> = vec![(None, "Everyone".to_string())];
-        for c in &self.contributors {
-            people.push((Some(c.clone()), c.clone()));
+        if self.author_offset >= self.contributors.len() {
+            self.author_offset = 0;
         }
+        let mut people: Vec<(Option<String>, String)> = vec![(None, "Everyone".to_string())];
+        people.extend(
+            self.contributors
+                .iter()
+                .skip(self.author_offset)
+                .map(|c| (Some(c.clone()), c.clone())),
+        );
         let picked = self.author.clone();
         let y2 = y + CHIP_ROW_H;
-        self.author_rects = draw_chip_row(
+        let mut page = draw_chip_row_paginated(
             scene,
             transform,
             tr,
@@ -1699,6 +1867,27 @@ impl RoomActivityPane {
             &people,
             |a| *a == picked,
         );
+        if self.author_offset > 0 && page.more_rect.is_none() {
+            let row = Rect::new(
+                self.sheet.x0 + 12.0,
+                y2,
+                self.sheet.x1 - 12.0,
+                y2 + CHIP_ROW_H,
+            );
+            page.more_rect = draw_more_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                row,
+                row.y0 + 1.0,
+                "First people…",
+            );
+        }
+        self.author_rects = page.items;
+        self.author_more_rect = page.more_rect;
+        // Everyone is repeated to preserve a stable escape from a person filter.
+        self.author_more_advance = page.shown.saturating_sub(1).max(1);
     }
 
     // ---------- Events ----------
@@ -1796,6 +1985,14 @@ impl RoomActivityPane {
                         };
                     }
                 }
+                if self.brief_more_rect.is_some_and(|rect| rect.contains(p)) {
+                    self.keyboard_focus = Some(ActivityFocus::MoreBriefs);
+                    self.advance_briefs();
+                    return RoomActivityOutcome {
+                        handled: true,
+                        ..RoomActivityOutcome::default()
+                    };
+                }
             }
             if self.view == ActivityView::Explore {
                 for (pane, rect) in self.explorer_pane_rects.clone() {
@@ -1843,6 +2040,8 @@ impl RoomActivityPane {
                                 out.undo_partial = applied.partial;
                             }
                         }
+                        DetailAction::Split => out.named = self.split_selection_group(tree),
+                        DetailAction::Merge => out.named = self.merge_selection_groups(tree),
                     }
                     return out;
                 }
@@ -1856,6 +2055,14 @@ impl RoomActivityPane {
                             ..RoomActivityOutcome::default()
                         };
                     }
+                }
+                if self.lens_more_rect.is_some_and(|rect| rect.contains(p)) {
+                    self.keyboard_focus = Some(ActivityFocus::MoreLenses);
+                    self.advance_lenses();
+                    return RoomActivityOutcome {
+                        handled: true,
+                        ..RoomActivityOutcome::default()
+                    };
                 }
             }
             for (period, rect) in self.period_rects.clone() {
@@ -1877,6 +2084,14 @@ impl RoomActivityPane {
                         ..RoomActivityOutcome::default()
                     };
                 }
+            }
+            if self.author_more_rect.is_some_and(|rect| rect.contains(p)) {
+                self.keyboard_focus = Some(ActivityFocus::MorePeople);
+                self.advance_people();
+                return RoomActivityOutcome {
+                    handled: true,
+                    ..RoomActivityOutcome::default()
+                };
             }
         }
 
@@ -1958,11 +2173,17 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(pane, _)| ActivityFocus::ExplorerPane(*pane)),
                 );
+                if self.author_more_rect.is_some() {
+                    order.push(ActivityFocus::MorePeople);
+                }
                 order.extend(
                     self.period_rects
                         .iter()
                         .map(|(period, _)| ActivityFocus::Period(*period)),
                 );
+                if self.lens_more_rect.is_some() {
+                    order.push(ActivityFocus::MoreLenses);
+                }
                 order.extend(
                     self.author_rects
                         .iter()
@@ -1979,6 +2200,9 @@ impl RoomActivityPane {
                         .map(|(action, _)| ActivityFocus::Detail(*action)),
                 );
             }
+        }
+        if self.view == ActivityView::CatchUp && self.brief_more_rect.is_some() {
+            order.push(ActivityFocus::MoreBriefs);
         }
         order
     }
@@ -2001,14 +2225,17 @@ impl RoomActivityPane {
                 .author_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::MorePeople => self.author_more_rect,
             ActivityFocus::Brief(value) => self
                 .brief_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::MoreBriefs => self.brief_more_rect,
             ActivityFocus::Lens(value) => self
                 .lens_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::MoreLenses => self.lens_more_rect,
             ActivityFocus::Detail(value) => self
                 .detail_action_rects
                 .iter()
@@ -2067,6 +2294,7 @@ impl RoomActivityPane {
             ActivityFocus::View(value) => self.set_view(value),
             ActivityFocus::Period(value) => self.set_period(value),
             ActivityFocus::Author(value) => self.set_author_filter(value),
+            ActivityFocus::MorePeople => self.advance_people(),
             ActivityFocus::Brief(index) => {
                 if self.expanded_brief == Some(index) {
                     self.open_brief_in_explorer(index);
@@ -2074,10 +2302,12 @@ impl RoomActivityPane {
                     self.expanded_brief = Some(index);
                 }
             }
+            ActivityFocus::MoreBriefs => self.advance_briefs(),
             ActivityFocus::Lens(value) => {
                 self.lens = value;
                 self.reinstall_filter();
             }
+            ActivityFocus::MoreLenses => self.advance_lenses(),
             ActivityFocus::Detail(DetailAction::Open) => {
                 outcome.open_target = self
                     .selection_detail()
@@ -2105,6 +2335,12 @@ impl RoomActivityPane {
                     outcome.reverted = applied.wrote;
                     outcome.undo_partial = applied.partial;
                 }
+            }
+            ActivityFocus::Detail(DetailAction::Split) => {
+                outcome.named = self.split_selection_group(tree);
+            }
+            ActivityFocus::Detail(DetailAction::Merge) => {
+                outcome.named = self.merge_selection_groups(tree);
             }
             ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
         }
@@ -2153,9 +2389,11 @@ impl RoomActivityPane {
             ActivityFocus::Period(value) => Some(value.label().to_string()),
             ActivityFocus::Author(Some(value)) => Some(value.clone()),
             ActivityFocus::Author(None) => Some("Everyone".to_string()),
+            ActivityFocus::MorePeople => Some("More people".to_string()),
             ActivityFocus::Brief(index) => {
                 digest.briefs.get(*index).map(|brief| brief.title.clone())
             }
+            ActivityFocus::MoreBriefs => Some("More outcomes".to_string()),
             ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
             ActivityFocus::Lens(LensSelection::App(value))
             | ActivityFocus::Lens(LensSelection::ResourceKind(value))
@@ -2165,6 +2403,7 @@ impl RoomActivityPane {
                 Some(format!("{key}: {value}"))
             }
             ActivityFocus::Lens(LensSelection::Unclassified) => Some("Unclassified".to_string()),
+            ActivityFocus::MoreLenses => Some("More lenses".to_string()),
             ActivityFocus::Detail(action) => Some(action.label().to_string()),
             ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
         }
@@ -2221,6 +2460,12 @@ impl RoomActivityPane {
                         None,
                         Some("Person filter".to_string()),
                     ),
+                    ActivityFocus::MorePeople => (
+                        Role::Button,
+                        false,
+                        None,
+                        Some("Show more contributor filters".to_string()),
+                    ),
                     ActivityFocus::Brief(brief_index) => {
                         let brief = self.digest.briefs.get(*brief_index)?;
                         (
@@ -2240,11 +2485,23 @@ impl RoomActivityPane {
                             )),
                         )
                     }
+                    ActivityFocus::MoreBriefs => (
+                        Role::Button,
+                        false,
+                        None,
+                        Some("Show more outcome summaries".to_string()),
+                    ),
                     ActivityFocus::Lens(value) => (
                         Role::RadioButton,
                         self.lens == *value,
                         None,
                         Some("History lens".to_string()),
+                    ),
+                    ActivityFocus::MoreLenses => (
+                        Role::Button,
+                        false,
+                        None,
+                        Some("Show more history lenses".to_string()),
                     ),
                     ActivityFocus::Detail(_) => (
                         Role::Button,
@@ -2346,14 +2603,17 @@ impl RoomActivityPane {
                 .author_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::MorePeople => self.author_more_rect,
             ActivityFocus::Brief(value) => self
                 .brief_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::MoreBriefs => self.brief_more_rect,
             ActivityFocus::Lens(value) => self
                 .lens_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::MoreLenses => self.lens_more_rect,
             ActivityFocus::Detail(value) => self
                 .detail_action_rects
                 .iter()
@@ -2626,6 +2886,125 @@ fn draw_chip_row<T: Clone>(
         );
     }
     out
+}
+
+struct ChipPage<T> {
+    items: Vec<(T, Rect)>,
+    more_rect: Option<Rect>,
+    shown: usize,
+}
+
+fn draw_chip_row_paginated<T: Clone>(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+    items: &[(T, String)],
+    is_active: impl Fn(&T) -> bool,
+) -> ChipPage<T> {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let size = (tokens.typography.scale.sm - 1.0).max(10.0);
+    let chip_h = (row.height() - 8.0).max(18.0);
+    let cy = row.center().y;
+    let mut out = Vec::with_capacity(items.len());
+    let mut x = row.x0;
+    for (value, label) in items {
+        let (lw, lh) = tr.measure(label, size, None);
+        let w = f64::from(lw) + 16.0;
+        if x + w > row.x1 - 58.0 {
+            break;
+        }
+        let rect = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if is_active(value) {
+                colors.accent[5]
+            } else {
+                colors.surface_white_5
+            },
+            None,
+            &RoundedRect::from_rect(rect, chip_h / 2.0),
+        );
+        tr.draw_text(
+            scene,
+            label,
+            size,
+            if is_active(value) {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+            at(
+                transform,
+                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
+            ),
+            None,
+        );
+        out.push((value.clone(), rect));
+        x += w + 6.0;
+    }
+    let shown = out.len();
+    let more_rect = if shown < items.len() {
+        let rect = Rect::new(row.x1 - 52.0, cy - chip_h / 2.0, row.x1, cy + chip_h / 2.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &RoundedRect::from_rect(rect, chip_h / 2.0),
+        );
+        tr.draw_text(
+            scene,
+            "More…",
+            size,
+            colors.text_primary,
+            at(transform, rect.x0 + 8.0, rect.y0 + 5.0),
+            None,
+        );
+        Some(rect)
+    } else {
+        None
+    };
+    ChipPage {
+        items: out,
+        more_rect,
+        shown,
+    }
+}
+
+fn draw_more_row(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    bounds: Rect,
+    y: f64,
+    label: &str,
+) -> Option<Rect> {
+    if y + 28.0 > bounds.y1 {
+        return None;
+    }
+    let rect = Rect::new(bounds.x0 + 6.0, y, bounds.x1 - 6.0, y + 28.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surface_white_5,
+        None,
+        &RoundedRect::from_rect(rect, 6.0),
+    );
+    tr.draw_text(
+        scene,
+        label,
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_primary,
+        at(transform, rect.x0 + 8.0, rect.y0 + 6.0),
+        Some((rect.width() - 16.0).max(0.0) as f32),
+    );
+    Some(rect)
 }
 
 // =====================================================================
@@ -4500,5 +4879,110 @@ mod tests {
             "it addressed the record it already had"
         );
         assert_eq!(ranges[0].label, "First try again");
+    }
+
+    #[test]
+    fn overflow_controls_make_every_filter_page_keyboard_reachable() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.contributors = (0..12).map(|i| format!("Contributor {i}")).collect();
+        for i in 0..18 {
+            pane.facet_index
+                .apps
+                .insert(format!("Application {i}"), i + 1);
+        }
+        pane.layout(Rect::new(0.0, 0.0, 1000.0, 520.0));
+        paint(&mut pane);
+
+        assert!(
+            pane.author_more_rect.is_some(),
+            "contributors expose a More control"
+        );
+        assert!(
+            pane.lens_more_rect.is_some(),
+            "short browse panel exposes a More control"
+        );
+        assert!(pane.focus_order().contains(&ActivityFocus::MorePeople));
+        assert!(pane.focus_order().contains(&ActivityFocus::MoreLenses));
+        let first_people = pane.author_rects.clone();
+        pane.advance_people();
+        paint(&mut pane);
+        assert_ne!(
+            first_people, pane.author_rects,
+            "More people advances the page"
+        );
+        let first_lenses = pane.lens_rects.clone();
+        pane.advance_lenses();
+        paint(&mut pane);
+        assert_ne!(
+            first_lenses, pane.lens_rects,
+            "More lenses advances the page"
+        );
+        assert!(
+            pane.lens_rects
+                .iter()
+                .all(|(_, rect)| rect.y1 <= pane.sheet.y1)
+        );
+    }
+
+    #[test]
+    fn short_catch_up_has_a_more_outcomes_affordance() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::CatchUp);
+        let first = pane
+            .digest
+            .briefs
+            .first()
+            .cloned()
+            .expect("fixture outcome");
+        while pane.digest.briefs.len() < 5 {
+            pane.digest.briefs.push(first.clone());
+        }
+        pane.layout(Rect::new(0.0, 0.0, 1000.0, 390.0));
+        paint(&mut pane);
+        assert!(
+            pane.brief_more_rect.is_some(),
+            "outcomes are paged, not silently clipped"
+        );
+        assert!(pane.focus_order().contains(&ActivityFocus::MoreBriefs));
+        let before = pane.brief_rects.clone();
+        pane.advance_briefs();
+        paint(&mut pane);
+        assert_ne!(before, pane.brief_rects);
+    }
+
+    #[test]
+    fn selected_named_bands_can_be_split_and_merged() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        assert!(pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start: entries[1].id,
+                end: entries[3].id,
+                label: "Investigate".to_string(),
+            },
+        ));
+        pane.timeline_mut().set_selection(Some((2, 2)));
+        assert!(pane.split_selection_group(&mut tree));
+        let split = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(split.len(), 2);
+        assert!(
+            split
+                .iter()
+                .any(|range| { range.start == entries[1].id && range.end == Some(entries[1].id) })
+        );
+        assert!(split.iter().any(|range| range.start == entries[2].id));
+
+        pane.timeline_mut().set_selection(Some((1, 3)));
+        assert!(pane.merge_selection_groups(&mut tree));
+        let merged = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].start, entries[1].id);
+        assert_eq!(merged[0].end, Some(entries[3].id));
     }
 }
