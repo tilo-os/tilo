@@ -19,6 +19,9 @@ use rand::RngCore as _;
 
 const SATELLITE: &str = "/usr/bin/xwayland-satellite";
 const FREERDP: &str = "/usr/bin/xfreerdp";
+const BWRAP: &str = "/usr/bin/bwrap";
+const READ_ONLY_DRIVE_PREFIX: &str = "--qos-read-only-drive=";
+const PORTAL_LEASE_ROOT: &str = "/run/qos/windows-vm/leases";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const DISPLAY_ATTEMPTS: usize = 64;
 
@@ -41,6 +44,7 @@ fn run() -> Result<u8, String> {
     if arguments.is_empty() {
         return Err("no FreeRDP request was supplied".to_string());
     }
+    let (arguments, read_only_drives) = split_private_arguments(arguments)?;
 
     let runtime = private_runtime_root()?;
     let (display_number, reservation) = reserve_display(&runtime)?;
@@ -62,8 +66,8 @@ fn run() -> Result<u8, String> {
 
     let result = (|| {
         wait_for_xwayland(&mut satellite, &socket)?;
-        let status = Command::new(FREERDP)
-            .args(&arguments)
+        let mut command = free_rdp_command(&arguments, &read_only_drives);
+        let status = command
             .env("DISPLAY", &display)
             .env("XAUTHORITY", &authority)
             // Harmless for FreeRDP and required by Java child windows that a
@@ -86,7 +90,7 @@ fn run() -> Result<u8, String> {
 }
 
 fn verify_runtime() -> Result<(), String> {
-    for binary in [SATELLITE, FREERDP] {
+    for binary in [SATELLITE, FREERDP, BWRAP] {
         if !Path::new(binary).is_file() {
             return Err(format!(
                 "required runtime component {binary} is not installed"
@@ -107,6 +111,64 @@ fn verify_runtime() -> Result<(), String> {
         return Err("the qOS Wayland socket is not available".to_string());
     }
     Ok(())
+}
+
+fn split_private_arguments(
+    arguments: Vec<std::ffi::OsString>,
+) -> Result<(Vec<std::ffi::OsString>, Vec<PathBuf>), String> {
+    let mut free_rdp = Vec::new();
+    let mut read_only = Vec::new();
+    for argument in arguments {
+        if let Some(value) = argument
+            .to_str()
+            .and_then(|value| value.strip_prefix(READ_ONLY_DRIVE_PREFIX))
+        {
+            let path = PathBuf::from(value);
+            validate_portal_drive(&path)?;
+            read_only.push(path);
+        } else {
+            free_rdp.push(argument);
+        }
+    }
+    if free_rdp.is_empty() {
+        return Err("no FreeRDP request was supplied".to_string());
+    }
+    Ok((free_rdp, read_only))
+}
+
+fn validate_portal_drive(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() || !path.starts_with(PORTAL_LEASE_ROOT) {
+        return Err("read-only drive is outside the qOS portal lease root".to_string());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect portal drive: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("read-only portal drive is not a real directory".to_string());
+    }
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("could not resolve portal drive: {error}"))?;
+    if canonical != path || !canonical.starts_with(PORTAL_LEASE_ROOT) {
+        return Err("read-only portal drive escaped its lease".to_string());
+    }
+    Ok(())
+}
+
+fn free_rdp_command(arguments: &[std::ffi::OsString], read_only_drives: &[PathBuf]) -> Command {
+    let mut command = if read_only_drives.is_empty() {
+        Command::new(FREERDP)
+    } else {
+        let mut sandbox = Command::new(BWRAP);
+        // Preserve the normal RAIL runtime while using the rootless mount
+        // namespace as the security boundary for portal read-only decisions.
+        sandbox.args(["--die-with-parent", "--new-session", "--bind", "/", "/"]);
+        for drive in read_only_drives {
+            sandbox.arg("--ro-bind").arg(drive).arg(drive);
+        }
+        sandbox.arg("--").arg(FREERDP);
+        sandbox
+    };
+    command.args(arguments);
+    command
 }
 
 fn runtime_directory() -> Result<PathBuf, String> {
@@ -301,5 +363,37 @@ mod tests {
         remove_private_launch_root(&launch);
         assert!(!launch.exists());
         assert!(directory.path().exists());
+    }
+
+    #[test]
+    fn private_read_only_argument_never_reaches_freerdp() {
+        let drive = PathBuf::from("/run/qos/windows-vm/leases/rail-test/QOS01");
+        let command = free_rdp_command(&["/v:guest".into()], std::slice::from_ref(&drive));
+        assert_eq!(command.get_program(), OsStr::new(BWRAP));
+        let arguments = command.get_args().collect::<Vec<_>>();
+        assert!(arguments.windows(3).any(|window| {
+            window
+                == [
+                    OsStr::new("--ro-bind"),
+                    drive.as_os_str(),
+                    drive.as_os_str(),
+                ]
+        }));
+        assert!(!arguments.iter().any(|argument| {
+            argument
+                .to_string_lossy()
+                .starts_with(READ_ONLY_DRIVE_PREFIX)
+        }));
+    }
+
+    #[test]
+    fn caller_cannot_name_an_ambient_read_only_path() {
+        assert!(
+            split_private_arguments(vec![
+                "--qos-read-only-drive=/home/user".into(),
+                "/v:guest".into(),
+            ])
+            .is_err()
+        );
     }
 }

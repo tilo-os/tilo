@@ -33,6 +33,15 @@ pub trait CompatibilityProvider: Send {
     ///
     /// Returns an error when the VM is unavailable or the entry is unknown.
     fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String>;
+    /// Open one portal-selected document in a published VM application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the route is not a published VM application or
+    /// the compatibility session cannot accept the descriptor.
+    fn launch_vm_with_file(&mut self, _app_id: &str, _source: File) -> Result<(), String> {
+        Err("Opening portal files is unavailable for this Windows route.".to_string())
+    }
     /// Transfer a portal-open installer descriptor to the service.
     ///
     /// # Errors
@@ -362,6 +371,7 @@ enum WorkerCommand {
     Refresh,
     Launch(String),
     LaunchVmFallback(String),
+    LaunchVmWithFile { entry_id: String, source: File },
     Install { source: File, source_name: String },
     InstallInCapsule { source: File, source_name: String },
     InstallInVm { source: File, source_name: String },
@@ -526,6 +536,24 @@ impl CompatibilityProvider for LiveProvider {
         }
         self.commands
             .send(WorkerCommand::LaunchVmFallback(app_id.to_string()))
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    fn launch_vm_with_file(&mut self, app_id: &str, source: File) -> Result<(), String> {
+        self.drain();
+        let application = self.cached.app(app_id).ok_or_else(|| {
+            "That managed Windows application is not in this session.".to_string()
+        })?;
+        if application.route != Route::Vm {
+            return Err(
+                "Open file is available only for a published Windows VM application.".to_string(),
+            );
+        }
+        self.commands
+            .send(WorkerCommand::LaunchVmWithFile {
+                entry_id: app_id.to_string(),
+                source,
+            })
             .map_err(|_| "The compatibility service worker has stopped.".to_string())
     }
 
@@ -796,6 +824,18 @@ fn worker(
                     Ok(_) => WorkerEvent::Unavailable(
                         "The compatibility service returned an invalid VM launch response.".into(),
                     ),
+                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                };
+                if events.send(event).is_err() {
+                    return;
+                }
+            }
+            WorkerCommand::LaunchVmWithFile { entry_id, source } => {
+                let event = match client.request_with_file(&ProtocolRequest::LaunchVmWithPortalFile { version: PROTOCOL_VERSION, entry_id, writable: false }, &source) {
+                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => WorkerEvent::Notice("Opened the portal-selected file in Windows.".into()),
+                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!("Windows closed with status {:?}.", receipt.exit_code)),
+                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
+                    Ok(_) => WorkerEvent::Unavailable("The compatibility service returned an invalid portal-file launch response.".into()),
                     Err(error) => WorkerEvent::Unavailable(error.to_string()),
                 };
                 if events.send(event).is_err() {
