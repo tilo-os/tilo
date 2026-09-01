@@ -38,7 +38,7 @@ than the raw timeline.
 The header says the scope and frontier: “Design review · 18 changes by 3
 people”. Below it, three to five outcome cards show explicit work groups first:
 
-> Prepare launch brief  
+> Prepare launch brief
 > Ada and Maren · Notes and Files · 12 changes · 28 min
 
 Each card can expand in place to resources, then individual actions. Expansion
