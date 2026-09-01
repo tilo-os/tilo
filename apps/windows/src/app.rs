@@ -1,5 +1,6 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
+use crate::appliance_owner::ApplianceOwnerClient;
 use crate::model::{Catalogue, Route};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
 use crate::strings;
@@ -36,6 +37,18 @@ fn installer_pick_request() -> PickRequest {
         .all_files()
 }
 
+fn windows_iso_pick_request() -> PickRequest {
+    PickRequest::open("Choose Windows installation media", "Use this ISO")
+        .thread_name("qos-windows-iso-picker")
+        .filter(
+            FileFilter::new("Windows installation media")
+                .glob("*.iso")
+                .mimetype("application/x-cd-image")
+                .mimetype("application/x-iso9660-image"),
+        )
+        .all_files()
+}
+
 #[derive(Clone, Copy)]
 enum Hit {
     App(usize),
@@ -62,6 +75,8 @@ pub struct WindowsApp {
     remove_launcher_button: Button,
     vendor_uninstall_button: Button,
     delete_data_button: Button,
+    choose_windows_iso_button: Button,
+    recovery_desktop_button: Button,
     route_signal: Rc<Cell<Option<Route>>>,
     reset_signal: Rc<Cell<bool>>,
     launch_signal: Rc<Cell<bool>>,
@@ -74,7 +89,11 @@ pub struct WindowsApp {
     remove_launcher_signal: Rc<Cell<bool>>,
     vendor_uninstall_signal: Rc<Cell<bool>>,
     delete_data_signal: Rc<Cell<bool>>,
+    choose_windows_iso_signal: Rc<Cell<bool>>,
+    recovery_desktop_signal: Rc<Cell<bool>>,
     portal_rx: Option<PortalChannel>,
+    iso_portal_rx: Option<PortalChannel>,
+    appliance_owner: ApplianceOwnerClient,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
 }
@@ -105,6 +124,8 @@ impl WindowsApp {
         let remove_launcher_signal = Rc::new(Cell::new(false));
         let vendor_uninstall_signal = Rc::new(Cell::new(false));
         let delete_data_signal = Rc::new(Cell::new(false));
+        let choose_windows_iso_signal = Rc::new(Cell::new(false));
+        let recovery_desktop_signal = Rc::new(Cell::new(false));
         let route_buttons = Route::ALL
             .iter()
             .map(|route| {
@@ -131,6 +152,8 @@ impl WindowsApp {
         let remove_launcher = Rc::clone(&remove_launcher_signal);
         let vendor_uninstall = Rc::clone(&vendor_uninstall_signal);
         let delete_data = Rc::clone(&delete_data_signal);
+        let choose_windows_iso = Rc::clone(&choose_windows_iso_signal);
+        let recovery_desktop = Rc::clone(&recovery_desktop_signal);
         Self {
             provider,
             catalogue,
@@ -217,6 +240,21 @@ impl WindowsApp {
                 .with_size(132.0, 32.0)
                 .with_enabled(false)
                 .on_click(move || delete_data.set(true)),
+            choose_windows_iso_button: Button::new(
+                "windows-choose-windows-iso",
+                "windows-choose-windows-iso",
+                None,
+            )
+            .with_size(256.0, 32.0)
+            .on_click(move || choose_windows_iso.set(true)),
+            recovery_desktop_button: Button::new(
+                "windows-open-recovery-desktop",
+                "windows-open-recovery-desktop",
+                None,
+            )
+            .with_size(256.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || recovery_desktop.set(true)),
             route_signal,
             reset_signal,
             launch_signal,
@@ -229,7 +267,11 @@ impl WindowsApp {
             remove_launcher_signal,
             vendor_uninstall_signal,
             delete_data_signal,
+            choose_windows_iso_signal,
+            recovery_desktop_signal,
             portal_rx: None,
+            iso_portal_rx: None,
+            appliance_owner: ApplianceOwnerClient::new(),
             confirm_vendor_uninstall: None,
             confirm_delete_data: None,
         }
@@ -311,7 +353,42 @@ impl WindowsApp {
             }
         }
     }
+    fn drain_iso_portal(&mut self) {
+        let Some(receiver) = self.iso_portal_rx.as_ref() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(PortalOutcome::Opened(path)) => {
+                self.iso_portal_rx = None;
+                match File::open(&path) {
+                    Ok(source) => match self.appliance_owner.import_iso(source) {
+                        Ok(()) => {
+                            self.notice = Some(strings::t("windows-iso-importing"));
+                        }
+                        Err(error) => self.notice = Some(error),
+                    },
+                    Err(error) => {
+                        self.notice =
+                            Some(format!("Could not open the selected Windows ISO: {error}"));
+                    }
+                }
+            }
+            Ok(PortalOutcome::Cancelled) => self.iso_portal_rx = None,
+            Ok(PortalOutcome::Failed(error)) => {
+                self.iso_portal_rx = None;
+                self.notice = Some(format!("Could not open the Windows ISO picker: {error}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.iso_portal_rx = None;
+                self.notice = Some(strings::t("windows-picker-disconnected"));
+            }
+        }
+    }
     fn refresh(&mut self) {
+        if let Some(notice) = self.appliance_owner.drain() {
+            self.notice = Some(notice);
+        }
         self.deactivate_selection_controls();
         self.catalogue = self.provider.catalogue();
         if let Some(notice) = self.provider.take_notice() {
@@ -337,6 +414,19 @@ impl WindowsApp {
         reason = "one ordered dispatcher drains the retained controls before mutating the selected model"
     )]
     fn apply_control_signals(&mut self) {
+        if self.choose_windows_iso_signal.replace(false)
+            && self.iso_portal_rx.is_none()
+            && !self.appliance_owner.busy()
+        {
+            self.iso_portal_rx = Some(windows_iso_pick_request().send());
+            self.notice = Some(strings::t("windows-choose-iso"));
+        }
+        if self.recovery_desktop_signal.replace(false) && !self.appliance_owner.busy() {
+            self.notice = self.appliance_owner.open_recovery().err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-recovery-starting"));
+            }
+        }
         if self.confirm_capsule_signal.replace(false)
             && self.catalogue.vm_install_confirmation.is_some()
         {
@@ -552,6 +642,7 @@ impl WindowsApp {
 impl Widget for WindowsApp {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         self.drain_portal();
+        self.drain_iso_portal();
         self.refresh();
     }
     fn build_layout(
@@ -714,12 +805,85 @@ impl Widget for WindowsApp {
                 );
             }
         }
-        let mut y = sidebar.y0
+        let appliance_y = sidebar.y0
             + if self.catalogue.vm_install_confirmation.is_some() {
-                232.0
+                244.0
             } else {
-                122.0
+                116.0
             };
+        let appliance = self.appliance_owner.status();
+        Self::text(
+            tr,
+            scene,
+            t,
+            Point::new(sidebar.x0 + PAD, appliance_y),
+            &strings::t("windows-appliance-setup"),
+            13.0,
+            theme.text_primary,
+            TextWeight::Bold,
+        );
+        Self::text(
+            tr,
+            scene,
+            t,
+            Point::new(sidebar.x0 + PAD, appliance_y + 20.0),
+            appliance.phase_label(),
+            11.0,
+            theme.text_dim,
+            TextWeight::Regular,
+        );
+        if let Some(detail) = &appliance.detail {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(sidebar.x0 + PAD, appliance_y + 34.0),
+                detail,
+                10.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+        }
+        Self::text(
+            tr,
+            scene,
+            t,
+            Point::new(sidebar.x0 + PAD, appliance_y + 48.0),
+            &strings::t("windows-appliance-desktop-note"),
+            10.0,
+            theme.text_dim,
+            TextWeight::Regular,
+        );
+        if !appliance.is_provisioned() {
+            let choose_iso = Rect::new(
+                sidebar.x0 + PAD,
+                appliance_y + 60.0,
+                sidebar.x1 - PAD,
+                appliance_y + 92.0,
+            );
+            self.choose_windows_iso_button
+                .apply_layout_external(choose_iso);
+            self.choose_windows_iso_button
+                .set_style(ButtonStyle::Primary);
+            self.choose_windows_iso_button
+                .set_enabled(!self.appliance_owner.busy() && self.iso_portal_rx.is_none());
+            self.choose_windows_iso_button
+                .draw(scene, t, tr, theme, presence);
+        } else {
+            let recovery = Rect::new(
+                sidebar.x0 + PAD,
+                appliance_y + 60.0,
+                sidebar.x1 - PAD,
+                appliance_y + 92.0,
+            );
+            self.recovery_desktop_button.apply_layout_external(recovery);
+            self.recovery_desktop_button.set_style(ButtonStyle::Neutral);
+            self.recovery_desktop_button
+                .set_enabled(appliance.recovery_available && !self.appliance_owner.busy());
+            self.recovery_desktop_button
+                .draw(scene, t, tr, theme, presence);
+        }
+        let mut y = appliance_y + 108.0;
         for (index, app) in self.catalogue.apps.iter().enumerate() {
             let row = Rect::new(sidebar.x0 + 10.0, y, sidebar.x1 - 10.0, y + ROW_H - 6.0);
             if index == self.selected {
@@ -1134,6 +1298,10 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.delete_data_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.choose_windows_iso_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.recovery_desktop_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.apply_control_signals();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1215,6 +1383,14 @@ impl Widget for WindowsApp {
             "windows-delete-data".into(),
             self.delete_data_button.get_rect(),
         ));
+        rects.push((
+            "windows-choose-windows-iso".into(),
+            self.choose_windows_iso_button.get_rect(),
+        ));
+        rects.push((
+            "windows-open-recovery-desktop".into(),
+            self.recovery_desktop_button.get_rect(),
+        ));
         rects
     }
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1234,6 +1410,8 @@ impl Widget for WindowsApp {
         children.push(&self.remove_launcher_button);
         children.push(&self.vendor_uninstall_button);
         children.push(&self.delete_data_button);
+        children.push(&self.choose_windows_iso_button);
+        children.push(&self.recovery_desktop_button);
         children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1253,6 +1431,8 @@ impl Widget for WindowsApp {
         children.push(&mut self.remove_launcher_button);
         children.push(&mut self.vendor_uninstall_button);
         children.push(&mut self.delete_data_button);
+        children.push(&mut self.choose_windows_iso_button);
+        children.push(&mut self.recovery_desktop_button);
         children
     }
 }
@@ -1301,6 +1481,8 @@ mod tests {
                 "windows-remove-launcher",
                 "windows-vendor-uninstall",
                 "windows-delete-data",
+                "windows-choose-windows-iso",
+                "windows-open-recovery-desktop",
             ]
         );
     }
@@ -1312,6 +1494,16 @@ mod tests {
         assert_eq!(
             request.filter_names(),
             vec!["Windows applications", "All files"]
+        );
+    }
+
+    #[test]
+    fn appliance_iso_picker_uses_the_shared_portal() {
+        let request = windows_iso_pick_request();
+        assert_eq!(request.title(), "Choose Windows installation media");
+        assert_eq!(
+            request.filter_names(),
+            vec!["Windows installation media", "All files"]
         );
     }
 
