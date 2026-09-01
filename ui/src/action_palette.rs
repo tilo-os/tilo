@@ -38,7 +38,7 @@ use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
     ActionContext, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
-    Resource, dispatch_with_context, flatten,
+    Resource, flatten,
 };
 
 /// The group header for the focused app's exported actions.
@@ -266,7 +266,15 @@ impl ActionPalette {
         context: ActionContext,
     ) -> Result<Dispatched, qos_actions::ActionError> {
         let action = registry.decode(encoded)?;
-        dispatch_with_context(doc, action.as_ref(), encoded.clone(), transport, context)
+        let actor = doc.get_actor().to_bytes().to_vec();
+        qos_actions::dispatch_by_with_context(
+            doc,
+            action.as_ref(),
+            encoded.clone(),
+            transport,
+            Some(&actor),
+            context,
+        )
     }
 
     /// Resolve a chosen row id into a pending outcome (or the argument step).
