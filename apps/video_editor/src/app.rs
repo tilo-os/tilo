@@ -5033,6 +5033,7 @@ fn nice_tick(px_per_sec: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

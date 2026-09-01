@@ -3755,6 +3755,7 @@ fn image_fetcher() -> ui::Fetcher {
 mod render;
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

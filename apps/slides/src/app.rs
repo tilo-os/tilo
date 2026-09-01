@@ -7173,6 +7173,7 @@ impl SlidesApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::{Deck, ElementKind, Layout, PaletteKind, Slide};
