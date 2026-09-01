@@ -62,6 +62,7 @@ fi
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
    && grep -Fq 'verified_tpm || ENROL_ARGS+=(--passphrase)' "$backend" \
+   && grep -Fq '&& kernel_lockdown_active' "$backend" \
    && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
    && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
   ok "native qOS installs require LUKS encryption and a startup secret"
