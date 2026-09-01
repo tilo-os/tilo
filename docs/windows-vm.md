@@ -2,7 +2,7 @@
 
 > **Status (2026-09): live, provisioned fallback.** The qOS session composes the
 > singleton libvirt appliance, authenticated and certificate-pinned guest
-> bridge, published-app catalogue, and app-focused SPICE presentation. An
+> bridge, managed installer catalogue, and app-focused SPICE presentation. An
 > unprovisioned or unhealthy guest remains unavailable without affecting
 > Wine/Proton applications.
 
@@ -94,7 +94,7 @@ This limits credential reuse; it does not make two Windows programs inside the
 singleton VM mutually isolated. Files, clipboard, microphone, and egress are
 still granted by qOS's existing workspace broker, not by this guest setup.
 
-The target full desktop is available only through the owner-authorised recovery action
+The full desktop is available only through the owner-authorised recovery action
 for installation or repair. qOS's privileged owner-authorisation backend may
 start the domain and attach installation media; it then invokes the viewer as
 the active owner session, never as root. It is never a normal launch fallback.
