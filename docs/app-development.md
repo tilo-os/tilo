@@ -714,12 +714,25 @@ qos-dev ui insert ui/settings.json --parent root --index 1 \
 qos-dev ui move ui/settings.json --id save --parent actions --index 0
 qos-dev ui replace ui/settings.json --id save --node-file nodes/publish.json
 qos-dev ui remove ui/settings.json --id obsolete-help
+qos-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
+qos-dev ui set ui/settings.json --id panel --property fill_height --value true
+qos-dev ui set ui/settings.json --id title --property size --unset
 qos-dev ui format ui/settings.json
 ```
 
+`ui set` changes one serialized property without copying and replacing the
+complete node. Property names follow the JSON schema and dotted paths reach
+nested objects such as `text.value` and `navigate.route`. Values are parsed as
+JSON first, so numbers, booleans, `null`, arrays, and objects retain their
+types; ordinary unquoted text remains a string. `--unset` restores the schema
+default. Every edit rebuilds and validates the affected node, then validates
+the complete graph before the original file is atomically replaced. A bad
+property name, type, duplicate ID, invalid binding, or accessibility regression
+therefore leaves the file byte-for-byte unchanged.
+
 Every command parses through the same lightweight `qos-ui-graph` schema used
-by the renderer. Insert, remove, replace, move, and formatting operations write
-through a same-directory temporary file only after the complete candidate
+by the renderer. Property, insert, remove, replace, move, and formatting edits
+write through a same-directory temporary file only after the complete candidate
 validates; an invalid id, duplicate subtree, inaccessible control, illegal
 reparent, or bad binding leaves the source file byte-for-byte unchanged.
 
