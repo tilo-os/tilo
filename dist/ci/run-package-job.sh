@@ -261,7 +261,24 @@ fedora-44)
     stage=inspect-rpm
     rpm -qip dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=lint-rpm
-    rpmlint dist/rpm/build/RPMS/*/qos-session-*.rpm
+    rpmlint_log=$(mktemp)
+    set +e
+    rpmlint dist/rpm/build/RPMS/*/qos-session-*.rpm 2>&1 | tee "$rpmlint_log"
+    rpmlint_status=${PIPESTATUS[0]}
+    set -e
+    # Fedora explicitly permits these for locally built artifacts. Native RPM
+    # signing belongs at a separately protected publication boundary; build
+    # and test jobs must not hold that private key. Every package-content or
+    # policy error still fails.
+    if grep ' E: ' "$rpmlint_log" \
+        | grep -Ev ' (no-signature|no-packager-tag)( |$)' >/dev/null; then
+        echo "rpmlint reported a package error" >&2
+        exit 1
+    fi
+    if (( rpmlint_status != 0 )) && ! grep -q ' E: ' "$rpmlint_log"; then
+        echo "rpmlint could not complete" >&2
+        exit "$rpmlint_status"
+    fi
     stage=install-test-rpm
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=collect-rpm
