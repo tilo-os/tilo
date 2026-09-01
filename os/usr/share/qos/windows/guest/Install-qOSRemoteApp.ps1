@@ -26,6 +26,8 @@ $ErrorActionPreference = 'Stop'
 $root = 'C:\ProgramData\qOS\RemoteApp'
 $focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $bridgeScript = Join-Path $BootstrapRoot 'Start-qOSGuestBridge.ps1'
+$networkProxyScript = Join-Path $BootstrapRoot 'Start-qOSNetworkProxy.ps1'
+$remoteAppScript = Join-Path $BootstrapRoot 'Start-qOSRemoteApp.ps1'
 $focusedScript = Join-Path $BootstrapRoot 'Start-qOSFocusedApp.ps1'
 $installerScript = Join-Path $BootstrapRoot 'Start-qOSInstaller.ps1'
 $uninstallerScript = Join-Path $BootstrapRoot 'Start-qOSUninstaller.ps1'
@@ -34,7 +36,7 @@ $processJobBrokerScript = Join-Path $BootstrapRoot 'Start-qOSProcessJobBroker.ps
 $secretPath = Join-Path $BootstrapRoot 'qos-bridge.secret'
 $configPath = Join-Path $BootstrapRoot 'qos-bridge.json'
 $virtioGuestToolsDigestPath = Join-Path $BootstrapRoot 'virtio-win-guest-tools.sha256'
-foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript, $secretPath, $configPath, $virtioGuestToolsDigestPath, $ApplicationsPath)) {
+foreach ($path in @($bridgeScript, $networkProxyScript, $remoteAppScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript, $secretPath, $configPath, $virtioGuestToolsDigestPath, $ApplicationsPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
@@ -183,6 +185,9 @@ Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $managedUser -ErrorAc
 $managedPassword = $null
 $managedSecurePassword = $null
 Copy-Item -LiteralPath $bridgeScript -Destination (Join-Path $root 'Start-qOSGuestBridge.ps1') -Force
+Copy-Item -LiteralPath $networkProxyScript -Destination (Join-Path $root 'Start-qOSNetworkProxy.ps1') -Force
+Copy-Item -LiteralPath $remoteAppScript -Destination (Join-Path $root 'Start-qOSRemoteApp.ps1') -Force
+Copy-Item -LiteralPath $processJobScript -Destination (Join-Path $root 'qOS-ProcessJob.ps1') -Force
 Copy-Item -LiteralPath $focusedScript -Destination (Join-Path $focusRoot 'Start-qOSFocusedApp.ps1') -Force
 Copy-Item -LiteralPath $processJobScript -Destination (Join-Path $focusRoot 'qOS-ProcessJob.ps1') -Force
 Copy-Item -LiteralPath $secretPath -Destination (Join-Path $root 'bridge.secret') -Force
@@ -211,12 +216,16 @@ if (-not (Test-Path -LiteralPath $uninstallRecordsPath -PathType Leaf)) {
 $allowList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList'
 $base = Join-Path $allowList 'Applications'
 New-Item -Path $base -Force | Out-Null
+$railJobs = Join-Path $root 'rail-jobs'
+New-Item -ItemType Directory -Force -Path $railJobs | Out-Null
 foreach ($app in $apps.applications) {
     $key = Join-Path $base $app.id
     New-Item -Path $key -Force | Out-Null
     New-ItemProperty -Path $key -Name Name -PropertyType String -Value $app.name -Force | Out-Null
-    New-ItemProperty -Path $key -Name Path -PropertyType String -Value ([IO.Path]::GetFullPath($app.path)) -Force | Out-Null
-    New-ItemProperty -Path $key -Name CommandLine -PropertyType String -Value ([string]$app.arguments) -Force | Out-Null
+    # RDP gets a fixed wrapper plus the fixed alias. It cannot run the guest
+    # executable directly or smuggle proxy/environment arguments into it.
+    New-ItemProperty -Path $key -Name Path -PropertyType String -Value "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Force | Out-Null
+    New-ItemProperty -Path $key -Name CommandLine -PropertyType String -Value "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$root\Start-qOSRemoteApp.ps1`" -ApplicationId $($app.id)" -Force | Out-Null
     New-ItemProperty -Path $key -Name ShowInTSWA -PropertyType DWord -Value 0 -Force | Out-Null
 }
 

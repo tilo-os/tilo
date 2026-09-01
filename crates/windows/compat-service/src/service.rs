@@ -800,6 +800,12 @@ where
         source: File,
         access: windows_vm::PortalDocumentAccess,
     ) -> Result<LaunchReceipt, ServiceError> {
+        validate_launch_id("app id", &application.app_id)?;
+        validate_launch_id("workspace id", workspace_id)?;
+        validate_launch_id(
+            "published application id",
+            &application.published_application_id,
+        )?;
         let resolved = CapabilityPlan::for_app(&application.app_id, capabilities, now_unix);
         let running = self.vm.launch_with_portal_file(
             VmRouteRequest {

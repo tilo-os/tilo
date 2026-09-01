@@ -49,6 +49,12 @@ fn windows_iso_pick_request() -> PickRequest {
         .all_files()
 }
 
+fn windows_document_pick_request() -> PickRequest {
+    PickRequest::open("Open a file in Windows", "Open read-only")
+        .thread_name("qos-windows-document-picker")
+        .all_files()
+}
+
 #[derive(Clone, Copy)]
 enum Hit {
     App(usize),
@@ -66,6 +72,7 @@ pub struct WindowsApp {
     route_buttons: Vec<Button>,
     reset_button: Button,
     launch_button: Button,
+    open_file_button: Button,
     vm_fallback_button: Button,
     install_button: Button,
     confirm_capsule_button: Button,
@@ -86,6 +93,7 @@ pub struct WindowsApp {
     route_signal: Rc<Cell<Option<Route>>>,
     reset_signal: Rc<Cell<bool>>,
     launch_signal: Rc<Cell<bool>>,
+    open_file_signal: Rc<Cell<bool>>,
     vm_fallback_signal: Rc<Cell<bool>>,
     install_signal: Rc<Cell<bool>>,
     confirm_capsule_signal: Rc<Cell<bool>>,
@@ -104,6 +112,8 @@ pub struct WindowsApp {
     shutdown_windows_signal: Rc<Cell<bool>>,
     connect_windows_signal: Rc<Cell<bool>>,
     portal_rx: Option<OpenFileChannel>,
+    document_portal_rx: Option<OpenFileChannel>,
+    document_target: Option<String>,
     iso_portal_rx: Option<OpenFileChannel>,
     appliance_owner: ApplianceOwnerClient,
     confirm_escalate_to_vm: Option<String>,
@@ -135,6 +145,7 @@ impl WindowsApp {
         let route_signal = Rc::new(Cell::new(None));
         let reset_signal = Rc::new(Cell::new(false));
         let launch_signal = Rc::new(Cell::new(false));
+        let open_file_signal = Rc::new(Cell::new(false));
         let vm_fallback_signal = Rc::new(Cell::new(false));
         let install_signal = Rc::new(Cell::new(false));
         let retry_signal = Rc::new(Cell::new(false));
@@ -166,6 +177,7 @@ impl WindowsApp {
             .collect();
         let reset = Rc::clone(&reset_signal);
         let launch = Rc::clone(&launch_signal);
+        let open_file = Rc::clone(&open_file_signal);
         let vm_fallback = Rc::clone(&vm_fallback_signal);
         let install = Rc::clone(&install_signal);
         let confirm_capsule_signal = Rc::new(Cell::new(false));
@@ -205,6 +217,14 @@ impl WindowsApp {
                 .with_size(132.0, 32.0)
                 .with_enabled(false)
                 .on_click(move || launch.set(true)),
+            open_file_button: Button::new(
+                "windows-open-file-in-vm",
+                "windows-open-file-in-vm",
+                None,
+            )
+            .with_size(164.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || open_file.set(true)),
             vm_fallback_button: Button::new("windows-open-in-vm", "windows-open-in-vm", None)
                 .with_size(174.0, 32.0)
                 .with_enabled(false)
@@ -335,6 +355,7 @@ impl WindowsApp {
             route_signal,
             reset_signal,
             launch_signal,
+            open_file_signal,
             vm_fallback_signal,
             install_signal,
             confirm_capsule_signal,
@@ -353,6 +374,8 @@ impl WindowsApp {
             shutdown_windows_signal,
             connect_windows_signal,
             portal_rx: None,
+            document_portal_rx: None,
+            document_target: None,
             iso_portal_rx: None,
             appliance_owner: ApplianceOwnerClient::new(),
             confirm_escalate_to_vm: None,
@@ -373,6 +396,7 @@ impl WindowsApp {
         }
         self.reset_button.set_enabled(false);
         self.launch_button.set_enabled(false);
+        self.open_file_button.set_enabled(false);
         self.vm_fallback_button.set_enabled(false);
         self.confirm_capsule_button.set_enabled(false);
         self.confirm_vm_install_button.set_enabled(false);
@@ -391,6 +415,7 @@ impl WindowsApp {
         self.route_signal.set(None);
         self.reset_signal.set(false);
         self.launch_signal.set(false);
+        self.open_file_signal.set(false);
         self.vm_fallback_signal.set(false);
         self.confirm_capsule_signal.set(false);
         self.confirm_vm_install_signal.set(false);
@@ -486,6 +511,43 @@ impl WindowsApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.iso_portal_rx = None;
+                self.notice = Some(strings::t("windows-picker-disconnected"));
+            }
+        }
+    }
+
+    fn drain_document_portal(&mut self) {
+        let Some(receiver) = self.document_portal_rx.as_ref() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(OpenFileOutcome::Opened(source)) => {
+                self.document_portal_rx = None;
+                let target = self.document_target.take();
+                self.notice = target
+                    .ok_or_else(|| "The Windows application selection expired.".to_string())
+                    .and_then(|entry_id| {
+                        self.provider
+                            .launch_vm_with_file(&entry_id, source.into_file())
+                    })
+                    .err();
+                if self.notice.is_none() {
+                    self.notice = Some(strings::t("windows-file-launch-queued"));
+                }
+            }
+            Ok(OpenFileOutcome::Cancelled) => {
+                self.document_portal_rx = None;
+                self.document_target = None;
+            }
+            Ok(OpenFileOutcome::Failed(error)) => {
+                self.document_portal_rx = None;
+                self.document_target = None;
+                self.notice = Some(format!("Could not open the file picker: {error}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.document_portal_rx = None;
+                self.document_target = None;
                 self.notice = Some(strings::t("windows-picker-disconnected"));
             }
         }
@@ -594,6 +656,16 @@ impl WindowsApp {
         if self.install_signal.replace(false) && self.portal_rx.is_none() {
             self.portal_rx = Some(installer_pick_request().send_open_file());
             self.notice = Some(strings::t("windows-choose-installer"));
+        }
+        if self.open_file_signal.replace(false)
+            && self.document_portal_rx.is_none()
+            && let Some(app) = self.selected_app()
+            && app.route == Route::Vm
+            && app.launch_available
+        {
+            self.document_target = Some(app.id.clone());
+            self.document_portal_rx = Some(windows_document_pick_request().send_open_file());
+            self.notice = Some(strings::t("windows-choose-document"));
         }
         if let Some(route) = self.route_signal.take()
             && let Some(app) = self.selected_app()
@@ -807,6 +879,7 @@ impl WindowsApp {
 impl Widget for WindowsApp {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         self.drain_portal();
+        self.drain_document_portal();
         self.drain_iso_portal();
         self.refresh();
     }
@@ -1283,6 +1356,18 @@ impl Widget for WindowsApp {
         self.launch_button.set_enabled(app.launch_available);
         self.launch_button.set_style(ButtonStyle::Primary);
         self.launch_button.draw(scene, t, tr, theme, presence);
+        if app.route == Route::Vm && app.launch_available {
+            let open_file = Rect::new(
+                launch.x1 + 12.0,
+                status.y0 - 2.0,
+                launch.x1 + 176.0,
+                status.y1 + 2.0,
+            );
+            self.open_file_button.apply_layout_external(open_file);
+            self.open_file_button.set_style(ButtonStyle::Neutral);
+            self.open_file_button.set_enabled(true);
+            self.open_file_button.draw(scene, t, tr, theme, presence);
+        }
         if app.route != Route::Vm && app.vm_fallback_available {
             let vm = Rect::new(
                 launch.x1 + 12.0,
@@ -1561,6 +1646,8 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.launch_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.open_file_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.vm_fallback_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.install_button
@@ -1647,6 +1734,10 @@ impl Widget for WindowsApp {
         ));
         rects.push(("windows-launch".into(), self.launch_button.get_rect()));
         rects.push((
+            "windows-open-file-in-vm".into(),
+            self.open_file_button.get_rect(),
+        ));
+        rects.push((
             "windows-open-in-vm".into(),
             self.vm_fallback_button.get_rect(),
         ));
@@ -1718,6 +1809,7 @@ impl Widget for WindowsApp {
             .collect::<Vec<_>>();
         children.push(&self.reset_button);
         children.push(&self.launch_button);
+        children.push(&self.open_file_button);
         children.push(&self.vm_fallback_button);
         children.push(&self.install_button);
         children.push(&self.confirm_capsule_button);
@@ -1745,6 +1837,7 @@ impl Widget for WindowsApp {
             .collect::<Vec<_>>();
         children.push(&mut self.reset_button);
         children.push(&mut self.launch_button);
+        children.push(&mut self.open_file_button);
         children.push(&mut self.vm_fallback_button);
         children.push(&mut self.install_button);
         children.push(&mut self.confirm_capsule_button);
@@ -1773,10 +1866,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     type RecordedInstall = Arc<Mutex<Option<(Vec<u8>, String)>>>;
+    type RecordedDocument = Arc<Mutex<Option<(String, Vec<u8>)>>>;
 
     struct RecordingProvider {
         inner: SampleProvider,
         installed: RecordedInstall,
+        opened_document: RecordedDocument,
     }
 
     impl CompatibilityProvider for RecordingProvider {
@@ -1790,6 +1885,15 @@ mod tests {
 
         fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String> {
             self.inner.launch_vm_fallback(app_id)
+        }
+
+        fn launch_vm_with_file(&mut self, app_id: &str, mut source: File) -> Result<(), String> {
+            let mut bytes = Vec::new();
+            source
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            *self.opened_document.lock().unwrap() = Some((app_id.to_string(), bytes));
+            Ok(())
         }
 
         fn install(&mut self, mut source: File, source_name: &str) -> Result<(), String> {
@@ -1852,6 +1956,7 @@ mod tests {
         let provider = RecordingProvider {
             inner: SampleProvider::new(),
             installed: Arc::clone(&installed),
+            opened_document: Arc::new(Mutex::new(None)),
         };
         let mut app = WindowsApp::with_provider(Box::new(provider));
         let dir = tempfile::tempdir().unwrap();
@@ -1875,6 +1980,39 @@ mod tests {
                 b"accepted descriptor bytes".to_vec(),
                 "display-name.msi".into()
             ))
+        );
+    }
+
+    #[test]
+    fn vm_document_picker_hands_the_open_descriptor_to_the_selected_publication() {
+        let opened_document = Arc::new(Mutex::new(None));
+        let provider = RecordingProvider {
+            inner: SampleProvider::new(),
+            installed: Arc::new(Mutex::new(None)),
+            opened_document: Arc::clone(&opened_document),
+        };
+        let mut app = WindowsApp::with_provider(Box::new(provider));
+        app.selected = app
+            .catalogue
+            .apps
+            .iter()
+            .position(|candidate| candidate.route == Route::Vm)
+            .unwrap();
+        let entry_id = app.selected_app().unwrap().id.clone();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("document.bin");
+        std::fs::write(&path, b"portal document bytes").unwrap();
+        app.document_target = Some(entry_id.clone());
+        app.document_portal_rx = Some(ui::portal::inject_open_file_for_test(
+            File::open(path).unwrap(),
+            "document.bin",
+        ));
+
+        app.drain_document_portal();
+
+        assert_eq!(
+            *opened_document.lock().unwrap(),
+            Some((entry_id, b"portal document bytes".to_vec()))
         );
     }
 
@@ -1910,6 +2048,7 @@ mod tests {
                 "windows-route-vm",
                 "windows-use-recommendation",
                 "windows-launch",
+                "windows-open-file-in-vm",
                 "windows-open-in-vm",
                 "windows-install",
                 "windows-install-private-capsule",
@@ -1949,6 +2088,13 @@ mod tests {
             request.filter_names(),
             vec!["Windows installation media", "All files"]
         );
+    }
+
+    #[test]
+    fn vm_document_picker_uses_the_shared_portal_and_defaults_read_only() {
+        let request = windows_document_pick_request();
+        assert_eq!(request.title(), "Open a file in Windows");
+        assert_eq!(request.filter_names(), vec!["All files"]);
     }
 
     #[test]
