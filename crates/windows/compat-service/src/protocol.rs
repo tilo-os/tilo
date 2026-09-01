@@ -1,7 +1,9 @@
 use compat_catalogue::ApplicationQuery;
 use serde::{Deserialize, Serialize};
 
-use crate::{ExplainStatus, InstallReceipt, InstallationStatus, LaunchReceipt, RouteKind};
+use crate::{
+    ExplainStatus, InstallReceipt, InstallationStatus, LaunchReceipt, RouteKind, VmAvailability,
+};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 
@@ -92,6 +94,9 @@ pub enum ProtocolResponse {
     Listed {
         applications: Vec<ManagedApplication>,
         installations: Vec<ManagedInstallation>,
+        /// Appliance readiness is global session state, not a property inferred
+        /// from whichever application rows happen to be published.
+        vm_availability: VmAvailability,
     },
     Resolved {
         explanation: ExplainStatus,
