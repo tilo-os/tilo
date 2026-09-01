@@ -15,8 +15,8 @@
 #     --encrypt                       accepted for UI compatibility; native qOS
 #                                     always uses LUKS2 full-disk encryption
 #     --pin                           required unlock secret on stdin line 2: a TPM2 PIN
-#                                     where there is a TPM, otherwise the boot
-#                                     passphrase (requires --encrypt)
+#                                     only with verified boot + kernel lockdown,
+#                                     otherwise the boot passphrase (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #
 # An older UI may omit `--encrypt`, but the backend still encrypts. It must
@@ -77,8 +77,19 @@ secure_boot_enabled() {
   return 1
 }
 
+kernel_lockdown_active() {
+  local state
+  state="$(cat /sys/kernel/security/lockdown 2>/dev/null || true)"
+  case "$state" in
+    *'[integrity]'*|*'[confidentiality]'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 verified_tpm() {
-  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } && secure_boot_enabled
+  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
+    && secure_boot_enabled \
+    && kernel_lockdown_active
 }
 
 # Updates are signature-required only for the official qOS repository in the
