@@ -226,12 +226,12 @@ impl MprisHandle {
         if !snap.should_republish(&self.last) {
             return;
         }
-        self.last = snap.clone();
         #[cfg(feature = "mpris")]
         if let Some(tx) = &self.publish_tx {
             // Unbounded send is sync + non-blocking; a dead worker just drops it.
-            let _ = tx.send(snap);
+            let _ = tx.send(snap.clone());
         }
+        self.last = snap;
     }
 }
 

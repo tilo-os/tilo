@@ -34,6 +34,7 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -45,12 +46,14 @@ pub mod app;
 pub mod caldav;
 pub mod date;
 pub mod doc;
+mod draw_util;
 mod event_popovers;
 pub mod ics;
 pub mod model;
 pub mod search_provider;
 mod sidebar;
 pub mod store;
+mod timeline_interaction;
 mod timeline_viewport;
 mod topbar;
 

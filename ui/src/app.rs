@@ -1162,7 +1162,7 @@ impl App {
                 crate::diag!("[app] broadcast doc delta {}B", delta.len());
             }
             self.collab_manager
-                .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
+                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
         }
     }
 
@@ -1277,6 +1277,30 @@ impl App {
         }
     }
 
+    fn apply_signed_document_envelope(&mut self, envelope: &collab_types::SignedOp) {
+        let applied = match collab_types::DocumentMutation::decode(&envelope.payload) {
+            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
+                if let Ok(mut incoming) = State::load(&data) {
+                    let _ = self.state.doc.merge(&mut incoming.doc);
+                    true
+                } else {
+                    false
+                }
+            }
+            Ok(collab_types::DocumentMutation::Incremental(data)) => {
+                self.state.load_incremental(&data).is_ok()
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
+                false
+            }
+        };
+        if applied {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+    }
+
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
@@ -1310,42 +1334,17 @@ impl App {
                 } => {
                     self.apply_collab_action_arrived(&type_id, &payload, &from_user_id);
                 }
-                CollabEvent::CRDTUpdate { data } => {
-                    // MERGE rather than replace — replacing clobbers our own
-                    // concurrent edits.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!("[app] recv CRDTUpdate {}B", data.len());
-                    }
-                    if let Ok(mut incoming) = State::load(&data) {
-                        let _ = self.state.doc.merge(&mut incoming.doc);
-                        self.needs_sync = true;
-                        // A remote change can grow the widget tree, so force
-                        // a relayout — else a stale layout indexes out of
-                        // bounds.
-                        self.layout_dirty = true;
-                    }
-                }
-                CollabEvent::CRDTIncremental { data } => {
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!("[app] recv CRDTIncremental {}B", data.len());
-                    }
-                    let _ = self.state.load_incremental(&data);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
-                }
-                CollabEvent::SignedCRDTIncremental { envelope, .. } => {
+                CollabEvent::Document { envelope, .. } => {
                     // The broker already validated the envelope (signature +
                     // role table + replay defence); the toolkit trusts it.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                         crate::diag!(
-                            "[app] recv SignedCRDTIncremental from {} ({}B payload)",
+                            "[app] recv document from {} ({}B payload)",
                             "<peer>",
                             envelope.payload.len()
                         );
                     }
-                    let _ = self.state.load_incremental(&envelope.payload);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
+                    self.apply_signed_document_envelope(&envelope);
                 }
                 CollabEvent::ScrollbackBatch {
                     artifact: _,
@@ -1353,15 +1352,13 @@ impl App {
                     exhausted: _,
                 } => {
                     // Broker pre-validated each envelope, trusted the same
-                    // way as `SignedCRDTIncremental`.
+                    // way as a live document mutation.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                         crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
-                        let _ = self.state.load_incremental(&envelope.payload);
+                        self.apply_signed_document_envelope(&envelope);
                     }
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
                 }
             }
         }
@@ -1439,21 +1436,8 @@ impl App {
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);
             }
-            CollabEvent::CRDTIncremental { data } => {
-                let _ = self.state.load_incremental(&data);
-                self.needs_sync = true;
-            }
-            CollabEvent::CRDTUpdate { data } => {
-                // MERGE (not replace) — see the production handler in
-                // `run`'s about_to_wait loop for the rationale.
-                if let Ok(mut incoming) = crate::state::State::load(&data) {
-                    let _ = self.state.doc.merge(&mut incoming.doc);
-                    self.needs_sync = true;
-                }
-            }
-            CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                let _ = self.state.load_incremental(&envelope.payload);
-                self.needs_sync = true;
+            CollabEvent::Document { envelope, .. } => {
+                self.apply_signed_document_envelope(&envelope);
             }
             _ => {}
         }
@@ -1584,7 +1568,7 @@ impl App {
                     crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
                 }
                 self.collab_manager
-                    .send(crate::collaboration::CollabRequest::SyncCRDT { data });
+                    .send(crate::collaboration::CollabRequest::DocumentSnapshot { data });
             }
         }
     }
@@ -4217,7 +4201,7 @@ mod pointer_broadcast_tests {
     }
 
     #[test]
-    fn crdt_update_merges_not_replaces() {
+    fn document_snapshot_merges_not_replaces() {
         use automerge::transaction::Transactable;
         use automerge::{ObjType, ROOT, ReadDoc};
         let mut base = automerge::AutoCommit::new();
@@ -4243,7 +4227,18 @@ mod pointer_broadcast_tests {
         peer.put(&pm, "b", 20).unwrap();
         let incoming = peer.save();
 
-        app.apply_collab_event_for_test(CollabEvent::CRDTUpdate { data: incoming });
+        let envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(incoming)
+                .encode()
+                .unwrap(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            0,
+        );
+        app.apply_signed_document_envelope(&envelope);
 
         // A replace would drop "a".
         let doc = &mut app.state_mut_for_test().doc;

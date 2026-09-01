@@ -53,26 +53,48 @@ if [ "$clippy_rc" -ne 0 ]; then
   exit 2
 fi
 
+# Count only our own code, and only once per site. Without the path filter
+# this also counts vendored crates and dependencies — 2,415 against 14 real
+# ones, most of it `vendor/`, which is not ours to fix and would keep the
+# gate permanently red. Without the dedupe, a file compiled as both lib and
+# test counts twice. `tools/check-warnings.sh` filters the same way.
 counts=$(python3 -c '
 import json, sys, collections
 c = collections.Counter()
+seen = set()
 for line in sys.stdin:
     try: d = json.loads(line)
     except ValueError: continue
     if d.get("reason") != "compiler-message": continue
-    name = ((d.get("message") or {}).get("code") or {}).get("code", "")
-    if name.startswith("clippy::"): c[name] += 1
+    m = d.get("message") or {}
+    name = (m.get("code") or {}).get("code", "")
+    if not name.startswith("clippy::"): continue
+    spans = [s for s in (m.get("spans") or []) if s.get("is_primary")] or (m.get("spans") or [])
+    if not spans: continue
+    sp = spans[0]
+    f = sp.get("file_name") or ""
+    if not f or f.startswith(("/", "..", "vendor/")): continue
+    key = (name, f, sp.get("line_start"), sp.get("column_start"))
+    if key in seen: continue
+    seen.add(key)
+    c[name] += 1
 for name, n in sorted(c.items()): print(f"{n} {name}")' < "$raw")
-rm -f "$raw"
 
-if [ -z "$counts" ]; then
-  echo "clippy produced no output — treating that as a failure rather than a pass" >&2
+# An empty count means one of two very different things: clippy linted the
+# whole workspace and found nothing, or it never ran. `build-finished` tells
+# them apart — without it, an empty result is a failure, not a clean bill.
+if ! grep -q '"reason":"build-finished"' "$raw"; then
+  echo "clippy produced no build-finished record — it did not complete, so an" >&2
+  echo "empty violation count would be a false pass. Not trusting it." >&2
+  rm -f "$raw"
   exit 2
 fi
+rm -f "$raw"
 
 if [ "${1:-}" = "--update" ]; then
-  printf '%s\n' "$counts" > "$BASELINE"
-  echo "baseline updated: $(awk '{s+=$1} END{print s}' <<<"$counts") violations"
+  printf '%s' "$counts" > "$BASELINE"
+  [ -n "$counts" ] && printf '\n' >> "$BASELINE"
+  echo "baseline updated: $(awk '{s+=$1} END{print s+0}' <<<"$counts") violations"
   exit 0
 fi
 

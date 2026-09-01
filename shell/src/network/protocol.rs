@@ -129,40 +129,15 @@ pub enum NeighbourMsg {
         #[serde(default)]
         revocations: Vec<qos_user_identity::RevocationEntry>,
     },
-    /// App-level CRDT incremental — bridges app-side Automerge change blobs from
-    /// the local collaboration service across hosts, opaque to the shell.
-    /// Distinct from [`NeighbourMsg::SyncResp`] (shell-side `WorkspaceTree`
-    /// changes). The remote-receive path fans this into local apps as
-    /// `CollabEvent::CRDTIncremental`, mirroring the broker's local fan-out.
-    AppCrdtIncremental {
-        peer: PeerId,
-        /// App-id from the originating `CollabRequest::Hello`; the receiving broker
-        /// routes only to local apps announcing the same `(app_id, cluster_id)` —
-        /// empty addresses nobody.
-        app_id: String,
-        /// Cluster id from the originating Hello — second half of the routing key.
-        cluster_id: String,
-        /// Record id from the originating Hello — which document these changes
-        /// belong to (empty = single document per `(app, cluster)`). Carried so the
-        /// receiving shell can route per-document.
-        record_id: String,
-        /// Opaque Automerge incremental change blob, passed through
-        /// untouched.
-        data: Vec<u8>,
-    },
-    /// A signed CRDT envelope crossing the Iroh boundary; recipients route it
-    /// into the local broker's validation pipeline
-    /// (`collab_types::validate_inbound_op`) before fan-out.
-    ///
-    /// Kept alongside unsigned `AppCrdtIncremental` for documents that have
-    /// not adopted signed governance. Boxed so this variant doesn't
-    /// bloat `NeighbourMsg`'s stack size — postcard's wire shape is unaffected.
-    AppCrdtIncrementalSigned {
+    /// One typed, signed document mutation crossing the Iroh boundary.
+    /// Recipients authenticate the transport device, validate the envelope and
+    /// decode its [`collab_types::DocumentMutation`] before local fan-out.
+    /// Boxed so this variant does not bloat `NeighbourMsg`'s stack size.
+    AppDocument {
         /// Hashed Iroh `PeerId` of the publisher; used to filter self-published
         /// gossip echoes.
         peer: PeerId,
-        /// App-id of the originating app, same routing key as
-        /// [`NeighbourMsg::AppCrdtIncremental`].
+        /// App-id of the originating app, first routing-key component.
         app_id: String,
         /// Cluster id — second half of the routing key.
         cluster_id: String,
@@ -180,39 +155,6 @@ pub enum NeighbourMsg {
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
-    },
-    /// App-level CRDT **snapshot** — a document's whole state, for a peer with no
-    /// history for it to adopt.
-    ///
-    /// Needed because [`NeighbourMsg::AppCrdtIncremental`] deltas name
-    /// dependencies by hash: two peers that each *created* a document rather
-    /// than opening a shared one otherwise exchange deltas forever without
-    /// converging.
-    ///
-    /// Sent on demand, not per-commit: a peer's `PresencePayload::Arrived`
-    /// (noted by [`crate::shell::network::ShellNetwork::note_snapshot_request`])
-    /// triggers one snapshot per arriving peer, not addressed specifically to
-    /// them — merging is idempotent/commutative, so anyone converges from it.
-    ///
-    /// Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`] to limit
-    /// serialization and fan-out memory. A document has no upper bound, so
-    /// publishing above the application cap fails loudly rather than making
-    /// the collaboration actor unresponsive.
-    AppCrdtSnapshot {
-        /// Hashed Iroh `PeerId` of the publisher; receiving shells drop their own
-        /// gossip echoes on it, as on every App* variant.
-        peer: PeerId,
-        /// App-id of the originating app — first routing-key component.
-        app_id: String,
-        /// Cluster id (room, as uuid string); the receiving shell refuses a room it
-        /// isn't in before the frame reaches any app.
-        cluster_id: String,
-        /// Record id — which document this is the state of. Getting this wrong is
-        /// unrecoverable (a merged snapshot can't be un-merged), so an unaddressed
-        /// snapshot is dropped rather than guessed at.
-        record_id: String,
-        /// `automerge::Automerge::save()` output for that record, opaque to every hop.
-        data: Vec<u8>,
     },
     /// Cooperative scrollback request, broadcast over gossip when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
@@ -426,18 +368,8 @@ mod tests {
 
         vec![
             (
-                "app incremental",
-                NeighbourMsg::AppCrdtIncremental {
-                    peer: 0x00AB_CDEF,
-                    app_id: "terminal".into(),
-                    cluster_id: ROOM.into(),
-                    record_id: "file:/work/report.odt".into(),
-                    data: vec![1, 2, 3, 4],
-                },
-            ),
-            (
-                "signed app incremental",
-                NeighbourMsg::AppCrdtIncrementalSigned {
+                "signed app document",
+                NeighbourMsg::AppDocument {
                     peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
                     cluster_id: ROOM.into(),
@@ -455,16 +387,6 @@ mod tests {
                         key: vec![4, 5],
                         payload: PeerPresencePayload::Selection { start: 3, end: 8 },
                     },
-                },
-            ),
-            (
-                "app snapshot",
-                NeighbourMsg::AppCrdtSnapshot {
-                    peer: 0x00AB_CDEF,
-                    app_id: "dev.qos.word-processor".into(),
-                    cluster_id: ROOM.into(),
-                    record_id: "file:/work/report.odt".into(),
-                    data: vec![0x85, 0x6F, 0x4A, 0x83],
                 },
             ),
             (
