@@ -20,7 +20,7 @@ pub use qos_actions::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
-use super::{QueryArgs, ResourceKind, SearchRegistry, SearchResult};
+use super::{ActionReceipt, QueryArgs, ResourceKind, SearchRegistry, SearchResult};
 
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +84,7 @@ pub struct ExportedAction {
     pub score: i32,
     /// What an invocation must carry, empty for the nullary majority.
     pub params: Vec<ActionParam>,
+    pub contract: Option<qos_actions::ActionContract>,
 }
 
 /// Permission hook: decides whether a caller may *see* a given resource.
@@ -172,6 +173,7 @@ impl ActionCatalog {
                 subtitle: r.subtitle.clone(),
                 score: r.score,
                 params: r.params.clone(),
+                contract: r.contract.clone(),
             })
             .collect()
     }
@@ -240,6 +242,10 @@ impl SelectedAction<'_> {
         &self.result.params
     }
 
+    pub fn contract(&self) -> Option<&qos_actions::ActionContract> {
+        self.result.contract.as_ref()
+    }
+
     /// Run the provider's side-effect, the same callback the palette fires
     /// on Enter. A failed bind is refused with the document untouched.
     ///
@@ -255,9 +261,37 @@ impl SelectedAction<'_> {
         root: &ObjId,
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<(), ActionError> {
+    ) -> Result<ActionReceipt, ActionError> {
         let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
-        (self.result.on_open)(doc, root, chrome, &bound)
+        match &self.result.on_invoke {
+            Some(invoke) => invoke(doc, root, chrome, &bound),
+            None => {
+                (self.result.on_open)(doc, root, chrome, &bound)?;
+                Ok(ActionReceipt::completed())
+            }
+        }
+    }
+
+    /// Invoke from the canonical JSON object used by control sockets and MCP.
+    /// Unlike lossy JSON-to-enum guessing, binding consults each declared
+    /// parameter, preserving resource/date-time/secret semantics and nested or
+    /// nullable values.
+    pub fn invoke_json(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ActionReceipt, ActionError> {
+        let bound =
+            ActionArgs::bind_json(&self.result.params, args).map_err(ActionError::Arguments)?;
+        match &self.result.on_invoke {
+            Some(invoke) => invoke(doc, root, chrome, &bound),
+            None => {
+                (self.result.on_open)(doc, root, chrome, &bound)?;
+                Ok(ActionReceipt::completed())
+            }
+        }
     }
 
     /// Sugar over [`Self::invoke`] with an empty argument set — a shorter
@@ -273,7 +307,7 @@ impl SelectedAction<'_> {
         doc: &mut AutoCommit,
         root: &ObjId,
         chrome: &Chrome,
-    ) -> Result<(), ActionError> {
+    ) -> Result<ActionReceipt, ActionError> {
         self.invoke(doc, root, chrome, Vec::new())
     }
 }
@@ -582,13 +616,83 @@ mod tests {
                     ParamType::Text,
                     "what to write",
                 )],
+                contract: None,
                 on_open: std::rc::Rc::new(move |_doc, _root, _chrome, args: &ActionArgs| {
                     assert_eq!(args.text("text"), Some("ok"));
                     ran.set(true);
                     Ok(())
                 }),
+                on_invoke: None,
             }]
         }
+    }
+
+    struct ReceiptProvider;
+
+    impl super::super::SearchProvider for ReceiptProvider {
+        fn id(&self) -> &'static str {
+            "receipts"
+        }
+
+        fn name(&self) -> &'static str {
+            "Receipts"
+        }
+
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+
+        fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
+            vec![SearchResult {
+                kind: ResourceKind::Action,
+                provider_id: "receipts".into(),
+                id: "broker.action".into(),
+                title: "Broker action".into(),
+                subtitle: None,
+                score: 0,
+                params: Vec::new(),
+                contract: None,
+                on_open: std::rc::Rc::new(|_, _, _, _| Ok(())),
+                on_invoke: Some(std::rc::Rc::new(|_, _, _, _| {
+                    Ok(ActionReceipt {
+                        broker_invocation_id: Some(73),
+                        update: qos_actions::InvocationUpdate::Accepted {
+                            invocation: qos_actions::InvocationId::new(),
+                        },
+                    })
+                })),
+            }]
+        }
+    }
+
+    #[test]
+    fn headless_invocation_returns_the_providers_broker_receipt() {
+        let mut registry = SearchRegistry::new();
+        registry.register(std::rc::Rc::new(ReceiptProvider));
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &registry,
+            "",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+        let receipt = catalog
+            .select(&ResourceRef::new("receipts", "broker.action"))
+            .expect("the broker action is addressable")
+            .invoke_nullary(&mut doc, &root, &chrome)
+            .expect("the provider admits the action");
+
+        assert_eq!(receipt.broker_invocation_id, Some(73));
+        assert!(matches!(
+            receipt.update,
+            qos_actions::InvocationUpdate::Accepted { .. }
+        ));
     }
 
     /// The parameter machinery must not make an existing nullary caller
