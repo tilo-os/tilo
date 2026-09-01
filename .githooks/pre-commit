@@ -13,6 +13,7 @@ note() { printf '  %s\n' "$*" >&2; }
 # the build this way and nothing noticed.
 "$root/scripts/check-workspace-complete.sh"
 python3 "$root/tools/check_app_text_contract.py"
+python3 "$root/tools/check_shell_copy_contract.py"
 
 staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
 
@@ -38,6 +39,14 @@ while IFS= read -r f; do
   [ -f "$crate_tests/it.rs" ] || continue
   # helper modules live in a subdirectory or are named in it.rs already
   case "$f" in */tests/*/*) continue ;; esac
+  # Some environment-owning integration tests intentionally remain separate
+  # Cargo test binaries. An explicit [[test]] path is just as reachable as a
+  # module in tests/it.rs and must not be reported as silently orphaned.
+  crate_manifest="$(dirname "$crate_tests")/Cargo.toml"
+  if [ -f "$crate_manifest" ] \
+    && grep -qE "^[[:space:]]*path[[:space:]]*=[[:space:]]*\"tests/${base}\\.rs\"[[:space:]]*$" "$crate_manifest"; then
+    continue
+  fi
   if ! grep -q "mod ${base};" "$crate_tests/it.rs"; then
     note "$f is not declared in $crate_tests/it.rs — it will not be compiled or run"
     fail=1

@@ -21,9 +21,16 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
+qos-actions = { path = "../../crates/collab/actions" }
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
+collab-types = { path = "../../crates/collab/collab-types" }
+qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
+ed25519-dalek.workspace = true
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+tokio = { workspace = true, features = ["rt", "net", "io-util"] }
+uuid.workspace = true
 # The one shared thumbnail generator + cache. `pdf` on (real first-page PDF
 # previews; pure-Rust to build — pdfium loads dynamically at runtime, falling
 # back to a badge when absent). Video stays a badge here so the hermetic build
@@ -32,11 +39,17 @@ thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
 open.workspace = true
 mime_guess = "2.0.5"
-humansize = "2.1.3"
 chrono = { workspace = true, default-features = true }
+# CLDR-backed date/time and decimal formatting. Keep these scoped to Files:
+# ICU4X's compiled data provides deterministic locale fallback without relying
+# on host libc locale installation.
+icu_datetime = "2.3.0"
+icu_decimal = "2.3.0"
+icu_locale = "2.3.0"
 # Reads the qOS FUSE driver's `user.qos.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state.
 xattr = "1.6.1"
+libc.workspace = true
 # Only used by the `--shots` demo seeds to synthesise real sample files
 # (gradient images, an EPUB with a cover) so a headless thumbnail frame renders
 # genuine previews rather than mocks.
@@ -47,6 +60,10 @@ zip.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+fluent.workspace = true
+unic-langid.workspace = true
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
 automerge.workspace = true
@@ -56,10 +73,17 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+fs = { path = "../../fs" }
+fuser.workspace = true
+iroh.workspace = true
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[[test]]
+name = "live_collaborative_mount"
+path = "tests/live_collaborative_mount.rs"
 
 [lints]
 workspace = true

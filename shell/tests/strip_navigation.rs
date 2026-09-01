@@ -382,9 +382,8 @@ fn the_plus_chip_does_not_move_the_viewport() {
     h.click(plus.center());
     h.tick();
 
-    assert_eq!(
-        h.scroll_x(),
-        parked,
+    assert!(
+        (h.scroll_x() - parked).abs() <= f64::EPSILON,
         "clicking + moved the strip from {parked} to {}",
         h.scroll_x()
     );

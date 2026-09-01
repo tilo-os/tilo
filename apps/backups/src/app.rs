@@ -29,6 +29,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
 };
@@ -3379,7 +3380,7 @@ impl BackupsApp {
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some((msg, when)) = self.toast.clone() else {
+        let Some((msg, when)) = self.toast.as_ref() else {
             return;
         };
         let age = when.elapsed().as_secs_f64();
@@ -3387,52 +3388,19 @@ impl BackupsApp {
             self.toast = None;
             return;
         }
-        let c = &theme.tokens.colors;
         let alpha = if age > 2.5 {
             (1.0 - (age - 2.5)) as f32
         } else {
             1.0
         };
-        let (tw, _) = tr.measure(&msg, 13.0, None);
-        let w = f64::from(tw) + 56.0;
-        let toast = Rect::new(
-            self.rect.center().x - w / 2.0,
-            self.rect.y1 - 56.0,
-            self.rect.center().x + w / 2.0,
-            self.rect.y1 - 20.0,
-        );
-        paint::fill_rrect(
+        paint_transient(
             scene,
             t,
-            toast,
-            10.0,
-            c.neutral[0].with_alpha_factor(0.92 * alpha),
-        );
-        paint::stroke_rrect(
-            scene,
-            t,
-            toast,
-            10.0,
-            theme.accent_primary.with_alpha_factor(0.6 * alpha),
-            1.0,
-        );
-        paint::dot(
-            scene,
-            t,
-            Point::new(toast.x0 + 22.0, toast.center().y),
-            4.0,
-            c.semantic.success.with_alpha_factor(alpha),
-        );
-        paint::text_vc(
-            scene,
             tr,
-            t,
-            &msg,
-            13.0,
-            c.text_primary.with_alpha_factor(alpha),
-            toast.x0 + 36.0,
-            toast.y0,
-            toast.height(),
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Success).alpha(alpha),
         );
     }
 

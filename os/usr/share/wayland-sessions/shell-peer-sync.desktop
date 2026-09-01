@@ -11,6 +11,6 @@
 Name=qOS with peer sync
 GenericName=Desktop
 Comment=Collaborative session with Iroh peer discovery enabled
-Exec=/usr/bin/shell --backend drm --enable-peer-sync
+Exec=/usr/libexec/qos-session --backend drm --enable-peer-sync
 Type=Application
 DesktopNames=nirios

@@ -14,7 +14,9 @@
 //! [`take_changed`](NumberInput::take_changed) polls a committed user
 //! change; [`set_value`](NumberInput::set_value) pushes one in silently;
 //! [`with_on_change_path`](NumberInput::with_on_change_path) optionally
-//! binds the value to a CRDT `F64`, like [`Slider`](crate::widget::Slider).
+//! binds the value to a CRDT `F64`, while
+//! [`from_state`](NumberInput::from_state) supplies typed process-local
+//! two-way binding.
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -126,6 +128,8 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 )]
 pub struct NumberInput {
     id: String,
+    /// Fluent message id spoken for the composite control.
+    accessible_name: Option<String>,
     /// Canonical value — the single source of truth. The embedded field's
     /// text is a *view* of this (re-synced on every commit); `value` is
     /// what [`value`](NumberInput::value) and the CRDT reflect.
@@ -164,9 +168,11 @@ pub struct NumberInput {
     pending_write: Option<f64>,
     on_change_path: String,
     crdt_bound: bool,
+    local_state: Option<crate::local_state::LocalBinding<f64>>,
     enabled: bool,
     width: f64,
     height: f64,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl NumberInput {
@@ -175,6 +181,7 @@ impl NumberInput {
     pub fn new(value: f64) -> Self {
         let mut s = Self {
             id: String::new(),
+            accessible_name: None,
             value,
             min: f64::NEG_INFINITY,
             max: f64::INFINITY,
@@ -195,13 +202,29 @@ impl NumberInput {
             pending_write: None,
             on_change_path: String::new(),
             crdt_bound: false,
+            local_state: None,
             enabled: true,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         };
         s.value = s.value.clamp(s.min, s.max);
         s.sync_field();
         s
+    }
+
+    /// Create a true two-way binding to typed process-local numeric state.
+    ///
+    /// Committed typing, steppers, keyboard actions, and accessibility
+    /// actions update `state`; mutations through any clone update this field
+    /// on the next synchronization pass. [`Self::take_changed`] remains a
+    /// user-intent signal and does not report model synchronization.
+    pub fn from_state(state: &crate::LocalState<f64>) -> Self {
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        Self {
+            local_state: Some(binding),
+            ..Self::new(value)
+        }
     }
 
     /// Clamp committed + typed values to `[min, max]`. The current value is
@@ -212,6 +235,7 @@ impl NumberInput {
         self.max = max;
         self.value = self.value.clamp(min, max);
         self.sync_field();
+        self.publish_local_state();
         self
     }
 
@@ -247,6 +271,13 @@ impl NumberInput {
         self
     }
 
+    /// Name the complete number input for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
+    }
+
     /// Fixed control width / height in logical pixels.
     #[must_use]
     pub fn with_size(mut self, width: f64, height: f64) -> Self {
@@ -260,6 +291,7 @@ impl NumberInput {
     /// widget self-contained (poll [`take_changed`](NumberInput::take_changed)).
     #[must_use]
     pub fn with_on_change_path(mut self, path: &str) -> Self {
+        self.local_state = None;
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
         self
@@ -286,11 +318,13 @@ impl NumberInput {
 
     /// Push a value in programmatically. Clamps and re-formats the
     /// display, but does NOT report a change through
-    /// [`take_changed`](NumberInput::take_changed) or write the CRDT.
+    /// [`take_changed`](NumberInput::take_changed) or write the CRDT. A bound
+    /// [`crate::LocalState`] is updated immediately.
     /// Mirrors [`TextInput::set_text`](crate::widget::TextInput::set_text).
     pub fn set_value(&mut self, v: f64) {
         self.value = v.clamp(self.min, self.max);
         self.sync_field();
+        self.publish_local_state();
     }
 
     /// Poll for a committed user change since the last call, draining it.
@@ -341,6 +375,7 @@ impl NumberInput {
                 self.value = clamped;
                 self.changed = Some(clamped);
                 self.pending_write = Some(clamped);
+                self.publish_local_state();
             }
         }
         // Whether or not the value moved, re-render the canonical text so a
@@ -356,6 +391,7 @@ impl NumberInput {
             self.value = next;
             self.changed = Some(next);
             self.pending_write = Some(next);
+            self.publish_local_state();
         }
         self.sync_field();
     }
@@ -385,12 +421,42 @@ impl NumberInput {
             );
         }
     }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.value);
+        }
+    }
 }
 
 impl Widget for NumberInput {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.field.set_interaction_environment(environment);
+        self.minus_hover &= environment.supports_hover();
+        self.plus_hover &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
+        if self.local_state.is_some() {
+            // Don't clobber a partially typed value. A later user commit wins;
+            // otherwise the model is adopted as soon as editing ends.
+            if !self.field.is_focused()
+                && let Some(value) = self
+                    .local_state
+                    .as_mut()
+                    .and_then(crate::local_state::LocalBinding::poll)
+            {
+                self.value = value.clamp(self.min, self.max);
+                self.sync_field();
+            }
+            return;
+        }
         if !self.crdt_bound {
             return;
         }
@@ -433,7 +499,10 @@ impl Widget for NumberInput {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(px_f32(self.width)),
-                height: Dimension::length(px_f32(self.height)),
+                height: Dimension::length(px_f32(
+                    self.height
+                        .max(f64::from(self.interaction.minimum_target())),
+                )),
             },
             ..Default::default()
         });
@@ -712,6 +781,7 @@ impl Widget for NumberInput {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::SpinButton)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.format_value())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
@@ -752,6 +822,7 @@ impl Widget for NumberInput {
                     self.value = clamped;
                     self.changed = Some(clamped);
                     self.pending_write = Some(clamped);
+                    self.publish_local_state();
                     self.flush_crdt(state, root);
                 }
                 self.sync_field();
@@ -1015,6 +1086,42 @@ mod tests {
             "programmatic set is not a user change"
         );
         assert_eq!(n.field.value(), "72");
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_number_inputs() {
+        use crate::a11y::Action;
+
+        let state = crate::LocalState::new(16.0);
+        let mut first = NumberInput::from_state(&state)
+            .with_range(8.0, 72.0)
+            .with_step(1.0);
+        let mut second = NumberInput::from_state(&state).with_range(8.0, 72.0);
+        let mut document = AutoCommit::new();
+
+        state.set(24.0);
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), 24.0);
+        assert_eq!(second.value(), 24.0);
+        assert_eq!(first.take_changed(), None, "model sync is not user intent");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &Action::Increment,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), 25.0);
+        assert_eq!(first.take_changed(), Some(25.0));
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), 25.0);
+
+        second.set_value(30.0);
+        assert_eq!(state.get(), 30.0);
+        assert_eq!(second.take_changed(), None);
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), 30.0);
     }
 
     /// Keyboard (Tab) focus routes into the editable field so it's typeable

@@ -10,7 +10,6 @@ use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
@@ -19,7 +18,6 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
-use crate::canvas;
 use crate::draw;
 use crate::geo;
 use crate::model::{LatLon, Place};
@@ -126,6 +124,14 @@ impl SearchBox {
         self.debounce = None;
     }
 
+    /// Close transient type-ahead suggestions without discarding the query.
+    /// Escape or a click away returns attention to the map; the query remains
+    /// available to edit or submit.
+    pub(crate) fn dismiss(&mut self) {
+        self.focused = false;
+        self.dismiss_results();
+    }
+
     pub(crate) fn overlay_active(&self, query: &str) -> bool {
         self.focused && !query.trim().is_empty() && !self.results.is_empty()
     }
@@ -171,7 +177,7 @@ impl SearchBox {
                 ..
             }
         ) {
-            self.focused = false;
+            self.dismiss();
             return SearchKeyEffect::Dismissed;
         }
         self.input.set_focus(true);
@@ -327,20 +333,23 @@ impl SearchBox {
                     draw::alpha(theme.accent_primary, 0.12),
                 );
             }
-            let category = canvas::category_color(theme, place.category);
+            // Category remains explicit in each row's text. A different
+            // saturated hue for every result makes a short ordered list read
+            // like a legend instead of a set of choices.
+            let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
             draw::fill_circle(
                 scene,
                 transform,
                 Point::new(r.x0 + 14.0, r.center().y),
                 6.0,
-                category,
+                marker,
             );
             draw::fill_circle(
                 scene,
                 transform,
                 Point::new(r.x0 + 14.0, r.center().y),
                 2.4,
-                draw::mix(c.surfaces.base, Color::WHITE, 0.7),
+                theme.accent_primary,
             );
             let text_x = r.x0 + 30.0;
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, overlay.anchor));
@@ -445,5 +454,19 @@ mod tests {
         assert_eq!(picked.id, "first");
         assert!(!search.is_focused());
         assert!(search.results().is_empty());
+    }
+
+    #[test]
+    fn dismiss_keeps_the_query_but_drops_transient_suggestions() {
+        let mut search = SearchBox::new();
+        let now = Instant::now();
+        search.set_focused(true);
+        search.query_changed("museum", vec![place("local")], now);
+
+        search.dismiss();
+
+        assert!(!search.is_focused());
+        assert!(search.results().is_empty());
+        assert!(search.take_due_query(now + DEBOUNCE, "museum").is_none());
     }
 }

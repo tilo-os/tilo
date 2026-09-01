@@ -1,4 +1,4 @@
-//! Resource + action-model status for the Typst editor.
+//! Canonical resource/operation surface for the Typst editor.
 //!
 //! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
@@ -27,13 +27,108 @@
 //!   (the Typst compiler and the filesystem) or pure presentation. None of them
 //!   mutate the shared document, so none is an action.
 //!
-//! Consequently the Typst editor exports **no** actions and publishes **no**
-//! Ctrl+K resource tree: [`Widget::resources`](ui::widget::Widget::resources)
-//! stays empty and
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
-//! `None` (both toolkit defaults). Rather than fabricate a document/settings
-//! model just to have actions, this module records that finding and proves it on
-//! the production path — see the tests below.
+//! Source typing remains on the CRDT-native text path. Compile/filesystem work
+//! is exported as an effect and local navigation/zoom as view operations.
+
+use automerge::AutoCommit;
+use qos_actions::{ActionSpec, OperationKind, Resource};
+use serde::{Deserialize, Serialize};
+
+pub const OPERATION_TYPE: &str = "typst.operation";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TypstOperation {
+    Compile,
+    Save,
+    Open,
+    ExportPdf,
+    ZoomOut,
+    ZoomIn,
+    FitWidth,
+    ToggleProblems,
+    ShowEditor,
+    ShowPreview,
+}
+
+pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
+    let mut document = Resource::new("typst.current", "typst.document", "Current document");
+    for (id, label, kind, op) in [
+        (
+            "compile",
+            "Recompile",
+            OperationKind::Effect,
+            TypstOperation::Compile,
+        ),
+        (
+            "save",
+            "Save Typst file",
+            OperationKind::Effect,
+            TypstOperation::Save,
+        ),
+        (
+            "open",
+            "Open Typst file",
+            OperationKind::Effect,
+            TypstOperation::Open,
+        ),
+        (
+            "export-pdf",
+            "Export PDF",
+            OperationKind::Effect,
+            TypstOperation::ExportPdf,
+        ),
+        (
+            "zoom-in",
+            "Zoom in",
+            OperationKind::View,
+            TypstOperation::ZoomIn,
+        ),
+        (
+            "zoom-out",
+            "Zoom out",
+            OperationKind::View,
+            TypstOperation::ZoomOut,
+        ),
+        (
+            "fit-width",
+            "Fit preview width",
+            OperationKind::View,
+            TypstOperation::FitWidth,
+        ),
+        (
+            "problems",
+            "Toggle problems",
+            OperationKind::View,
+            TypstOperation::ToggleProblems,
+        ),
+        (
+            "editor",
+            "Show editor",
+            OperationKind::View,
+            TypstOperation::ShowEditor,
+        ),
+        (
+            "preview",
+            "Show preview",
+            OperationKind::View,
+            TypstOperation::ShowPreview,
+        ),
+    ] {
+        if let Ok(operation) = ActionSpec::operation(id, label, kind, OPERATION_TYPE, &op) {
+            document = document.with_action(operation);
+        }
+    }
+    vec![document]
+}
+
+pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<TypstOperation>, String> {
+    if type_id != OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -202,20 +297,33 @@ mod tests {
         );
     }
 
-    /// The honest steady state: the Typst editor fabricates no action or resource
-    /// surface. `Widget::resources` is empty (nothing to publish to Ctrl+K) and
-    /// no action host records an undo boundary, because no action is ever
-    /// dispatched.
+    /// The source remains native text while effects/views are discoverable.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_effect_and_view_operations_without_fake_document_actions() {
         let (mut app, doc) = synced();
+        let resources = Widget::resources(&app, &doc);
+        assert_eq!(resources.len(), 1);
         assert!(
-            Widget::resources(&app, &doc).is_empty(),
-            "the editor publishes no Ctrl+K resource tree — its only shared state is native text"
+            resources[0]
+                .actions
+                .iter()
+                .any(|a| { a.id == "compile" && a.kind == qos_actions::OperationKind::Effect })
+        );
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|a| { a.id == "zoom-in" && a.kind == qos_actions::OperationKind::View })
+        );
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .all(|a| a.kind != qos_actions::OperationKind::Document)
         );
         assert!(
             app.take_committed_action().is_none(),
-            "no action is dispatched, so no action-host undo boundary is recorded"
+            "effects/views do not create document undo boundaries"
         );
     }
 }

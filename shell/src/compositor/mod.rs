@@ -233,6 +233,22 @@ pub fn parse_provision_identity(args: &[&str]) -> bool {
     args.contains(&"--provision-identity")
 }
 
+/// Process-global wrapper around [`parse_verify_collaboration_identity`].
+pub fn parse_verify_collaboration_identity_from_args() -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
+    parse_verify_collaboration_identity(&borrowed)
+}
+
+/// Read-only identity gate used by the shipped graphical-session wrapper.
+///
+/// This is deliberately distinct from `--provision-identity`: verification
+/// must never repair, rotate, or mint keys merely because login is checking
+/// whether the ceremony completed.
+pub fn parse_verify_collaboration_identity(args: &[&str]) -> bool {
+    args.contains(&"--verify-collaboration-identity")
+}
+
 /// Process-global wrapper around [`parse_portals`]: opt in via `--enable-portals` for the `xdg-desktop-portal` D-Bus backend. v1 default OFF, same shape as `parse_peer_sync`.
 pub fn parse_portals_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
@@ -490,6 +506,22 @@ mod tests {
             "--mode",
             "native",
             "--firstboot-only"
+        ]));
+    }
+
+    #[test]
+    fn identity_entry_points_are_explicit_and_independent() {
+        assert!(!parse_provision_identity(&[]));
+        assert!(!parse_verify_collaboration_identity(&[]));
+        assert!(parse_provision_identity(&["--provision-identity"]));
+        assert!(parse_verify_collaboration_identity(&[
+            "--verify-collaboration-identity"
+        ]));
+        assert!(!parse_provision_identity(&[
+            "--verify-collaboration-identity"
+        ]));
+        assert!(!parse_verify_collaboration_identity(&[
+            "--provision-identity"
         ]));
     }
 

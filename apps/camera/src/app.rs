@@ -30,6 +30,7 @@ use vello::peniko::Color;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{Image, ImageFit, Toggle, ToggleFace, Widget};
 use winit::event::WindowEvent;
 
@@ -1416,42 +1417,17 @@ impl CameraApp {
     }
 
     fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some(msg) = self.toast.clone() else {
+        let Some(msg) = self.toast.as_deref() else {
             return;
         };
-        let c = &theme.tokens.colors;
-        let tw = f64::from(p::text_w(tr, &msg, 13.0));
-        let w = tw + 56.0;
-        let cx = self.stage_center_x();
-        let r = Rect::new(
-            cx - w / 2.0,
-            self.rect.y1 - 64.0,
-            cx + w / 2.0,
-            self.rect.y1 - 28.0,
-        );
-        p::fill_round(scene, t, r, 18.0, p::alpha(c.neutral[1], 0.96));
-        p::stroke_round(scene, t, r, 18.0, p::alpha(theme.accent_primary, 0.5), 1.0);
-        p::icon(
+        paint_transient(
             scene,
             t,
-            "check",
-            Rect::new(
-                r.x0 + 14.0,
-                r.center().y - 8.0,
-                r.x0 + 30.0,
-                r.center().y + 8.0,
-            ),
-            theme.status_success,
-            2.0,
-        );
-        p::text(
-            scene,
             tr,
-            r.x0 + 36.0,
-            r.center().y - 8.0,
-            &msg,
-            13.0,
-            c.text_primary,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Success),
         );
     }
 

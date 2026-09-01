@@ -72,8 +72,7 @@ impl ActionContext {
             .ok()
             .as_ref()
             .and_then(action_variant)
-            .map(humanize_identifier)
-            .unwrap_or_else(|| "Update".to_string());
+            .map_or_else(|| "Update".to_string(), humanize_identifier);
         Self {
             action_label,
             ..Self::default()
@@ -222,7 +221,7 @@ fn action_variant(value: &serde_json::Value) -> Option<&str> {
 }
 
 fn humanize_identifier(value: &str) -> String {
-    let mut result = String::with_capacity(value.len() + 4);
+    let mut result = String::with_capacity(value.len().saturating_add(4));
     let mut previous_lowercase_or_digit = false;
     for character in value.chars() {
         if character == '_' || character == '-' {

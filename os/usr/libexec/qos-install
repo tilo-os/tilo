@@ -12,20 +12,25 @@
 #     --timezone <Area/City>          IANA time zone (default: system default / UTC)
 #     --keymap <xkb-layout>           keyboard layout, e.g. us, de (default: us)
 #     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
-#     --encrypt                       LUKS2 full-disk encryption on the root
-#     --pin                           unlock secret on stdin line 2: a TPM2 PIN
-#                                     where there is a TPM, otherwise the boot
-#                                     passphrase (requires --encrypt)
+#     --encrypt                       accepted for UI compatibility; native qOS
+#                                     always uses LUKS2 full-disk encryption
+#     --pin                           required unlock secret on stdin line 2: a TPM2 PIN
+#                                     only with verified boot + kernel lockdown,
+#                                     otherwise the boot passphrase (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
+#     --alongside --root-partition P --efi-partition P
+#                                     preserve the disk's partition table;
+#                                     format only a prepared empty Linux root
+#                                     and reuse (never format) its existing ESP
 #
-# (These are optional so an older UI that omits them still works.) We:
+# An older UI may omit `--encrypt`, but the backend still encrypts. It must
+# provide `--pin`; otherwise installation fails closed. We:
 #
 #   1. copy the currently-booted bootc image into local container storage
 #      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
 #   2. install from that copied image, in a privileged podman container, onto
-#      the target disk (wipes it, --filesystem layout). Without --encrypt that
-#      is `bootc install to-disk`; with it, qos-disk-encrypt builds the
-#      GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
+#      the target disk (wipes it, --filesystem layout). qos-disk-encrypt builds
+#      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
 #      `--block-setup tpm2-luks`,
 #   3. create the user account: `bootc install` does NOT make users, so we
@@ -65,6 +70,50 @@ DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+secure_boot_enabled() {
+  local variable value
+  for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
+    [ -f "$variable" ] || continue
+    value="$(od -An -tu1 -j4 -N1 "$variable" 2>/dev/null | tr -d ' \n')"
+    [ "$value" = "1" ] && return 0
+  done
+  return 1
+}
+
+kernel_lockdown_active() {
+  local state
+  state="$(cat /sys/kernel/security/lockdown 2>/dev/null || true)"
+  case "$state" in
+    *'[integrity]'*|*'[confidentiality]'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Securely booting the live medium does not prove that the freshly installed
+# target will boot an equally sealed and trusted UKI. Short-PIN mode is enabled
+# only when a dedicated target-chain preflight exists and verifies that full
+# handoff. It is deliberately absent until installation-time UKI signing,
+# firmware trust enrollment and measured-target validation are integrated.
+target_verified_boot_ready() {
+  local preflight=/usr/libexec/qos-verified-boot-install-preflight
+  [ -x "$preflight" ] && "$preflight" "$@"
+}
+
+verified_tpm() {
+  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
+    && secure_boot_enabled \
+    && kernel_lockdown_active \
+    && target_verified_boot_ready --capability
+}
+
+verified_tpm_target() {
+  local target_root="$1"
+  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
+    && secure_boot_enabled \
+    && kernel_lockdown_active \
+    && target_verified_boot_ready --prepare-target "$target_root"
+}
 
 # Updates are signature-required only for the official qOS repository in the
 # shipped containers policy. Do not let a live-session environment override
@@ -160,9 +209,12 @@ HOSTNAME_VAL="qos"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
-ENCRYPT=0            # --encrypt → bootc --block-setup tpm2-luks (else direct)
-WANT_PIN=0           # --pin → enroll a TPM2+PIN keyslot (PIN read on stdin line 2)
+ENCRYPT=1            # Native qOS is always installed into a LUKS2 root.
+WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
+ALONGSIDE=0
+ROOT_PARTITION=""
+EFI_PARTITION=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -176,6 +228,9 @@ while [ $# -gt 0 ]; do
     --encrypt) ENCRYPT=1; shift ;;
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
+    --alongside) ALONGSIDE=1; shift ;;
+    --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
+    --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -184,6 +239,14 @@ done
 
 [ -n "$DISK" ] || die "missing --disk <device>"
 [ -n "$USERNAME" ] || die "missing --user <name>"
+
+if [ "$ALONGSIDE" -eq 1 ]; then
+  [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
+    || die "--alongside requires --root-partition and --efi-partition"
+else
+  [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
+    || die "partition arguments require --alongside"
+fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
 # across the distributions qOS targets. It also keeps the colon-delimited
@@ -212,10 +275,11 @@ esac
 # Encryption does NOT require a TPM. The volume is created with a recovery key
 # and the TPM is one more slot on top of it, so a machine without one still gets
 # an encrypted disk that it unlocks by typing a secret. See qos-disk-encrypt.
-# The extra factors only make sense on an encrypted disk.
-if [ "$ENCRYPT" -eq 0 ] && { [ "$WANT_PIN" -eq 1 ] || [ "$WANT_FIDO2" -eq 1 ]; }; then
-  die "--pin/--fido2 require --encrypt"
-fi
+# A startup secret is mandatory. Short-PIN mode requires TPM2 plus verified boot
+# of both the live medium and installed target; otherwise the same input is a
+# normal, stronger disk passphrase.
+[ "$WANT_PIN" -eq 1 ] \
+  || die "native qOS requires --pin for its encrypted startup boundary"
 
 # Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
@@ -294,6 +358,49 @@ done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 [ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] \
   || die "$DISK is the live medium's own disk — refusing to install onto it"
 
+validate_alongside() {
+  local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
+  for tool in blockdev blkid lsblk wipefs "mkfs.$FILESYSTEM" mount; do
+    command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
+  done
+  [ -b "$ROOT_PARTITION" ] && [ "$(lsblk -dno TYPE "$ROOT_PARTITION" 2>/dev/null)" = part ] \
+    || die "$ROOT_PARTITION is not a partition"
+  [ -b "$EFI_PARTITION" ] && [ "$(lsblk -dno TYPE "$EFI_PARTITION" 2>/dev/null)" = part ] \
+    || die "$EFI_PARTITION is not a partition"
+  root_parent="$(lsblk -no PKNAME "$ROOT_PARTITION" 2>/dev/null | head -1)"
+  efi_parent="$(lsblk -no PKNAME "$EFI_PARTITION" 2>/dev/null | head -1)"
+  [ -n "$root_parent" ] && [ -n "$efi_parent" ] \
+    && [ "$(readlink -f "/dev/$root_parent")" = "$DISK" ] \
+    && [ "$(readlink -f "/dev/$efi_parent")" = "$DISK" ] \
+    || die "alongside root and EFI partitions must both belong to $DISK"
+  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  efi_type="$(lsblk -dno PARTTYPE "$EFI_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ "$root_type" = "0fc63daf-8483-4772-8e79-3d69d8477de4" ] \
+    || die "$ROOT_PARTITION is not explicitly typed as a Linux filesystem partition"
+  [ "$efi_type" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] \
+    || die "$EFI_PARTITION is not an EFI System Partition"
+  efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
+  [ "$efi_fs" = vfat ] || die "$EFI_PARTITION is not a FAT EFI System Partition"
+  [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
+    || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
+  mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
+    || die "could not inspect $ROOT_PARTITION mount state"
+  [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \
+    || die "$ROOT_PARTITION is mounted"
+  signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")" \
+    || die "could not inspect signatures on $ROOT_PARTITION"
+  [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
+    || die "$ROOT_PARTITION contains a filesystem or volume signature; refusing to guess that its data is disposable"
+}
+
+if [ "$ALONGSIDE" -eq 1 ]; then
+  ROOT_PARTITION="$(readlink -f "$ROOT_PARTITION")"
+  EFI_PARTITION="$(readlink -f "$EFI_PARTITION")"
+  validate_alongside
+  log "  alongside   : preserve partition table; format only $ROOT_PARTITION"
+  log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
+fi
+
 # Refuse if the target disk (or any of its partitions) is currently mounted.
 if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
   die "$DISK (or one of its partitions) is currently mounted — unmount it first"
@@ -307,6 +414,16 @@ IFS= read -r PASSWORD || true
 if [ "$WANT_PIN" -eq 1 ]; then
   IFS= read -r PIN || true
   [ -n "$PIN" ] || die "--pin set but no PIN received on stdin (line 2)"
+  if verified_tpm; then
+    case "$PIN" in
+      *[!0-9]*) die "startup PIN must contain only digits" ;;
+    esac
+    [ "${#PIN}" -ge 6 ] && [ "${#PIN}" -le 12 ] \
+      || die "startup PIN must be 6 to 12 digits"
+  else
+    [ "${#PIN}" -ge 12 ] \
+      || die "disk passphrase must contain at least 12 characters without verified TPM2 boot"
+  fi
 fi
 
 log "qOS installer"
@@ -332,12 +449,21 @@ ENC_MNT=""
 ENC_LUKS=""
 ENC_KEYFILE=""
 if [ "$ENCRYPT" -eq 1 ]; then
-  step "Preparing an encrypted root on $DISK (this ERASES the disk)"
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    step "Preparing encrypted qOS root on $ROOT_PARTITION (existing OS partitions are preserved)"
+  else
+    step "Preparing an encrypted root on $DISK (this ERASES the disk)"
+  fi
   # The helper reports the volume it made on stdout and its progress on stderr;
   # keep the report and let the progress through to the UI, which reads our
   # stdout. fd 3 is this script's stdout for the duration.
   exec 3>&1
-  PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    validate_alongside
+    PREP="$("$DISK_ENCRYPT" prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION" --filesystem "$FILESYSTEM" 2>&3)"
+  else
+    PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
+  fi
   exec 3>&-
   ENC_MNT="$(printf '%s\n' "$PREP" | sed -n 's/^MNT=//p')"
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
@@ -377,6 +503,33 @@ if [ "$ENCRYPT" -eq 1 ]; then
       --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize \
       /target
+elif [ "$ALONGSIDE" -eq 1 ]; then
+  validate_alongside
+  step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
+  case "$FILESYSTEM" in
+    btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
+    ext4) mkfs.ext4 -q -F -L root "$ROOT_PARTITION" ;;
+    xfs) mkfs.xfs -q -f -L root "$ROOT_PARTITION" >/dev/null ;;
+  esac
+  ROOT_FS_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION")"
+  [ -n "$ROOT_FS_UUID" ] || die "could not read the new qOS root UUID"
+  ALONGSIDE_MNT="$(mktemp -d)"
+  mount "$ROOT_PARTITION" "$ALONGSIDE_MNT"
+  install -d -m 0755 "$ALONGSIDE_MNT/boot/efi"
+  mount "$EFI_PARTITION" "$ALONGSIDE_MNT/boot/efi"
+  cleanup_alongside() {
+    umount "$ALONGSIDE_MNT/boot/efi" 2>/dev/null || true
+    umount "$ALONGSIDE_MNT" 2>/dev/null || true
+    rmdir "$ALONGSIDE_MNT" 2>/dev/null || true
+  }
+  trap cleanup_alongside EXIT
+  podman run --rm --privileged --pid=host --ipc=host \
+    -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
+    -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
+    "$LOCAL_IMG" bootc install to-filesystem \
+      --root-mount-spec "UUID=$ROOT_FS_UUID" \
+      --karg-delete qos.installer=1 --target-imgref "$QOS_TARGET_IMGREF" \
+      --skip-finalize /target
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
   podman run --rm --privileged --pid=host --ipc=host \
@@ -406,6 +559,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
+  if verified_tpm; then
+    verified_tpm_target "$ENC_MNT" \
+      || die "the installed target did not preserve verified boot; refusing to enroll a short PIN"
+  else
+    ENROL_ARGS+=(--passphrase)
+  fi
   if [ "$WANT_PIN" -eq 1 ]; then
     PIN_FILE=/run/qos-install/pin
     install -d -m 0700 /run/qos-install
@@ -448,6 +607,9 @@ find_deploy_etc() {
 if [ "$ENCRYPT" -eq 1 ]; then
   MNT="$ENC_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+elif [ "$ALONGSIDE" -eq 1 ]; then
+  MNT="$ALONGSIDE_MNT"
+  DEPLOY_ETC="$(find_deploy_etc "$MNT")"
 else
   MNT="$(mktemp -d)"
   cleanup() {
@@ -479,13 +641,15 @@ fi
 # bootc above; restoring greetd and removing the transient privilege drop-in
 # completes the boundary between installer and target.
 install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
+printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
+  "$USERNAME" >> "$DEPLOY_ETC/greetd/config.toml"
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base qOS image
 # leaves sshd disabled but unmasked.
 rm -f "$DEPLOY_ETC/systemd/system/sshd.service" \
       "$DEPLOY_ETC/systemd/system/multi-user.target.wants/sshd.service"
-log "  restored the normal greeter configuration"
+log "  configured encrypted-startup handoff to the '$USERNAME' session"
 
 # NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
 # files in the live medium. Preserve those profiles so a connection made in
@@ -572,6 +736,9 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # unmounts the tree and closes the mapping.
   step "Closing the encrypted root"
   "$DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEYFILE" --mnt "$ENC_MNT" 2>&1
+elif [ "$ALONGSIDE" -eq 1 ]; then
+  cleanup_alongside
+  trap - EXIT
 else
   umount "$MOUNTED" 2>/dev/null || true
   MOUNTED=""

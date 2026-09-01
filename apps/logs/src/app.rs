@@ -47,6 +47,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
@@ -1754,6 +1755,40 @@ fn contrast_on(bg: Color) -> Color {
 // ===================================================================
 
 impl Widget for LogsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("journal", "logs.journal", "System journal");
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh journal",
+            OperationKind::Effect,
+            "logs.refresh",
+            &"",
+        ) {
+            root.actions.push(spec);
+        }
+        vec![root]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        _payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "logs.refresh" {
+            return Ok(false);
+        }
+        if !self.allow_live {
+            return Err("live journal access is disabled".into());
+        }
+        self.entries = crate::journal::load_live(2000);
+        self.rebuild_facets();
+        self.dirty = true;
+        Ok(true)
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
         LogsDoc::ensure_defaults(doc, root);
         self.search_input.sync(doc, root);

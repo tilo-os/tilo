@@ -37,7 +37,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, TextInput, Toggle, ToggleFace};
+use ui::widget::{BlockEditor, Checkbox, CheckboxFace, TextInput, Toggle, ToggleFace};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
@@ -49,6 +49,7 @@ use crate::event_popovers::{
     EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
+use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
@@ -135,8 +136,9 @@ enum Action {
     Export,
     Import,
     NewEvent,
-    /// Step the visible month by ±1 from the mini-month navigator.
-    ShiftMonth(i32),
+    /// Navigation intent interpreted by the mini-month component. The app
+    /// applies it to the anchor shared by every calendar view.
+    MiniMonth(MiniMonthOutcome),
     CycleColor,
     CycleRecurrence,
     CycleReminder,
@@ -2064,7 +2066,12 @@ impl CalendarApp {
             Action::Sync => self.start_sync(doc),
             Action::Export => self.export_ics(),
             Action::Import => self.import_ics(doc),
-            Action::ShiftMonth(n) => self.anchor = date::add_months(self.anchor, n),
+            Action::MiniMonth(outcome) => match outcome {
+                MiniMonthOutcome::SelectDate(date) => self.anchor = date,
+                MiniMonthOutcome::ShiftMonth(months) => {
+                    self.anchor = date::add_months(self.anchor, months);
+                }
+            },
             Action::NewEvent => self.new_event(doc),
             Action::CycleColor => {
                 self.cycle_event(doc, |e| {
@@ -2129,13 +2136,20 @@ impl CalendarApp {
             .collect()
     }
 
-    /// Whether `date` carries any *visible* event — drives the mini-month dots.
-    fn day_has_visible_event(&self, date: NaiveDate) -> bool {
+    /// Dates in the mini-month grid carrying at least one visible event. The
+    /// root applies account-visibility policy once; the component only needs
+    /// the dates it should mark.
+    fn mini_month_event_dates(&self) -> HashSet<NaiveDate> {
         let hidden = self.hidden_calendar_ids();
-        self.model
-            .events
-            .iter()
-            .any(|e| e.occurs_on(date) && e.visible_under(&hidden))
+        date::month_grid(self.anchor)
+            .into_iter()
+            .filter(|date| {
+                self.model
+                    .events
+                    .iter()
+                    .any(|event| event.occurs_on(*date) && event.visible_under(&hidden))
+            })
+            .collect()
     }
 
     // ====================================================================
@@ -2429,26 +2443,26 @@ impl CalendarApp {
         y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let c = &theme.tokens.colors;
         // Reserve the bottom of the sidebar for the mini-month navigator.
-        let mini_top = r.y1 - 196.0;
+        let mini_top = MiniMonth::content_limit(r);
         let y = self.draw_sidebar_task_rail(scene, t, tr, theme, r, pad, y, mini_top, hits);
-
-        // Mini-month navigator pinned to the sidebar bottom — drawn only when
-        // the sidebar content above it (lists + projects + CALENDARS) hasn't
-        // already grown into its reserved band, so the two never overlap.
-        if y < mini_top - 8.0 {
-            stroke_line(
+        let event_dates = self.mini_month_event_dates();
+        hits.extend(
+            MiniMonth::draw(
                 scene,
                 t,
-                c.border_standard,
-                Point::new(r.x0 + pad, mini_top - 8.0),
-                Point::new(r.x1 - pad, mini_top - 8.0),
-                1.0,
-            );
-            let mini_region = Rect::new(r.x0, mini_top, r.x1, r.y1 - 12.0);
-            hits.extend(self.draw_mini_month(scene, t, tr, theme, mini_region));
-        }
+                tr,
+                theme,
+                r,
+                y,
+                self.anchor,
+                self.today,
+                &event_dates,
+                self.last_mouse,
+            )
+            .into_iter()
+            .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
+        );
     }
 
     /// The mini upcoming-task rail — only when there are tasks to show AND
@@ -2569,122 +2583,6 @@ impl CalendarApp {
             }
         }
         y
-    }
-
-    /// Compact month navigator drawn in the sidebar: a 6×7 day grid with
-    /// today highlighted, the anchor ringed, a dot under days that have
-    /// events, and prev/next month chevrons. Clicking a day re-anchors the
-    /// active view; the chevrons step the visible month.
-    fn draw_mini_month(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        region: Rect,
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        let pad = 18.0;
-
-        tr.draw_text(
-            scene,
-            &date::month_title(self.anchor),
-            13.0,
-            c.text_primary,
-            t * Affine::translate((region.x0 + pad, region.y0)),
-            None,
-        );
-        let pc = Rect::new(
-            region.x1 - pad - 46.0,
-            region.y0 - 4.0,
-            region.x1 - pad - 24.0,
-            region.y0 + 18.0,
-        );
-        let nc = Rect::new(
-            region.x1 - pad - 22.0,
-            region.y0 - 4.0,
-            region.x1 - pad,
-            region.y0 + 18.0,
-        );
-        if pc.contains(self.last_mouse) {
-            fill_round(scene, t, c.surface_white_5, pc, 6.0);
-        }
-        if nc.contains(self.last_mouse) {
-            fill_round(scene, t, c.surface_white_5, nc, 6.0);
-        }
-        draw_chevron(scene, t, c.neutral[7], pc.center(), true);
-        draw_chevron(scene, t, c.neutral[7], nc.center(), false);
-        hits.push((pc, Action::ShiftMonth(-1)));
-        hits.push((nc, Action::ShiftMonth(1)));
-
-        let grid_x0 = region.x0 + pad;
-        let grid_w = region.width() - 2.0 * pad;
-        let cw = grid_w / 7.0;
-        let head_y = region.y0 + 24.0;
-        for (i, lbl) in date::WEEKDAY_NARROW.iter().enumerate() {
-            center_text(
-                scene,
-                tr,
-                lbl,
-                10.0,
-                c.text_dim,
-                Rect::new(
-                    grid_x0 + cw * i as f64,
-                    head_y,
-                    grid_x0 + cw * (i as f64 + 1.0),
-                    head_y + 14.0,
-                ),
-                t,
-            );
-        }
-
-        let grid = date::month_grid(self.anchor);
-        let cell_h = 22.0;
-        let top = head_y + 18.0;
-        for (idx, day) in grid.iter().enumerate() {
-            let row = (idx / 7) as f64;
-            let col = (idx % 7) as f64;
-            let cell = Rect::new(
-                grid_x0 + cw * col,
-                top + cell_h * row,
-                grid_x0 + cw * (col + 1.0),
-                top + cell_h * (row + 1.0),
-            );
-            let in_month = day.month() == self.anchor.month();
-            let is_today = *day == self.today;
-            let is_anchor = *day == self.anchor;
-            let has_ev = self.day_has_visible_event(*day);
-
-            if is_today {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.accent[5],
-                    None,
-                    &Circle::new(cell.center(), 10.0),
-                );
-            } else if is_anchor {
-                stroke_round(scene, t, c.accent[5], cell.inflate(-3.0, -2.0), 7.0, 1.2);
-            } else if cell.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -2.0), 7.0);
-            }
-            let num_col = if is_today {
-                Color::WHITE
-            } else if !in_month {
-                c.neutral[4]
-            } else {
-                c.neutral[8]
-            };
-            center_text(scene, tr, &format!("{}", day.day()), 11.0, num_col, cell, t);
-            if has_ev && !is_today {
-                let dot = Point::new(cell.center().x, cell.y1 - 2.5);
-                scene.fill(Fill::NonZero, t, c.accent[5], None, &Circle::new(dot, 1.6));
-            }
-            hits.push((cell, Action::PickDate(*day)));
-        }
-
-        hits
     }
 
     fn view_rect(&self) -> Rect {
@@ -4907,13 +4805,12 @@ pub(crate) fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
 }
 
 pub(crate) fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, done: bool) {
-    let c = &theme.tokens.colors;
-    if done {
-        fill_round(scene, t, c.accent[5], r, 4.0);
-        draw_check(scene, t, Color::WHITE, r);
-    } else {
-        stroke_round(scene, t, c.neutral[5], r, 4.0, 1.6);
-    }
+    Checkbox::paint(
+        scene,
+        t,
+        theme,
+        &CheckboxFace::new(r, done).transparent_unchecked(),
+    );
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.
@@ -5137,6 +5034,24 @@ fn elide(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn task_checkbox_paints_both_completion_states() {
+        let theme = Theme::dark();
+        let rect = Rect::new(4.0, 6.0, 22.0, 24.0);
+        let mut unchecked = Scene::new();
+        draw_checkbox(&mut unchecked, Affine::IDENTITY, &theme, rect, false);
+        let mut checked = Scene::new();
+        draw_checkbox(&mut checked, Affine::IDENTITY, &theme, rect, true);
+
+        let unchecked_tags = unchecked.encoding().draw_tags.len();
+        let checked_tags = checked.encoding().draw_tags.len();
+        assert!(unchecked_tags > 0, "unchecked state keeps its outline");
+        assert!(
+            checked_tags > unchecked_tags,
+            "checked state adds its fill and check mark"
+        );
+    }
 
     #[test]
     fn demo_app_seeds_model_and_selection() {
@@ -6115,6 +6030,25 @@ mod tests {
                 .find(|(_, a)| pred(a))
                 .map(|(r, _)| r.center())
         }
+    }
+
+    #[test]
+    fn mini_month_outcome_updates_the_shared_calendar_anchor() {
+        let mut h = Harness::new(1280, 1200);
+        h.app.shots_show_calendar();
+        h.relayout();
+        let before = h.app.anchor;
+        let previous = h
+            .hit_center(|action| matches!(action, Action::MiniMonth(_)))
+            .expect("the sidebar mini-month has a previous-month target");
+
+        h.click(previous);
+
+        assert_eq!(
+            h.app.anchor,
+            date::add_months(before, -1),
+            "the component interprets its target and the root updates the anchor"
+        );
     }
 
     #[test]

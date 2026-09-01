@@ -114,7 +114,7 @@ impl RunError {
 }
 
 /// Optional knobs for `run_with`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent CLI-exposed launch knob (no_services, minimal_libs, \
@@ -161,6 +161,10 @@ pub struct RunOptions {
     /// `$XDG_CONFIG_HOME`/`$HOME` default. It is read only by the launcher to
     /// create a broker capability and is never bound into the sandbox.
     pub identity_host_path: Option<PathBuf>,
+    /// Host path of the session's bounded, non-secret human identity
+    /// projection. Honoured only for Files and mounted read-only over its
+    /// otherwise writable app directory.
+    pub trusted_identities_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id
     /// ([`crate::sandbox::WORKSPACE_ID_ENV`]). `None` means no session.
     pub workspace_id: Option<String>,
@@ -176,6 +180,34 @@ pub struct RunOptions {
     /// A URI to open, forwarded as one opaque argv value. The caller must
     /// validate its scheme against the freshly-read installed manifest.
     pub open_uri: Option<String>,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            no_services: false,
+            runtime_root: None,
+            bwrap_bin: None,
+            minimal_libs: false,
+            // qpkg applications are untrusted by default.  A caller using the
+            // convenience constructor must not accidentally remove one of the
+            // kernel-enforced confinement layers.
+            landlock_enforce: true,
+            mode: LaunchMode::default(),
+            allow_missing_runtime: false,
+            allow_unsigned_runtime: false,
+            require_runtime_publisher: None,
+            wayland_socket: None,
+            render_node: None,
+            identity_host_path: None,
+            trusted_identities_host_path: None,
+            workspace_id: None,
+            capabilities_path: None,
+            app_id: None,
+            open_document: None,
+            open_uri: None,
+        }
+    }
 }
 
 fn gui_open_args(opts: &RunOptions) -> Vec<String> {
@@ -886,6 +918,24 @@ fn splice_app_dir(
     Ok(())
 }
 
+/// Mount Files' live room-governance identity directory read-only. The
+/// projection is package-scoped and must remain visible across atomic host
+/// replacement, so the containing directory—not one inode—is bound.
+fn splice_trusted_identities(
+    argv: &mut Vec<String>,
+    manifest: &MinimalManifest,
+    opts: &RunOptions,
+) -> Result<(), RunError> {
+    if manifest.package_id == "dev.qos.file-explorer"
+        && let Some(host_path) = opts.trusted_identities_host_path.as_deref()
+    {
+        let entry = pop_entry(argv)?;
+        crate::sandbox::push_trusted_identities_bind(argv, host_path);
+        argv.push(entry);
+    }
+    Ok(())
+}
+
 /// Wayland display, spliced before the entrypoint token like the
 /// minimal-libs binds. No `wayland_socket` means no display at all. Returns
 /// the resolved bind, needed again by the shim's Landlock plan.
@@ -1447,6 +1497,7 @@ pub fn run_with(
     splice_workspace_id_bind(&mut argv, opts)?;
     splice_tool_context(&mut argv)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -1701,6 +1752,7 @@ pub fn run_with_captured(
         crate::appdir::push_app_dir(&mut argv, &app_dir);
         argv.push(entry);
     }
+    splice_trusted_identities(&mut argv, manifest, opts)?;
 
     spawn_and_capture(
         argv,

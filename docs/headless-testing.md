@@ -384,6 +384,29 @@ app had when it exited. Apps that need specific actions get them from
 widgets out of the app's own live tree, skipping anything whose name suggests
 a destructive operation.
 
+## Undo, through the driver
+
+`Driver` records undo boundaries the way the real host does, so a headless
+scenario can drive an edit and then assert it is undoable — including an edit
+made through an accessibility verb rather than a click.
+
+This did not always work, and the way it failed is worth knowing. An app that
+dispatches its edits through `qos_actions` reports them via
+`Widget::take_committed_action`; the driver never drained it, so no boundary was
+recorded and any headless undo test was impossible to write honestly. (One was
+written and deleted for exactly that reason — it could not observe its subject.)
+Two further holes sat behind it: the boundary was recorded with no author while
+undo is author-scoped, so a user's own Ctrl+Z **skipped** their button-driven
+edit and reverted an older one instead; and only the root widget was drained,
+because no container forwards that call.
+
+All three are fixed in one place — `ui::undo::record_dispatched_action`, called
+by both `App` and `Driver` — so the two hosts cannot drift. If you simulate the
+host yourself in a unit test, use `record_committed_action_authored` (or that
+function) rather than the anonymous `record_committed_action`: the anonymous
+form produces an entry production no longer creates, so a test built on it
+passes while proving nothing.
+
 ## Opening an app the machine does not have
 
 `scripts/install-on-open-demo.py` drives the one flow that cannot be

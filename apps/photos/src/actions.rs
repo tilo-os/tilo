@@ -38,8 +38,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::PhotosDoc;
@@ -50,6 +50,27 @@ pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
 
 /// The resource `kind` an open photograph publishes under.
 pub const IMAGE_KIND: &str = "photos.image";
+pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PhotosOperation {
+    OpenPicker,
+    Copy,
+    SaveSuggested,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOperation>, String> {
+    if type_id != PHOTOS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn operation(id: &str, label: &str, op: PhotosOperation) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, &op).ok()
+}
 
 /// Every collaborative operation on the open photograph.
 ///
@@ -181,8 +202,8 @@ pub struct PhotosResources;
 
 impl ResourceProvider for PhotosResources {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Nothing open: publish nothing. An app with no photograph exports no
-        // operations on one.
+        // Nothing open: there is no addressed photograph yet. The shell's app
+        // launcher remains the entry point for opening the first one.
         let Some(image) = PhotosDoc::image(doc) else {
             return Vec::new();
         };
@@ -222,6 +243,23 @@ impl ResourceProvider for PhotosResources {
                     "Keep a region of what is currently shown, in normalized coordinates",
                 ),
             );
+        for (id, label, op) in [
+            (
+                "open",
+                "Open another photograph",
+                PhotosOperation::OpenPicker,
+            ),
+            ("copy", "Copy photograph", PhotosOperation::Copy),
+            (
+                "save",
+                "Save edited photograph",
+                PhotosOperation::SaveSuggested,
+            ),
+        ] {
+            if let Some(spec) = operation(id, label, op) {
+                resource = resource.with_action(spec);
+            }
+        }
 
         // Reset only appears when there is something to undo, so the surface
         // never offers an operation that would do nothing.
@@ -407,7 +445,17 @@ mod tests {
         let doc = doc_with_image();
         let res = PhotosResources.resources(&doc);
         let ids: Vec<&str> = res[0].actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["rotate-right", "rotate-left", "crop"]);
+        assert_eq!(
+            ids,
+            vec![
+                "rotate-right",
+                "rotate-left",
+                "crop",
+                "open",
+                "copy",
+                "save",
+            ]
+        );
     }
 
     #[test]

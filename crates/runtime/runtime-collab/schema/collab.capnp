@@ -217,6 +217,13 @@ struct ExportedAction {
   # fact here, so there is no separate flag.
   description   @5 :Text;
   input         @6 :ActionInput;
+  # `document`, `effect`, or `view`. Empty from an older client means
+  # `document` for backwards compatibility.
+  operationKind @7 :Text;
+  # JSON encoding of `qos_actions::ActionParam[]`. Kept as an opaque JSON
+  # projection so Cap'n Proto clients can forward newer parameter vocabulary
+  # without a schema bump; empty means the legacy `input` projection.
+  paramsJson @8 :Text;
 }
 
 # What one exported action's invocation must supply.
@@ -333,6 +340,11 @@ interface PresenceHandle {
   # to end and never re-keys them, so exactly one receiver can place the
   # position and the rest can tell that it is not theirs.
   publishPointer @7 (keyBytes :Data, x :Float32, y :Float32) -> ();
+
+  # Publish a transient "just typed" range. This is intentionally distinct
+  # from selection: receivers render it as a fading insertion highlight,
+  # while a selection is durable presence until the next caret update.
+  publishTyping @8 (keyBytes :Data, start :UInt64, end :UInt64) -> ();
 }
 
 interface PresenceStream {
@@ -401,6 +413,13 @@ struct PresencePayload {
       x @7 :Float32;
       y @8 :Float32;
     }
+
+    # A transient insertion range. Kept as its own union arm so the local
+    # Cap'n Proto hop preserves the same semantic variant as peer transport.
+    typing :group {
+      start @9 :UInt64;
+      end  @10 :UInt64;
+    }
   }
 }
 
@@ -414,6 +433,12 @@ struct PresencePayload {
 struct ChannelContext {
   collaborators @0 :List(Collaborator);
   permissions   @1 :List(Text);
+  # A session-local Follow command. `followChanged == false` means this is
+  # the ordinary complete roster/permission snapshot above. When true,
+  # clients leave that snapshot untouched and either follow `followTarget`
+  # or stop when it is empty. The compositor never relays this to peers.
+  followTarget  @2 :Text;
+  followChanged @3 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

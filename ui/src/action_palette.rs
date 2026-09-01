@@ -38,7 +38,7 @@ use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
     ActionContext, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
-    Resource, flatten,
+    OperationKind, Resource, flatten,
 };
 
 /// The group header for the focused app's exported actions.
@@ -58,7 +58,7 @@ const PER_GROUP_CAP: usize = 8;
 #[derive(Clone)]
 enum RowResolution {
     /// An exported action — dispatch through `qos_actions`.
-    Dispatch(ActionKind),
+    Dispatch(Box<ActionKind>),
     /// A search-provider hit — hand the opaque id back to the app to navigate.
     Navigate(String),
 }
@@ -70,12 +70,14 @@ enum ActionKind {
     Immediate {
         encoded: EncodedAction,
         context: ActionContext,
+        kind: OperationKind,
     },
     /// Collects a free-text argument in the field first, then builds the action.
     Prompted {
         prompt: String,
         build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
         context: ActionContext,
+        kind: OperationKind,
     },
 }
 
@@ -83,6 +85,14 @@ enum ActionKind {
 struct ArgState {
     build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
     context: ActionContext,
+    kind: OperationKind,
+}
+
+/// A palette activation after address resolution and argument collection.
+pub struct PendingOperation {
+    pub encoded: EncodedAction,
+    pub context: ActionContext,
+    pub kind: OperationKind,
 }
 
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
@@ -101,7 +111,7 @@ pub struct ActionPalette {
     /// `Some` while collecting a prompted action's argument in the field.
     arg: Option<ArgState>,
     /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
-    pending_dispatch: Option<(EncodedAction, ActionContext)>,
+    pending_dispatch: Option<PendingOperation>,
     ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
     pending_nav: Option<String>,
@@ -254,10 +264,27 @@ impl ActionPalette {
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
-        let (encoded, context) = self.pending_dispatch.take()?;
+        let pending = self.pending_dispatch.take()?;
+        if pending.kind != OperationKind::Document {
+            return Some(Err(qos_actions::ActionError::Refused(format!(
+                "{} operation requires the owning widget",
+                pending.kind.as_str()
+            ))));
+        }
         Some(Self::dispatch_encoded(
-            doc, &encoded, registry, transport, context,
+            doc,
+            &pending.encoded,
+            registry,
+            transport,
+            pending.context,
         ))
+    }
+
+    /// Drain the resolved operation without assuming it is a document edit.
+    /// The application host uses this to route effects/views to the owning
+    /// widget and document operations to the deterministic executor.
+    pub fn take_operation(&mut self) -> Option<PendingOperation> {
+        self.pending_dispatch.take()
     }
 
     /// Drain a completed content activation: the opaque `action_id` of the
@@ -288,23 +315,38 @@ impl ActionPalette {
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
         match self.index.get(id).cloned() {
-            Some(RowResolution::Dispatch(ActionKind::Immediate { encoded, context })) => {
-                self.pending_dispatch = Some((encoded, context));
-                self.open = false;
-            }
-            Some(RowResolution::Dispatch(ActionKind::Prompted {
-                prompt,
-                build,
-                context,
-            })) => {
-                // Repurpose the field to collect the argument; clear the result
-                // list so only the prompt shows.
-                self.field = SearchField::new();
-                self.field.set_placeholder(&prompt);
-                self.field.set_focused(true);
-                self.results.set_groups(Vec::new());
-                self.arg = Some(ArgState { build, context });
-            }
+            Some(RowResolution::Dispatch(kind)) => match *kind {
+                ActionKind::Immediate {
+                    encoded,
+                    context,
+                    kind,
+                } => {
+                    self.pending_dispatch = Some(PendingOperation {
+                        encoded,
+                        context,
+                        kind,
+                    });
+                    self.open = false;
+                }
+                ActionKind::Prompted {
+                    prompt,
+                    build,
+                    context,
+                    kind,
+                } => {
+                    // Repurpose the field to collect the argument; clear the result
+                    // list so only the prompt shows.
+                    self.field = SearchField::new();
+                    self.field.set_placeholder(&prompt);
+                    self.field.set_focused(true);
+                    self.results.set_groups(Vec::new());
+                    self.arg = Some(ArgState {
+                        build,
+                        context,
+                        kind,
+                    });
+                }
+            },
             Some(RowResolution::Navigate(target)) => {
                 self.pending_nav = Some(target);
                 self.open = false;
@@ -349,14 +391,16 @@ impl ActionPalette {
                 ActionInput::Immediate(enc) => ActionKind::Immediate {
                     encoded: enc.clone(),
                     context,
+                    kind: fa.action.kind,
                 },
                 ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
                     prompt: prompt.clone(),
                     build: build.clone(),
                     context,
+                    kind: fa.action.kind,
                 },
             };
-            index.insert(fa.key.clone(), RowResolution::Dispatch(kind));
+            index.insert(fa.key.clone(), RowResolution::Dispatch(Box::new(kind)));
             rows.push(r);
         }
 
@@ -485,7 +529,11 @@ impl ActionPalette {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
                 if let Some(state) = self.arg.take() {
-                    self.pending_dispatch = Some(((state.build)(&value), state.context));
+                    self.pending_dispatch = Some(PendingOperation {
+                        encoded: (state.build)(&value),
+                        context: state.context,
+                        kind: state.kind,
+                    });
                 }
                 self.open = false;
             } else {
