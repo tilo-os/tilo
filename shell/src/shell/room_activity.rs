@@ -329,6 +329,20 @@ impl Default for RoomActivityPane {
 }
 
 impl RoomActivityPane {
+    fn detail_action_label(&self, action: DetailAction) -> &'static str {
+        if action == DetailAction::Open
+            && self.selection_detail().is_some_and(|detail| {
+                detail.resources.first().is_some_and(|resource| {
+                    !resource.id.starts_with("file:") && !resource.id.contains("://")
+                })
+            })
+        {
+            "Open app"
+        } else {
+            action.label()
+        }
+    }
+
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
@@ -1438,7 +1452,7 @@ impl RoomActivityPane {
                     );
                     tr.draw_text(
                         scene,
-                        action.label(),
+                        self.detail_action_label(action),
                         size,
                         theme.tokens.colors.text_primary,
                         at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
@@ -2427,10 +2441,10 @@ impl RoomActivityPane {
     /// observable in tests, this is the stable hand-off point for the shell's
     /// overlay AccessKit bridge (immediate-mode overlays have no `NodeId`).
     pub fn focused_control_label(&self) -> Option<String> {
-        Self::focus_label(self.keyboard_focus.as_ref()?, &self.digest)
+        self.focus_label(self.keyboard_focus.as_ref()?)
     }
 
-    fn focus_label(focus: &ActivityFocus, digest: &ActivityDigest) -> Option<String> {
+    fn focus_label(&self, focus: &ActivityFocus) -> Option<String> {
         match focus {
             ActivityFocus::Scope(value) => Some(value.label().to_string()),
             ActivityFocus::View(value) => Some(value.label().to_string()),
@@ -2438,9 +2452,11 @@ impl RoomActivityPane {
             ActivityFocus::Author(Some(value)) => Some(value.clone()),
             ActivityFocus::Author(None) => Some("Everyone".to_string()),
             ActivityFocus::MorePeople => Some("More people".to_string()),
-            ActivityFocus::Brief(index) => {
-                digest.briefs.get(*index).map(|brief| brief.title.clone())
-            }
+            ActivityFocus::Brief(index) => self
+                .digest
+                .briefs
+                .get(*index)
+                .map(|brief| brief.title.clone()),
             ActivityFocus::MoreBriefs => Some("More outcomes".to_string()),
             ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
             ActivityFocus::Lens(LensSelection::App(value))
@@ -2452,7 +2468,7 @@ impl RoomActivityPane {
             }
             ActivityFocus::Lens(LensSelection::Unclassified) => Some("Unclassified".to_string()),
             ActivityFocus::MoreLenses => Some("More lenses".to_string()),
-            ActivityFocus::Detail(action) => Some(action.label().to_string()),
+            ActivityFocus::Detail(action) => Some(self.detail_action_label(*action).to_string()),
             ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
         }
     }
@@ -2482,7 +2498,7 @@ impl RoomActivityPane {
             .iter()
             .enumerate()
             .filter_map(|(index, focus)| {
-                let label = Self::focus_label(focus, &self.digest)?;
+                let label = self.focus_label(focus)?;
                 let (role, selected, expanded, description) = match focus {
                     ActivityFocus::Scope(value) => (
                         Role::RadioButton,
@@ -4797,7 +4813,7 @@ mod tests {
             }) || pane
                 .detail_action_rects
                 .iter()
-                .any(|(action, _)| action.label() == label),
+                .any(|(action, _)| pane.detail_action_label(*action) == label),
             "focused control is a rendered explorer control: {label}"
         );
         assert!(
