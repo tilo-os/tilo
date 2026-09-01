@@ -174,6 +174,9 @@ pub struct StoreApp {
     /// Drained by the host each frame via [`take_pending_actions`].
     pending_actions: Vec<(String, ActionKind)>,
     pending_refresh: bool,
+    pending_lifecycle_actions: Vec<(String, ActionKind, qos_actions::InvocationId)>,
+    pending_lifecycle_refresh: Option<qos_actions::InvocationId>,
+    completed_invocations: Vec<qos_actions::InvocationUpdate>,
     pending_search: Option<String>,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
@@ -223,6 +226,9 @@ impl StoreApp {
             root: None,
             pending_actions: Vec::new(),
             pending_refresh: false,
+            pending_lifecycle_actions: Vec::new(),
+            pending_lifecycle_refresh: None,
+            completed_invocations: Vec::new(),
             pending_search: None,
             pending_detail: None,
             remotes: Vec::new(),
@@ -248,6 +254,38 @@ impl StoreApp {
     /// race an install/remove or fan out into duplicate network work.
     pub fn take_refresh_requested(&mut self) -> bool {
         std::mem::take(&mut self.pending_refresh)
+    }
+
+    pub fn take_lifecycle_actions(
+        &mut self,
+    ) -> Vec<(String, ActionKind, qos_actions::InvocationId)> {
+        std::mem::take(&mut self.pending_lifecycle_actions)
+    }
+
+    pub fn take_lifecycle_refresh(&mut self) -> Option<qos_actions::InvocationId> {
+        self.pending_lifecycle_refresh.take()
+    }
+
+    pub fn complete_lifecycle_invocation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        error: Option<String>,
+    ) {
+        self.completed_invocations.push(match error {
+            Some(message) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "store.operation_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+            None => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+        });
     }
 
     pub fn take_search_requested(&mut self) -> Option<String> {
@@ -912,6 +950,10 @@ fn take_bool_edge(state: &mut AutoCommit, path: &ObjId, key: &str) -> bool {
 }
 
 impl Widget for StoreApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["store.refresh", "store.app"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("store", "store.catalog", "App Store");
         if let Ok(refresh) = ActionSpec::operation(
@@ -942,10 +984,6 @@ impl Widget for StoreApp {
                 &payload,
             ) {
                 let destructive = matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove);
-                let background = matches!(
-                    action,
-                    ActionKind::Update | ActionKind::FlatpakInstall | ActionKind::FlatpakUpdate
-                );
                 resource.actions.push(spec.with_contract(ActionContract {
                     risk: if destructive {
                         RiskLevel::Destructive
@@ -963,18 +1001,10 @@ impl Widget for StoreApp {
                     ) {
                         RetryPolicy::AtMostOnce
                     } else {
-                        RetryPolicy::RetryWithInvocationId
+                        RetryPolicy::Idempotent
                     },
-                    execution: if background {
-                        ExecutionMode::Background { cancellable: false }
-                    } else {
-                        ExecutionMode::Immediate
-                    },
-                    result: if background {
-                        ResultSpec::Job
-                    } else {
-                        ResultSpec::None
-                    },
+                    execution: ExecutionMode::Background { cancellable: false },
+                    result: ResultSpec::Job,
                     ..ActionContract::default()
                 }));
             }
@@ -990,7 +1020,7 @@ impl Widget for StoreApp {
                     resource.actions.push(spec.with_contract(ActionContract {
                         risk: RiskLevel::Destructive,
                         confirmation: ConfirmationPolicy::Confirm,
-                        retry: RetryPolicy::RetryWithInvocationId,
+                        retry: RetryPolicy::Idempotent,
                         execution: ExecutionMode::Background { cancellable: false },
                         result: ResultSpec::Job,
                         ..ActionContract::default()
@@ -1006,19 +1036,42 @@ impl Widget for StoreApp {
         &mut self,
         kind: OperationKind,
         type_id: &str,
-        payload: &[u8],
+        _payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind != OperationKind::Effect {
             return Ok(false);
         }
+        match type_id {
+            "store.refresh" | "store.app" => {
+                Err("store operations require the lifecycle-capable operation host".into())
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect {
+            return Ok(None);
+        }
         if type_id == "store.refresh" {
-            self.pending_refresh = true;
-            return Ok(true);
+            if self.pending_lifecycle_refresh.is_some() {
+                return Err("a catalog refresh is already queued".into());
+            }
+            self.pending_lifecycle_refresh = Some(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
         if type_id != "store.app" {
-            return Ok(false);
+            return Ok(None);
         }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let id = args
@@ -1027,8 +1080,23 @@ impl Widget for StoreApp {
             .clone();
         let action = action_from_code(args.get(1).map(String::as_str).unwrap_or(""))
             .ok_or_else(|| "unknown store action".to_string())?;
-        self.pending_actions.push((id, action));
-        Ok(true)
+        self.pending_lifecycle_actions
+            .push((id, action, invocation));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        let index = self
+            .completed_invocations
+            .iter()
+            .position(|update| update.invocation() == invocation)?;
+        Some(self.completed_invocations.remove(index))
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -1447,5 +1515,53 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.take_remote_intents(), vec![RemoteIntent::Refresh]);
         assert!(app.take_remote_intents().is_empty());
+    }
+
+    #[test]
+    fn exported_refresh_is_accepted_until_worker_completion() {
+        let mut app = seeded_app();
+        let doc = AutoCommit::new();
+        let invocation = qos_actions::InvocationId::new();
+        let started = app
+            .start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                "store.refresh",
+                &serde_json::to_vec(&"").unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+        assert_eq!(app.take_lifecycle_refresh(), Some(invocation));
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        app.complete_lifecycle_invocation(invocation, None);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn exported_store_operations_are_background_jobs() {
+        let app = seeded_app();
+        let doc = AutoCommit::new();
+        for action in Widget::resources(&app, &doc).iter().flat_map(|resource| {
+            resource.actions.iter().chain(
+                resource
+                    .children
+                    .iter()
+                    .flat_map(|child| child.actions.iter()),
+            )
+        }) {
+            assert!(matches!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            ));
+            assert_eq!(action.contract.result, ResultSpec::Job);
+        }
     }
 }

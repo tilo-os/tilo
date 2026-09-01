@@ -48,10 +48,17 @@ pub struct Snapshot {
     pub query: Option<String>,
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
+    pub invocation: Option<qos_actions::InvocationId>,
+    pub operation_error: Option<String>,
+}
+
+struct QueuedRequest {
+    request: Request,
+    invocation: Option<qos_actions::InvocationId>,
 }
 
 pub struct StoreWorker {
-    requests: mpsc::Sender<Request>,
+    requests: mpsc::Sender<QueuedRequest>,
     snapshots: mpsc::Receiver<Snapshot>,
     pending: Arc<AtomicUsize>,
 }
@@ -82,8 +89,23 @@ impl StoreWorker {
     }
 
     pub fn request(&self, request: Request) -> bool {
+        self.request_with_invocation(request, None)
+    }
+
+    pub fn request_with_invocation(
+        &self,
+        request: Request,
+        invocation: Option<qos_actions::InvocationId>,
+    ) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if self.requests.send(request).is_ok() {
+        if self
+            .requests
+            .send(QueuedRequest {
+                request,
+                invocation,
+            })
+            .is_ok()
+        {
             true
         } else {
             self.pending.fetch_sub(1, Ordering::Relaxed);
@@ -116,7 +138,7 @@ struct State {
 }
 
 fn run(
-    requests: &mpsc::Receiver<Request>,
+    requests: &mpsc::Receiver<QueuedRequest>,
     snapshots: &mpsc::Sender<Snapshot>,
     opened_ref: Option<FlatpakRef>,
 ) {
@@ -145,7 +167,13 @@ fn run(
     loop {
         match requests.recv_timeout(REFRESH_INTERVAL) {
             Ok(request) => {
-                if !handle(request, &mut state, snapshots, &staging) {
+                if !handle(
+                    request.request,
+                    request.invocation,
+                    &mut state,
+                    snapshots,
+                    &staging,
+                ) {
                     break;
                 }
             }
@@ -169,6 +197,7 @@ fn run(
 
 fn handle(
     request: Request,
+    invocation: Option<qos_actions::InvocationId>,
     state: &mut State,
     snapshots: &mpsc::Sender<Snapshot>,
     staging: &std::path::Path,
@@ -176,12 +205,14 @@ fn handle(
     match request {
         Request::Refresh => {
             refresh(state);
-            send(
+            send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 "Store refreshed.",
                 None,
+                None,
+                invocation,
                 None,
             )
         }
@@ -190,49 +221,58 @@ fn handle(
         Request::RefreshRemotes => {
             state.remotes = crate::flathub_client::list_remotes();
             let label = format!("Loaded {} Flatpak remotes.", state.remotes.len());
-            send(
+            send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 &label,
                 None,
+                None,
+                invocation,
                 None,
             )
         }
         Request::RemoteAdd { name, url } => {
             let label = run_plan(&crate::actions::flatpak_remote_add_plan(&name, &url));
             state.remotes = crate::flathub_client::list_remotes();
-            send(
+            send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 &label,
                 None,
+                None,
+                invocation,
                 None,
             )
         }
         Request::RemoteRemove(name) => {
             let label = run_plan(&crate::actions::flatpak_remote_remove_plan(&name));
             state.remotes = crate::flathub_client::list_remotes();
-            send(
+            send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 &label,
                 None,
                 None,
+                invocation,
+                None,
             )
         }
         Request::Act(item, action) => {
             let outcome = crate::actions::execute(&item, action, staging);
             refresh(state);
-            send(
+            let operation_error = (!outcome.ok).then(|| outcome.status_line.clone());
+            send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 &outcome.status_line,
                 None,
                 None,
+                invocation,
+                operation_error,
             )
         }
     }
@@ -329,6 +369,28 @@ fn send(
     query: Option<String>,
     detail: Option<StoreItem>,
 ) -> bool {
+    send_tracked(
+        snapshots,
+        state,
+        items,
+        status_line,
+        query,
+        detail,
+        None,
+        None,
+    )
+}
+
+fn send_tracked(
+    snapshots: &mpsc::Sender<Snapshot>,
+    state: &State,
+    items: Vec<StoreItem>,
+    status_line: &str,
+    query: Option<String>,
+    detail: Option<StoreItem>,
+    invocation: Option<qos_actions::InvocationId>,
+    operation_error: Option<String>,
+) -> bool {
     snapshots
         .send(Snapshot {
             items,
@@ -336,6 +398,8 @@ fn send(
             query,
             detail,
             remotes: state.remotes.clone(),
+            invocation,
+            operation_error,
         })
         .is_ok()
 }
