@@ -74,6 +74,7 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         | "settings.open"
         | "quick-settings.open"
         | "projection.open"
+        | "capture.open"
         | "collaborators.open"
         | "room.activity.open" => None,
 

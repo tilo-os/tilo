@@ -43,6 +43,31 @@ pub trait Widget {
         theme: &Theme,
         presence: &PresenceCtx,
     );
+
+    /// Semantic canvas size this widget can render for a complete-content
+    /// capture without resizing or scrolling its live presentation. `None`
+    /// means the ordinary window surface is authoritative. Apps opt in only
+    /// when they can reproduce the complete page/document/canvas from their
+    /// own model; the shell never guesses by stitching visible pixels.
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+        None
+    }
+
+    /// Paint the complete semantic content into `bounds`, in the same desktop
+    /// coordinate space as [`Widget::get_rect`]. Called only after
+    /// [`Widget::complete_content_size`] returned a usable size. Implementors
+    /// must leave live layout, scroll position, focus and pointer state intact.
+    fn draw_complete_content(
+        &mut self,
+        _scene: &mut Scene,
+        _bounds: vello::kurbo::Rect,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) -> bool {
+        false
+    }
     // This is the widget system's event-dispatch contract, implemented by
     // ~90 widgets; every parameter is independently meaningful (the raw
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
@@ -91,6 +116,78 @@ pub trait Widget {
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect;
+
+    /// One-shot request to hand app content to the shared floating-surface
+    /// host. Shell and in-app hosts consume the same description, so `PiP` does
+    /// not require a second rendering/widget API.
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        None
+    }
+
+    /// One-shot request for the session shell's shared capture/PiP chooser.
+    /// Apps request only the starting mode; the shell remains authoritative
+    /// for targets, consent, capture execution, and the visible selector.
+    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+        None
+    }
+
+    /// Rising-edge source-geometry updates for an already adopted generic
+    /// floating surface. App-owned native call/navigation windows publish
+    /// complete presentation geometry below; browser media PiP instead keeps
+    /// a shell mirror pointed at the current app-local element rectangle.
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+        Vec::new()
+    }
+
+    /// Paint app-owned content whose presentation has moved into shell space.
+    /// The ordinary app draw remains clipped to its window; the shell invokes
+    /// this second pass above window content so the exact same live widget can
+    /// cross that clip without being snapshotted or reimplemented.
+    fn draw_floating_surfaces(
+        &mut self,
+        _scene: &mut vello::Scene,
+        _transform: vello::kurbo::Affine,
+        _text_renderer: &mut crate::text_render::TextRenderer,
+        _theme: &crate::theme::Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+    }
+
+    /// Desktop-space app-owned presentations currently needing a native
+    /// secondary window. Kept separate from `draw_floating_surfaces` so the
+    /// runtime can synchronize compositor geometry without inspecting app
+    /// state or duplicating placement logic.
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        Vec::new()
+    }
+
+    /// Stable IDs whose underlying activity still exists, whether currently
+    /// attached or floating. This lets the runtime distinguish an ordinary
+    /// animated reattachment (suspend the warm native surface) from the
+    /// activity actually ending (permanently dismiss it).
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Push the shell's authoritative combined-output bounds down to apps
+    /// that own live floating surfaces. Attached surfaces still resolve from
+    /// their app rect; detached ones use this desktop rect for reachable-edge
+    /// clamping and release snapping. The default is a no-op so ordinary
+    /// widgets do not need to know about shell presentation geometry.
+    fn set_floating_surface_bounds(&mut self, _bounds: vello::kurbo::Rect) {}
+
+    /// Deliver an acknowledged shell lifecycle edge back to the app-owned
+    /// surface. Standalone app roots use this for native-surface adoption,
+    /// close, and graceful reattachment; ordinary widgets ignore it.
+    fn on_floating_surface_host_message(
+        &mut self,
+        _message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+    }
 
     /// `point` is logical coords, same space as [`Widget::get_rect`];
     /// `None` defers to the default arrow. The host hit-tests the whole
@@ -553,7 +650,7 @@ pub use document_viewport::{
     DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState,
 };
 mod floating_window;
-pub use floating_window::FloatingWindow;
+pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
 mod segmented;
 pub use segmented::{
     ColorSwatchPicker, DEFAULT_PALETTE, SegmentTone, TriStateControl, packed_color,
@@ -708,6 +805,16 @@ pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 pub mod card;
 pub use card::{Card, CardGrid, card_column_width, card_columns};
+pub mod capture_studio;
+pub use capture_studio::{
+    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
+    CapturePreview, CaptureStudio, CaptureTarget, PipLayout, RecordingCommand, ReplayCommand,
+    ScreenshotCommand, SourceMode,
+};
+pub mod screenshot_markup;
+pub use screenshot_markup::{
+    MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
+};
 
 pub mod activity_timeline;
 pub mod history;

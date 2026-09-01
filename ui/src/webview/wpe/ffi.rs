@@ -24,6 +24,7 @@ pub enum GError {}
 pub enum GCancellable {}
 pub enum GAsyncResult {}
 pub enum GParamSpec {}
+pub enum JSCValue {}
 
 pub type GSourceFunc = extern "C" fn(user_data: *mut c_void) -> gboolean;
 pub type GAsyncReadyCallback =
@@ -60,6 +61,7 @@ unsafe extern "C" {
     pub fn g_bytes_new(data: *const c_void, size: usize) -> *mut GBytes;
     pub fn g_bytes_unref(bytes: *mut GBytes);
     pub fn g_error_free(err: *mut GError);
+    pub fn g_free(mem: *mut c_void);
 }
 
 #[link(name = "gobject-2.0")]
@@ -75,6 +77,7 @@ unsafe extern "C" {
     /// `GType` is `gsize`. Construction property list is NULL-terminated.
     pub fn g_object_new(object_type: usize, first_property_name: *const c_char, ...)
     -> *mut c_void;
+    pub fn g_object_unref(object: *mut c_void);
 }
 
 // ─────────────────────────────── libwpe ───────────────────────────────────
@@ -408,6 +411,21 @@ unsafe extern "C" {
     pub fn webkit_web_view_get_user_content_manager(
         view: *mut WebKitWebView,
     ) -> *mut WebKitUserContentManager;
+    pub fn webkit_web_view_evaluate_javascript(
+        view: *mut WebKitWebView,
+        script: *const c_char,
+        length: isize,
+        world_name: *const c_char,
+        source_uri: *const c_char,
+        cancellable: *mut GCancellable,
+        callback: GAsyncReadyCallback,
+        user_data: *mut c_void,
+    );
+    pub fn webkit_web_view_evaluate_javascript_finish(
+        view: *mut WebKitWebView,
+        result: *mut GAsyncResult,
+        error: *mut *mut GError,
+    ) -> *mut JSCValue;
 
     pub fn webkit_user_content_manager_add_filter(
         ucm: *mut WebKitUserContentManager,
@@ -477,4 +495,9 @@ unsafe extern "C" {
         result: *mut GAsyncResult,
         error: *mut *mut GError,
     ) -> *mut WebKitUserContentFilter;
+
+    // WPEWebKit's public API exposes JSCValue and exports this symbol itself.
+    // Recent WPE installations do not ship a separate
+    // `libWPEJavaScriptCore-2.0`, so keep it in the WPEWebKit link block.
+    pub fn jsc_value_to_string(value: *mut JSCValue) -> *mut c_char;
 }

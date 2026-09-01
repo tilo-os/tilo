@@ -466,6 +466,15 @@ impl Action {
             },
         ),
         chrome(
+            "capture.open",
+            "Capture or float part of the screen",
+            "Screenshot, record, or make PiP from one or more regions",
+            |st, _| {
+                st.overlays.capture = true;
+                Ok(())
+            },
+        ),
+        chrome(
             "collaborators.open",
             "Show collaborators",
             "Peers currently editing this workspace",

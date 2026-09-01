@@ -28,7 +28,7 @@ use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, EmptyState, IconDescriptor, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -107,6 +107,10 @@ pub struct NotesApp {
     /// `Rect::ZERO` when not showing. Only drives the pointer cursor —
     /// clicking anywhere already focuses the note.
     empty_action_rect: Rect,
+    /// Height of the complete semantic document at the live wrap width.
+    /// Updated by the ordinary draw pass, then consumed by shell capture
+    /// without scrolling or resizing the live editor.
+    complete_content_height: f64,
 }
 
 impl NotesApp {
@@ -125,6 +129,7 @@ impl NotesApp {
             body_origin: Point::ZERO,
             wrap_width: 40.0,
             empty_action_rect: Rect::ZERO,
+            complete_content_height: 0.0,
         }
     }
 
@@ -306,6 +311,7 @@ impl Widget for NotesApp {
         self.body_origin = Point::new(content_x, body_top);
 
         if self.body.text.is_empty() && !self.focused {
+            self.complete_content_height = self.rect.height();
             self.empty_action_rect = EmptyState::paint(
                 scene,
                 transform,
@@ -332,19 +338,8 @@ impl Widget for NotesApp {
             self.draw_selection_highlight(scene, transform, tr, sel_color, body_layout);
         }
 
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine::mul is pure matrix composition (translate here), not primitive integer arithmetic that can silently wrap"
-        )]
-        let body_transform = transform * Affine::translate((content_x, body_top));
-        tr.draw_text(
-            scene,
-            &self.body.text,
-            TEXT_SIZE,
-            text_color,
-            body_transform,
-            Some(wrap_w),
-        );
+        let body_height = self.draw_body_lines(scene, transform, tr, text_color, body_layout);
+        self.complete_content_height = (PADDING * 2.0 + body_height).max(self.rect.height());
 
         if self.focused {
             self.draw_caret(scene, transform, tr, accent, body_layout);
@@ -400,6 +395,44 @@ impl Widget for NotesApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn complete_content_size(&self) -> Option<Size> {
+        (!self.body.text.is_empty() && self.complete_content_height > self.rect.height() + 1.0)
+            .then_some(Size::new(self.rect.width(), self.complete_content_height))
+    }
+
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut Scene,
+        bounds: Rect,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        if self.body.text.is_empty() || bounds.area() <= 0.0 {
+            return false;
+        }
+
+        // Capture is another presentation of the same document, not a live
+        // resize. Restore every draw-time interaction cache so the editor's
+        // next pointer event still maps against the on-screen surface.
+        let live_rect = self.rect;
+        let live_body_origin = self.body_origin;
+        let live_wrap_width = self.wrap_width;
+        let live_empty_action_rect = self.empty_action_rect;
+        let live_complete_content_height = self.complete_content_height;
+
+        self.rect = bounds;
+        self.draw(scene, transform, tr, theme, presence);
+
+        self.rect = live_rect;
+        self.body_origin = live_body_origin;
+        self.wrap_width = live_wrap_width;
+        self.empty_action_rect = live_empty_action_rect;
+        self.complete_content_height = live_complete_content_height;
+        true
     }
 
     fn is_focusable(&self) -> bool {
@@ -468,6 +501,39 @@ struct BodyLayout {
 }
 
 impl NotesApp {
+    /// Paint explicit document lines as bounded glyph runs. Besides matching
+    /// the editor's newline-based caret model, this avoids handing a
+    /// multi-page document to Vello as one enormous glyph run during complete
+    /// capture. Wrapped lines advance by their measured visual height; blank
+    /// lines still reserve one line-height.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine composition and finite draw-time f64 line positioning cannot overflow"
+    )]
+    fn draw_body_lines(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        color: vello::peniko::Color,
+        layout: BodyLayout,
+    ) -> f64 {
+        let mut y = layout.body_top;
+        for line in self.body.text.split('\n') {
+            tr.draw_text(
+                scene,
+                line,
+                TEXT_SIZE,
+                color,
+                transform * Affine::translate((layout.content_x, y)),
+                Some(layout.wrap_w),
+            );
+            let (_, height) = tr.measure(line, TEXT_SIZE, Some(layout.wrap_w));
+            y += f64::from(height.max(LINE_HEIGHT));
+        }
+        y - layout.body_top
+    }
+
     /// The selection-highlight rects painted per visual line, including
     /// the trailing-newline sliver when the selection spans a line break.
     fn draw_selection_highlight(
@@ -967,6 +1033,53 @@ mod tests {
             "text in the body ⇒ no zero-state",
         );
         assert_eq!(app.cursor_shape(tile.center()), None);
+    }
+
+    #[test]
+    fn complete_capture_paints_the_whole_document_without_mutating_live_geometry() {
+        let (mut doc, tile_root) = bind();
+        let text = (1..=80)
+            .map(|line| {
+                format!("Design note {line}: preserve the live editor while exporting everything.")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = NotesApp::with_seed(text);
+        app.sync(&mut doc, &tile_root);
+        let live_rect = Rect::new(120.0, 90.0, 820.0, 490.0);
+        draw_tile(&mut app, live_rect);
+
+        let size = app
+            .complete_content_size()
+            .expect("a long note advertises its complete semantic canvas");
+        assert_eq!(size.width, live_rect.width());
+        assert!(size.height > live_rect.height());
+
+        let live_body_origin = app.body_origin;
+        let live_wrap_width = app.wrap_width;
+        let live_empty_action_rect = app.empty_action_rect;
+        let live_complete_height = app.complete_content_height;
+        let bounds = Rect::new(
+            live_rect.x0,
+            live_rect.y0,
+            live_rect.x1,
+            live_rect.y0 + size.height,
+        );
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        assert!(app.draw_complete_content(
+            &mut scene,
+            bounds,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        ));
+        assert_eq!(app.rect, live_rect);
+        assert_eq!(app.body_origin, live_body_origin);
+        assert_eq!(app.wrap_width, live_wrap_width);
+        assert_eq!(app.empty_action_rect, live_empty_action_rect);
+        assert_eq!(app.complete_content_height, live_complete_height);
     }
 
     #[test]
