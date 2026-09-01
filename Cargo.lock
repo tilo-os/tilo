@@ -11360,7 +11360,10 @@ dependencies = [
 name = "qos-dev-template-smoke"
 version = "0.1.0"
 dependencies = [
+ "qos-actions",
  "qos-dev",
+ "serde",
+ "serde_json",
  "ui",
 ]
 
