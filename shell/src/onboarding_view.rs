@@ -326,7 +326,7 @@ impl OnboardingView {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Text::new("qOS  •  PRIVATE BY DESIGN")
+                        Text::new("qOS setup")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
@@ -345,6 +345,26 @@ impl OnboardingView {
             .with_gap(spacing.s6)
             .push(Box::new(progress))
             .push(body);
+        if self.flow.screen() == Screen::Done {
+            // The backup card can be taller than a laptop-height viewport,
+            // especially with large text. Keep the only route into the
+            // desktop outside that scroll region so setup never becomes a
+            // visual dead end.
+            let footer_height = 56.0;
+            let scroll_height = (panel_height - footer_height).max(120.0);
+            return Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_gap(spacing.s3)
+                    .push(Box::new(
+                        Scrollable::new_vertical()
+                            .with_height(scroll_height)
+                            .with_content_gutter(spacing.s3)
+                            .with_child(Box::new(content)),
+                    ))
+                    .push(self.finish_action()),
+            );
+        }
         Box::new(
             Scrollable::new_vertical()
                 .with_height(panel_height)
@@ -576,19 +596,6 @@ impl OnboardingView {
             backup_button = backup_button.with_style(ui::widget::ButtonStyle::Primary);
         }
         backup = backup.push(actions(vec![Box::new(backup_button)]));
-        let finish_label = if self.backup_saved.is_some() {
-            match self.context {
-                OnboardingContext::FullSystem => "Enter qOS",
-                OnboardingContext::HostDesktop => "Open qOS desktop",
-            }
-        } else {
-            "Skip for now"
-        };
-        let mut finish = Button::new("onboarding.finish.button", finish_label, Some(KEY_FINISH))
-            .with_icon(ui::icons::Icon::ArrowRight);
-        if self.backup_saved.is_some() {
-            finish = finish.with_style(ui::widget::ButtonStyle::Primary);
-        }
         let system_care = match self.context {
             OnboardingContext::FullSystem => {
                 "qOS checks signed system updates automatically after setup when the machine is \
@@ -611,9 +618,7 @@ impl OnboardingView {
                 ))
                 .push(paragraph(DONE_BODY, theme))
                 .push(paragraph(
-                    "The desktop can open now. Device-to-device sharing stays off unless you \
-                     explicitly enable peer sync; after enabling it, sign out and back in once \
-                     to start the peer session.",
+                    "The desktop is ready. Sharing stays off until you turn it on in Settings.",
                     theme,
                 ))
                 .push(Box::new(Card::titled(
@@ -631,9 +636,27 @@ impl OnboardingView {
                     "There is no recovery service. If this device goes and you have no \
                      encrypted portable backup, this identity goes with it.",
                     theme,
-                ))
-                .push(actions(vec![Box::new(finish)])),
+                )),
         )
+    }
+
+    /// Sticky final action, deliberately outside the Done screen's scrollable
+    /// backup content so it remains visible at narrow and large-text sizes.
+    fn finish_action(&self) -> Box<dyn Widget> {
+        let finish_label = if self.backup_saved.is_some() {
+            match self.context {
+                OnboardingContext::FullSystem => "Enter qOS",
+                OnboardingContext::HostDesktop => "Open qOS desktop",
+            }
+        } else {
+            "Skip for now"
+        };
+        let mut finish = Button::new("onboarding.finish.button", finish_label, Some(KEY_FINISH))
+            .with_icon(ui::icons::Icon::ArrowRight);
+        if self.backup_saved.is_some() {
+            finish = finish.with_style(ui::widget::ButtonStyle::Primary);
+        }
+        actions(vec![Box::new(finish)])
     }
 }
 
@@ -1673,5 +1696,52 @@ mod tests {
         let panel = view.composed.as_ref().expect("composition").get_rect();
         assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
         assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
+    }
+
+    #[test]
+    fn done_exit_action_stays_visible_at_laptop_height_with_large_text() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&mut doc, key);
+            view.sync(&mut doc, &automerge::ROOT);
+        }
+        assert_eq!(view.flow().screen(), Screen::Done);
+
+        let theme = Theme::dark().with_text_scale(1.3);
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(720.0),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                            (*ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("large-text done layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+
+        let finish = node_map
+            .values()
+            .find_map(|&ptr| unsafe {
+                ((*ptr).test_id() == Some("onboarding.finish.button")).then(|| (*ptr).get_rect())
+            })
+            .expect("Done screen exposes its exit action");
+        assert!(finish.area() > 0.0, "finish={finish:?}");
+        assert!(
+            finish.y0 >= 0.0 && finish.y1 <= 720.0,
+            "the exit action must stay in the viewport, finish={finish:?}"
+        );
     }
 }
