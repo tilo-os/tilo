@@ -11,12 +11,12 @@
 //! preserves their ratio, so an accent chip can mute far less than a neutral
 //! one. Seeing them side by side is what tells you whether the signal holds.
 //!
-//! Run:  cargo run -p ui --example denied_state_shots
-//! Out:  $DENIED_SHOTS_OUT (default /tmp/denied_shots) — one PNG per theme in
-//!       $DENIED_SHOTS_THEMES (default "Dark,Light,High Contrast").
+//! Run: `cargo run -p ui --example ui-shots -- denied_state_shots`
+//! Out: `$DENIED_SHOTS_OUT` (default `/tmp/denied_shots`) — one PNG per theme in
+//! `$DENIED_SHOTS_THEMES` (default `Dark,Light,High Contrast`).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
@@ -53,7 +53,7 @@ fn stamp(
     widget: &mut dyn Widget,
     origin: Point,
     permissions: &PermissionContext,
-) {
+) -> Result<(), String> {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     widget.sync(&mut state.doc, &state.root);
@@ -61,15 +61,17 @@ fn stamp(
     taffy
         .compute_layout_with_measure(
             node,
-            Size { width: AvailableSpace::Definite(280.0), height: AvailableSpace::Definite(44.0) },
+            Size {
+                width: AvailableSpace::Definite(280.0),
+                height: AvailableSpace::Definite(44.0),
+            },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, tr)
+                })
             },
         )
-        .unwrap();
+        .map_err(|error| format!("layout failed: {error}"))?;
     widget.apply_layout(&taffy, node, origin);
     widget.draw_with_presence(
         scene,
@@ -79,16 +81,24 @@ fn stamp(
         &PresenceCtx::default(),
         permissions,
     );
+    Ok(())
 }
 
-fn shoot(theme: &Theme, out: PathBuf) {
+fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     let mut state = ui::State::new();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let c = &theme.tokens.colors;
 
-    let mut caption = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, y: f64, s: &str| {
-        tr.draw_text(scene, s, theme.tokens.typography.scale.sm, c.text_dim, Affine::translate((x, y)), None);
+    let caption = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, y: f64, s: &str| {
+        tr.draw_text(
+            scene,
+            s,
+            theme.tokens.typography.scale.sm,
+            c.text_dim,
+            Affine::translate((x, y)),
+            None,
+        );
     };
     caption(&mut scene, &mut tr, COL_ENABLED, 16.0, "granted");
     caption(&mut scene, &mut tr, COL_DENIED, 16.0, "denied");
@@ -103,38 +113,85 @@ fn shoot(theme: &Theme, out: PathBuf) {
         let mut primary = Button::new("d_primary", "Publish", None)
             .primary()
             .with_permission_scope(locked());
-        stamp(&mut scene, &mut tr, theme, &mut state, &mut primary, Point::new(x, 44.0), ctx);
+        stamp(
+            &mut scene,
+            &mut tr,
+            theme,
+            &mut state,
+            &mut primary,
+            Point::new(x, 44.0),
+            ctx,
+        )?;
 
         // Neutral control: primary text on the raised card.
         let mut secondary =
             Button::new("d_secondary", "Save draft", None).with_permission_scope(locked());
-        stamp(&mut scene, &mut tr, theme, &mut state, &mut secondary, Point::new(x, 108.0), ctx);
+        stamp(
+            &mut scene,
+            &mut tr,
+            theme,
+            &mut state,
+            &mut secondary,
+            Point::new(x, 108.0),
+            ctx,
+        )?;
 
-        let mut check = Checkbox::new("d_check", "Share with peers").with_permission_scope(locked());
-        stamp(&mut scene, &mut tr, theme, &mut state, &mut check, Point::new(x, 172.0), ctx);
+        let mut check =
+            Checkbox::new("d_check", "Share with peers").with_permission_scope(locked());
+        stamp(
+            &mut scene,
+            &mut tr,
+            theme,
+            &mut state,
+            &mut check,
+            Point::new(x, 172.0),
+            ctx,
+        )?;
 
         let mut toggle = Toggle::new("d_toggle", "Sync").with_permission_scope(locked());
-        stamp(&mut scene, &mut tr, theme, &mut state, &mut toggle, Point::new(x, 228.0), ctx);
+        stamp(
+            &mut scene,
+            &mut tr,
+            theme,
+            &mut state,
+            &mut toggle,
+            Point::new(x, 228.0),
+            ctx,
+        )?;
     }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
+    Ok(())
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("DENIED_SHOTS_OUT").unwrap_or_else(|_| "/tmp/denied_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        crate::registry::fatal(format_args!("cannot create {dir}: {error}"));
+    }
     let dir = PathBuf::from(dir);
     let themes = std::env::var("DENIED_SHOTS_THEMES")
         .unwrap_or_else(|_| "Dark,Light,High Contrast".to_string());
     for name in themes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let theme = Theme::named(name).unwrap_or_else(|| panic!("unknown theme {name:?}"));
+        let Some(theme) = Theme::named(name) else {
+            crate::registry::fatal(format_args!("unknown theme {name:?}"));
+        };
         let slug: String = name
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect();
-        shoot(&theme, dir.join(format!("denied-{slug}.png")));
+        let out = dir.join(format!("denied-{slug}.png"));
+        if let Err(error) = shoot(&theme, &out) {
+            crate::registry::fatal(format_args!("{}: {error}", out.display()));
+        }
     }
 }
