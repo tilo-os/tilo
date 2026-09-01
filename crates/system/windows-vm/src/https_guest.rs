@@ -135,6 +135,14 @@ impl InstallationOperationId {
     }
 }
 
+/// One accepted installer plus the explicit app-focused surface that makes its
+/// interactive UI visible. The desktop remains unavailable as a launch type.
+#[derive(Debug)]
+pub struct PreparedInstallation {
+    pub operation_id: InstallationOperationId,
+    pub presentation: GuestLaunch,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallationState {
@@ -433,7 +441,7 @@ impl HttpsGuestBridge {
     pub fn begin_installation(
         &self,
         staged: &StagedInstaller,
-    ) -> Result<InstallationOperationId, AgentError> {
+    ) -> Result<PreparedInstallation, AgentError> {
         if !valid_identifier(&staged.package_id) || staged.expires_at_unix <= now_unix()? {
             return Err(AgentError::InvalidInstaller);
         }
@@ -445,10 +453,8 @@ impl HttpsGuestBridge {
         .map_err(|error| AgentError::Transport(format!("installation request JSON: {error}")))?;
         let accepted: WireInstallationAccepted =
             deserialize(&self.request("POST", "/v1/installations", &body)?)?;
-        if accepted.operation_id != operation_id || accepted.package_id != staged.package_id {
-            return Err(AgentError::Authentication);
-        }
-        Ok(InstallationOperationId(operation_id))
+        self.require_enrolled_certificate(&accepted.certificate_sha256)?;
+        accepted.into_prepared(&operation_id, &staged.package_id)
     }
 
     pub fn installation_status(
@@ -655,6 +661,67 @@ impl GuestAgent for HttpsGuestBridge {
         self.require_enrolled_certificate(&launch.certificate_sha256)?;
         launch.into_guest_launch(application_id, self.config.presentation)
     }
+
+    fn stage_installer<R>(
+        &self,
+        session: &GuestSession,
+        package: &InstallerPackage,
+        reader: R,
+    ) -> Result<StagedInstaller, AgentError>
+    where
+        R: Read + Send + 'static,
+    {
+        require_session(session)?;
+        HttpsGuestBridge::stage_installer(self, package, reader)
+    }
+
+    fn begin_installation(
+        &self,
+        session: &GuestSession,
+        staged: &StagedInstaller,
+    ) -> Result<PreparedInstallation, AgentError> {
+        require_session(session)?;
+        HttpsGuestBridge::begin_installation(self, staged)
+    }
+
+    fn installation_status(
+        &self,
+        session: &GuestSession,
+        operation: &InstallationOperationId,
+    ) -> Result<InstallationStatus, AgentError> {
+        require_session(session)?;
+        HttpsGuestBridge::installation_status(self, operation)
+    }
+
+    fn publish_candidate(
+        &self,
+        session: &GuestSession,
+        operation: &InstallationOperationId,
+        candidate_id: &str,
+        application_id: &str,
+        display_name: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        require_session(session)?;
+        HttpsGuestBridge::publish_candidate(
+            self,
+            operation,
+            candidate_id,
+            application_id,
+            display_name,
+            expected_generation,
+        )
+    }
+
+    fn remove_publication(
+        &self,
+        session: &GuestSession,
+        application_id: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        require_session(session)?;
+        HttpsGuestBridge::remove_publication(self, application_id, expected_generation)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -687,6 +754,37 @@ struct WireBeginInstallation<'a> {
 struct WireInstallationAccepted {
     package_id: String,
     operation_id: String,
+    endpoint: String,
+    remote_app_alias: String,
+    launch_nonce: String,
+    certificate_sha256: String,
+    presentation_backend: String,
+}
+
+impl WireInstallationAccepted {
+    fn into_prepared(
+        self,
+        expected_operation: &str,
+        expected_package: &str,
+    ) -> Result<PreparedInstallation, AgentError> {
+        if self.operation_id != expected_operation || self.package_id != expected_package {
+            return Err(AgentError::Authentication);
+        }
+        let presentation = WireLaunch {
+            endpoint: self.endpoint,
+            username: None,
+            password: None,
+            remote_app_alias: self.remote_app_alias,
+            launch_nonce: self.launch_nonce,
+            certificate_sha256: self.certificate_sha256,
+            presentation_backend: self.presentation_backend,
+        }
+        .into_guest_launch(expected_operation, ApplicationPresentation::AppFocusedSpice)?;
+        Ok(PreparedInstallation {
+            operation_id: InstallationOperationId(expected_operation.to_string()),
+            presentation,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -1136,6 +1234,14 @@ fn valid_username(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+fn require_session(session: &GuestSession) -> Result<(), AgentError> {
+    if valid_identifier(&session.id) && session.id.len() >= 16 {
+        Ok(())
+    } else {
+        Err(AgentError::Authentication)
+    }
+}
+
 fn valid_display_name(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty() && trimmed.len() <= 256 && !trimmed.chars().any(char::is_control)
@@ -1218,6 +1324,27 @@ mod tests {
             .validate(&operation)
             .is_ok()
         );
+    }
+
+    #[test]
+    fn installation_acceptance_can_only_prepare_app_focused_spice() {
+        let operation = "a".repeat(48);
+        let accepted = WireInstallationAccepted {
+            package_id: "b".repeat(48),
+            operation_id: operation.clone(),
+            endpoint: "192.168.251.2:3389".to_string(),
+            remote_app_alias: operation.clone(),
+            launch_nonce: "c".repeat(32),
+            certificate_sha256: "d".repeat(64),
+            presentation_backend: "app_focused_spice".to_string(),
+        };
+        let prepared = accepted.into_prepared(&operation, &"b".repeat(48)).unwrap();
+        assert_eq!(prepared.operation_id.as_str(), operation);
+        assert_eq!(
+            prepared.presentation.presentation,
+            ApplicationPresentation::AppFocusedSpice
+        );
+        assert!(prepared.presentation.endpoint.username.is_empty());
     }
 
     #[test]
