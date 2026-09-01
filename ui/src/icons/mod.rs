@@ -118,6 +118,11 @@ pub enum Icon {
     ArrowBigUp,
     Delete,
     CornerDownLeft,
+    // --- History set ---
+    /// Undo — a leftward arrow curving back on itself. Lucide `undo-2`.
+    Undo2,
+    /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
+    Redo2,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -132,34 +137,32 @@ pub const LUCIDE_DEFAULT_STROKE_PX: f64 = 1.5;
 
 /// Parse a lucide `d="…"` string into a [`BezPath`].
 ///
-/// Degrades to an empty path if the supplied string is malformed — an
-/// invisible icon is a bad hand-edit surviving to draw time, not a crash.
-/// All paths shipped in this module are unit-tested to parse into
-/// non-empty bez paths, so CI still catches the mistake.
+/// Panics if the supplied string is malformed. All paths shipped in
+/// this module are unit-tested to parse into non-empty bez paths, so a
+/// panic here flags a bad hand-edit rather than a runtime bug.
 fn path_from_d(d: &str) -> BezPath {
-    BezPath::from_svg(d).unwrap_or_default()
+    #[allow(
+        clippy::expect_used,
+        reason = "all embedded Lucide path literals are compile-time data covered by parsing tests"
+    )]
+    BezPath::from_svg(d).expect("lucide path literal must parse")
 }
 
 /// Build the stroked outline of a lucide `<rect>`, with optional corner radius.
-#[allow(
-    clippy::many_single_char_names,
-    reason = "x/y/w/h/p mirror the SVG <rect> attributes and the point being built; \
-              spelling them out would just repeat rect/point field names"
-)]
-fn rect_path(x: f64, y: f64, w: f64, h: f64, rx: f64) -> BezPath {
-    let rect = Rect::new(x, y, x + w, y + h);
-    if rx > 0.0 {
-        RoundedRect::from_rect(rect, rx)
+fn rect_path(left: f64, top: f64, width: f64, height: f64, radius: f64) -> BezPath {
+    let rect = Rect::new(left, top, left + width, top + height);
+    if radius > 0.0 {
+        RoundedRect::from_rect(rect, radius)
             .path_elements(0.1)
             .collect()
     } else {
-        let mut p = BezPath::new();
-        p.move_to(Point::new(rect.x0, rect.y0));
-        p.line_to(Point::new(rect.x1, rect.y0));
-        p.line_to(Point::new(rect.x1, rect.y1));
-        p.line_to(Point::new(rect.x0, rect.y1));
-        p.close_path();
-        p
+        let mut path = BezPath::new();
+        path.move_to(Point::new(rect.x0, rect.y0));
+        path.line_to(Point::new(rect.x1, rect.y0));
+        path.line_to(Point::new(rect.x1, rect.y1));
+        path.line_to(Point::new(rect.x0, rect.y1));
+        path.close_path();
+        path
     }
 }
 
@@ -179,24 +182,12 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
 /// The strokable subpaths for `icon` in the lucide 24×24 viewBox.
 /// `pub(crate)` so unit tests can poke at the raw shapes without
 /// duplicating the data table; widgets call [`draw_icon`] instead.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive Lucide icon-to-static-path table is intentionally kept in one match"
+)]
 pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
-    icon_subpaths_group1(icon)
-        .or_else(|| icon_subpaths_group2(icon))
-        .or_else(|| icon_subpaths_group3(icon))
-        .or_else(|| icon_subpaths_group4(icon))
-        .or_else(|| icon_subpaths_group5(icon))
-        .or_else(|| icon_subpaths_group6(icon))
-        // Every `Icon` variant is listed across the six groups above;
-        // this is only reached by a variant added to the enum without a
-        // matching arm in any group, so an empty (invisible) icon is a
-        // safer degrade than a panic.
-        .unwrap_or_default()
-}
-
-/// Group 1/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
-/// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group1(icon: Icon) -> Option<Vec<BezPath>> {
-    Some(match icon {
+    match icon {
         Icon::LayoutGrid => vec![
             rect_path(3.0, 3.0, 7.0, 7.0, 1.0),
             rect_path(14.0, 3.0, 7.0, 7.0, 1.0),
@@ -258,14 +249,6 @@ fn icon_subpaths_group1(icon: Icon) -> Option<Vec<BezPath>> {
         ],
         Icon::Code => vec![path_from_d("m16 18 6-6-6-6"), path_from_d("m8 6-6 6 6 6")],
         Icon::Terminal => vec![path_from_d("M12 19h8"), path_from_d("m4 17 6-6-6-6")],
-        _ => return None,
-    })
-}
-
-/// Group 2/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
-/// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group2(icon: Icon) -> Option<Vec<BezPath>> {
-    Some(match icon {
         Icon::FileText => vec![
             path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
             path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
@@ -357,14 +340,6 @@ fn icon_subpaths_group2(icon: Icon) -> Option<Vec<BezPath>> {
         Icon::ArrowLeft => vec![path_from_d("m12 19-7-7 7-7"), path_from_d("M19 12H5")],
         Icon::ArrowRight => vec![path_from_d("M5 12h14"), path_from_d("m12 5 7 7-7 7")],
         Icon::ArrowUp => vec![path_from_d("m5 12 7-7 7 7"), path_from_d("M12 19V5")],
-        _ => return None,
-    })
-}
-
-/// Group 3/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
-/// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group3(icon: Icon) -> Option<Vec<BezPath>> {
-    Some(match icon {
         Icon::ChevronRight => vec![path_from_d("m9 18 6-6-6-6")],
         Icon::RotateCw => vec![
             path_from_d("M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"),
@@ -463,14 +438,6 @@ fn icon_subpaths_group3(icon: Icon) -> Option<Vec<BezPath>> {
             path_from_d("M5 6h14"),
             rect_path(3.0, 10.0, 18.0, 12.0, 2.0),
         ],
-        _ => return None,
-    })
-}
-
-/// Group 4/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
-/// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group4(icon: Icon) -> Option<Vec<BezPath>> {
-    Some(match icon {
         Icon::History => vec![
             path_from_d("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"),
             path_from_d("M3 3v5h5"),
@@ -534,14 +501,6 @@ fn icon_subpaths_group4(icon: Icon) -> Option<Vec<BezPath>> {
             line_path(10.0, 11.0, 10.0, 17.0),
             line_path(14.0, 11.0, 14.0, 17.0),
         ],
-        _ => return None,
-    })
-}
-
-/// Group 5/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
-/// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group5(icon: Icon) -> Option<Vec<BezPath>> {
-    Some(match icon {
         Icon::Copy => vec![
             rect_path(8.0, 8.0, 14.0, 14.0, 2.0),
             path_from_d("M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"),
@@ -594,14 +553,6 @@ fn icon_subpaths_group5(icon: Icon) -> Option<Vec<BezPath>> {
             path_from_d("M8 12h13"),
             path_from_d("M8 19h13"),
         ],
-        _ => return None,
-    })
-}
-
-/// Group 6/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
-/// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group6(icon: Icon) -> Option<Vec<BezPath>> {
-    Some(match icon {
         Icon::HardDrive => vec![
             line_path(22.0, 12.0, 2.0, 12.0),
             path_from_d(
@@ -683,8 +634,17 @@ fn icon_subpaths_group6(icon: Icon) -> Option<Vec<BezPath>> {
             path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
             path_from_d("M9 10 4 15l5 5"),
         ],
-        _ => return None,
-    })
+        // Undo2: the left-pointing arrowhead + the loop that doubles back.
+        Icon::Undo2 => vec![
+            path_from_d("M9 14 4 9l5-5"),
+            path_from_d("M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"),
+        ],
+        // Redo2: Undo2 mirrored — arrowhead on the right, loop to the left.
+        Icon::Redo2 => vec![
+            path_from_d("m15 14 5-5-5-5"),
+            path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
+        ],
+    }
 }
 
 /// Map a filesystem entry to the most appropriate [`Icon`]. Directories
@@ -747,6 +707,10 @@ impl Icon {
     /// for glyphs that read as filled when "on" (starred, a selected pin).
     /// Only closed sub-paths fill meaningfully; `Star` and similar
     /// single-loop glyphs are authored closed for exactly this.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+    )]
     pub fn draw_filled(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
         let size = rect.size();
         let min = size.width.min(size.height);
@@ -757,12 +721,6 @@ impl Icon {
         let glyph = LUCIDE_VIEWBOX * scale;
         let tx = rect.x0 + (size.width - glyph) / 2.0;
         let ty = rect.y0 + (size.height - glyph) / 2.0;
-        // `Affine`'s `Mul` composes transform matrices; it has no failure
-        // mode, but clippy can't see that for a non-primitive operator.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
-        )]
         let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
         for sub in icon_subpaths(self) {
             scene.fill(Fill::NonZero, local, color, None, &sub);
@@ -792,6 +750,10 @@ impl Icon {
 /// 2 px on a 24-unit viewBox, trimmed here to 1.5 px by default
 /// ([`LUCIDE_DEFAULT_STROKE_PX`]); it's divided by the icon's scale
 /// before handing to vello so stroke width stays consistent across sizes.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+)]
 pub fn draw_icon(
     scene: &mut Scene,
     transform: Affine,
@@ -810,12 +772,6 @@ pub fn draw_icon(
     let glyph_h = LUCIDE_VIEWBOX * scale;
     let tx = rect.x0 + (size.width - glyph_w) / 2.0;
     let ty = rect.y0 + (size.height - glyph_h) / 2.0;
-    // `Affine`'s `Mul` composes transform matrices; it has no failure
-    // mode, but clippy can't see that for a non-primitive operator.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
-    )]
     let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
 
     let stroke = Stroke::new(stroke_px / scale)
@@ -836,6 +792,10 @@ pub fn draw_icon(
 /// `color_for` receives the subpath index in the order
 /// [`icon_subpaths`] returns them (for [`Icon::Wifi`]: base dot, outer
 /// arc, middle arc, inner arc).
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+)]
 pub fn draw_icon_layered(
     scene: &mut Scene,
     transform: Affine,
@@ -853,12 +813,6 @@ pub fn draw_icon_layered(
     let glyph = LUCIDE_VIEWBOX * scale;
     let tx = rect.x0 + (size.width - glyph) / 2.0;
     let ty = rect.y0 + (size.height - glyph) / 2.0;
-    // `Affine`'s `Mul` composes transform matrices; it has no failure
-    // mode, but clippy can't see that for a non-primitive operator.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
-    )]
     let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
     let stroke = Stroke::new(stroke_px / scale)
         .with_caps(Cap::Round)
@@ -1071,6 +1025,8 @@ mod tests {
             Icon::ArrowBigUp,
             Icon::Delete,
             Icon::CornerDownLeft,
+            Icon::Undo2,
+            Icon::Redo2,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

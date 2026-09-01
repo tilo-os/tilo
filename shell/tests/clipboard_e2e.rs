@@ -29,8 +29,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use rand_core::OsRng;
+use threshold_identity::ThresholdIdentity;
+use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
@@ -126,9 +129,16 @@ impl Compositor {
             &state_path,
         )
         .expect("seed the clipboard e2e desktop");
+        let identity_root = Self::seed_identity(&runtime_dir);
 
-        let mut child =
-            Self::spawn_compositor(home, size, &runtime_dir, &control_socket, &state_path);
+        let mut child = Self::spawn_compositor(
+            home,
+            size,
+            &runtime_dir,
+            &control_socket,
+            &state_path,
+            &identity_root,
+        );
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let rx = Self::drain_log_pipes(&mut child, &log);
         let found = Self::wait_for_sockets(&rx, &mut child, &log);
@@ -155,6 +165,34 @@ impl Compositor {
         this
     }
 
+    /// Give this desktop fixture an already-completed identity ceremony.
+    /// Clipboard tests exercise normal desktop clients; leaving the fixture
+    /// identity empty correctly activates OOBE, which must withhold focus.
+    fn seed_identity(runtime_dir: &Path) -> PathBuf {
+        let identity_dir = runtime_dir.join("config/qos/identity");
+        let identity = ThresholdIdentity::bootstrap_single_device(&mut OsRng)
+            .expect("create clipboard fixture identity");
+        let record = IdentityRecord::from_threshold_identity(
+            &identity,
+            "Clipboard test",
+            [128, 128, 128],
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("encode clipboard fixture identity");
+        let bytes = record
+            .to_json_bytes()
+            .expect("serialize clipboard fixture identity");
+        let provider = runtime_identity::BrokerFileProvider::new(&identity_dir);
+        runtime_identity::import_identity_with_provider(
+            &identity_dir,
+            "primary",
+            &bytes,
+            &provider,
+        )
+        .expect("persist clipboard fixture identity");
+        runtime_dir.join("identity-root")
+    }
+
     /// Spawn the `shell` binary under test against a throwaway `HOME`/XDG env,
     /// pointed at the fixture's runtime dir and sockets. Split out of
     /// [`Self::start_with`] to keep it short.
@@ -164,6 +202,7 @@ impl Compositor {
         runtime_dir: &Path,
         control_socket: &Path,
         state_path: &Path,
+        identity_root: &Path,
     ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
@@ -184,6 +223,7 @@ impl Compositor {
             // the hosted Files app's initial directory.
             .env("QOS_WORKSPACE_ROOTS", "")
             .env("QOS_STATE_PATH", state_path)
+            .env("QOS_IDENTITY_ROOT", identity_root)
             .env("QOS_TEST_CONTROL", control_socket)
             .env("NIRIOS_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
             // smithay logs selection/drag decisions at debug; "denying drag from

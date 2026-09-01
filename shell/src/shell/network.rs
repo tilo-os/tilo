@@ -118,6 +118,9 @@ pub struct ShellNetwork {
     /// This device's iroh identity. An invite is a signed statement
     /// by the inviting owner — [`Self::issue_invite`] signs with it.
     keypair: iroh::SecretKey,
+    /// Root-signed certificate matching `keypair`, when the machine has been
+    /// provisioned through the identity layer.
+    host_identity: Option<HostIdentity>,
     /// Endpoint id derived from [`Self::keypair`].
     local_peer_id: iroh::EndpointId,
     /// Current direct/relay dialing addresses reported by iroh.
@@ -334,7 +337,7 @@ impl ShellNetwork {
         let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
             endpoint,
             lookup,
-            host_identity,
+            host_identity.clone(),
             Arc::clone(&listen_addrs),
         );
         if let Some(mdns) = mdns {
@@ -363,6 +366,7 @@ impl ShellNetwork {
             runtime: Some(runtime),
             local_peer_hash,
             keypair,
+            host_identity,
             local_peer_id,
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
@@ -422,9 +426,10 @@ impl ShellNetwork {
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
         let room = match msg {
-            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
-                Some(room.as_str())
-            }
+            NeighbourMsg::IdentityAnnouncement { room, .. }
+            | NeighbourMsg::IdentityAnnouncementV2 { room, .. }
+            | NeighbourMsg::SyncReq { room, .. }
+            | NeighbourMsg::SyncResp { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
@@ -849,6 +854,15 @@ impl ShellNetwork {
             let me = crate::shell::state::local_user_id_for_room(&room);
             let peer = self.local_peer_id.to_string();
             replica.tree.write().name_peer(room, &me, &peer, &me);
+            if let Some(identity) = &self.host_identity {
+                replica.tree.write().certify_peer_identity(
+                    room,
+                    &peer,
+                    identity.device_cert.clone(),
+                );
+            }
+            let projection = replica.tree.read().trusted_identity_projection(room);
+            crate::shell::launcher::set_trusted_identity_projection(room, &projection);
         }
         self.join_topic(room_topic_id(room));
 
@@ -918,6 +932,47 @@ impl ShellNetwork {
         }
     }
 
+    /// Promote a transport-authenticated identity announcement through room
+    /// governance and immediately publish the accepted Files projection.
+    ///
+    /// The endpoint binding is checked here, before governance sees the row;
+    /// `certify_peer_identity_with_revocations` then checks the room governor,
+    /// governed name, certificate lifetime and every root-signed revocation.
+    fn handle_identity_announcement(
+        &self,
+        peer: &iroh::EndpointId,
+        room: &str,
+        device_cert: &qos_user_identity::DeviceCert,
+        revocations: &[qos_user_identity::RevocationEntry],
+    ) -> bool {
+        self.name_invitee_on_arrival(peer, room);
+        let Some(room) = RoomId::parse(room) else {
+            return false;
+        };
+        if device_cert.device_public_key != *peer.as_bytes()
+            || qos_user_identity::verify_device_cert(device_cert).is_err()
+        {
+            tracing::warn!(%peer, %room, "dropping mismatched device identity announcement");
+            return false;
+        }
+
+        let projection = {
+            let Ok(rep) = self.replica.lock() else {
+                tracing::error!(%peer, %room, "replica state is poisoned; refusing identity announcement");
+                return false;
+            };
+            rep.tree.write().certify_peer_identity_with_revocations(
+                room,
+                &peer.to_string(),
+                device_cert.clone(),
+                revocations.to_vec(),
+            );
+            rep.tree.read().trusted_identity_projection(room)
+        };
+        crate::shell::launcher::set_trusted_identity_projection(room, &projection);
+        true
+    }
+
     /// Accept an invite token into `local`, then immediately ask the
     /// room it named to catch us up — replication is per room, so
     /// without that request a freshly accepted invite sits idle until
@@ -944,6 +999,7 @@ impl ShellNetwork {
         if !self.join_topic(room_topic_id(room)) {
             return Err("peer-sync command queue is full; try accepting the invite again".into());
         }
+        self.publish_identity_announcement(room);
         // Dial the authenticated address carried by the invite.
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
@@ -964,15 +1020,31 @@ impl ShellNetwork {
         Ok(room)
     }
 
+    fn publish_identity_announcement(&self, room: crate::shell::state::RoomId) {
+        let Some(identity) = &self.host_identity else {
+            return;
+        };
+        let (device_cert, revocations) = identity.material_for(room_topic_id(room));
+        let _ = self.publish_message(NeighbourMsg::IdentityAnnouncementV2 {
+            room: room.to_string(),
+            device_cert: Box::new(device_cert),
+            revocations,
+        });
+    }
+
     /// Ask every room this machine is in for whatever it is missing,
     /// and publish the requests.
     pub fn publish_sync_requests(&self) {
         let Ok(replica) = self.replica.lock() else {
             return;
         };
+        let rooms = replica.tree.read().rooms();
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
+        for room in rooms {
+            self.publish_identity_announcement(room);
+        }
         for msg in outgoing {
             let _ = self.publish_message(msg);
         }
@@ -1115,6 +1187,16 @@ impl ShellNetwork {
             return;
         }
         match msg {
+            NeighbourMsg::IdentityAnnouncement { room, device_cert } => {
+                self.handle_identity_announcement(&peer, &room, &device_cert, &[]);
+            }
+            NeighbourMsg::IdentityAnnouncementV2 {
+                room,
+                device_cert,
+                revocations,
+            } => {
+                self.handle_identity_announcement(&peer, &room, &device_cert, &revocations);
+            }
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
             NeighbourMsg::PresenceMoved {
                 peer: peer_hash,
@@ -1233,8 +1315,19 @@ impl ShellNetwork {
         // digest: this decides whether the payload may rewrite
         // a room's governance.
         rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), msg);
+        let refreshed_room = match msg {
+            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
+                RoomId::parse(room)
+            }
+            _ => None,
+        };
+        let refreshed_projection =
+            refreshed_room.map(|room| (room, rep.tree.read().trusted_identity_projection(room)));
         let outgoing = rep.drain_outgoing();
         drop(rep);
+        if let Some((room, projection)) = refreshed_projection {
+            crate::shell::launcher::set_trusted_identity_projection(room, &projection);
+        }
         for out_msg in outgoing {
             let _ = self.publish_message(out_msg);
         }
@@ -1291,8 +1384,18 @@ impl ShellNetwork {
             "accepted collaboration device identity"
         );
         self.admit_invited_identity(workspace_topic, peer, cert);
-        // The initial SyncReq can race ahead of the identity hello and is
-        // intentionally dropped. Re-kick anti-entropy after trust is
+        if let Some(room) = self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == workspace_topic)
+        }) {
+            self.handle_identity_announcement(peer, &room.to_string(), cert, revocations);
+        }
+        // The initial SyncReq can race ahead of the identity hello
+        // and is intentionally dropped. Re-kick anti-entropy after trust is
         // established so joining never waits for another topology event.
         if !was_known {
             self.publish_sync_requests();
@@ -1527,6 +1630,29 @@ fn host_identity_for_key(
     })
 }
 
+#[cfg(test)]
+fn load_identity_revocations(
+    path: &std::path::Path,
+    user_public_key: [u8; 32],
+) -> Result<Vec<qos_user_identity::RevocationEntry>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let entries: Vec<qos_user_identity::RevocationEntry> =
+        postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+    if entries.len() > qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+        || entries.iter().any(|entry| {
+            entry.user_public_key != user_public_key
+                || qos_user_identity::verify_revocation_entry(entry).is_err()
+        })
+    {
+        return Err("revocation entries are invalid, cross-root, or over capacity".into());
+    }
+    Ok(entries)
+}
+
 impl Drop for ShellNetwork {
     fn drop(&mut self) {
         // `take` + explicit shutdown avoids the noisy "runtime dropped
@@ -1560,6 +1686,7 @@ pub(crate) fn shell_network_for_test(
         runtime: None,
         local_peer_hash,
         keypair,
+        host_identity: None,
         local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
@@ -2391,5 +2518,125 @@ mod tests {
         assert_eq!(buf[0].artifact, artifact);
         assert_eq!(buf[0].ops.len(), 1);
         assert_eq!(buf[0].ops[0], env);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn network_announcement_governs_and_republishes_files_projection() {
+        let runtime = tempfile::tempdir().unwrap();
+        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        // SAFETY: guarded by the process_env serial group shared with launcher tests.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+
+        let mut state = WorkspaceTree::default();
+        let workspace = state.append_empty_workspace("Identity workflow");
+        let room = state.room_of(workspace).unwrap();
+        state.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
+        let tree = state.shared();
+        let (network, _commands) = shell_network_for_test(tree.clone(), 0x1D);
+
+        let device_secret = iroh::SecretKey::generate();
+        let endpoint = device_secret.public();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[104; 32]);
+        let mut certificate = qos_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *endpoint.as_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+
+        network
+            .pending_invitees
+            .lock()
+            .unwrap()
+            .insert(room, "Ada Lovelace".into());
+        assert!(network.handle_identity_announcement(
+            &endpoint,
+            &room.to_string(),
+            &certificate,
+            &[]
+        ));
+        let projection_path = runtime
+            .path()
+            .join("qos/identity-projections")
+            .join(room.to_string())
+            .join("trusted-identities.json");
+        let projected: qos_user_identity::TrustedIdentityProjectionV2 =
+            serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
+        assert_eq!(projected.humans.len(), 1);
+        assert_eq!(projected.humans[0].display_name, "Ada Lovelace");
+        assert_eq!(projected.humans[0].devices[0].certificate, certificate);
+
+        let impostor = iroh::SecretKey::generate().public();
+        assert!(
+            !network.handle_identity_announcement(&impostor, &room.to_string(), &certificate, &[]),
+            "the signed certificate cannot be rebound to another transport endpoint"
+        );
+
+        let mut revocation = qos_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: *endpoint.as_bytes(),
+            revoked_at_ns: 2,
+            reason: qos_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        assert!(network.handle_identity_announcement(
+            &endpoint,
+            &room.to_string(),
+            &certificate,
+            &[revocation]
+        ));
+        let projected: qos_user_identity::TrustedIdentityProjectionV2 =
+            serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
+        assert!(
+            projected.humans.is_empty(),
+            "the root-signed revocation must immediately replace Files' live projection"
+        );
+        assert!(
+            tree.read()
+                .trusted_identity_projection(room)
+                .humans
+                .is_empty()
+        );
+
+        // SAFETY: restore the process-global environment under the same lock.
+        unsafe {
+            match previous_runtime {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    fn revocation_source_is_reloaded_and_cross_root_rows_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("revocations.bin");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[101; 32]);
+        assert!(
+            load_identity_revocations(&path, root.verifying_key().to_bytes())
+                .unwrap()
+                .is_empty()
+        );
+        let mut entry = qos_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: [102; 32],
+            revoked_at_ns: 5,
+            reason: qos_user_identity::RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        std::fs::write(&path, postcard::to_allocvec(&vec![entry.clone()]).unwrap()).unwrap();
+        assert_eq!(
+            load_identity_revocations(&path, root.verifying_key().to_bytes()).unwrap(),
+            vec![entry]
+        );
+        let other_root = ed25519_dalek::SigningKey::from_bytes(&[103; 32]);
+        assert!(load_identity_revocations(&path, other_root.verifying_key().to_bytes()).is_err());
     }
 }

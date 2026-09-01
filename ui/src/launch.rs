@@ -63,7 +63,9 @@ pub struct LaunchSpec {
     app_id: &'static str,
     live_root: Option<RootFactory>,
     live_root_with_args: Option<ArgsRootFactory>,
-    shot_root: ShotFactory,
+    /// `None` reuses the live root, so ordinary apps do not register the same
+    /// factory twice just to render a screenshot.
+    shot_root: Option<ShotFactory>,
     shot_handler: Option<ShotHandler>,
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
@@ -86,7 +88,7 @@ impl LaunchSpec {
             app_id,
             live_root: Some(live_root),
             live_root_with_args: None,
-            shot_root: |_| Err(LaunchError::ShotsUnsupported),
+            shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
@@ -111,7 +113,7 @@ impl LaunchSpec {
             app_id,
             live_root: None,
             live_root_with_args: Some(live_root),
-            shot_root: |_| Err(LaunchError::ShotsUnsupported),
+            shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
@@ -140,7 +142,7 @@ impl LaunchSpec {
 
     #[must_use]
     pub fn shot_root(mut self, factory: ShotFactory) -> Self {
-        self.shot_root = factory;
+        self.shot_root = Some(factory);
         self
     }
 
@@ -270,6 +272,11 @@ impl LaunchSpec {
         )
     }
 
+    fn screenshot_root(&self, args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        self.shot_root
+            .map_or_else(|| self.live_root(args), |factory| factory(args))
+    }
+
     /// Declare every accepted screenshot scenario. With no declaration,
     /// `--scenario` is rejected instead of being silently ignored.
     #[must_use]
@@ -351,9 +358,8 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 /// Returns a [`LaunchError`] if argument parsing fails (an unknown flag, a
 /// missing or malformed value, a duplicate flag, `--shots` combined with
 /// `--headless-drive`, a shots-only flag used outside `--shots`, or an
-/// undeclared `--scenario`), if the app has no [`LaunchSpec::shot_root`] /
-/// [`LaunchSpec::shot_handler`] and `--shots` was requested, or if the
-/// app's own shot factory or shot handler returns one.
+/// undeclared `--scenario`), or if the app's root factory, shot factory, or
+/// shot handler returns one.
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
@@ -389,7 +395,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
             handler(&args)?;
             return Ok(());
         }
-        let root = (spec.shot_root)(&args)?;
+        let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
         let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme());
         harness.render_png(out);
@@ -721,6 +727,16 @@ mod tests {
         ));
         let declared = LaunchSpec::new("dev.qos.test", dummy_root).scenarios(&["wide"]);
         validate_spec_args(&args, &declared).unwrap();
+    }
+
+    #[test]
+    fn ordinary_launch_spec_reuses_live_root_for_screenshots() {
+        let args = parse_args(&strings(&["app", "--shots=/tmp/ordinary.png"]), &[], &[]).unwrap();
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root);
+        let root = spec
+            .screenshot_root(&args)
+            .expect("default screenshot root");
+        assert_eq!(root.name(), "Button");
     }
 
     #[test]

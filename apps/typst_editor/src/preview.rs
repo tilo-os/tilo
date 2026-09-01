@@ -916,6 +916,7 @@ fn selection_color(theme: &Theme) -> Color {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::compile::{PageImage, TextCell, TextRun};

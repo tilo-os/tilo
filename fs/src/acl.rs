@@ -167,9 +167,7 @@ fn peer_actor(peer: &IdentityKey) -> Actor {
 
 /// Seconds since the Unix epoch, saturating at 0 if the clock is before it.
 fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    crate::clock::unix_now_secs()
 }
 
 /// A workspace's per-identity access-control list. Two sources, both

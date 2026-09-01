@@ -92,6 +92,7 @@ pub struct Checkbox {
     /// Spoken name for a checkbox with no adjacent text label. When unset
     /// the checkbox relies on a sibling label resolved by the tree builder.
     accessible_name: Option<String>,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Checkbox {
@@ -108,6 +109,7 @@ impl Checkbox {
             enabled: true,
             id_override: None,
             accessible_name: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -235,6 +237,14 @@ impl Checkbox {
 }
 
 impl Widget for Checkbox {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
             && let Value::Scalar(s) = val
@@ -252,8 +262,8 @@ impl Widget for Checkbox {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(24.0),
-                height: Dimension::length(24.0),
+                width: Dimension::length(self.interaction.minimum_target()),
+                height: Dimension::length(self.interaction.minimum_target()),
             },
             ..Default::default()
         });
@@ -279,11 +289,12 @@ impl Widget for Checkbox {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        let visual = Rect::from_center_size(self.rect.center(), (24.0, 24.0));
         Self::paint(
             scene,
             transform,
             theme,
-            &CheckboxFace::new(self.rect, self.is_checked)
+            &CheckboxFace::new(visual, self.is_checked)
                 .hovered(self.is_hovered)
                 .focused(self.is_focused)
                 .disabled(!self.enabled),
