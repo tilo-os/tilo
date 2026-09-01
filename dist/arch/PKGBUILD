@@ -7,6 +7,10 @@ pkgdesc='qOS collaborative compositor as a Wayland session'
 url='https://code.podesta.ai/qos/qos'
 license=('AGPL-3.0-only')
 arch=('x86_64' 'aarch64')
+# Arch enables split debug packages through makepkg.conf on some builders.
+# The release contract intentionally publishes only the runtime and devel
+# packages, so make that output deterministic across builder images.
+options=('!debug')
 makedepends=(
   'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto'
   'libxkbcommon' 'wayland' 'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
