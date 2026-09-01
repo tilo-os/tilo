@@ -26,12 +26,12 @@ use ui::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
 };
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 
 use crate::doc::DisksDoc;
 use crate::model::{
@@ -3192,17 +3192,53 @@ impl Widget for DisksApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("disks", "disks.system", "Storage devices");
         for drive in &self.topo.drives {
-            let mut disk = Resource::new(format!("disk:{}", drive.name), "disks.drive", drive.model.clone());
+            let mut disk = Resource::new(
+                format!("disk:{}", drive.name),
+                "disks.drive",
+                drive.model.clone(),
+            );
             if drive.removable {
                 let payload = vec!["eject".to_string(), drive.name.clone(), String::new()];
-                if let Ok(spec) = ActionSpec::operation("eject", "Eject", OperationKind::Effect, "disks.operation", &payload) { disk.actions.push(spec); }
+                if let Ok(spec) = ActionSpec::operation(
+                    "eject",
+                    "Eject",
+                    OperationKind::Effect,
+                    "disks.operation",
+                    &payload,
+                ) {
+                    disk.actions.push(spec);
+                }
             }
             for part in &drive.partitions {
-                let mut partition = Resource::new(format!("partition:{}", part.name), "disks.partition", part.name.clone());
-                let verb = if part.mountpoint.is_some() { "unmount" } else { "mount" };
-                for (id, label) in [(verb, if verb == "mount" { "Mount" } else { "Unmount" }), ("benchmark", "Benchmark"), ("format", "Format") ] {
-                    let payload = vec![id.to_string(), part.name.clone(), part.fstype.clone().unwrap_or_default()];
-                    if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "disks.operation", &payload) { partition.actions.push(spec); }
+                let mut partition = Resource::new(
+                    format!("partition:{}", part.name),
+                    "disks.partition",
+                    part.name.clone(),
+                );
+                let verb = if part.mountpoint.is_some() {
+                    "unmount"
+                } else {
+                    "mount"
+                };
+                for (id, label) in [
+                    (verb, if verb == "mount" { "Mount" } else { "Unmount" }),
+                    ("benchmark", "Benchmark"),
+                    ("format", "Format"),
+                ] {
+                    let payload = vec![
+                        id.to_string(),
+                        part.name.clone(),
+                        part.fstype.clone().unwrap_or_default(),
+                    ];
+                    if let Ok(spec) = ActionSpec::operation(
+                        id,
+                        label,
+                        OperationKind::Effect,
+                        "disks.operation",
+                        &payload,
+                    ) {
+                        partition.actions.push(spec);
+                    }
                 }
                 disk.children.push(partition);
             }
@@ -3211,21 +3247,38 @@ impl Widget for DisksApp {
         vec![root]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" { return Ok(false); }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "disks.operation" {
+            return Ok(false);
+        }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let action = ActionKind::from_key(args.first().map(String::as_str).unwrap_or("")).ok_or_else(|| "unknown disk operation".to_string())?;
-        let leaf = args.get(1).ok_or_else(|| "missing device".to_string())?.clone();
+        let action = ActionKind::from_key(args.first().map(String::as_str).unwrap_or(""))
+            .ok_or_else(|| "unknown disk operation".to_string())?;
+        let leaf = args
+            .get(1)
+            .ok_or_else(|| "missing device".to_string())?
+            .clone();
         let fstype = args.get(2).filter(|v| !v.is_empty()).cloned();
         if !self.live {
-            self.status = format!("Would {} /dev/{leaf} (set DISKS_LIVE to execute)", action.label().to_ascii_lowercase());
+            self.status = format!(
+                "Would {} /dev/{leaf} (set DISKS_LIVE to execute)",
+                action.label().to_ascii_lowercase()
+            );
             self.dirty = true;
             return Ok(true);
         }
         let (tx, rx) = mpsc::channel();
         let refresh = action.changes_topology();
         thread::spawn(move || {
-            let text = ops::run(action.op(), &leaf, fstype.as_deref()).unwrap_or_else(|e| format!("{} failed — {e}", action.label()));
+            let text = ops::run(action.op(), &leaf, fstype.as_deref())
+                .unwrap_or_else(|e| format!("{} failed — {e}", action.label()));
             let _ = tx.send(ActionResult { text, refresh });
         });
         self.action_rx = Some(rx);

@@ -28,6 +28,7 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
@@ -36,7 +37,6 @@ use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, IconDescriptor, ProgressBar, Row, TextInput,
     TextInputKind, WebView, Widget,
 };
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 
 use crate::address_overlay::AddressSuggestions;
 use crate::history::History;
@@ -515,16 +515,35 @@ fn default_engine() -> SharedEngine {
 
 impl Widget for BrowserWidget {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut page = Resource::new("browser.page", "browser.page", if self.title.is_empty() { "Web page" } else { &self.title });
-        for (id, label) in [("back", "Go back"), ("forward", "Go forward"), ("reload", "Reload") ] {
-            if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "browser.operation", &id) {
+        let mut page = Resource::new(
+            "browser.page",
+            "browser.page",
+            if self.title.is_empty() {
+                "Web page"
+            } else {
+                &self.title
+            },
+        );
+        for (id, label) in [
+            ("back", "Go back"),
+            ("forward", "Go forward"),
+            ("reload", "Reload"),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "browser.operation", &id)
+            {
                 page.actions.push(spec);
             }
         }
         page.actions.push(ActionSpec::prompted_operation(
-            "navigate", "Open address", "Address or search", "https://…",
+            "navigate",
+            "Open address",
+            "Address or search",
+            "https://…",
             OperationKind::Effect,
-            |value| EncodedAction::encode_operation("browser.navigate", &value).expect("string payload"),
+            |value| {
+                EncodedAction::encode_operation("browser.navigate", &value).expect("string payload")
+            },
         ));
         vec![page]
     }
@@ -537,7 +556,9 @@ impl Widget for BrowserWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect { return Ok(false); }
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
             "browser.operation" => match value.as_str() {
@@ -546,7 +567,9 @@ impl Widget for BrowserWidget {
                 "reload" => self.engine.send(WebViewCommand::Reload),
                 _ => return Ok(false),
             },
-            "browser.navigate" => self.engine.send(WebViewCommand::Navigate(normalise_url(&value))),
+            "browser.navigate" => self
+                .engine
+                .send(WebViewCommand::Navigate(normalise_url(&value))),
             _ => return Ok(false),
         }
         Ok(true)

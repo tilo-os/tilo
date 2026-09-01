@@ -99,7 +99,7 @@ pub use executor::{
     dispatch_with_context, replay,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
-pub use params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
+pub use params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 pub use registry::ActionRegistry;
 pub use resource::{
     ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,

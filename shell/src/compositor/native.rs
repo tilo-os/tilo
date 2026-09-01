@@ -31,6 +31,7 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
                 "type": p.ty.label(),
                 "required": p.required,
                 "description": p.description,
+                "choices": p.choices,
             })
         })
         .collect()

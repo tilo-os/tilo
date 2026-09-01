@@ -164,10 +164,7 @@ impl EncodedAction {
     /// Serialize a non-document operation payload. Unlike [`Self::encode`],
     /// this intentionally requires no [`Action`] implementation: effects and
     /// views are handled by the owning application, not replayed into a CRDT.
-    pub fn encode_operation<T>(
-        type_id: impl Into<String>,
-        payload: &T,
-    ) -> Result<Self, ActionError>
+    pub fn encode_operation<T>(type_id: impl Into<String>, payload: &T) -> Result<Self, ActionError>
     where
         T: Serialize,
     {
