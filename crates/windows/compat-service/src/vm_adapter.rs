@@ -501,7 +501,9 @@ where
             })
             .ok_or(windows_vm::AgentError::InvalidInstaller)?;
         active.status = vm_uninstallation_from_guest(&entry_id, &guest_status);
-        Ok(Some(active.status.clone()))
+        let status = active.status.clone();
+        drop(uninstaller);
+        Ok(Some(status))
     }
 
     fn uninstall_published_application(
@@ -514,14 +516,14 @@ where
                 "Windows uninstaller state is unavailable".to_string(),
             )
         })?;
-        if let Some(active) = uninstaller.as_ref() {
-            if !active.is_terminal() {
-                return if active.belongs_to(workspace_id) && active.entry_id == entry_id {
-                    Ok(active.status.clone())
-                } else {
-                    Err(windows_vm::AgentError::InvalidInstaller.into())
-                };
-            }
+        if let Some(active) = uninstaller.as_ref()
+            && !active.is_terminal()
+        {
+            return if active.belongs_to(workspace_id) && active.entry_id == entry_id {
+                Ok(active.status.clone())
+            } else {
+                Err(windows_vm::AgentError::InvalidInstaller.into())
+            };
         }
         // Do not hold this state lock while presenting the guest surface.
         drop(uninstaller);
@@ -555,6 +557,7 @@ where
             operation: prepared.operation_id,
             status: status.clone(),
         });
+        drop(uninstaller);
         Ok(status)
     }
 
