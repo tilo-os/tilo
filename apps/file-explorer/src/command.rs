@@ -135,6 +135,58 @@ pub enum FileCommand {
     RestoreFromTrash,
     /// Permanently empty the Trash.
     EmptyTrash,
+    /// Persist selected collaborative records on this device, or return them
+    /// to automatic cache management.
+    KeepOffline,
+    RemoveOfflinePin,
+    /// Request policy-checked asynchronous removal of locally cached bytes.
+    FreeLocalSpace,
+    /// Confirm the separately warned override after the daemon refused to
+    /// certify an ordinary eviction as safe. Never exposed directly in menus.
+    ConfirmDestructiveEviction {
+        paths: Vec<PathBuf>,
+    },
+    /// Re-attempt hydration after a projected or failed transfer. The daemon
+    /// performs the transfer asynchronously and reports progress through the
+    /// availability projection.
+    RetryTransfer,
+    /// Open one consolidated properties surface for local and collaborative
+    /// metadata without reading or decoding file content.
+    ShowProperties,
+    /// Open detailed residency, transfer, policy, replica and freshness state.
+    ShowAvailability,
+    /// Open read-only authority-backed sharing details for the selected record.
+    ShowSharing,
+    /// Create a view-only, 24-hour, one-redemption link and copy it.
+    CreateOneTimeShareLink,
+    /// Grant view access to one identity-layer-resolved human root. Names are
+    /// intentionally not carried in the command or authority protocol.
+    ShareWithPerson {
+        person: collab_types::Ed25519PublicKey,
+    },
+    /// Submit one fully specified share-composer choice. The app dispatches
+    /// the authority request on its background worker.
+    CreateShare(crate::sharing::ShareComposerRequest),
+    /// Revoke one exact authority grant. Already-downloaded bytes cannot be
+    /// recalled; this stops future record and blob access.
+    RevokeShare {
+        grant_id: uuid::Uuid,
+    },
+    /// Open recent immutable versions and conflict state for the selected record.
+    ShowHistory,
+    /// Restore one immutable version by appending a new Restore version.
+    RestoreVersion {
+        version_id: collab_types::FileVersionId,
+    },
+    /// Resolve one open conflict using the exact immutable member selected in
+    /// the history projection. The filesystem revalidates it against current
+    /// signed state before committing.
+    ResolveConflict {
+        conflict_id: uuid::Uuid,
+        strategy: collab_types::ConflictStrategy,
+        version_id: collab_types::FileVersionId,
+    },
+    CloseCollabPanel,
 }
 
 /// Shared, cheaply-clonable queue the child widgets push into.

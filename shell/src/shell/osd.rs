@@ -360,6 +360,10 @@ pub fn expire(current: &mut Option<Osd>, now: Instant) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact OSD animation endpoints and clamps are the behavior under test"
+)]
 mod tests {
     use super::*;
 

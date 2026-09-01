@@ -45,7 +45,11 @@ fn remote_cursor_is_clipped_to_active_tile_bounds() {
 #[test]
 fn remote_cursor_overlay_exposes_active_tile_bounds() {
     let ov = RemoteCursorOverlay::new();
-    assert_eq!(ov.active_tile_bounds(), [0.0, 0.0, 0.0, 0.0]);
+    assert!(
+        ov.active_tile_bounds()
+            .iter()
+            .all(|component| component.abs() <= f32::EPSILON)
+    );
 }
 
 #[test]

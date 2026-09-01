@@ -9,15 +9,17 @@
 //! frame. See [`crate::command`].
 
 use crate::command::{CommandSink, FileCommand, new_sink};
+use crate::i18n::{arg, t, t_args};
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::views::file_view::ThumbCtx;
 use crate::{config, favorites, fileops, templates};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -39,6 +41,19 @@ const RENAME_QUERY_PATH: &str = "files.rename_query";
 /// way — the places list is navigation, so it never takes the window from it
 /// (`ui/HIG.md` §1a).
 const BODY_BREAKPOINT_PX: f64 = 640.0;
+const LIVE_METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+fn format_duration(duration_ms: u64) -> String {
+    let seconds = duration_ms / 1_000;
+    let hours = seconds / 3_600;
+    let minutes = (seconds / 60) % 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
 
 /// Ensure a `Text` object exists at `key` on `root`, returning its id. The
 /// toolkit's `TextInput` binds to (and writes into) an existing `Text`
@@ -75,9 +90,143 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CollabPanel {
+    title: String,
+    summary: String,
+    lines: Vec<String>,
+    action: Option<CollabPanelAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CollabPanelAction {
+    DestructiveEviction(Vec<PathBuf>),
+}
+
+fn hex_prefix(bytes: &[u8], count: usize) -> String {
+    let mut output = String::with_capacity(count.saturating_mul(2));
+    for byte in bytes.iter().take(count) {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn short_fingerprint(key: &[u8; 32]) -> String {
+    hex_prefix(key, 6)
+}
+
+fn short_uuid(id: uuid::Uuid) -> String {
+    let simple = id.simple().to_string();
+    simple.get(..8).unwrap_or(&simple).to_string()
+}
+
+fn format_timestamp(timestamp_ms: u64) -> String {
+    i64::try_from(timestamp_ms)
+        .ok()
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map_or_else(
+            || t("files-time-unknown"),
+            |timestamp| crate::i18n::format_datetime(timestamp.with_timezone(&chrono::Local)),
+        )
+}
+
+fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) -> String {
+    let caps = &device.capabilities;
+    let mut capabilities = Vec::new();
+    if caps.can_own_workspaces {
+        capabilities.push(t("files-device-cap-own"));
+    }
+    if caps.can_admit_devices {
+        capabilities.push(t("files-device-cap-admit"));
+    }
+    if caps.can_act_as_host {
+        capabilities.push(t("files-device-cap-host"));
+    }
+    if caps.can_read_all_workspaces {
+        capabilities.push(t("files-device-cap-read-all"));
+    }
+    if capabilities.is_empty() {
+        capabilities.push(t("files-device-cap-member"));
+    }
+    let expiry = device.expires_at_ns.map_or_else(
+        || t("files-no-expiry"),
+        |deadline| {
+            t_args(
+                "files-expires",
+                &[arg("time", format_timestamp(deadline / 1_000_000))],
+            )
+        },
+    );
+    t_args(
+        "files-certified-device-detail",
+        &[
+            arg("device", device.label.clone()),
+            arg("fingerprint", short_fingerprint(device.device.as_bytes())),
+            arg("capabilities", capabilities.join(", ")),
+            arg("issued", format_timestamp(device.issued_at_ns / 1_000_000)),
+            arg("expiry", expiry),
+        ],
+    )
+}
+
+fn fluent_count(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn transfer_phase_label(phase: crate::model::TransferPhase) -> String {
+    t(match phase {
+        crate::model::TransferPhase::Idle => "files-transfer-idle",
+        crate::model::TransferPhase::Queued => "files-transfer-queued",
+        crate::model::TransferPhase::Downloading => "files-transfer-downloading",
+        crate::model::TransferPhase::Uploading => "files-transfer-uploading",
+        crate::model::TransferPhase::Verifying => "files-transfer-verifying",
+    })
+}
+
+fn grant_status_label(status: crate::model::ShareGrantStatus) -> String {
+    t(match status {
+        crate::model::ShareGrantStatus::Active => "files-grant-active",
+        crate::model::ShareGrantStatus::Expired => "files-grant-expired",
+        crate::model::ShareGrantStatus::Revoked => "files-grant-revoked",
+        crate::model::ShareGrantStatus::Exhausted => "files-grant-exhausted",
+    })
+}
+
+fn conflict_strategy_label(strategy: collab_types::ConflictStrategy) -> String {
+    t(match strategy {
+        collab_types::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
+        collab_types::ConflictStrategy::UseOther => "files-strategy-use-other",
+        collab_types::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
+        collab_types::ConflictStrategy::Merge => "files-strategy-merge",
+    })
+}
+
+fn share_permission_label(permission: collab_types::FilePermission) -> String {
+    match permission {
+        collab_types::FilePermission::View => t("files-share-choice-view"),
+        collab_types::FilePermission::Edit => t("files-share-choice-edit"),
+    }
+}
+
+fn share_expiry_label(expiry: crate::sharing::ShareExpiryChoice) -> String {
+    t(match expiry {
+        crate::sharing::ShareExpiryChoice::Day => "files-share-choice-day",
+        crate::sharing::ShareExpiryChoice::Week => "files-share-choice-week",
+        crate::sharing::ShareExpiryChoice::Month => "files-share-choice-month",
+        crate::sharing::ShareExpiryChoice::Never => "files-share-choice-never",
+    })
+}
+
+fn named_delivery_status_key(delivery: collab_types::NamedShareDeliveryStateV1) -> &'static str {
+    match delivery {
+        collab_types::NamedShareDeliveryStateV1::Pending => "files-share-created-pending",
+        collab_types::NamedShareDeliveryStateV1::Delivered => "files-share-created-delivered",
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag is an independent piece of widget state (loading, clipboard mode, rename phase, shots/layout bookkeeping), always set by name rather than a confusing positional constructor"
+    reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FileExplorerWidget {
     current_path: PathBuf,
@@ -99,6 +248,10 @@ pub struct FileExplorerWidget {
     clipboard_cut: bool,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
+    /// Filesystem/xattr changes have no winit event of their own. The widget
+    /// asks the host for this low-frequency wake so sync/availability/share/
+    /// history badges update without burning an animation frame loop.
+    next_metadata_refresh: Instant,
     /// When `Some(i)`, an inline rename of displayed entry `i` is in
     /// progress: the in-place editor is drawn over row/cell `i` and its
     /// `TextInput` edits [`RENAME_QUERY_PATH`]. `None` = not renaming.
@@ -213,6 +366,21 @@ pub struct FileExplorerWidget {
     /// The folder currently under the cursor during a drag (a valid drop
     /// target), so it can be highlighted. `None` when over no target.
     drag_hover: Option<PathBuf>,
+    /// Read-only sharing/history sheet sourced entirely from bounded FUSE
+    /// projections. `None` means no sheet is open.
+    collab_panel: Option<CollabPanel>,
+    collab_panel_focused: bool,
+    /// Single background share request. The worker never touches widget state;
+    /// paint/event polling adopts its bounded result on the UI thread.
+    share_result: Arc<std::sync::Mutex<Option<Result<crate::sharing::ShareActionResult, String>>>>,
+    share_pending_path: Option<PathBuf>,
+    /// Host-projected names keyed by certified human roots. Labels affect
+    /// presentation only; every command and request continues to carry the
+    /// root key.
+    trusted_humans: crate::identity_directory::TrustedHumanDirectory,
+    history_result: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    history_pending_path: Option<PathBuf>,
+    history_pending_success: Option<String>,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
     /// release — the app captures the pointer for the duration of the drag).
@@ -257,6 +425,14 @@ impl FileExplorerWidget {
         Self::with_persistence(config::config_dir(), crate::model::user_home())
     }
 
+    /// Surface a bounded result from startup portals such as received-file
+    /// admission without coupling those clients to widget internals.
+    pub fn set_external_status(&mut self, status: impl AsRef<str>) {
+        const MAX_STATUS_CHARS: usize = 512;
+        self.status = Some(status.as_ref().chars().take(MAX_STATUS_CHARS).collect());
+        self.structure_dirty = true;
+    }
+
     /// Construct with an explicit persistence directory + home, resolving the
     /// XDG user dirs from the real environment. `new` uses the real per-user
     /// config dir; tests pass a `tempdir` (or `None`) so they never read or
@@ -294,6 +470,8 @@ impl FileExplorerWidget {
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
         let thumbs = build_thumb_service(config_dir.as_deref()).map(Arc::new);
+        let trusted_humans =
+            crate::identity_directory::TrustedHumanDirectory::load_default().unwrap_or_default();
         Self {
             current_path: cwd,
             home_path: home,
@@ -310,6 +488,7 @@ impl FileExplorerWidget {
             clipboard: Vec::new(),
             clipboard_cut: false,
             status: None,
+            next_metadata_refresh: Instant::now() + LIVE_METADATA_REFRESH_INTERVAL,
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
@@ -317,7 +496,7 @@ impl FileExplorerWidget {
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
                 .with_on_change_path(RENAME_QUERY_PATH)
-                .with_placeholder("New name"),
+                .with_placeholder(&t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
@@ -358,6 +537,14 @@ impl FileExplorerWidget {
             drag_seed: Vec::new(),
             drag_origin_is_dir: false,
             drag_hover: None,
+            collab_panel: None,
+            collab_panel_focused: false,
+            share_result: Arc::new(std::sync::Mutex::new(None)),
+            share_pending_path: None,
+            trusted_humans,
+            history_result: Arc::new(std::sync::Mutex::new(None)),
+            history_pending_path: None,
+            history_pending_success: None,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
@@ -486,11 +673,13 @@ impl FileExplorerWidget {
         let mut view_col = Column::new()
             .with_vertical_padding(sp.s1)
             .with_horizontal_padding(sp.s3, sp.s3);
-        if let Some(err) = self.error.as_deref() {
+        if self.is_loading {
+            view_col = view_col.push(Box::new(Text::new(&t("files-loading"))));
+        } else if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
             // wired to re-read the directory (Refresh).
             let sink = self.cmds.clone();
-            let retry = ui::widget::Button::new("files.retry", "Try Again", None)
+            let retry = ui::widget::Button::new("files.retry", &t("files-try-again"), None)
                 .on_click(move || crate::command::push(&sink, FileCommand::Refresh));
             view_col = view_col.push(Box::new(
                 Row::new()
@@ -522,13 +711,74 @@ impl FileExplorerWidget {
         let left = self
             .status
             .clone()
-            .unwrap_or_else(|| format!("{count} {}", if count == 1 { "item" } else { "items" }));
+            .unwrap_or_else(|| t_args("files-item-count", &[arg("count", fluent_count(count))]));
         let sel = self.selection.selected().len();
         if sel > 0 {
-            format!("{left}  ·  {sel} selected")
+            t_args(
+                "files-selected-count",
+                &[arg("base", left), arg("count", fluent_count(sel))],
+            )
         } else {
             left
         }
+    }
+
+    fn empty_state_message(&self) -> String {
+        if self.is_trash_view() {
+            t("files-empty-trash")
+        } else {
+            t("files-empty-folder")
+        }
+    }
+
+    fn show_collab_panel(&mut self, panel: CollabPanel) {
+        self.collab_panel = Some(panel);
+        self.collab_panel_focused = true;
+    }
+
+    fn close_collab_panel(&mut self) {
+        self.collab_panel = None;
+        self.collab_panel_focused = false;
+    }
+
+    fn collab_panel_action_command(&self) -> Option<FileCommand> {
+        match self.collab_panel.as_ref()?.action.as_ref()? {
+            CollabPanelAction::DestructiveEviction(paths) => {
+                Some(FileCommand::ConfirmDestructiveEviction {
+                    paths: paths.clone(),
+                })
+            }
+        }
+    }
+
+    /// Spoken state for custom-painted surfaces which otherwise have no
+    /// backing child widget. The stable accessible name on Files' root turns
+    /// value changes into live announcements without stealing keyboard focus.
+    fn accessibility_status(&self) -> String {
+        if let Some(panel) = &self.collab_panel {
+            let details = panel.lines.join(". ");
+            return t_args(
+                "files-a11y-panel-details",
+                &[
+                    arg("title", panel.title.clone()),
+                    arg("summary", panel.summary.clone()),
+                    arg("details", details),
+                ],
+            );
+        }
+        if let Some(error) = &self.error {
+            return t_args("files-a11y-load-error", &[arg("error", error.clone())]);
+        }
+        if self.is_loading {
+            return t_args(
+                "files-loading-folder",
+                &[arg("path", self.current_path.display().to_string())],
+            );
+        }
+        if self.entries.is_empty() {
+            return self.empty_state_message();
+        }
+        self.footer_label()
     }
 
     /// `--shots`: force the status bubble fully visible so a single headless
@@ -657,7 +907,7 @@ impl FileExplorerWidget {
                 // Drop stale entries so the error view isn't backed by the old
                 // directory's contents.
                 self.entries.clear();
-                self.error = Some(e);
+                self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
             }
         }
         // Always record the path we attempted, even on error, so a Refresh
@@ -698,6 +948,94 @@ impl FileExplorerWidget {
 
     pub fn refresh(&mut self) {
         self.load(self.current_path.clone());
+    }
+
+    /// Poll the visible directory without treating it as navigation. Stable
+    /// record identity preserves selection across remote rename/move metadata;
+    /// ordinary files fall back to their path. Scroll and transient operation
+    /// status remain untouched.
+    fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
+        if now < self.next_metadata_refresh {
+            return false;
+        }
+        self.next_metadata_refresh = now + LIVE_METADATA_REFRESH_INTERVAL;
+        let identities_changed = self.refresh_trusted_identities(None);
+        if self.renaming.is_some() || self.pin_drag.is_some() {
+            return identities_changed;
+        }
+        self.refresh_metadata_preserving_view() || identities_changed
+    }
+
+    fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
+        let next = path.map_or_else(
+            crate::identity_directory::TrustedHumanDirectory::load_default,
+            crate::identity_directory::TrustedHumanDirectory::load,
+        );
+        // A malformed or missing live authority snapshot is not permission to
+        // retain stale recipients. Fail closed to the empty directory.
+        let next = next.unwrap_or_default();
+        if next == self.trusted_humans {
+            return false;
+        }
+        self.trusted_humans = next;
+        self.structure_dirty = true;
+        true
+    }
+
+    /// Re-read the current directory while preserving stable-record
+    /// selection, scroll, and operation status. Collaborative controls use
+    /// this path because their xattr response changes row metadata but is not
+    /// navigation.
+    fn refresh_metadata_preserving_view(&mut self) -> bool {
+        let selected = self
+            .selection
+            .selected()
+            .into_iter()
+            .filter_map(|index| self.entries.get(index))
+            .map(|entry| (entry.record_id, entry.path.clone()))
+            .collect::<Vec<_>>();
+        let primary = self
+            .selection
+            .primary()
+            .and_then(|index| self.entries.get(index))
+            .map(|entry| (entry.record_id, entry.path.clone()));
+        let Ok(mut entries) = read_dir_sync(&self.current_path) else {
+            // A transient unmount/reconnect must not replace a still-useful
+            // view with an error page. Explicit Refresh remains the path that
+            // surfaces directory errors to the user.
+            return false;
+        };
+        if !self.show_hidden {
+            entries.retain(|entry| !entry.name.starts_with('.'));
+        }
+        sort_entries(self.sort_by, self.sort_order, &mut entries);
+        if entries == self.entries {
+            return false;
+        }
+        let matches_key = |entry: &Entry, key: &(Option<[u8; 16]>, PathBuf)| {
+            key.0.map_or_else(
+                || entry.path == key.1,
+                |record| entry.record_id == Some(record),
+            )
+        };
+        let selected_indices = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                selected
+                    .iter()
+                    .any(|key| matches_key(entry, key))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let primary_index = primary
+            .as_ref()
+            .and_then(|key| entries.iter().position(|entry| matches_key(entry, key)));
+        self.entries = entries;
+        self.selection
+            .replace_indices(selected_indices, primary_index);
+        self.structure_dirty = true;
+        true
     }
 
     /// Single/double click handler retained for tests + the command path.
@@ -757,9 +1095,15 @@ impl FileExplorerWidget {
     // --- Command application ------------------------------------------
 
     /// Apply one queued command, returning whether it changed the widget
-    /// tree structure (and thus needs a rebuild). Crate-visible so sibling
-    /// modules' tests can drive the real command-application path.
-    pub(crate) fn apply_command(&mut self, cmd: FileCommand) -> bool {
+    /// Apply one semantic Files command through the same path used by menus,
+    /// keyboard actions and accessibility activation.
+    ///
+    /// This is public so shell hosts and full-stack mount tests can drive the
+    /// application without synthesizing layout-dependent pointer coordinates.
+    // Central semantic dispatcher: every menu, keyboard, accessibility, and
+    // integration-test command must share the same state transitions.
+    #[allow(clippy::too_many_lines)]
+    pub fn apply_command(&mut self, cmd: FileCommand) -> bool {
         match cmd {
             FileCommand::Navigate(p) => {
                 self.navigate(p);
@@ -785,6 +1129,805 @@ impl FileExplorerWidget {
             FileCommand::ContextSelect(target) => self.apply_context_select(target),
             FileCommand::Activate(index) => self.apply_activate(index),
             FileCommand::SortColumn(col) => self.apply_sort_column(col),
+            policy @ (FileCommand::KeepOffline | FileCommand::RemoveOfflinePin) => {
+                let keep_offline = matches!(policy, FileCommand::KeepOffline);
+                let value: &[u8] = if keep_offline {
+                    b"pinned"
+                } else {
+                    b"automatic"
+                };
+                // Pin policy is a collaborative-FS control, not a generic file
+                // xattr.  A mixed selection may contain ordinary files, and an
+                // inherited pin can only be changed on its parent.  Restrict
+                // writes to records for which this exact action is meaningful.
+                let displayed = self.displayed_entries();
+                let paths: Vec<_> = self
+                    .selection
+                    .selected()
+                    .into_iter()
+                    .filter_map(|index| displayed.get(index))
+                    .filter(|entry| {
+                        entry.availability.as_ref().is_some_and(|availability| {
+                            if keep_offline {
+                                availability.policy != crate::model::AvailabilityPolicy::Pinned
+                            } else {
+                                availability.policy == crate::model::AvailabilityPolicy::Pinned
+                                    && !availability.policy_inherited
+                            }
+                        })
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                if paths.is_empty() {
+                    self.status = Some(if value == b"pinned" {
+                        t("files-no-pin-needed")
+                    } else {
+                        t("files-no-direct-pin")
+                    });
+                    return true;
+                }
+                let mut failures = Vec::new();
+                for path in &paths {
+                    if let Err(error) = xattr::set(path, crate::model::PIN_XATTR, value) {
+                        failures.push(format!("{}: {error}", path.display()));
+                    }
+                }
+                if failures.is_empty() {
+                    self.status = Some(if value == b"pinned" {
+                        t_args(
+                            "files-keeping-offline",
+                            &[arg("count", fluent_count(paths.len()))],
+                        )
+                    } else {
+                        t_args(
+                            "files-using-automatic",
+                            &[arg("count", fluent_count(paths.len()))],
+                        )
+                    });
+                } else {
+                    self.status = Some(t_args(
+                        "files-offline-policy-failed",
+                        &[arg("errors", failures.join("; "))],
+                    ));
+                }
+                self.refresh_metadata_preserving_view();
+                true
+            }
+            FileCommand::FreeLocalSpace => {
+                let displayed = self.displayed_entries();
+                let paths: Vec<_> = self
+                    .selection
+                    .selected()
+                    .into_iter()
+                    .filter_map(|index| displayed.get(index))
+                    .filter(|entry| {
+                        !entry.is_dir
+                            && entry.availability.as_ref().is_some_and(|availability| {
+                                availability.policy == crate::model::AvailabilityPolicy::Automatic
+                                    && !availability.policy_inherited
+                                    && availability.transfer.phase
+                                        == crate::model::TransferPhase::Idle
+                                    && matches!(
+                                        availability.residency,
+                                        crate::model::Residency::Partial { .. }
+                                            | crate::model::Residency::Resident { .. }
+                                    )
+                            })
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                let mut failures = Vec::new();
+                let mut safety_refusals = Vec::new();
+                for path in &paths {
+                    if let Err(error) =
+                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"evict")
+                    {
+                        if error.raw_os_error() == Some(libc::EBUSY) {
+                            safety_refusals.push(path.clone());
+                        } else {
+                            failures.push(format!("{}: {error}", path.display()));
+                        }
+                    }
+                }
+                self.status = Some(if paths.is_empty() {
+                    t("files-no-local-space-releasable")
+                } else if failures.is_empty() && safety_refusals.is_empty() {
+                    t_args(
+                        "files-freeing-local-space",
+                        &[arg("count", fluent_count(paths.len()))],
+                    )
+                } else if failures.is_empty() {
+                    t("files-eviction-needs-confirmation")
+                } else {
+                    t_args(
+                        "files-free-local-space-failed",
+                        &[arg("errors", failures.join("; "))],
+                    )
+                });
+                if !safety_refusals.is_empty() {
+                    self.show_collab_panel(CollabPanel {
+                        title: t("files-destructive-eviction-title"),
+                        summary: t_args(
+                            "files-destructive-eviction-summary",
+                            &[arg("count", fluent_count(safety_refusals.len()))],
+                        ),
+                        lines: vec![
+                            t("files-destructive-eviction-no-replica"),
+                            t("files-destructive-eviction-loss"),
+                            t("files-destructive-eviction-protected"),
+                        ],
+                        action: Some(CollabPanelAction::DestructiveEviction(safety_refusals)),
+                    });
+                }
+                self.refresh_metadata_preserving_view();
+                true
+            }
+            FileCommand::ConfirmDestructiveEviction { paths } => {
+                let mut failures = Vec::new();
+                for path in &paths {
+                    if let Err(error) = xattr::set(
+                        path,
+                        crate::model::AVAILABILITY_CONTROL_XATTR,
+                        b"evict-destructive",
+                    ) {
+                        failures.push(format!("{}: {error}", path.display()));
+                    }
+                }
+                self.status = Some(if failures.is_empty() {
+                    t_args(
+                        "files-destructive-eviction-started",
+                        &[arg("count", fluent_count(paths.len()))],
+                    )
+                } else {
+                    t_args(
+                        "files-free-local-space-failed",
+                        &[arg("errors", failures.join("; "))],
+                    )
+                });
+                self.refresh_metadata_preserving_view();
+                true
+            }
+            FileCommand::RetryTransfer => {
+                let displayed = self.displayed_entries();
+                let paths: Vec<_> = self
+                    .selection
+                    .selected()
+                    .into_iter()
+                    .filter_map(|index| displayed.get(index))
+                    .filter(|entry| {
+                        entry.availability.as_ref().is_some_and(|availability| {
+                            !matches!(
+                                availability.residency,
+                                crate::model::Residency::Resident { .. }
+                            ) && availability.transfer.phase == crate::model::TransferPhase::Idle
+                        })
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                let mut failures = Vec::new();
+                for path in &paths {
+                    if let Err(error) =
+                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"retry")
+                    {
+                        failures.push(format!("{}: {error}", path.display()));
+                    }
+                }
+                self.status = Some(if paths.is_empty() {
+                    t("files-no-retryable-transfer")
+                } else if failures.is_empty() {
+                    t_args(
+                        "files-retrying-transfers",
+                        &[arg("count", fluent_count(paths.len()))],
+                    )
+                } else {
+                    t_args("files-retry-failed", &[arg("errors", failures.join("; "))])
+                });
+                self.refresh_metadata_preserving_view();
+                true
+            }
+            FileCommand::ShowProperties => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                if let Some(entry) = entry {
+                    let mut lines = vec![
+                        t_args(
+                            "files-property-type",
+                            &[arg(
+                                "type",
+                                if entry.is_dir {
+                                    t("files-a11y-folder")
+                                } else {
+                                    entry.mime.clone()
+                                },
+                            )],
+                        ),
+                        t_args(
+                            "files-property-location",
+                            &[arg(
+                                "location",
+                                entry
+                                    .path
+                                    .parent()
+                                    .unwrap_or_else(|| Path::new("/"))
+                                    .display()
+                                    .to_string(),
+                            )],
+                        ),
+                        t_args(
+                            "files-property-size",
+                            &[arg("size", crate::model::human_size(&entry))],
+                        ),
+                        t_args(
+                            "files-property-modified",
+                            &[arg(
+                                "time",
+                                entry.modified.map_or_else(
+                                    || t("files-property-unknown"),
+                                    |modified| crate::model::format_modified(Some(modified)),
+                                ),
+                            )],
+                        ),
+                    ];
+                    if let Some(record_id) = entry.record_id {
+                        lines.push(t_args(
+                            "files-property-collaborative-record",
+                            &[arg("record", uuid::Uuid::from_bytes(record_id).to_string())],
+                        ));
+                    }
+                    if let Some(content_hash) = entry.content_hash {
+                        let hash = hex_prefix(&content_hash, 8);
+                        lines.push(t_args("files-property-content", &[arg("hash", hash)]));
+                    }
+                    if let Some(metadata) = &entry.rich_metadata {
+                        let properties = &metadata.properties;
+                        if let (Some(width), Some(height)) =
+                            (properties.image_width, properties.image_height)
+                        {
+                            lines.push(t_args(
+                                "files-property-dimensions",
+                                &[
+                                    arg("width", i64::from(width)),
+                                    arg("height", i64::from(height)),
+                                ],
+                            ));
+                        }
+                        if let Some(duration_ms) = properties.duration_ms {
+                            lines.push(t_args(
+                                "files-property-duration",
+                                &[arg("duration", format_duration(duration_ms))],
+                            ));
+                        }
+                        if let Some(page_count) = properties.page_count {
+                            lines.push(t_args(
+                                "files-property-pages",
+                                &[arg("count", i64::from(page_count))],
+                            ));
+                        }
+                        if let Some(codec) = &properties.codec {
+                            lines.push(t_args(
+                                "files-property-codec",
+                                &[arg("codec", codec.clone())],
+                            ));
+                        }
+                        if let Some(container) = &properties.container {
+                            lines.push(t_args(
+                                "files-property-container",
+                                &[arg("container", container.clone())],
+                            ));
+                        }
+                    }
+                    if let Some(availability) = &entry.availability {
+                        let residency = match availability.residency {
+                            crate::model::Residency::NotResident => {
+                                t("files-residency-metadata-only")
+                            }
+                            crate::model::Residency::Partial { resident_bytes } => t_args(
+                                "files-residency-partly-local",
+                                &[arg(
+                                    "bytes",
+                                    i64::try_from(resident_bytes).unwrap_or(i64::MAX),
+                                )],
+                            ),
+                            crate::model::Residency::Resident { bytes } => t_args(
+                                "files-residency-local",
+                                &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
+                            ),
+                        };
+                        lines.push(t_args(
+                            "files-property-on-device",
+                            &[arg("state", residency)],
+                        ));
+                    }
+                    if let Some(share) = &entry.share {
+                        lines.push(t_args(
+                            "files-property-sharing",
+                            &[arg("count", fluent_count(share.active_grants()))],
+                        ));
+                    }
+                    if let Some(history) = &entry.history {
+                        lines.push(t_args(
+                            "files-property-history",
+                            &[
+                                arg(
+                                    "versions",
+                                    i64::try_from(history.total_versions).unwrap_or(i64::MAX),
+                                ),
+                                arg("conflicts", fluent_count(history.open_conflicts().count())),
+                            ],
+                        ));
+                    }
+                    self.show_collab_panel(CollabPanel {
+                        title: t_args("files-properties-title", &[arg("name", entry.name)]),
+                        summary: if entry.record_id.is_some() {
+                            t("files-properties-collab-summary")
+                        } else {
+                            t("files-properties-summary")
+                        },
+                        lines,
+                        action: None,
+                    });
+                }
+                true
+            }
+            FileCommand::ShowAvailability => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                if let Some(entry) = entry
+                    && let Some(availability) = entry.availability
+                {
+                    let residency = match availability.residency {
+                        crate::model::Residency::NotResident => t("files-not-stored"),
+                        crate::model::Residency::Partial { resident_bytes } => t_args(
+                            "files-partly-stored",
+                            &[arg(
+                                "bytes",
+                                i64::try_from(resident_bytes).unwrap_or(i64::MAX),
+                            )],
+                        ),
+                        crate::model::Residency::Resident { bytes } => t_args(
+                            "files-stored",
+                            &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
+                        ),
+                    };
+                    let policy = match (availability.policy, availability.policy_inherited) {
+                        (crate::model::AvailabilityPolicy::Pinned, true) => {
+                            t("files-kept-offline-parent")
+                        }
+                        (crate::model::AvailabilityPolicy::Pinned, false) => {
+                            t("files-kept-offline")
+                        }
+                        (crate::model::AvailabilityPolicy::Automatic, _) => {
+                            t("files-automatic-storage")
+                        }
+                    };
+                    let replicas = match availability.replicas {
+                        crate::model::ReplicaEvidence::Unknown => t("files-replica-unverified"),
+                        crate::model::ReplicaEvidence::Known { reachable, durable } => t_args(
+                            "files-replica-counts",
+                            &[
+                                arg("reachable", i64::from(reachable)),
+                                arg("durable", i64::from(durable)),
+                            ],
+                        ),
+                    };
+                    let transfer = availability.transfer.last_error.clone().unwrap_or_else(|| {
+                        t_args(
+                            "files-transfer-state",
+                            &[arg(
+                                "state",
+                                transfer_phase_label(availability.transfer.phase),
+                            )],
+                        )
+                    });
+                    self.show_collab_panel(CollabPanel {
+                        title: t_args("files-availability-title", &[arg("name", entry.name)]),
+                        summary: residency,
+                        lines: vec![policy, replicas, transfer],
+                        action: None,
+                    });
+                }
+                true
+            }
+            FileCommand::CreateOneTimeShareLink => {
+                if self.share_pending_path.is_some() {
+                    self.status = Some(t("files-share-link-pending"));
+                    return true;
+                }
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry else {
+                    self.status = Some(t("files-select-collaborative-file"));
+                    return true;
+                };
+                let (Some(record_id), Some(socket)) = (
+                    entry.record_id,
+                    crate::model::share_control_socket(&entry.path, &self.workspace_roots),
+                ) else {
+                    self.status = Some(t("files-sharing-unavailable"));
+                    return true;
+                };
+                self.share_pending_path = Some(entry.path);
+                self.status = Some(t("files-creating-one-use-link"));
+                let result = Arc::clone(&self.share_result);
+                std::thread::spawn(move || {
+                    let outcome = crate::sharing::create_one_use_view_link(
+                        &socket,
+                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                    )
+                    .map(crate::sharing::ShareActionResult::LinkCreated);
+                    if let Ok(mut slot) = result.lock() {
+                        *slot = Some(outcome);
+                    }
+                });
+                true
+            }
+            FileCommand::ShareWithPerson { person } => {
+                if self.share_pending_path.is_some() {
+                    self.status = Some(t("files-share-change-pending"));
+                    return true;
+                }
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry else {
+                    self.status = Some(t("files-select-collaborative-file"));
+                    return true;
+                };
+                let (Some(record_id), Some(socket)) = (
+                    entry.record_id,
+                    crate::model::share_control_socket(&entry.path, &self.workspace_roots),
+                ) else {
+                    self.status = Some(t("files-sharing-unavailable"));
+                    return true;
+                };
+                let display = self.trusted_humans.display_name_or_fingerprint(&person);
+                let recipient_devices: Vec<collab_types::Ed25519PublicKey> = self
+                    .trusted_humans
+                    .human(&person)
+                    .map(|human| human.devices.iter().map(|device| device.device).collect())
+                    .unwrap_or_default();
+                if recipient_devices.is_empty() {
+                    self.status = Some(t("files-share-recipient-unreachable"));
+                    return true;
+                }
+                self.share_pending_path = Some(entry.path);
+                self.status = Some(t_args(
+                    "files-share-with-progress",
+                    &[arg("person", display)],
+                ));
+                let result = Arc::clone(&self.share_result);
+                std::thread::spawn(move || {
+                    let outcome = crate::sharing::create_named_share(
+                        &socket,
+                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        person,
+                        recipient_devices,
+                        collab_types::FilePermission::View,
+                        None,
+                    )
+                    .map(crate::sharing::ShareActionResult::NamedCreated);
+                    if let Ok(mut slot) = result.lock() {
+                        *slot = Some(outcome);
+                    }
+                });
+                true
+            }
+            FileCommand::CreateShare(request) => {
+                if self.share_pending_path.is_some() {
+                    self.status = Some(t("files-share-change-pending"));
+                    return true;
+                }
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry else {
+                    self.status = Some(t("files-select-collaborative-file"));
+                    return true;
+                };
+                let (Some(record_id), Some(socket)) = (
+                    entry.record_id,
+                    crate::model::share_control_socket(&entry.path, &self.workspace_roots),
+                ) else {
+                    self.status = Some(t("files-sharing-unavailable"));
+                    return true;
+                };
+                self.share_pending_path = Some(entry.path);
+                self.status = Some(t("files-share-creating"));
+                let result = Arc::clone(&self.share_result);
+                std::thread::spawn(move || {
+                    let outcome = crate::sharing::create_share(
+                        &socket,
+                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        request,
+                    );
+                    if let Ok(mut slot) = result.lock() {
+                        *slot = Some(outcome);
+                    }
+                });
+                true
+            }
+            FileCommand::RevokeShare { grant_id } => {
+                if self.share_pending_path.is_some() {
+                    self.status = Some(t("files-share-change-pending"));
+                    return true;
+                }
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry else {
+                    self.status = Some(t("files-select-shared-file"));
+                    return true;
+                };
+                let Some(socket) =
+                    crate::model::share_control_socket(&entry.path, &self.workspace_roots)
+                else {
+                    self.status = Some(t("files-sharing-unavailable"));
+                    return true;
+                };
+                self.share_pending_path = Some(entry.path);
+                self.status = Some(t("files-revoking-access"));
+                let result = Arc::clone(&self.share_result);
+                std::thread::spawn(move || {
+                    let outcome = crate::sharing::revoke_grant(&socket, grant_id);
+                    if let Ok(mut slot) = result.lock() {
+                        *slot = Some(outcome);
+                    }
+                });
+                true
+            }
+            FileCommand::ShowSharing => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                if let Some(entry) = entry
+                    && let Some(share) = entry.share
+                {
+                    let active = share.active_grants();
+                    let lines = if share.grants.is_empty() {
+                        vec![t("files-not-shared")]
+                    } else {
+                        let mut lines = Vec::new();
+                        for grant in &share.grants {
+                            let (subject, devices) = match grant.subject {
+                                crate::model::ShareSubject::Person { person } => {
+                                    let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                    self.trusted_humans.human(&person).map_or_else(
+                                        || {
+                                            (
+                                                crate::identity_directory::fingerprint(
+                                                    person.as_bytes(),
+                                                ),
+                                                Vec::new(),
+                                            )
+                                        },
+                                        |human| {
+                                            let subject = if human.devices.is_empty() {
+                                                human.display_name.clone()
+                                            } else {
+                                                t_args(
+                                                    "files-certified-devices",
+                                                    &[
+                                                        arg("person", human.display_name.clone()),
+                                                        arg(
+                                                            "devices",
+                                                            human
+                                                                .devices
+                                                                .iter()
+                                                                .map(|device| device.label.as_str())
+                                                                .collect::<Vec<_>>()
+                                                                .join(", "),
+                                                        ),
+                                                    ],
+                                                )
+                                            };
+                                            let devices = human
+                                                .devices
+                                                .iter()
+                                                .map(certified_device_detail)
+                                                .collect();
+                                            (subject, devices)
+                                        },
+                                    )
+                                }
+                                crate::model::ShareSubject::BearerLink => {
+                                    (t("files-anyone-link"), Vec::new())
+                                }
+                            };
+                            let permission = match grant.permission {
+                                crate::model::FilePermission::View => t("files-can-view"),
+                                crate::model::FilePermission::Edit => t("files-can-edit"),
+                            };
+                            let status = grant_status_label(grant.status);
+                            let expiry = grant.expires_at_ms.map_or_else(
+                                || t("files-no-expiry"),
+                                |deadline| {
+                                    t_args(
+                                        "files-expires",
+                                        &[arg("time", format_timestamp(deadline))],
+                                    )
+                                },
+                            );
+                            lines.push(t_args(
+                                "files-share-grant-line",
+                                &[
+                                    arg("subject", subject),
+                                    arg("permission", permission),
+                                    arg("status", status),
+                                    arg("expiry", expiry),
+                                ],
+                            ));
+                            lines.extend(devices);
+                        }
+                        lines
+                    };
+                    self.show_collab_panel(CollabPanel {
+                        title: t_args("files-sharing-title", &[arg("name", entry.name)]),
+                        summary: t_args(
+                            "files-sharing-summary",
+                            &[arg("count", fluent_count(active))],
+                        ),
+                        lines,
+                        action: None,
+                    });
+                }
+                true
+            }
+            FileCommand::ShowHistory => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                if let Some(entry) = entry
+                    && let Some(history) = entry.history
+                {
+                    let mut lines = history
+                        .versions
+                        .iter()
+                        .rev()
+                        .map(|version| {
+                            t_args(
+                                "files-history-version-line",
+                                &[
+                                    arg("action", t(version.provenance_key())),
+                                    arg("time", format_timestamp(version.timestamp_ms)),
+                                    arg("device", short_fingerprint(&version.actor.device)),
+                                ],
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if history.versions_truncated {
+                        lines.push(t("files-history-older"));
+                    }
+                    for conflict in &history.conflicts {
+                        let state = match conflict.status {
+                            collab_types::ConflictStatus::Open => t("files-conflict-needs-review"),
+                            collab_types::ConflictStatus::Resolved => {
+                                conflict.resolution.as_ref().map_or_else(
+                                    || t("files-conflict-resolved"),
+                                    |resolution| {
+                                        t_args(
+                                            "files-conflict-resolved-strategy",
+                                            &[arg(
+                                                "strategy",
+                                                conflict_strategy_label(resolution.strategy),
+                                            )],
+                                        )
+                                    },
+                                )
+                            }
+                        };
+                        lines.push(t_args(
+                            "files-conflict-line",
+                            &[
+                                arg("conflict", short_uuid(conflict.id)),
+                                arg("count", fluent_count(conflict.versions.len())),
+                                arg("state", state),
+                            ],
+                        ));
+                        if conflict.status == collab_types::ConflictStatus::Open {
+                            lines.push(t("files-conflict-resolve-hint"));
+                            lines.push(t("files-conflict-unsupported-hint"));
+                        }
+                    }
+                    self.show_collab_panel(CollabPanel {
+                        title: t_args("files-history-title", &[arg("name", entry.name)]),
+                        summary: t_args(
+                            "files-history-summary",
+                            &[
+                                arg(
+                                    "versions",
+                                    i64::try_from(history.total_versions).unwrap_or(i64::MAX),
+                                ),
+                                arg("heads", fluent_count(history.heads.len())),
+                            ],
+                        ),
+                        lines,
+                        action: None,
+                    });
+                }
+                true
+            }
+            FileCommand::RestoreVersion { version_id } => {
+                if self.history_pending_path.is_some() {
+                    self.status = Some(t("files-history-change-pending"));
+                    return true;
+                }
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry.filter(|entry| entry.history.is_some()) else {
+                    self.status = Some(t("files-select-file-with-history"));
+                    return true;
+                };
+                self.history_pending_path = Some(entry.path.clone());
+                self.history_pending_success = Some(t("files-version-restored"));
+                self.status = Some(t("files-restoring-version"));
+                let result = Arc::clone(&self.history_result);
+                std::thread::spawn(move || {
+                    let outcome = crate::history_control::restore_version(&entry.path, version_id);
+                    if let Ok(mut slot) = result.lock() {
+                        *slot = Some(outcome);
+                    }
+                });
+                true
+            }
+            FileCommand::ResolveConflict {
+                conflict_id,
+                strategy,
+                version_id,
+            } => {
+                if self.history_pending_path.is_some() {
+                    self.status = Some(t("files-history-change-pending"));
+                    return true;
+                }
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                let Some(entry) = entry.filter(|entry| entry.history.is_some()) else {
+                    self.status = Some(t("files-select-file-with-history"));
+                    return true;
+                };
+                let verb = match strategy {
+                    collab_types::ConflictStrategy::KeepCurrent => t("files-keeping-current"),
+                    collab_types::ConflictStrategy::UseOther => t("files-applying-other"),
+                    collab_types::ConflictStrategy::KeepBoth => {
+                        conflict_strategy_label(collab_types::ConflictStrategy::KeepBoth)
+                    }
+                    collab_types::ConflictStrategy::Merge => t("files-merging-versions"),
+                };
+                self.history_pending_path = Some(entry.path.clone());
+                self.history_pending_success = Some(t("files-conflict-resolved-signed"));
+                self.status = Some(verb);
+                let result = Arc::clone(&self.history_result);
+                std::thread::spawn(move || {
+                    let outcome = crate::history_control::resolve_conflict(
+                        &entry.path,
+                        conflict_id,
+                        strategy,
+                        version_id,
+                    );
+                    if let Ok(mut slot) = result.lock() {
+                        *slot = Some(outcome);
+                    }
+                });
+                true
+            }
+            FileCommand::CloseCollabPanel => {
+                self.close_collab_panel();
+                true
+            }
             FileCommand::SetView(m) => {
                 self.set_view_mode(m);
                 true
@@ -906,16 +2049,16 @@ impl FileExplorerWidget {
     /// `FileCommand::NewFolder` — create, refresh, then drop into
     /// inline-rename so the user names it right away.
     fn apply_new_folder(&mut self) -> bool {
-        match fileops::new_folder(&self.current_path, "New Folder") {
+        match fileops::new_folder(&self.current_path, &t("files-new-folder-default-name")) {
             Ok(path) => {
                 self.refresh();
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
                     self.begin_rename();
                 }
-                self.status = Some("Created folder".to_string());
+                self.status = Some(t("files-created-folder"));
             }
-            Err(e) => self.status = Some(format!("New folder failed: {e}")),
+            Err(e) => self.status = Some(t_args("files-new-folder-failed", &[arg("error", e)])),
         }
         true
     }
@@ -931,17 +2074,27 @@ impl FileExplorerWidget {
                 match fileops::purge_entries(&paths) {
                     Ok(n) => {
                         self.refresh();
-                        self.status = Some(format!("Permanently deleted {n}"));
+                        self.status = Some(t_args(
+                            "files-permanently-deleted",
+                            &[arg("count", fluent_count(n))],
+                        ));
                     }
-                    Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                    Err(e) => {
+                        self.status = Some(t_args("files-delete-failed", &[arg("error", e)]));
+                    }
                 }
             } else {
                 match fileops::delete_to_trash(&paths) {
                     Ok(()) => {
                         self.refresh();
-                        self.status = Some(format!("Moved {} to Trash", paths.len()));
+                        self.status = Some(t_args(
+                            "files-moved-to-trash",
+                            &[arg("count", fluent_count(paths.len()))],
+                        ));
                     }
-                    Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                    Err(e) => {
+                        self.status = Some(t_args("files-delete-failed", &[arg("error", e)]));
+                    }
                 }
             }
         }
@@ -956,9 +2109,11 @@ impl FileExplorerWidget {
             match fileops::restore_entries(&paths) {
                 Ok(n) => {
                     self.refresh();
-                    self.status = Some(format!("Restored {n}"));
+                    self.status = Some(t_args("files-restored", &[arg("count", fluent_count(n))]));
                 }
-                Err(e) => self.status = Some(format!("Restore failed: {e}")),
+                Err(e) => {
+                    self.status = Some(t_args("files-restore-failed", &[arg("error", e)]));
+                }
             }
         }
         true
@@ -970,12 +2125,14 @@ impl FileExplorerWidget {
             Ok(n) => {
                 self.refresh();
                 self.status = Some(if n == 0 {
-                    "Trash is already empty".to_string()
+                    t("files-trash-already-empty")
                 } else {
-                    format!("Emptied Trash ({n})")
+                    t_args("files-emptied-trash", &[arg("count", fluent_count(n))])
                 });
             }
-            Err(e) => self.status = Some(format!("Empty Trash failed: {e}")),
+            Err(e) => {
+                self.status = Some(t_args("files-empty-trash-failed", &[arg("error", e)]));
+            }
         }
         true
     }
@@ -990,9 +2147,9 @@ impl FileExplorerWidget {
                     self.selection.select_only(i);
                     self.begin_rename();
                 }
-                self.status = Some("Created file".to_string());
+                self.status = Some(t("files-created-file"));
             }
-            Err(e) => self.status = Some(format!("New file failed: {e}")),
+            Err(e) => self.status = Some(t_args("files-new-file-failed", &[arg("error", e)])),
         }
         true
     }
@@ -1067,7 +2224,7 @@ impl FileExplorerWidget {
         };
         if added {
             self.save_favorites();
-            self.status = Some("Added to Favourites".to_string());
+            self.status = Some(t("files-added-favourite"));
         }
         true
     }
@@ -1080,7 +2237,7 @@ impl FileExplorerWidget {
         };
         if removed {
             self.save_favorites();
-            self.status = Some("Removed from Favourites".to_string());
+            self.status = Some(t("files-removed-favourite"));
         }
         true
     }
@@ -1127,7 +2284,10 @@ impl FileExplorerWidget {
     fn apply_copy(&mut self) -> bool {
         self.clipboard = self.selected_paths();
         self.clipboard_cut = false;
-        self.status = Some(format!("Copied {}", self.clipboard.len()));
+        self.status = Some(t_args(
+            "files-copied",
+            &[arg("count", fluent_count(self.clipboard.len()))],
+        ));
         true
     }
 
@@ -1135,7 +2295,10 @@ impl FileExplorerWidget {
     fn apply_cut(&mut self) -> bool {
         self.clipboard = self.selected_paths();
         self.clipboard_cut = true;
-        self.status = Some(format!("Cut {}", self.clipboard.len()));
+        self.status = Some(t_args(
+            "files-cut",
+            &[arg("count", fluent_count(self.clipboard.len()))],
+        ));
         true
     }
 
@@ -1446,12 +2609,21 @@ impl FileExplorerWidget {
             |n| n.to_string_lossy().into_owned(),
         );
         self.status = Some(if errors > 0 {
-            format!("Moved {moved} to \u{201c}{dest}\u{201d} ({errors} failed)")
+            t_args(
+                "files-moved-with-failures",
+                &[
+                    arg("moved", fluent_count(moved)),
+                    arg("destination", dest),
+                    arg("failed", fluent_count(errors)),
+                ],
+            )
         } else if moved > 0 {
-            let noun = if moved == 1 { "item" } else { "items" };
-            format!("Moved {moved} {noun} to \u{201c}{dest}\u{201d}")
+            t_args(
+                "files-moved-to-folder",
+                &[arg("count", fluent_count(moved)), arg("destination", dest)],
+            )
         } else {
-            "Nothing to move".to_string()
+            t("files-nothing-to-move")
         });
     }
 
@@ -1478,9 +2650,15 @@ impl FileExplorerWidget {
         }
         self.refresh();
         self.status = Some(if errors == 0 {
-            format!("Pasted {}", items.len())
+            t_args("files-pasted", &[arg("count", fluent_count(items.len()))])
         } else {
-            format!("Pasted {} ({errors} failed)", items.len() - errors)
+            t_args(
+                "files-pasted-with-failures",
+                &[
+                    arg("count", fluent_count(items.len() - errors)),
+                    arg("failed", fluent_count(errors)),
+                ],
+            )
         });
     }
 
@@ -1626,7 +2804,7 @@ impl FileExplorerWidget {
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        if !self.entries.is_empty() || self.error.is_some() {
+        if !self.entries.is_empty() || self.error.is_some() || self.is_loading {
             return;
         }
         let rect = self.nav.overview_rect();
@@ -1634,15 +2812,15 @@ impl FileExplorerWidget {
             return;
         }
         let (icon, msg) = if self.is_trash_view() {
-            (ui::icons::Icon::Trash2, "Trash is empty")
+            (ui::icons::Icon::Trash2, self.empty_state_message())
         } else {
-            (ui::icons::Icon::Folder, "This folder is empty")
+            (ui::icons::Icon::Folder, self.empty_state_message())
         };
         let tokens = &theme.tokens;
         let dim = tokens.colors.text_dim;
         let icon_px = 40.0_f64;
         let size = tokens.typography.scale.base;
-        let (tw, _) = text_renderer.measure(msg, size, None);
+        let (tw, _) = text_renderer.measure(&msg, size, None);
         let cx = rect.x0 + rect.width() / 2.0;
         let cy = rect.y0 + rect.height() / 2.0;
         // Icon centred above the line.
@@ -1659,11 +2837,170 @@ impl FileExplorerWidget {
         let ty = crate::text_layout::centered_text_y(cy, f64::from(size), size);
         text_renderer.draw_text(
             scene,
-            msg,
+            &msg,
             size,
             dim,
             transform * vello::kurbo::Affine::translate((cx - f64::from(tw) / 2.0, ty)),
             None,
+        );
+    }
+
+    fn collab_panel_rect(&self) -> vello::kurbo::Rect {
+        let line_count = self
+            .collab_panel
+            .as_ref()
+            .map_or(1, |panel| panel.lines.len().clamp(1, 14));
+        let width = self.rect.width().clamp(320.0, 680.0) - 32.0;
+        let action_height = if self
+            .collab_panel
+            .as_ref()
+            .is_some_and(|panel| panel.action.is_some())
+        {
+            58.0
+        } else {
+            0.0
+        };
+        let height = (116.0 + line_count as f64 * 27.0 + action_height)
+            .min(self.rect.height() - 32.0)
+            .max(180.0);
+        let x0 = self.rect.x0 + (self.rect.width() - width) / 2.0;
+        let y0 = self.rect.y0 + (self.rect.height() - height) / 2.0;
+        vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+
+    fn collab_panel_action_rect(&self) -> Option<vello::kurbo::Rect> {
+        self.collab_panel.as_ref()?.action.as_ref()?;
+        let panel = self.collab_panel_rect();
+        Some(vello::kurbo::Rect::new(
+            panel.x0 + 24.0,
+            panel.y1 - 50.0,
+            panel.x1 - 24.0,
+            panel.y1 - 14.0,
+        ))
+    }
+
+    // Drawing the modal as one routine keeps geometry, focus, and action hit
+    // targets derived from the same bounded panel state.
+    #[allow(clippy::too_many_lines)]
+    fn draw_collab_panel(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+    ) {
+        use ui::ColorCompat;
+        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+        use vello::peniko::Fill;
+        let Some(panel) = &self.collab_panel else {
+            return;
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base.with_alpha_factor(0.72),
+            None,
+            &self.rect,
+        );
+        let rect = self.collab_panel_rect();
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+        let x = rect.x0 + 24.0;
+        text_renderer.draw_text(
+            scene,
+            &panel.title,
+            theme.tokens.typography.scale.lg,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((x, rect.y0 + 23.0)),
+            Some((rect.width() - 80.0) as f32),
+        );
+        text_renderer.draw_text(
+            scene,
+            &panel.summary,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((x, rect.y0 + 53.0)),
+            Some((rect.width() - 48.0) as f32),
+        );
+        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let mut y = rect.y0 + 88.0;
+        for line in panel.lines.iter().take(14) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent,
+                None,
+                &Rect::new(x, y + 5.0, x + 5.0, y + 10.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                line,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((x + 14.0, y)),
+                Some((rect.width() - 62.0) as f32),
+            );
+            y += 27.0;
+            if y > rect.y1 - 26.0 {
+                break;
+            }
+        }
+        if let Some(action_rect) = self.collab_panel_action_rect() {
+            let danger = theme.tokens.colors.semantic.danger;
+            let action_shape = RoundedRect::from_rect(action_rect, 8.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                danger.with_alpha_factor(0.14),
+                None,
+                &action_shape,
+            );
+            scene.stroke(&Stroke::new(1.5), transform, danger, None, &action_shape);
+            let label = t("files-destructive-eviction-confirm");
+            let (label_width, _) = text_renderer.measure(
+                &label,
+                theme.tokens.typography.scale.sm,
+                Some((action_rect.width() - 24.0) as f32),
+            );
+            text_renderer.draw_text(
+                scene,
+                &label,
+                theme.tokens.typography.scale.sm,
+                danger,
+                transform
+                    * Affine::translate((
+                        action_rect.x0 + (action_rect.width() - f64::from(label_width)) / 2.0,
+                        action_rect.y0 + 9.0,
+                    )),
+                Some((action_rect.width() - 24.0) as f32),
+            );
+        }
+        let close_rect = Rect::new(
+            rect.x1 - 42.0,
+            rect.y0 + 12.0,
+            rect.x1 - 14.0,
+            rect.y0 + 40.0,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            close_rect,
+            ui::icons::Icon::X,
+            theme.tokens.colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
 
@@ -1747,7 +3084,7 @@ impl FileExplorerWidget {
         let count = self.drag_paths.len().max(1);
         let glyph = ui::icons::icon_for_path(path, path.is_dir());
         let label = if count > 1 {
-            format!("{count} items")
+            t_args("files-drag-items", &[arg("count", fluent_count(count))])
         } else {
             path.file_name().map_or_else(
                 || path.display().to_string(),
@@ -1826,12 +3163,12 @@ impl FileExplorerWidget {
             Ok(_) => {
                 self.end_rename_editor();
                 self.refresh();
-                self.status = Some("Renamed".to_string());
+                self.status = Some(t("files-renamed"));
                 true
             }
             Err(e) => {
                 // Keep the bar open so the user can fix the name.
-                self.status = Some(format!("Rename failed: {e}"));
+                self.status = Some(t_args("files-rename-failed", &[arg("error", e)]));
                 false
             }
         }
@@ -1932,6 +3269,28 @@ pub fn is_document(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(qdoc::is_supported_ext)
+}
+
+/// Presentation-side lower bound for the daemon's fail-closed merge codecs.
+/// The daemon still validates exact bytes and may reject malformed qdoc,
+/// invalid UTF-8, overlapping edits, or a stale signed conflict.
+fn merge_supported_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "txt" | "qdoc"))
+}
+
+#[cfg(test)]
+mod merge_support_tests {
+    use super::merge_supported_path;
+
+    #[test]
+    fn merge_is_never_offered_for_binary_or_unsupported_names() {
+        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
+        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
+        assert!(!merge_supported_path(std::path::Path::new("unknown")));
+    }
 }
 
 /// How the explorer hands a document to the application that owns it.
@@ -2040,6 +3399,9 @@ impl FileExplorerWidget {
     /// the available `templates`. Returns `(label, command)` pairs; a `None`
     /// command with an empty label is a separator. Pure (templates injected) so
     /// the menu contents — including the "New File ▸" gating — are unit-testable.
+    // This declarative menu state machine intentionally keeps visibility and
+    // command gating adjacent for auditability and accessibility parity.
+    #[allow(clippy::too_many_lines)]
     fn context_menu_spec(&self, templates: &[PathBuf]) -> Vec<(String, Option<FileCommand>)> {
         let has_sel = !self.selection.is_empty();
         let can_paste = !self.clipboard.is_empty();
@@ -2053,43 +3415,386 @@ impl FileExplorerWidget {
         if in_trash {
             if has_sel {
                 spec.push((
-                    "Open".into(),
+                    t("files-menu-open"),
                     self.selection.primary().map(FileCommand::Activate),
                 ));
                 spec.push((String::new(), None));
-                spec.push(("Restore".into(), Some(FileCommand::RestoreFromTrash)));
-                spec.push(("Delete Permanently".into(), Some(FileCommand::Delete)));
+                spec.push((t("files-menu-restore"), Some(FileCommand::RestoreFromTrash)));
+                spec.push((
+                    t("files-menu-delete-permanently"),
+                    Some(FileCommand::Delete),
+                ));
             }
             spec.push((String::new(), None));
-            spec.push(("Empty Trash".into(), Some(FileCommand::EmptyTrash)));
+            spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
             return spec;
         }
 
         if has_sel {
             spec.push((
-                "Open".into(),
+                t("files-menu-open"),
                 self.selection.primary().map(FileCommand::Activate),
             ));
-            spec.push(("Rename".into(), Some(FileCommand::Rename)));
+            spec.push((t("files-menu-rename"), Some(FileCommand::Rename)));
             spec.push((String::new(), None));
-            spec.push(("Cut".into(), Some(FileCommand::Cut)));
-            spec.push(("Copy".into(), Some(FileCommand::Copy)));
+            spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
+            spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
+            let displayed = self.displayed_entries();
+            let collaborative: Vec<_> = self
+                .selection
+                .selected()
+                .iter()
+                .filter_map(|index| displayed.get(*index))
+                .filter(|entry| entry.availability.is_some())
+                .collect();
+            if !collaborative.is_empty() {
+                let any_automatic = collaborative.iter().any(|entry| {
+                    entry.availability.as_ref().is_some_and(|availability| {
+                        availability.policy == crate::model::AvailabilityPolicy::Automatic
+                    })
+                });
+                let any_directly_pinned = collaborative.iter().any(|entry| {
+                    entry.availability.as_ref().is_some_and(|availability| {
+                        availability.policy == crate::model::AvailabilityPolicy::Pinned
+                            && !availability.policy_inherited
+                    })
+                });
+                spec.push((String::new(), None));
+                let any_inherited = collaborative.iter().any(|entry| {
+                    entry
+                        .availability
+                        .as_ref()
+                        .is_some_and(|availability| availability.policy_inherited)
+                });
+                if any_automatic {
+                    spec.push((t("files-keep-offline"), Some(FileCommand::KeepOffline)));
+                }
+                if any_directly_pinned {
+                    spec.push((
+                        t("files-use-automatic-storage"),
+                        Some(FileCommand::RemoveOfflinePin),
+                    ));
+                }
+                if any_inherited && !any_directly_pinned {
+                    spec.push((t("files-pinned-by-parent"), None));
+                }
+                let any_releasable = collaborative.iter().any(|entry| {
+                    !entry.is_dir
+                        && entry.availability.as_ref().is_some_and(|availability| {
+                            availability.policy == crate::model::AvailabilityPolicy::Automatic
+                                && !availability.policy_inherited
+                                && availability.transfer.phase == crate::model::TransferPhase::Idle
+                                && matches!(
+                                    availability.residency,
+                                    crate::model::Residency::Partial { .. }
+                                        | crate::model::Residency::Resident { .. }
+                                )
+                        })
+                });
+                if any_releasable {
+                    spec.push((
+                        t("files-free-local-space"),
+                        Some(FileCommand::FreeLocalSpace),
+                    ));
+                }
+                let any_retryable = collaborative.iter().any(|entry| {
+                    entry.availability.as_ref().is_some_and(|availability| {
+                        !matches!(
+                            availability.residency,
+                            crate::model::Residency::Resident { .. }
+                        ) && availability.transfer.phase == crate::model::TransferPhase::Idle
+                    })
+                });
+                if any_retryable {
+                    spec.push((t("files-retry-download"), Some(FileCommand::RetryTransfer)));
+                }
+            }
+            if self.selection.selected().len() == 1
+                && let Some(entry) = self
+                    .selection
+                    .primary()
+                    .and_then(|index| displayed.get(index))
+            {
+                spec.push((
+                    t("files-menu-properties"),
+                    Some(FileCommand::ShowProperties),
+                ));
+                if !entry.is_dir
+                    && entry.record_id.is_some()
+                    && crate::model::share_control_socket(&entry.path, &self.workspace_roots)
+                        .is_some()
+                {
+                    for human in self
+                        .trusted_humans
+                        .humans()
+                        .iter()
+                        .filter(|human| !human.devices.is_empty())
+                        .take(16)
+                    {
+                        // Keep the concise default, then expose every named
+                        // permission/expiry choice without ever placing the
+                        // display label into the authority command.
+                        spec.push((
+                            t_args(
+                                "files-share-with",
+                                &[arg("person", human.display_name.clone())],
+                            ),
+                            Some(FileCommand::ShareWithPerson {
+                                person: human.person,
+                            }),
+                        ));
+                        for permission in [
+                            collab_types::FilePermission::View,
+                            collab_types::FilePermission::Edit,
+                        ] {
+                            for expiry in [
+                                crate::sharing::ShareExpiryChoice::Day,
+                                crate::sharing::ShareExpiryChoice::Week,
+                                crate::sharing::ShareExpiryChoice::Month,
+                                crate::sharing::ShareExpiryChoice::Never,
+                            ] {
+                                spec.push((
+                                    t_args(
+                                        "files-share-composer-named",
+                                        &[
+                                            arg("person", human.display_name.clone()),
+                                            arg("permission", share_permission_label(permission)),
+                                            arg("expiry", share_expiry_label(expiry)),
+                                        ],
+                                    ),
+                                    Some(FileCommand::CreateShare(
+                                        crate::sharing::ShareComposerRequest {
+                                            subject: crate::sharing::ShareSubjectChoice::Named(
+                                                human.person,
+                                            ),
+                                            permission,
+                                            expiry,
+                                            link_uses: None,
+                                            recipient_devices: human
+                                                .devices
+                                                .iter()
+                                                .map(|device| device.device)
+                                                .collect(),
+                                        },
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                    spec.push((
+                        t("files-copy-one-time-link"),
+                        Some(FileCommand::CreateOneTimeShareLink),
+                    ));
+                    for permission in [
+                        collab_types::FilePermission::View,
+                        collab_types::FilePermission::Edit,
+                    ] {
+                        for expiry in [
+                            crate::sharing::ShareExpiryChoice::Day,
+                            crate::sharing::ShareExpiryChoice::Week,
+                            crate::sharing::ShareExpiryChoice::Month,
+                        ] {
+                            for link_uses in [
+                                crate::sharing::LinkUseChoice::OneUse,
+                                crate::sharing::LinkUseChoice::Bounded(10),
+                            ] {
+                                let uses = match link_uses {
+                                    crate::sharing::LinkUseChoice::OneUse => {
+                                        t("files-share-choice-one-use")
+                                    }
+                                    crate::sharing::LinkUseChoice::Bounded(count) => t_args(
+                                        "files-share-choice-bounded-uses",
+                                        &[arg("count", i64::from(count))],
+                                    ),
+                                };
+                                spec.push((
+                                    t_args(
+                                        "files-share-composer-link",
+                                        &[
+                                            arg("permission", share_permission_label(permission)),
+                                            arg("expiry", share_expiry_label(expiry)),
+                                            arg("uses", uses),
+                                        ],
+                                    ),
+                                    Some(FileCommand::CreateShare(
+                                        crate::sharing::ShareComposerRequest {
+                                            subject: crate::sharing::ShareSubjectChoice::Link,
+                                            permission,
+                                            expiry,
+                                            link_uses: Some(link_uses),
+                                            recipient_devices: Vec::new(),
+                                        },
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                }
+                if entry.share.is_some() {
+                    spec.push((t("files-sharing-access"), Some(FileCommand::ShowSharing)));
+                }
+                if entry.availability.is_some() {
+                    spec.push((
+                        t("files-availability-title-short"),
+                        Some(FileCommand::ShowAvailability),
+                    ));
+                }
+                if crate::model::share_control_socket(&entry.path, &self.workspace_roots).is_some()
+                    && let Some(share) = &entry.share
+                {
+                    for grant in share
+                        .grants
+                        .iter()
+                        .filter(|grant| grant.status == crate::model::ShareGrantStatus::Active)
+                    {
+                        let Ok(grant_id) = uuid::Uuid::parse_str(&grant.grant_id) else {
+                            continue;
+                        };
+                        let subject = match grant.subject {
+                            crate::model::ShareSubject::Person { person } => {
+                                let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                self.trusted_humans.display_name_or_fingerprint(&person)
+                            }
+                            crate::model::ShareSubject::BearerLink => t("files-shared-link"),
+                        };
+                        spec.push((
+                            t_args("files-revoke-subject", &[arg("subject", subject)]),
+                            Some(FileCommand::RevokeShare { grant_id }),
+                        ));
+                    }
+                }
+                if entry.history.is_some() {
+                    spec.push((t("files-version-history"), Some(FileCommand::ShowHistory)));
+                    if let Some(version_id) = entry.history.as_ref().and_then(|history| {
+                        history.versions.iter().rev().find_map(|version| {
+                            (!history.heads.contains(&version.id) && version.content_hash.is_some())
+                                .then(|| uuid::Uuid::parse_str(&version.id).ok())
+                                .flatten()
+                                .map(collab_types::FileVersionId)
+                        })
+                    }) {
+                        spec.push((
+                            t("files-restore-previous"),
+                            Some(FileCommand::RestoreVersion { version_id }),
+                        ));
+                    }
+                    if let (Some(history), Some(current_hash)) =
+                        (entry.history.as_ref(), entry.content_hash)
+                    {
+                        for conflict in history.open_conflicts() {
+                            let members = conflict
+                                .versions
+                                .iter()
+                                .filter_map(|id| {
+                                    history.versions.iter().find(|version| {
+                                        uuid::Uuid::parse_str(&version.id).ok() == Some(id.0)
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            let current = members
+                                .iter()
+                                .copied()
+                                .filter(|version| version.content_hash == Some(current_hash))
+                                .collect::<Vec<_>>();
+                            // An exact unique hash match is the strongest fact
+                            // this bounded V1 projection exposes. The daemon
+                            // additionally CAS-checks its signed revision, so a
+                            // stale menu action fails instead of changing meaning.
+                            if current.len() != 1 {
+                                continue;
+                            }
+                            let Some(current_version) = current.first() else {
+                                continue;
+                            };
+                            let current_projection_id = current_version.id.as_str();
+                            let Ok(current_id) = uuid::Uuid::parse_str(current_projection_id)
+                            else {
+                                continue;
+                            };
+                            spec.push((String::new(), None));
+                            spec.push((
+                                t_args(
+                                    "files-resolve-keep-current",
+                                    &[arg("conflict", short_uuid(conflict.id))],
+                                ),
+                                Some(FileCommand::ResolveConflict {
+                                    conflict_id: conflict.id,
+                                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                                    version_id: collab_types::FileVersionId(current_id),
+                                }),
+                            ));
+                            for other in members
+                                .into_iter()
+                                .filter(|version| version.id != current_projection_id)
+                            {
+                                let Ok(other_id) = uuid::Uuid::parse_str(&other.id) else {
+                                    continue;
+                                };
+                                spec.push((
+                                    t_args(
+                                        "files-resolve-use-other",
+                                        &[
+                                            arg("conflict", short_uuid(conflict.id)),
+                                            arg("device", short_fingerprint(&other.actor.device)),
+                                        ],
+                                    ),
+                                    Some(FileCommand::ResolveConflict {
+                                        conflict_id: conflict.id,
+                                        strategy: collab_types::ConflictStrategy::UseOther,
+                                        version_id: collab_types::FileVersionId(other_id),
+                                    }),
+                                ));
+                                if merge_supported_path(&entry.path) {
+                                    spec.push((
+                                        format!(
+                                            "{} · {}",
+                                            conflict_strategy_label(
+                                                collab_types::ConflictStrategy::Merge,
+                                            ),
+                                            short_fingerprint(&other.actor.device),
+                                        ),
+                                        Some(FileCommand::ResolveConflict {
+                                            conflict_id: conflict.id,
+                                            strategy: collab_types::ConflictStrategy::Merge,
+                                            version_id: collab_types::FileVersionId(other_id),
+                                        }),
+                                    ));
+                                }
+                                spec.push((
+                                    format!(
+                                        "{} · {}",
+                                        conflict_strategy_label(
+                                            collab_types::ConflictStrategy::KeepBoth,
+                                        ),
+                                        short_fingerprint(&other.actor.device),
+                                    ),
+                                    Some(FileCommand::ResolveConflict {
+                                        conflict_id: conflict.id,
+                                        strategy: collab_types::ConflictStrategy::KeepBoth,
+                                        version_id: collab_types::FileVersionId(other_id),
+                                    }),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         }
         if can_paste {
-            spec.push(("Paste".into(), Some(FileCommand::Paste)));
+            spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
         }
         spec.push((String::new(), None));
-        spec.push(("New Folder".into(), Some(FileCommand::NewFolder)));
+        spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
         // Only offer "New File ▸" when the Templates dir actually has files.
         if has_templates {
             spec.push((
-                "New File  \u{203A}".into(),
+                t("files-menu-new-file"),
                 Some(FileCommand::OpenTemplatesMenu),
             ));
         }
         if has_sel {
             spec.push((String::new(), None));
-            spec.push(("Move to Trash".into(), Some(FileCommand::Delete)));
+            spec.push((t("files-menu-move-trash"), Some(FileCommand::Delete)));
         }
 
         // Favourites: add the single selected folder, or remove the current
@@ -2097,13 +3802,13 @@ impl FileExplorerWidget {
         if let Some(dir) = self.single_selected_dir() {
             spec.push((String::new(), None));
             spec.push((
-                "Add to Favourites".into(),
+                t("files-menu-add-favourite"),
                 Some(FileCommand::AddFavorite(dir)),
             ));
         } else if self.current_is_removable_favourite() {
             spec.push((String::new(), None));
             spec.push((
-                "Remove from Favourites".into(),
+                t("files-menu-remove-favourite"),
                 Some(FileCommand::RemoveFavorite(self.current_path.clone())),
             ));
         }
@@ -2112,9 +3817,9 @@ impl FileExplorerWidget {
         spec.push((String::new(), None));
         spec.push((
             if self.show_hidden {
-                "Hide Hidden Files".into()
+                t("files-menu-hide-hidden")
             } else {
-                "Show Hidden Files".into()
+                t("files-menu-show-hidden")
             },
             Some(FileCommand::ToggleHidden),
         ));
@@ -2124,23 +3829,26 @@ impl FileExplorerWidget {
         // reach "Sort by Type" at all.
         spec.push((String::new(), None));
         spec.push((
-            "Sort by Name".into(),
+            t("files-menu-sort-name"),
             Some(FileCommand::SetSort(SortBy::Name)),
         ));
         spec.push((
-            "Sort by Size".into(),
+            t("files-menu-sort-size"),
             Some(FileCommand::SetSort(SortBy::Size)),
         ));
         spec.push((
-            "Sort by Type".into(),
+            t("files-menu-sort-type"),
             Some(FileCommand::SetSort(SortBy::Type)),
         ));
         spec.push((
-            "Sort by Date".into(),
+            t("files-menu-sort-date"),
             Some(FileCommand::SetSort(SortBy::Modified)),
         ));
         spec.push((String::new(), None));
-        spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
+        spec.push((
+            t("files-menu-open-terminal"),
+            Some(FileCommand::OpenTerminal),
+        ));
         spec
     }
 
@@ -2245,28 +3953,31 @@ impl FileExplorerWidget {
     fn open_view_menu(&mut self) {
         let anchor = self.toolbar.view_menu_anchor();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
-        spec.push(("New Folder".into(), Some(FileCommand::NewFolder)));
+        spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
         if !self.available_templates().is_empty() {
             spec.push((
-                "New File  \u{203A}".into(),
+                t("files-menu-new-file"),
                 Some(FileCommand::OpenTemplatesMenu),
             ));
         }
         spec.push((String::new(), None));
         spec.push((
             if self.show_hidden {
-                "\u{2713} Show Hidden Files".into()
+                t("files-menu-show-hidden-checked")
             } else {
-                "Show Hidden Files".into()
+                t("files-menu-show-hidden")
             },
             Some(FileCommand::ToggleHidden),
         ));
         if self.is_trash_view() {
             spec.push((String::new(), None));
-            spec.push(("Empty Trash".into(), Some(FileCommand::EmptyTrash)));
+            spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
         }
         spec.push((String::new(), None));
-        spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
+        spec.push((
+            t("files-menu-open-terminal"),
+            Some(FileCommand::OpenTerminal),
+        ));
         self.open_menu_right_aligned(spec, anchor);
     }
 
@@ -2275,27 +3986,36 @@ impl FileExplorerWidget {
     /// grid's equivalent of clicking a list column header.
     fn open_sort_menu(&mut self) {
         let anchor = self.toolbar.sort_menu_anchor();
-        let check = |on: bool| if on { "\u{2713} " } else { "     " };
+        let checked = |on: bool, label: String| {
+            t_args(
+                if on {
+                    "files-menu-checked"
+                } else {
+                    "files-menu-unchecked"
+                },
+                &[arg("label", label)],
+            )
+        };
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
         for (label, by) in [
-            ("Name", SortBy::Name),
-            ("Size", SortBy::Size),
-            ("Type", SortBy::Type),
-            ("Date", SortBy::Modified),
+            (t("files-sort-name"), SortBy::Name),
+            (t("files-sort-size"), SortBy::Size),
+            (t("files-sort-type"), SortBy::Type),
+            (t("files-sort-date"), SortBy::Modified),
         ] {
             spec.push((
-                format!("{}{label}", check(self.sort_by == by)),
+                checked(self.sort_by == by, label),
                 Some(FileCommand::SetSort(by)),
             ));
         }
         spec.push((String::new(), None));
         let asc = self.sort_order == SortOrder::Ascending;
         spec.push((
-            format!("{}Ascending", check(asc)),
+            checked(asc, t("files-sort-ascending")),
             Some(FileCommand::SetSortOrder(SortOrder::Ascending)),
         ));
         spec.push((
-            format!("{}Descending", check(!asc)),
+            checked(!asc, t("files-sort-descending")),
             Some(FileCommand::SetSortOrder(SortOrder::Descending)),
         ));
         self.open_menu_right_aligned(spec, anchor);
@@ -2312,11 +4032,14 @@ impl FileExplorerWidget {
             .iter()
             .any(|f| f.is_home && f.path == path);
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
-        spec.push(("Open".into(), Some(FileCommand::Navigate(path.clone()))));
+        spec.push((
+            t("files-menu-open"),
+            Some(FileCommand::Navigate(path.clone())),
+        ));
         if !is_home {
             spec.push((String::new(), None));
             spec.push((
-                "Remove from Favourites".into(),
+                t("files-menu-remove-favourite"),
                 Some(FileCommand::RemoveFavorite(path)),
             ));
         }
@@ -2382,6 +4105,99 @@ impl FileExplorerWidget {
         true
     }
 
+    /// Route keyboard input through a standalone context menu and translate
+    /// its selected row back into the app command bus. The menu is painted as
+    /// an overlay rather than installed in the taffy tree, so normal child
+    /// event propagation cannot reach it.
+    #[allow(clippy::too_many_arguments)]
+    fn route_menu_keyboard(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        focus_target: &mut Option<taffy::NodeId>,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) -> bool {
+        let submenu = self.submenu.is_open();
+        let mut menu_handled = false;
+        let selected = {
+            let menu = if submenu {
+                &mut self.submenu
+            } else {
+                &mut self.context_menu
+            };
+            menu.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                &mut menu_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            menu.take_selection()
+        };
+        if !menu_handled {
+            return false;
+        }
+        let Some(index) = selected else {
+            return true;
+        };
+        let command = if submenu {
+            self.submenu_commands.get(index).cloned().flatten()
+        } else {
+            self.menu_commands.get(index).cloned().flatten()
+        };
+        if let Some(FileCommand::OpenTemplatesMenu) = command {
+            let rect = self.context_menu.get_rect();
+            self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
+        } else {
+            self.submenu.close();
+            self.context_menu.close();
+            if let Some(command) = command {
+                self.apply_command(command);
+            }
+        }
+        true
+    }
+
+    /// Put a keyboard-opened context menu beside the selected row. Falling
+    /// back to the content area's upper-left keeps the action available when
+    /// the row is virtualized or the composition has not painted yet.
+    fn keyboard_context_anchor(&self) -> Point {
+        fn find_named_rect(widget: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
+            if let Some((_, rect)) = widget
+                .test_rects()
+                .into_iter()
+                .find(|(candidate, _)| candidate == name)
+            {
+                return Some(rect);
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find_named_rect(child, name))
+        }
+
+        let row_name = self.selection.primary().and_then(|index| {
+            self.displayed_entries()
+                .get(index)
+                .map(|entry| format!("file_row:{}", entry.name))
+        });
+        if let Some(rect) = row_name
+            .as_deref()
+            .and_then(|name| find_named_rect(&self.nav, name))
+        {
+            return Point::new(rect.x0 + 24.0, rect.y0 + 24.0);
+        }
+        Point::new(self.rect.x0 + 24.0, self.rect.y0 + 72.0)
+    }
+
     /// Drain and apply all queued commands. Returns whether any command
     /// changed the structure.
     #[allow(
@@ -2395,6 +4211,94 @@ impl FileExplorerWidget {
             dirty |= self.apply_command(cmd);
         }
         dirty
+    }
+
+    fn poll_share_result(&mut self) -> bool {
+        let result = self
+            .share_result
+            .lock()
+            .ok()
+            .and_then(|mut result| result.take());
+        let Some(result) = result else {
+            return false;
+        };
+        let path = self.share_pending_path.take();
+        match result {
+            Ok(crate::sharing::ShareActionResult::LinkCreated(uri)) => {
+                ui::clipboard_copy(&uri);
+                self.status = Some(t("files-link-copied"));
+                if let Some(path) = path {
+                    let projection = crate::model::read_share(&path);
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
+                        entry.share = projection;
+                    }
+                }
+            }
+            Ok(crate::sharing::ShareActionResult::NamedCreated(metadata)) => {
+                let display = self
+                    .trusted_humans
+                    .display_name_or_fingerprint(&metadata.person);
+                self.status = Some(t_args(
+                    named_delivery_status_key(metadata.delivery),
+                    &[arg("person", display)],
+                ));
+                if let Some(path) = path {
+                    let projection = crate::model::read_share(&path);
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
+                        entry.share = projection;
+                    }
+                }
+            }
+            Ok(crate::sharing::ShareActionResult::Revoked { revoked, .. }) => {
+                self.status = Some(if revoked {
+                    t("files-access-revoked")
+                } else {
+                    t("files-share-inactive")
+                });
+                if let Some(path) = path {
+                    let projection = crate::model::read_share(&path);
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
+                        entry.share = projection;
+                    }
+                }
+            }
+            Err(error) => self.status = Some(error),
+        }
+        self.structure_dirty = true;
+        true
+    }
+
+    fn poll_history_result(&mut self) -> bool {
+        let result = self
+            .history_result
+            .lock()
+            .ok()
+            .and_then(|mut result| result.take());
+        let Some(result) = result else {
+            return false;
+        };
+        let path = self.history_pending_path.take();
+        match result {
+            Ok(()) => {
+                self.status = self
+                    .history_pending_success
+                    .take()
+                    .or_else(|| Some(t("files-history-change-saved")));
+                if let Some(path) = path {
+                    let history = crate::model::read_history(&path);
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
+                        entry.history = history;
+                    }
+                }
+            }
+            Err(error) => {
+                self.history_pending_success = None;
+                self.status = Some(error);
+            }
+        }
+        self.close_collab_panel();
+        self.structure_dirty = true;
+        true
     }
 
     /// Forward an event to the three body children in visual order — chrome
@@ -2469,6 +4373,10 @@ impl FileExplorerWidget {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let len = self.displayed_entries().len();
         match &ke.logical_key {
+            Key::Named(NamedKey::ContextMenu) if !self.selection.is_empty() => {
+                self.open_context_menu(self.keyboard_context_anchor());
+                true
+            }
             // F2 renames the current selection in place.
             Key::Named(NamedKey::F2) => {
                 self.begin_rename();
@@ -2594,6 +4502,24 @@ impl FileExplorerWidget {
             return false;
         }
         match ctx.event {
+            WindowEvent::KeyboardInput { .. } => {
+                if self.route_menu_keyboard(
+                    ctx.event,
+                    ctx.scale_factor,
+                    ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
+                ) {
+                    *ctx.handled = true;
+                    self.structure_dirty = true;
+                    let _ = self.drain_commands();
+                    return true;
+                }
+                false
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -2606,19 +4532,6 @@ impl FileExplorerWidget {
                     return true;
                 }
                 false
-            }
-            WindowEvent::KeyboardInput { event: ke, .. }
-                if ke.state == ElementState::Pressed
-                    && matches!(
-                        ke.logical_key,
-                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
-                    ) =>
-            {
-                self.submenu.close();
-                self.context_menu.close();
-                *ctx.handled = true;
-                self.structure_dirty = true;
-                true
             }
             _ => false,
         }
@@ -2823,6 +4736,7 @@ impl FileExplorerWidget {
 impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::ReadDoc;
+        self.refresh_metadata_if_due(Instant::now());
         // Seed the inline-rename field's backing Text object *before* the
         // children sync so the rename input resolves a real object to write
         // into (the toolkit's TextInput binds to an existing Text but never
@@ -2857,6 +4771,10 @@ impl Widget for FileExplorerWidget {
         {
             self.rename_buffer = text;
         }
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        Some(self.next_metadata_refresh)
     }
 
     fn build_layout(
@@ -2970,6 +4888,8 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        self.poll_share_result();
+        self.poll_history_result();
         self.paint_background(scene, transform, theme);
         self.toolbar
             .draw(scene, transform, text_renderer, theme, presence);
@@ -3032,6 +4952,7 @@ impl Widget for FileExplorerWidget {
         // Floating status bubble (item count / status + selection), above the
         // content but below any open menus / drag ghost.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
+        self.draw_collab_panel(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
             self.context_menu
@@ -3048,6 +4969,9 @@ impl Widget for FileExplorerWidget {
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
     }
 
+    // Primary widget event dispatcher; pointer, keyboard, drag, menu, and
+    // accessibility paths converge here before entering semantic commands.
+    #[allow(clippy::too_many_lines)]
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -3061,6 +4985,9 @@ impl Widget for FileExplorerWidget {
         taffy: &taffy::TaffyTree<()>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
+        self.poll_share_result();
+        self.poll_history_result();
+        let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3073,6 +5000,64 @@ impl Widget for FileExplorerWidget {
                 self.apply_command(FileCommand::BeginDrag { path, is_dir });
                 self.structure_dirty = true;
             }
+        }
+        if self.collab_panel.is_some() {
+            use winit::keyboard::{Key, NamedKey};
+            let activate = match event {
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && event.logical_key == Key::Named(NamedKey::Enter) =>
+                {
+                    self.collab_panel_action_command()
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } if self
+                    .collab_panel_action_rect()
+                    .is_some_and(|rect| rect.contains(self.last_cursor)) =>
+                {
+                    self.collab_panel_action_command()
+                }
+                _ => None,
+            };
+            if let Some(command) = activate {
+                self.close_collab_panel();
+                self.apply_command(command);
+                *handled = true;
+                self.structure_dirty = true;
+                return;
+            }
+            let close = match event {
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && event.logical_key == Key::Named(NamedKey::Escape) =>
+                {
+                    true
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    let rect = self.collab_panel_rect();
+                    let close_rect = vello::kurbo::Rect::new(
+                        rect.x1 - 48.0,
+                        rect.y0 + 6.0,
+                        rect.x1 - 8.0,
+                        rect.y0 + 46.0,
+                    );
+                    !rect.contains(self.last_cursor) || close_rect.contains(self.last_cursor)
+                }
+                _ => false,
+            };
+            if close {
+                self.close_collab_panel();
+            }
+            *handled = true;
+            self.structure_dirty = true;
+            return;
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Released,
@@ -3109,6 +5094,12 @@ impl Widget for FileExplorerWidget {
         }
 
         self.finish_event(&mut ctx);
+        if !panel_was_open && self.collab_panel.is_some() {
+            // The dialog replaced the semantic subtree during this event.
+            // Focus its real backing widget so AccessKit never points at a
+            // now-hidden toolbar/list node.
+            *ctx.focus_target = Some(ctx.node_id);
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3118,15 +5109,22 @@ impl Widget for FileExplorerWidget {
         d
     }
 
-    /// Fold the Favourites / Places into the unified Ctrl+K palette: a snapshot
-    /// [`PlacesSearchProvider`](crate::search_provider::PlacesSearchProvider)
-    /// makes every pinned location findable there by label or path. Live
-    /// directory contents and the back/forward history are deliberately not
-    /// indexed — only the stable, curated places set.
+    /// Keep ordinary Places search and add a separately bounded snapshot of
+    /// collaborative records from the live mount projection. Collaborative
+    /// actions carry stable record UUIDs; their current paths are provenance,
+    /// never identity.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::PlacesSearchProvider::new(
-            self.favs.borrow().favorites.clone(),
-        ))]
+        let collaborative = crate::model::read_workspace_record_index(&self.workspace_roots);
+        vec![
+            Box::new(crate::search_provider::PlacesSearchProvider::new(
+                self.favs.borrow().favorites.clone(),
+            )),
+            Box::new(
+                crate::search_provider::CollaborativeRecordSearchProvider::new(
+                    &collaborative.records,
+                ),
+            ),
+        ]
     }
 
     /// Navigate to the place a chosen palette row identifies (its destination
@@ -3140,6 +5138,27 @@ impl Widget for FileExplorerWidget {
         if let Some(dest) = crate::search_provider::PlacesSearchProvider::parse_action_id(action_id)
         {
             self.navigate(dest);
+        } else if let Some(record_id) =
+            crate::search_provider::CollaborativeRecordSearchProvider::parse_action_id(action_id)
+            // Resolve mutable provenance again at activation time. A remote
+            // rename or move may have landed since the palette was opened.
+            && let Some(path) = crate::model::read_workspace_record_index(&self.workspace_roots)
+                .records
+                .into_iter()
+                .find(|record| record.record_id == record_id)
+                .map(|record| record.path)
+        {
+            if path.parent() != Some(self.current_path.as_path())
+                && let Some(parent) = path.parent().map(Path::to_path_buf)
+            {
+                self.navigate(parent);
+            }
+            if let Some(index) = self.entries.iter().position(|entry| {
+                entry.record_id == Some(*record_id.as_bytes()) || entry.path == path
+            }) {
+                self.selection.select_only(index);
+                self.structure_dirty = true;
+            }
         }
     }
 
@@ -3157,11 +5176,32 @@ impl Widget for FileExplorerWidget {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.toolbar, &self.nav]
+        if self.collab_panel.is_some() {
+            return Vec::new();
+        }
+        let v: Vec<&dyn Widget> = vec![
+            &self.toolbar,
+            &self.nav,
+            // Standalone overlays are not taffy children, but they are semantic
+            // children: expose their menu/item nodes while open (closed nodes carry
+            // `hidden`, so assistive technology drops them).
+            &self.context_menu,
+            &self.submenu,
+        ];
+        v
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.toolbar, &mut self.nav]
+        if self.collab_panel.is_some() {
+            return Vec::new();
+        }
+        let v: Vec<&mut (dyn Widget + '_)> = vec![
+            &mut self.toolbar,
+            &mut self.nav,
+            &mut self.context_menu,
+            &mut self.submenu,
+        ];
+        v
     }
 
     fn name(&self) -> &'static str {
@@ -3170,6 +5210,81 @@ impl Widget for FileExplorerWidget {
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
+
+    fn traps_focus(&self) -> bool {
+        self.collab_panel.is_some()
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.collab_panel.is_some()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.collab_panel_focused = focused && self.collab_panel.is_some();
+    }
+
+    fn is_focused(&self) -> bool {
+        self.collab_panel.is_some() && self.collab_panel_focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        if let Some(panel) = &self.collab_panel {
+            let mut children = Vec::with_capacity(panel.lines.len() + 2);
+            children
+                .push(AccessNode::new(Role::Heading { level: 2 }).with_name(panel.title.clone()));
+            children.push(AccessNode::new(Role::Paragraph).with_name(panel.summary.clone()));
+            children.extend(
+                panel
+                    .lines
+                    .iter()
+                    .map(|line| AccessNode::new(Role::StaticText).with_name(line.clone())),
+            );
+            if panel.action.is_some() {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(t("files-destructive-eviction-confirm"))
+                        .with_description(t("files-destructive-eviction-loss")),
+                );
+            }
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name(panel.title.clone())
+                    .with_description(t_args(
+                        "files-a11y-dialog-close",
+                        &[arg("summary", panel.summary.clone())],
+                    ))
+                    .with_value(panel.lines.join(". "))
+                    .with_live(Politeness::Polite)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.collab_panel_focused,
+                        modal: true,
+                        ..Default::default()
+                    })
+                    .with_children(children),
+            );
+        }
+
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(t("files-a11y-activity"))
+                .with_description(t_args(
+                    "files-a11y-current-folder",
+                    &[arg("path", self.current_path.display().to_string())],
+                ))
+                .with_value(self.accessibility_status())
+                .with_live(if self.error.is_some() {
+                    Politeness::Assertive
+                } else {
+                    Politeness::Polite
+                })
+                .with_state(AccessState {
+                    busy: self.is_loading,
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 impl AppWidget for FileExplorerWidget {
@@ -3177,7 +5292,8 @@ impl AppWidget for FileExplorerWidget {
         AppKind::Files
     }
     fn app_title(&self) -> &'static str {
-        "Files"
+        static TITLE: OnceLock<String> = OnceLock::new();
+        TITLE.get_or_init(|| t("files-app-title")).as_str()
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰉋")
@@ -3224,6 +5340,12 @@ mod open_with_tests {
             modified: None,
             mime: String::new(),
             sync_state: None,
+            content_hash: None,
+            record_id: None,
+            availability: None,
+            share: None,
+            history: None,
+            rich_metadata: None,
         }
     }
 
@@ -3412,6 +5534,12 @@ mod command_path_tests {
             modified: None,
             mime: mime.into(),
             sync_state: None,
+            content_hash: None,
+            record_id: None,
+            availability: None,
+            share: None,
+            history: None,
+            rich_metadata: None,
         }
     }
 
@@ -4046,16 +6174,14 @@ mod command_path_tests {
             ctrl: false,
             shift: false,
         });
-        assert_eq!(
-            w.scroll_offset.get().1,
-            240.0,
+        assert!(
+            (w.scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
             "selecting a row keeps the scroll"
         );
         // Re-sorting is a structural rebuild — scroll must hold.
         w.apply_command(FileCommand::SetSort(SortBy::Size));
-        assert_eq!(
-            w.scroll_offset.get().1,
-            240.0,
+        assert!(
+            (w.scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
             "re-sorting keeps the scroll"
         );
 
@@ -4135,6 +6261,965 @@ mod command_path_tests {
             "templates present → New File entry shown"
         );
         assert!(has_new_folder(&two));
+    }
+
+    #[test]
+    fn collaborative_selection_offers_and_applies_keep_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shared.txt");
+        std::fs::write(&file, b"shared").unwrap();
+        let availability = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "current_version": null,
+            "residency": {"state": "not_resident"},
+            "transfer": {"phase": "idle", "progress": null, "last_error": null,
+                "last_error_at_ms": null, "error_truncated": false},
+            "policy": "automatic",
+            "replicas": {"state": "unknown"},
+            "freshness": {"metadata_observed_at_ms": null, "local_verified_at_ms": null,
+                "replicas_observed_at_ms": null}
+        }))
+        .unwrap();
+        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.current_path = dir.path().to_path_buf();
+        let mut entry = ent("shared.txt", false, "text/plain");
+        entry.path = file.clone();
+        entry.availability = crate::model::read_availability(&file);
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let spec = w.context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Keep Offline" && *command == Some(FileCommand::KeepOffline)
+        }));
+        assert!(w.apply_command(FileCommand::KeepOffline));
+        assert_eq!(
+            xattr::get(&file, crate::model::PIN_XATTR)
+                .unwrap()
+                .as_deref(),
+            Some(b"pinned".as_slice())
+        );
+    }
+
+    #[test]
+    fn free_local_space_is_offered_and_sent_only_for_eligible_local_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local.txt");
+        let remote = dir.path().join("remote.txt");
+        std::fs::write(&local, b"local").unwrap();
+        std::fs::write(&remote, b"remote").unwrap();
+        let availability = |state: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": uuid::Uuid::new_v4(),
+                "current_version": null,
+                "residency": state,
+                "transfer": {"phase": "idle", "progress": null, "last_error": null,
+                    "last_error_at_ms": null, "error_truncated": false},
+                "policy": "automatic",
+                "policy_inherited": false,
+                "replicas": {"state": "unknown"},
+                "freshness": {"metadata_observed_at_ms": null, "local_verified_at_ms": null,
+                    "replicas_observed_at_ms": null}
+            }))
+            .unwrap()
+        };
+        xattr::set(
+            &local,
+            crate::model::AVAILABILITY_XATTR,
+            &availability(serde_json::json!({"state": "resident", "bytes": 5})),
+        )
+        .unwrap();
+        xattr::set(
+            &remote,
+            crate::model::AVAILABILITY_XATTR,
+            &availability(serde_json::json!({"state": "not_resident"})),
+        )
+        .unwrap();
+
+        let mut widget = FileExplorerWidget::new();
+        widget.current_path = dir.path().to_path_buf();
+        widget.entries = [("local.txt", &local), ("remote.txt", &remote)]
+            .into_iter()
+            .map(|(name, path)| {
+                let mut entry = ent(name, false, "text/plain");
+                entry.path = path.clone();
+                entry.availability = crate::model::read_availability(path);
+                entry
+            })
+            .collect();
+        widget.selection.select_all(2);
+
+        assert!(
+            widget
+                .context_menu_spec(&[])
+                .iter()
+                .any(|(label, command)| {
+                    label == "Free Local Space" && *command == Some(FileCommand::FreeLocalSpace)
+                })
+        );
+        assert!(widget.apply_command(FileCommand::FreeLocalSpace));
+        assert_eq!(
+            xattr::get(&local, crate::model::AVAILABILITY_CONTROL_XATTR)
+                .unwrap()
+                .as_deref(),
+            Some(b"evict".as_slice())
+        );
+        assert_eq!(
+            xattr::get(&remote, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduled_metadata_refresh_preserves_record_selection_and_scroll() {
+        let dir = tempfile::tempdir().unwrap();
+        // Production discovers this from the mounted workspace root. Mark the
+        // isolated fixture as a collaborative root so the listing reads the
+        // record/sync xattrs whose refresh behavior this test exercises.
+        let previous_roots = std::env::var_os("QOS_WORKSPACE_ROOTS");
+        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", dir.path()) };
+        let before = dir.path().join("before.txt");
+        let after = dir.path().join("after.txt");
+        std::fs::write(&before, b"shared").unwrap();
+        let record = uuid::Uuid::from_u128(0x5151);
+        xattr::set(&before, crate::model::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(&before, crate::model::SYNC_XATTR, b"projected").unwrap();
+
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        widget.selection.select_only(0);
+        widget.scroll_offset.set((0.0, 137.0));
+        std::fs::rename(&before, &after).unwrap();
+        xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
+        widget.next_metadata_refresh = Instant::now();
+
+        assert!(widget.refresh_metadata_if_due(Instant::now()));
+        assert_eq!(widget.entries[0].path, after);
+        assert_eq!(
+            widget.entries[0].sync_state,
+            Some(crate::model::SyncState::Local)
+        );
+        assert_eq!(widget.selection.selected(), vec![0]);
+        assert_eq!(widget.selection.primary(), Some(0));
+        assert_eq!(widget.scroll_offset.get(), (0.0, 137.0));
+        if let Some(previous_roots) = previous_roots {
+            unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", previous_roots) };
+        } else {
+            unsafe { std::env::remove_var("QOS_WORKSPACE_ROOTS") };
+        }
+    }
+
+    #[test]
+    fn mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let automatic = dir.path().join("automatic.txt");
+        let pinned = dir.path().join("pinned.txt");
+        let ordinary = dir.path().join("ordinary.txt");
+        for path in [&automatic, &pinned, &ordinary] {
+            std::fs::write(path, b"data").unwrap();
+        }
+        let availability = |policy: &str, inherited: bool| {
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "current_version": null,
+                "residency": {"state": "resident", "bytes": 4},
+                "transfer": {"phase": "idle", "progress": null, "last_error": null,
+                    "last_error_at_ms": null, "error_truncated": false},
+                "policy": policy,
+                "policy_inherited": inherited,
+                "replicas": {"state": "unknown"},
+                "freshness": {"metadata_observed_at_ms": null, "local_verified_at_ms": null,
+                    "replicas_observed_at_ms": null}
+            }))
+            .unwrap()
+        };
+        xattr::set(
+            &automatic,
+            crate::model::AVAILABILITY_XATTR,
+            &availability("automatic", false),
+        )
+        .unwrap();
+        xattr::set(
+            &pinned,
+            crate::model::AVAILABILITY_XATTR,
+            &availability("pinned", false),
+        )
+        .unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.current_path = dir.path().to_path_buf();
+        w.entries = [
+            ("automatic.txt", &automatic),
+            ("pinned.txt", &pinned),
+            ("ordinary.txt", &ordinary),
+        ]
+        .into_iter()
+        .map(|(name, path)| {
+            let mut entry = ent(name, false, "text/plain");
+            entry.path = path.clone();
+            entry.availability = crate::model::read_availability(path);
+            entry
+        })
+        .collect();
+        w.selection.select_all(3);
+
+        let spec = w.context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Keep Offline" && *command == Some(FileCommand::KeepOffline)
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Use Automatic Storage" && *command == Some(FileCommand::RemoveOfflinePin)
+        }));
+
+        w.apply_command(FileCommand::KeepOffline);
+        assert_eq!(
+            xattr::get(&automatic, crate::model::PIN_XATTR)
+                .unwrap()
+                .as_deref(),
+            Some(b"pinned".as_slice())
+        );
+        assert_eq!(xattr::get(&pinned, crate::model::PIN_XATTR).unwrap(), None);
+        assert_eq!(
+            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
+            None
+        );
+
+        // `refresh` deliberately treats this temp directory as an ordinary
+        // non-workspace path. Restore the directly-read projections so the
+        // second half can exercise the opposite command independently.
+        for entry in &mut w.entries {
+            entry.availability = crate::model::read_availability(&entry.path);
+        }
+        w.selection.select_all(w.entries.len());
+        w.apply_command(FileCommand::RemoveOfflinePin);
+        assert_eq!(
+            xattr::get(&pinned, crate::model::PIN_XATTR)
+                .unwrap()
+                .as_deref(),
+            Some(b"automatic".as_slice())
+        );
+        assert_eq!(
+            xattr::get(&automatic, crate::model::PIN_XATTR)
+                .unwrap()
+                .as_deref(),
+            Some(b"pinned".as_slice()),
+            "the opposite policy action must not rewrite an automatic record"
+        );
+        assert_eq!(
+            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_pin_is_explained_but_not_offered_as_a_local_toggle() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("inherited.txt");
+        std::fs::write(&file, b"data").unwrap();
+        let availability = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "current_version": null,
+            "residency": {"state": "resident", "bytes": 4},
+            "transfer": {"phase": "idle", "progress": null, "last_error": null,
+                "last_error_at_ms": null, "error_truncated": false},
+            "policy": "pinned",
+            "policy_inherited": true,
+            "replicas": {"state": "unknown"},
+            "freshness": {"metadata_observed_at_ms": null, "local_verified_at_ms": null,
+                "replicas_observed_at_ms": null}
+        }))
+        .unwrap();
+        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.current_path = dir.path().to_path_buf();
+        let mut entry = ent("inherited.txt", false, "text/plain");
+        entry.path = file.clone();
+        entry.availability = crate::model::read_availability(&file);
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+
+        let spec = w.context_menu_spec(&[]);
+        assert!(
+            spec.iter().any(|(label, command)| {
+                label == "Pinned by Parent Folder" && command.is_none()
+            })
+        );
+        assert!(
+            !spec
+                .iter()
+                .any(|(_, command)| { *command == Some(FileCommand::RemoveOfflinePin) })
+        );
+        w.apply_command(FileCommand::RemoveOfflinePin);
+        assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);
+    }
+
+    #[test]
+    fn failed_projected_file_offers_retry_and_availability_details() {
+        let mut entry = ent("offline.txt", false, "text/plain");
+        entry.availability = crate::model::AvailabilityProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "current_version": null,
+                "residency": {"state": "not_resident"},
+                "transfer": {"phase": "idle", "progress": null,
+                    "last_error": "No available replica could provide this file",
+                    "last_error_at_ms": 12, "error_truncated": false},
+                "policy": "automatic",
+                "replicas": {"state": "known", "reachable": 0, "durable": 1},
+                "freshness": {"metadata_observed_at_ms": 10,
+                    "local_verified_at_ms": null, "replicas_observed_at_ms": 11}
+            }))
+            .unwrap(),
+        );
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+
+        let spec = w.context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Retry Download" && *command == Some(FileCommand::RetryTransfer)
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
+        }));
+
+        w.apply_command(FileCommand::ShowAvailability);
+        let panel = w.collab_panel.as_ref().expect("availability panel");
+        assert!(panel.summary.contains("Not stored"));
+        assert!(panel.lines.iter().any(|line| line.contains("durable")));
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("No available replica"))
+        );
+    }
+
+    #[test]
+    fn authority_sharing_and_history_open_real_detail_panels() {
+        let mut entry = ent("shared.txt", false, "text/plain");
+        entry.record_id =
+            Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
+        entry.rich_metadata = crate::model::MetadataProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "properties": {"schema_version": 1, "image_width": 1920,
+                    "image_height": 1080, "duration_ms": 65000,
+                    "page_count": 4, "codec": "h264", "container": "mp4"}
+            }))
+            .unwrap(),
+        );
+        entry.share = crate::model::ShareProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "observed_at_ms": 10,
+                "grants": [{
+                    "grant_id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
+                    "subject": {"kind": "bearer_link"},
+                    "permission": "View",
+                    "expires_at_ms": null,
+                    "revoked": false,
+                    "expired": false,
+                    "used": false,
+                    "exhausted": false,
+                    "status": "active",
+                    "redemptions": 0,
+                    "max_redemptions": 1
+                }]
+            }))
+            .unwrap(),
+        );
+        entry.history = crate::model::HistoryProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "total_versions": 1,
+                "versions_truncated": false,
+                "heads": ["a0d4e23f-c7cb-4ded-a427-b32cf9da9342"],
+                "versions": [{
+                    "id": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [],
+                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
+                    "timestamp_ms": 9,
+                    "content_hash": null,
+                    "metadata_hash": vec![3; 32],
+                    "provenance": "Create"
+                }],
+                "conflicts_truncated": false,
+                "conflicts": []
+            }))
+            .unwrap(),
+        );
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let spec = w.context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Sharing & Access…" && *command == Some(FileCommand::ShowSharing)
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Version History…" && *command == Some(FileCommand::ShowHistory)
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Properties…" && *command == Some(FileCommand::ShowProperties)
+        }));
+
+        w.apply_command(FileCommand::ShowProperties);
+        let panel = w.collab_panel.as_ref().unwrap();
+        assert!(panel.title.contains("Properties"));
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("Collaborative record"))
+        );
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("1 active grant"))
+        );
+        assert!(panel.lines.iter().any(|line| line.contains("1 version")));
+        assert!(panel.lines.iter().any(|line| line.contains("1920 × 1080")));
+        assert!(panel.lines.iter().any(|line| line.contains("1:05")));
+        assert!(panel.lines.iter().any(|line| line.contains("Pages: 4")));
+        w.apply_command(FileCommand::ShowSharing);
+        let panel = w.collab_panel.as_ref().unwrap();
+        assert!(panel.title.contains("Sharing"));
+        assert!(panel.lines[0].contains("Anyone with the link"));
+        w.apply_command(FileCommand::ShowHistory);
+        let panel = w.collab_panel.as_ref().unwrap();
+        assert!(panel.title.contains("Version History"));
+        assert!(panel.lines[0].contains("Created"));
+        w.apply_command(FileCommand::CloseCollabPanel);
+        assert!(w.collab_panel.is_none());
+    }
+
+    // This scenario proves that governed presentation labels remain separate
+    // from root-key command identity across the complete share-menu flow.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn named_recipient_menu_uses_identity_label_but_commands_the_root_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("report.txt");
+        std::fs::write(&file, b"report").unwrap();
+        xattr::set(
+            dir.path(),
+            crate::model::SHARE_CONTROL_XATTR,
+            b"/run/qos/app/qos-fs-share.sock",
+        )
+        .unwrap();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        let person_bytes = root_key.verifying_key().to_bytes();
+        let person = collab_types::Ed25519PublicKey::from_bytes(person_bytes);
+        let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
+        let device =
+            collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
+        let mut certificate = qos_user_identity::DeviceCert {
+            user_public_key: person_bytes,
+            device_public_key: device_key.verifying_key().to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.workspace_roots = vec![dir.path().to_path_buf()];
+        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            qos_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person_bytes,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![qos_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                }],
+            },
+        )
+        .unwrap();
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.path = file;
+        entry.record_id = Some(*uuid::Uuid::from_u128(82).as_bytes());
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+
+        let spec = w.context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Share with Ada Lovelace"
+                && *command == Some(FileCommand::ShareWithPerson { person })
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label.contains("Ada Lovelace")
+                && label.contains("Edit")
+                && label.contains("no expiry")
+                && *command
+                    == Some(FileCommand::CreateShare(
+                        crate::sharing::ShareComposerRequest {
+                            subject: crate::sharing::ShareSubjectChoice::Named(person),
+                            permission: collab_types::FilePermission::Edit,
+                            expiry: crate::sharing::ShareExpiryChoice::Never,
+                            link_uses: None,
+                            recipient_devices: vec![device],
+                        },
+                    ))
+        }));
+        assert!(spec.iter().any(|(label, command)| {
+            label.contains("Copy link")
+                && label.contains("Edit")
+                && label.contains("30 days")
+                && label.contains("10 uses")
+                && *command
+                    == Some(FileCommand::CreateShare(
+                        crate::sharing::ShareComposerRequest {
+                            subject: crate::sharing::ShareSubjectChoice::Link,
+                            permission: collab_types::FilePermission::Edit,
+                            expiry: crate::sharing::ShareExpiryChoice::Month,
+                            link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
+                            recipient_devices: Vec::new(),
+                        },
+                    ))
+        }));
+
+        w.entries[0].share = Some(crate::model::ShareProjection {
+            schema_version: 1,
+            record_id: uuid::Uuid::from_u128(82).to_string(),
+            observed_at_ms: 1,
+            grants: vec![crate::model::ShareGrantProjection {
+                grant_id: uuid::Uuid::from_u128(83).to_string(),
+                subject: crate::model::ShareSubject::Person {
+                    person: *person.as_bytes(),
+                },
+                permission: crate::model::FilePermission::Edit,
+                expires_at_ms: None,
+                revoked: false,
+                expired: false,
+                used: false,
+                exhausted: false,
+                status: crate::model::ShareGrantStatus::Active,
+                redemptions: 0,
+                max_redemptions: None,
+            }],
+        });
+        w.apply_command(FileCommand::ShowSharing);
+        let lines = &w.collab_panel.as_ref().unwrap().lines;
+        assert!(lines.iter().any(|line| line.contains("Ada's laptop")));
+        assert!(lines.iter().any(|line| line.contains("manages workspaces")));
+        assert!(
+            lines.iter().any(|line| line.contains("key ")),
+            "the on-demand Sharing panel exposes certificate identity, not labels alone"
+        );
+    }
+
+    #[test]
+    fn running_files_reloads_new_renamed_removed_and_expired_governed_devices() {
+        fn projection(
+            root: &ed25519_dalek::SigningKey,
+            name: &str,
+            devices: &[(u8, &str, Option<u64>)],
+        ) -> qos_user_identity::TrustedIdentityProjectionV2 {
+            let devices = devices
+                .iter()
+                .map(|(seed, label, expires_at_ns)| {
+                    let device = ed25519_dalek::SigningKey::from_bytes(&[*seed; 32]);
+                    let mut certificate = qos_user_identity::DeviceCert {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_public_key: device.verifying_key().to_bytes(),
+                        device_label: (*label).into(),
+                        capabilities: qos_user_identity::DeviceCapabilities::member(),
+                        issued_at_ns: 1,
+                        expires_at_ns: *expires_at_ns,
+                        signature: [0; 64],
+                    };
+                    qos_user_identity::sign_device_cert(&mut certificate, root).unwrap();
+                    qos_user_identity::GovernedDeviceIdentityV2 { certificate }
+                })
+                .collect();
+            qos_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: root.verifying_key().to_bytes(),
+                    display_name: name.into(),
+                    devices,
+                }],
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trusted-identities.json");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
+        let person = collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
+        let mut widget = FileExplorerWidget::new();
+
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&projection(&root, "Ada", &[(94, "Laptop", None)])).unwrap(),
+        )
+        .unwrap();
+        assert!(widget.refresh_trusted_identities(Some(&path)));
+        assert_eq!(
+            widget.trusted_humans.human(&person).unwrap().devices.len(),
+            1
+        );
+
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&projection(
+                &root,
+                "Ada Renamed",
+                &[(94, "Laptop", None), (95, "Phone", None)],
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(widget.refresh_trusted_identities(Some(&path)));
+        let human = widget.trusted_humans.human(&person).unwrap();
+        assert_eq!(human.display_name, "Ada Renamed");
+        assert_eq!(human.devices.len(), 2);
+
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&projection(&root, "Ada Renamed", &[(95, "Phone", Some(1))]))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(widget.refresh_trusted_identities(Some(&path)));
+        assert!(
+            widget
+                .trusted_humans
+                .human(&person)
+                .unwrap()
+                .devices
+                .is_empty(),
+            "removed and expired devices cannot remain usable after reload"
+        );
+
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&qos_user_identity::TrustedIdentityProjectionV2::empty()).unwrap(),
+        )
+        .unwrap();
+        assert!(widget.refresh_trusted_identities(Some(&path)));
+        assert!(widget.trusted_humans.humans().is_empty());
+    }
+
+    #[test]
+    fn collaborative_search_activation_resolves_the_latest_path_by_record_id() {
+        use ui::widget::Widget;
+
+        let dir = tempfile::tempdir().unwrap();
+        let record_id = uuid::Uuid::from_u128(0xabc);
+        let nested = dir.path().join("nested");
+        let file = nested.join("renamed.txt");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(&file, b"hello").unwrap();
+        xattr::set(&file, crate::model::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        let projection = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": record_id,
+                "path": "/nested/renamed.txt",
+                "is_dir": false
+            }]
+        });
+        xattr::set(
+            dir.path(),
+            crate::model::RECORD_INDEX_XATTR,
+            &serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.current_path = dir.path().to_path_buf();
+        widget.entries.clear();
+        widget.workspace_roots = vec![dir.path().to_path_buf()];
+
+        let providers = widget.search_providers();
+        assert_eq!(providers.len(), 2, "Places remains a separate provider");
+        let hit = providers[1]
+            .search("renamed")
+            .pop()
+            .expect("collaborative record is searchable");
+        let mut doc = automerge::AutoCommit::new();
+        widget.activate_search_result(&hit.action_id, &mut doc, &automerge::ROOT);
+        assert_eq!(widget.current_path, nested);
+        assert_eq!(widget.selection.primary(), Some(0));
+        assert_eq!(widget.entries[0].path, file);
+    }
+
+    #[test]
+    fn share_composer_authority_round_trip_never_blocks_the_ui_command() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("report.txt");
+        let socket = dir.path().join("share.sock");
+        std::fs::write(&file, b"report").unwrap();
+        xattr::set(
+            dir.path(),
+            crate::model::SHARE_CONTROL_XATTR,
+            socket.as_os_str().as_encoded_bytes(),
+        )
+        .unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut length = [0_u8; 4];
+            stream.read_exact(&mut length).unwrap();
+            let mut request = vec![0; u32::from_be_bytes(length) as usize];
+            stream.read_exact(&mut request).unwrap();
+            seen_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let response = collab_types::ShareControlResponseV1 {
+                protocol_version: collab_types::SHARE_CONTROL_VERSION,
+                result: collab_types::ShareControlResultV1::BearerCreatedV2 {
+                    uri: "qos-file://bounded".into(),
+                },
+            };
+            let response = collab_types::canonical_bytes(&response).unwrap();
+            stream
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(&response).unwrap();
+        });
+
+        let mut widget = FileExplorerWidget::new();
+        widget.workspace_roots = vec![dir.path().to_path_buf()];
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.path = file;
+        entry.record_id = Some(*uuid::Uuid::from_u128(0xdef).as_bytes());
+        widget.entries = vec![entry];
+        widget.selection.select_only(0);
+        assert!(widget.apply_command(FileCommand::CreateShare(
+            crate::sharing::ShareComposerRequest {
+                subject: crate::sharing::ShareSubjectChoice::Link,
+                permission: collab_types::FilePermission::Edit,
+                expiry: crate::sharing::ShareExpiryChoice::Month,
+                link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
+                recipient_devices: Vec::new(),
+            },
+        )));
+        // The daemon has the request but deliberately cannot reply yet. Reaching
+        // this receive proves the UI command returned independently of I/O.
+        seen_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(widget.share_pending_path.is_some());
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn named_share_status_distinguishes_pending_from_delivered() {
+        let pending = t_args(
+            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
+            &[arg("person", "Ada")],
+        );
+        let delivered = t_args(
+            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Delivered),
+            &[arg("person", "Ada")],
+        );
+        assert!(pending.contains("pending"));
+        assert!(delivered.contains("completed"));
+        assert_ne!(pending, delivered);
+    }
+
+    #[test]
+    fn previous_immutable_version_is_an_explicit_restore_command() {
+        let previous = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
+        let mut entry = ent("history.txt", false, "text/plain");
+        entry.history = crate::model::HistoryProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "total_versions": 2,
+                "versions_truncated": false,
+                "heads": [current],
+                "versions": [{
+                    "id": previous,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [],
+                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
+                    "timestamp_ms": 9,
+                    "content_hash": vec![3; 32],
+                    "metadata_hash": vec![4; 32],
+                    "provenance": "Create"
+                }, {
+                    "id": current,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [previous],
+                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
+                    "timestamp_ms": 10,
+                    "content_hash": vec![5; 32],
+                    "metadata_hash": vec![6; 32],
+                    "provenance": "Edit"
+                }],
+                "conflicts_truncated": false,
+                "conflicts": []
+            }))
+            .unwrap(),
+        );
+        let mut widget = FileExplorerWidget::new();
+        widget.entries = vec![entry];
+        widget.selection.select_only(0);
+        let expected = collab_types::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
+        assert!(
+            widget
+                .context_menu_spec(&[])
+                .iter()
+                .any(|(label, command)| {
+                    label == "Restore Previous Version"
+                        && *command
+                            == Some(FileCommand::RestoreVersion {
+                                version_id: expected,
+                            })
+                })
+        );
+    }
+
+    #[test]
+    fn open_text_conflict_menu_offers_exact_safe_actions_including_merge() {
+        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
+        let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
+        let mut entry = ent("conflicted.qdoc", false, "application/x-qdoc");
+        entry.content_hash = Some([5; 32]);
+        entry.history = crate::model::HistoryProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "total_versions": 2,
+                "versions_truncated": false,
+                "heads": [current, other],
+                "versions": [{
+                    "id": other,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [],
+                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
+                    "timestamp_ms": 9,
+                    "content_hash": vec![3; 32],
+                    "metadata_hash": vec![4; 32],
+                    "provenance": "Edit"
+                }, {
+                    "id": current,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "parents": [other],
+                    "actor": {"person": vec![6; 32], "device": vec![7; 32]},
+                    "timestamp_ms": 10,
+                    "content_hash": vec![5; 32],
+                    "metadata_hash": vec![8; 32],
+                    "provenance": "Edit"
+                }],
+                "conflicts_truncated": false,
+                "conflicts": [{
+                    "id": conflict,
+                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "versions": [other, current],
+                    "status": "Open",
+                    "resolution": null
+                }]
+            }))
+            .unwrap(),
+        );
+        let mut widget = FileExplorerWidget::new();
+        widget.entries = vec![entry];
+        widget.selection.select_only(0);
+        let menu = widget.context_menu_spec(&[]);
+        let current_id = collab_types::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
+        let other_id = collab_types::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
+        assert!(menu.iter().any(|(_, command)| {
+            *command
+                == Some(FileCommand::ResolveConflict {
+                    conflict_id: conflict,
+                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                    version_id: current_id,
+                })
+        }));
+        assert!(menu.iter().any(|(_, command)| {
+            *command
+                == Some(FileCommand::ResolveConflict {
+                    conflict_id: conflict,
+                    strategy: collab_types::ConflictStrategy::UseOther,
+                    version_id: other_id,
+                })
+        }));
+        assert!(menu.iter().any(|(_, command)| {
+            *command
+                == Some(FileCommand::ResolveConflict {
+                    conflict_id: conflict,
+                    strategy: collab_types::ConflictStrategy::KeepBoth,
+                    version_id: other_id,
+                })
+        }));
+        assert!(menu.iter().any(|(_, command)| {
+            *command
+                == Some(FileCommand::ResolveConflict {
+                    conflict_id: conflict,
+                    strategy: collab_types::ConflictStrategy::Merge,
+                    version_id: other_id,
+                })
+        }));
+    }
+
+    #[test]
+    fn owner_context_menu_revokes_each_exact_active_grant() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("shared.txt");
+        std::fs::write(&file, b"shared").unwrap();
+        let socket = root.path().join("share-control.sock");
+        xattr::set(
+            root.path(),
+            crate::model::SHARE_CONTROL_XATTR,
+            socket.as_os_str().as_encoded_bytes(),
+        )
+        .unwrap();
+        let grant = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
+        let mut entry = ent("shared.txt", false, "text/plain");
+        entry.path = file;
+        entry.share = crate::model::ShareProjection::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "observed_at_ms": 10,
+                "grants": [{
+                    "grant_id": grant.to_string(),
+                    "subject": {"kind": "bearer_link"},
+                    "permission": "View",
+                    "expires_at_ms": null,
+                    "revoked": false,
+                    "expired": false,
+                    "used": false,
+                    "exhausted": false,
+                    "status": "active",
+                    "redemptions": 0,
+                    "max_redemptions": 2
+                }]
+            }))
+            .unwrap(),
+        );
+        let mut w = FileExplorerWidget::new();
+        w.workspace_roots = vec![root.path().to_path_buf()];
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let spec = w.context_menu_spec(&[]);
+        assert!(spec.iter().any(|(label, command)| {
+            label == "Revoke shared link"
+                && *command == Some(FileCommand::RevokeShare { grant_id: grant })
+        }));
     }
 }
 
@@ -4396,11 +7481,35 @@ mod responsive_body_tests {
             files.x0 >= 0.0 && files.x1 <= 600.0,
             "and inside the window rather than pushed off it: {files:?}",
         );
-        assert_eq!(
-            h.w.debug_content_rect().width(),
-            600.0,
+        assert!(
+            (h.w.debug_content_rect().width() - 600.0).abs() <= f64::EPSILON,
             "the content pane spans the whole narrow window",
         );
+    }
+
+    #[test]
+    fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.txt"), b"draft").unwrap();
+        let mut h = H::new(Some(dir.path()), 900.0, 720.0);
+
+        // Arrow navigation selects the first row. The platform Menu key must
+        // open the same selection-aware surface as right-click.
+        h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        h.press_named(winit::keyboard::NamedKey::ContextMenu);
+        assert!(h.w.context_menu.is_open());
+        let labels = h.open_menu_labels();
+        assert!(labels.iter().any(|label| label == "Open"));
+        assert!(labels.iter().any(|label| label == "Rename"));
+
+        // Menu keyboard handling skips separators and maps the selected row
+        // back onto the exact FileCommand. Down selects Open, Down selects
+        // Rename, and Enter executes it without any pointer event.
+        h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        h.press_named(winit::keyboard::NamedKey::ArrowDown);
+        h.press_named(winit::keyboard::NamedKey::Enter);
+        assert!(!h.w.context_menu.is_open());
+        assert!(h.w.renaming.is_some(), "keyboard menu executes Rename");
     }
 
     /// The drawer draws *over* the files rather than displacing them, and the
@@ -4448,9 +7557,8 @@ mod responsive_body_tests {
             !h.w.debug_places_open(),
             "navigating dismisses the drawer so the files are what remains",
         );
-        assert_eq!(
-            h.w.debug_content_rect().width(),
-            520.0,
+        assert!(
+            (h.w.debug_content_rect().width() - 520.0).abs() <= f64::EPSILON,
             "and the file view still owns the whole window",
         );
     }
@@ -4689,8 +7797,8 @@ mod responsive_body_tests {
         assert!(h.w.debug_places_open(), "wide docks the places list open");
 
         let content = h.w.debug_content_rect();
-        assert_eq!(
-            content.x1, 1200.0,
+        assert!(
+            (content.x1 - 1200.0).abs() <= f64::EPSILON,
             "the file view runs to the window's right edge",
         );
         assert!(
@@ -4703,6 +7811,119 @@ mod responsive_body_tests {
         assert!(
             h.w.debug_places_open(),
             "wide navigation leaves the docked list in place — nothing to dismiss",
+        );
+    }
+}
+
+#[cfg(test)]
+mod accessibility_tests {
+    use super::*;
+    use ui::a11y::{Politeness, Role};
+
+    fn empty_widget() -> (tempfile::TempDir, FileExplorerWidget) {
+        let home = tempfile::tempdir().unwrap();
+        let mut widget =
+            FileExplorerWidget::with_persistence(None, Some(home.path().to_path_buf()));
+        widget.entries.clear();
+        widget.error = None;
+        widget.is_loading = false;
+        (home, widget)
+    }
+
+    #[test]
+    fn custom_empty_loading_and_error_states_are_live_semantics() {
+        let (_home, mut widget) = empty_widget();
+        let empty = Widget::accessibility(&widget).expect("Files has a live root");
+        assert_eq!(empty.role, Role::Group);
+        assert_eq!(empty.name.as_deref(), Some("Files activity"));
+        assert_eq!(empty.live, Some(Politeness::Polite));
+        assert_eq!(empty.value.as_deref(), Some("This folder is empty"));
+        assert!(!empty.state.busy);
+
+        widget.is_loading = true;
+        let loading = Widget::accessibility(&widget).unwrap();
+        assert!(loading.state.busy);
+        assert!(loading.value.as_deref().unwrap().starts_with("Loading "));
+
+        widget.is_loading = false;
+        widget.error = Some("permission denied".into());
+        let error = Widget::accessibility(&widget).unwrap();
+        assert_eq!(error.live, Some(Politeness::Assertive));
+        assert!(
+            error
+                .value
+                .as_deref()
+                .unwrap()
+                .contains("permission denied")
+        );
+        assert!(error.value.as_deref().unwrap().contains("Try Again"));
+    }
+
+    #[test]
+    fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
+        let (_home, mut widget) = empty_widget();
+        widget.show_collab_panel(CollabPanel {
+            title: "Sharing — report.pdf".into(),
+            summary: "Shared with 2 people".into(),
+            lines: vec!["Alice can view".into(), "Bob can edit".into()],
+            action: None,
+        });
+
+        let dialog = Widget::accessibility(&widget).expect("open sheet has semantics");
+        assert_eq!(dialog.role, Role::Dialog);
+        assert_eq!(dialog.name.as_deref(), Some("Sharing — report.pdf"));
+        assert!(dialog.state.modal && dialog.state.focusable && dialog.state.focused);
+        assert_eq!(dialog.children[0].role, Role::Heading { level: 2 });
+        assert_eq!(dialog.children[1].role, Role::Paragraph);
+        assert!(dialog.value.as_deref().unwrap().contains("Bob can edit"));
+        assert!(Widget::traps_focus(&widget));
+        assert!(
+            Widget::children(&widget).is_empty(),
+            "background toolbar/sidebar/list leave the semantic tree while modal"
+        );
+
+        widget.close_collab_panel();
+        assert!(!Widget::traps_focus(&widget));
+        assert!(!Widget::children(&widget).is_empty());
+        assert_eq!(Widget::accessibility(&widget).unwrap().role, Role::Group);
+    }
+
+    #[test]
+    fn destructive_eviction_requires_a_named_modal_action_before_writing_the_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("only-copy.txt");
+        std::fs::write(&file, b"only local copy").unwrap();
+        let (_home, mut widget) = empty_widget();
+        widget.show_collab_panel(CollabPanel {
+            title: t("files-destructive-eviction-title"),
+            summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
+            lines: vec![t("files-destructive-eviction-loss")],
+            action: Some(CollabPanelAction::DestructiveEviction(vec![file.clone()])),
+        });
+
+        let dialog = Widget::accessibility(&widget).expect("warning dialog has semantics");
+        let action = dialog.children.last().expect("dialog action");
+        assert_eq!(action.role, Role::Button);
+        assert_eq!(
+            action.name.as_deref(),
+            Some(t("files-destructive-eviction-confirm").as_str())
+        );
+        assert_eq!(
+            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            None,
+            "opening the warning must not perform the destructive operation"
+        );
+
+        let command = widget
+            .collab_panel_action_command()
+            .expect("the explicit action is keyboard/click routable");
+        widget.close_collab_panel();
+        assert!(widget.apply_command(command));
+        assert_eq!(
+            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR)
+                .unwrap()
+                .as_deref(),
+            Some(b"evict-destructive".as_slice())
         );
     }
 }

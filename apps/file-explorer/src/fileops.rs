@@ -135,10 +135,10 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
 pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("Folder name cannot be empty".to_string());
+        return Err(crate::i18n::t("files-folder-name-empty"));
     }
     if name.contains('/') {
-        return Err("Folder name cannot contain '/'".to_string());
+        return Err(crate::i18n::t("files-folder-name-slash"));
     }
     let dest = unique_destination(parent, name);
     std::fs::create_dir(&dest).map_err(|e| e.to_string())?;
@@ -155,20 +155,23 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let new_name = new_name.trim();
     if new_name.is_empty() {
-        return Err("Name cannot be empty".to_string());
+        return Err(crate::i18n::t("files-name-empty"));
     }
     if new_name.contains('/') {
-        return Err("Name cannot contain '/'".to_string());
+        return Err(crate::i18n::t("files-name-slash"));
     }
     let parent = path
         .parent()
-        .ok_or_else(|| "No parent directory".to_string())?;
+        .ok_or_else(|| crate::i18n::t("files-no-parent"))?;
     let dest = parent.join(new_name);
     if dest == path {
         return Ok(dest);
     }
     if dest.exists() {
-        return Err(format!("\"{new_name}\" already exists"));
+        return Err(crate::i18n::t_args(
+            "files-name-exists",
+            &[crate::i18n::arg("name", new_name)],
+        ));
     }
     std::fs::rename(path, &dest).map_err(|e| e.to_string())?;
     Ok(dest)
@@ -200,7 +203,7 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     let name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| "Source has no file name".to_string())?;
+        .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
     let dest = unique_destination(dest_dir, &name);
     copy_recursive(src, &dest).map_err(|e| e.to_string())?;
     Ok(dest)
@@ -218,7 +221,7 @@ pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     let name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| "Source has no file name".to_string())?;
+        .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
     let dest = unique_destination(dest_dir, &name);
     if let Ok(()) = std::fs::rename(src, &dest) {
         Ok(dest)
