@@ -114,6 +114,17 @@ struct InviteAdmissionLedgerEntry {
     admission: PendingIdentityAdmission,
 }
 
+/// Non-secret metadata shown in collaboration settings for a pending invite.
+/// `invite_id` is a one-way BLAKE3 digest, never the redeemable bearer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingInviteSummary {
+    pub invite_id: String,
+    pub invitee: String,
+    pub role: crate::network::invite::InviteRole,
+    pub recipient_bound: bool,
+    pub expiry_unix_seconds: u64,
+}
+
 /// Durable authority-side correlation for outstanding bearer hashes.
 ///
 /// The signed bearer itself never touches disk. Possession remains with the
@@ -221,6 +232,36 @@ impl InviteAdmissionLedger {
 
     fn get(&self, id: &[u8; 32]) -> Option<&PendingIdentityAdmission> {
         self.entries.get(id)
+    }
+
+    fn summaries_for_room(&mut self, room: RoomId) -> std::io::Result<Vec<PendingInviteSummary>> {
+        self.prune_expired();
+        self.persist()?;
+        let mut summaries = self
+            .entries
+            .iter()
+            .filter(|(_, admission)| admission.room == room)
+            .map(|(id, admission)| PendingInviteSummary {
+                invite_id: hex::encode(id),
+                invitee: admission.name.clone(),
+                role: admission.role,
+                recipient_bound: admission.recipient_user_public_key.is_some(),
+                expiry_unix_seconds: admission.expiry_unix_seconds,
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by_key(|summary| summary.expiry_unix_seconds);
+        Ok(summaries)
+    }
+
+    fn revoke(&mut self, room: RoomId, id: &[u8; 32]) -> std::io::Result<bool> {
+        let removed = self
+            .entries
+            .get(id)
+            .is_some_and(|admission| admission.room == room)
+            && self.entries.remove(id).is_some();
+        self.prune_expired();
+        self.persist()?;
+        Ok(removed)
     }
 
     #[cfg(test)]
@@ -1100,6 +1141,75 @@ impl ShellNetwork {
             )
             .map_err(|error| format!("could not persist invite admission: {error}"))?;
         Ok(token)
+    }
+
+    /// List live invitations for a locally governed workspace. The bearer is
+    /// deliberately unrecoverable; "resend" must mint a fresh invite and
+    /// revoke the old digest.
+    pub fn pending_invites(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+    ) -> Result<Vec<PendingInviteSummary>, String> {
+        let room = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == local)
+                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
+            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
+                return Err(
+                    "only the governing workspace administrator can inspect invites".into(),
+                );
+            }
+            workspace.room
+        };
+        self.pending_identity_admissions
+            .lock()
+            .map_err(|_| "invite admission state is unavailable".to_string())?
+            .summaries_for_room(room)
+            .map_err(|error| format!("could not read pending invites: {error}"))
+    }
+
+    /// Revoke a pending invite by the digest returned from
+    /// [`Self::pending_invites`]. A digest from another room is never removed.
+    pub fn revoke_pending_invite(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        invite_id: &str,
+    ) -> Result<bool, String> {
+        let room = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == local)
+                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
+            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
+                return Err("only the governing workspace administrator can revoke invites".into());
+            }
+            workspace.room
+        };
+        let bytes =
+            hex::decode(invite_id).map_err(|_| "invite id is not hexadecimal".to_string())?;
+        let id: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "invite id must encode exactly 32 bytes".to_string())?;
+        self.pending_identity_admissions
+            .lock()
+            .map_err(|_| "invite admission state is unavailable".to_string())?
+            .revoke(room, &id)
+            .map_err(|error| format!("could not persist invite revocation: {error}"))
     }
 
     /// Promote a transport-authenticated identity announcement through room
@@ -2114,6 +2224,39 @@ mod tests {
 
         let restored = InviteAdmissionLedger::load(path).expect("restart load");
         assert!(restored.get(&id).is_none(), "consumed bearer resurrected");
+    }
+
+    #[test]
+    fn invite_management_exposes_only_hashes_and_scopes_revocation_to_room() {
+        let room = RoomId::new();
+        let other_room = RoomId::new();
+        let mut ledger = InviteAdmissionLedger::memory();
+        for (id, admission_room, name, bound) in [
+            ([0x11; 32], room, "Ada", Some([0x33; 32])),
+            ([0x22; 32], other_room, "Lin", None),
+        ] {
+            ledger
+                .insert(
+                    id,
+                    PendingIdentityAdmission {
+                        room: admission_room,
+                        name: name.into(),
+                        role: crate::network::invite::InviteRole::Viewer,
+                        recipient_user_public_key: bound,
+                        expiry_unix_seconds: InviteAdmissionLedger::now() + 600,
+                    },
+                )
+                .unwrap();
+        }
+
+        let summaries = ledger.summaries_for_room(room).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].invite_id, hex::encode([0x11; 32]));
+        assert!(summaries[0].recipient_bound);
+        assert!(!ledger.revoke(room, &[0x22; 32]).unwrap());
+        assert!(ledger.get(&[0x22; 32]).is_some());
+        assert!(ledger.revoke(room, &[0x11; 32]).unwrap());
+        assert!(ledger.get(&[0x11; 32]).is_none());
     }
 
     #[test]
