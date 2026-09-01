@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use serde::{Deserialize, Serialize};
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -322,7 +323,8 @@ pub struct PackageOutcome {
 }
 
 /// One validated edit to a serialized UI object graph.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum UiGraphEdit {
     Insert {
         parent: String,
@@ -341,12 +343,17 @@ pub enum UiGraphEdit {
         parent: String,
         index: usize,
     },
-    /// Set or remove one serialized node property. A dotted path addresses
-    /// nested objects such as `text.value` or `navigate.route`.
+    /// Set one serialized node property. A dotted path addresses nested
+    /// objects such as `text.value` or `navigate.route`.
     SetProperty {
         id: String,
         property: String,
-        value: Option<serde_json::Value>,
+        value: serde_json::Value,
+    },
+    /// Remove one serialized node property so its schema default applies.
+    UnsetProperty {
+        id: String,
+        property: String,
     },
 }
 
@@ -2870,7 +2877,45 @@ pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
 /// Returns a load, structural-validation, or atomic-write error. The source
 /// file remains unchanged on failure.
 pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
+    edit_ui_graph_batch(path, vec![edit])
+}
+
+/// Parse a JSON array of tagged graph edits suitable for
+/// [`edit_ui_graph_batch`].
+///
+/// # Errors
+///
+/// Returns an error when the source is not a non-empty array of supported,
+/// structurally valid edit objects.
+pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>> {
+    let edits: Vec<UiGraphEdit> =
+        serde_json::from_str(source).context("parsing UI graph edit batch")?;
+    if edits.is_empty() {
+        bail!("UI graph edit batch must contain at least one edit");
+    }
+    Ok(edits)
+}
+
+/// Apply a non-empty edit batch and publish the graph exactly once after every
+/// operation and the resulting complete graph validate.
+///
+/// # Errors
+///
+/// Returns a load, edit, validation, or atomic-write error. The source file
+/// remains byte-for-byte unchanged when any operation fails.
+pub fn edit_ui_graph_batch(path: &Path, edits: Vec<UiGraphEdit>) -> Result<()> {
+    if edits.is_empty() {
+        bail!("UI graph edit batch must contain at least one edit");
+    }
     let mut document = load_ui_graph(path)?;
+    for (index, edit) in edits.into_iter().enumerate() {
+        apply_ui_graph_edit(&mut document, edit)
+            .with_context(|| format!("applying UI graph edit {}", index.saturating_add(1)))?;
+    }
+    write_ui_graph(path, &document)
+}
+
+fn apply_ui_graph_edit(document: &mut qos_ui_graph::UiDocument, edit: UiGraphEdit) -> Result<()> {
     match edit {
         UiGraphEdit::Insert {
             parent,
@@ -2889,10 +2934,13 @@ pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
             property,
             value,
         } => {
-            set_ui_node_property(&mut document, &id, &property, value)?;
+            set_ui_node_property(document, &id, &property, Some(value))?;
+        }
+        UiGraphEdit::UnsetProperty { id, property } => {
+            set_ui_node_property(document, &id, &property, None)?;
         }
     }
-    write_ui_graph(path, &document)
+    Ok(())
 }
 
 fn set_ui_node_property(
@@ -6363,7 +6411,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
         );
     }
     if spec.template == Template::Async {
@@ -8038,7 +8086,7 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "text.value".into(),
-                value: Some(serde_json::json!("Recent projects")),
+                value: serde_json::json!("Recent projects"),
             },
         )
         .expect("set nested title value");
@@ -8047,7 +8095,7 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "size".into(),
-                value: Some(serde_json::json!(24.0)),
+                value: serde_json::json!(24.0),
             },
         )
         .expect("set typed size");
@@ -8057,10 +8105,9 @@ mod tests {
 
         edit_ui_graph(
             &graph,
-            UiGraphEdit::SetProperty {
+            UiGraphEdit::UnsetProperty {
                 id: "title".into(),
                 property: "size".into(),
-                value: None,
             },
         )
         .expect("restore schema default");
@@ -8075,11 +8122,11 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "size".into(),
-                value: Some(serde_json::json!("large")),
+                value: serde_json::json!("large"),
             },
         )
         .unwrap_err();
-        assert!(error.to_string().contains("not valid"), "{error:#}");
+        assert!(format!("{error:#}").contains("not valid"), "{error:#}");
         assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
 
         let typo = edit_ui_graph(
@@ -8087,12 +8134,89 @@ mod tests {
             UiGraphEdit::SetProperty {
                 id: "title".into(),
                 property: "typo".into(),
-                value: Some(serde_json::json!(true)),
+                value: serde_json::json!(true),
             },
         )
         .unwrap_err();
-        assert!(typo.to_string().contains("not valid"), "{typo:#}");
+        assert!(format!("{typo:#}").contains("not valid"), "{typo:#}");
         assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
+    }
+
+    #[test]
+    fn ui_graph_edit_batches_mix_operations_and_roll_back_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let edits = parse_ui_graph_edits(
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","style":"primary"}},
+              {"op":"move","id":"create","parent":"root","index":1},
+              {"op":"set-property","id":"create","property":"enabled","value":false},
+              {"op":"set-property","id":"title","property":"size","value":24},
+              {"op":"unset-property","id":"title","property":"size"}
+            ]"#,
+        )
+        .expect("parse mixed edit batch");
+        assert_eq!(edits.len(), 6);
+        assert!(
+            serde_json::to_string(&edits)
+                .unwrap()
+                .contains("\"op\":\"set-property\"")
+        );
+        let null_edit = parse_ui_graph_edits(
+            r#"[{"op":"set-property","id":"title","property":"size","value":null}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            null_edit.as_slice(),
+            [UiGraphEdit::SetProperty {
+                value: serde_json::Value::Null,
+                ..
+            }]
+        ));
+        edit_ui_graph_batch(&graph, edits).expect("apply mixed batch");
+
+        let document = load_ui_graph(&graph).unwrap();
+        assert_eq!(
+            document
+                .nodes()
+                .iter()
+                .map(|node| node.id())
+                .collect::<Vec<_>>(),
+            ["root", "title", "create", "body"]
+        );
+        assert!(matches!(
+            document.node("create"),
+            Some(qos_ui_graph::UiNode::Button { enabled: false, .. })
+        ));
+        assert!(matches!(
+            document.node("title"),
+            Some(qos_ui_graph::UiNode::Text { size: None, .. })
+        ));
+        assert!(
+            std::fs::read_to_string(&graph)
+                .unwrap()
+                .contains("Recent projects")
+        );
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let invalid = parse_ui_graph_edits(
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Do not publish"},
+              {"op":"set-property","id":"title","property":"size","value":"large"}
+            ]"#,
+        )
+        .unwrap();
+        let error = edit_ui_graph_batch(&graph, invalid).unwrap_err();
+        assert!(error.to_string().contains("edit 2"), "{error:#}");
+        assert_eq!(
+            std::fs::read(&graph).unwrap(),
+            before_invalid,
+            "a later failure must roll back the complete batch"
+        );
+        assert!(parse_ui_graph_edits("[]").is_err());
+        assert!(edit_ui_graph_batch(&graph, Vec::new()).is_err());
     }
 
     #[test]
@@ -8684,6 +8808,7 @@ mod tests {
         assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
         assert!(app_readme(&spec).contains("qos-dev ui set"));
+        assert!(app_readme(&spec).contains("qos-dev ui apply"));
     }
 
     #[test]
