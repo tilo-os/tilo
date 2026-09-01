@@ -153,8 +153,9 @@ EOF
   root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
   [ -n "$root_fs_uuid" ] || die "prepare: could not read the root filesystem UUID"
 
-  install -d -m 0755 "$mnt"
+  install -d -m 0700 "$mnt"
   mount "/dev/mapper/$mapper" "$mnt"
+  chmod 0700 "$mnt"
   # `bootc install to-filesystem` wants an empty root; ext4 arrives with a
   # lost+found, so clear whatever mkfs left rather than special-casing it.
   find "$mnt" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
