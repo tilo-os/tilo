@@ -849,6 +849,13 @@ where
             authorize_capsule_entries(managed, allowed_entry_ids, &capsule_id)?;
             Ok(ProtocolResponse::Retried { receipt })
         }
+        ProtocolRequest::EscalateInstallToVm { capsule_id, .. } => {
+            require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
+            let installation =
+                managed.escalate_install_to_vm(&capsule_id, &handoff.workspace_id)?;
+            authorize_vm_candidates(allowed_entry_ids, &installation);
+            Ok(ProtocolResponse::VmInstallStarted { installation })
+        }
         ProtocolRequest::RemoveLauncher { entry_id, .. } => {
             if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
                 return Err(SessionError::UnknownEntry);

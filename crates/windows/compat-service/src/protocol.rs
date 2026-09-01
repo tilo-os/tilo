@@ -6,7 +6,7 @@ use crate::{
     VmInstallConfirmation, VmInstallation, VmUninstallation,
 };
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -61,6 +61,13 @@ pub enum ProtocolRequest {
         version: u16,
     },
     RetryInstall {
+        version: u16,
+        capsule_id: String,
+    },
+    /// Escalate the exact digest-pinned installer already retained by a
+    /// portal-managed capsule. No second file selection or client path is
+    /// accepted; the server reopens and revalidates its own managed copy.
+    EscalateInstallToVm {
         version: u16,
         capsule_id: String,
     },
