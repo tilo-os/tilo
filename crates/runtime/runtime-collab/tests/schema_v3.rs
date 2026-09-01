@@ -65,6 +65,7 @@ struct PublishedAction {
     resource_label: String,
     action_label: String,
     description: String,
+    operation_kind: String,
     input: PublishedInput,
 }
 
@@ -282,6 +283,7 @@ impl channel_handle::Server for FakeChannel {
                     resource_label: a.get_resource_label()?.to_str()?.to_owned(),
                     action_label: a.get_action_label()?.to_str()?.to_owned(),
                     description: a.get_description()?.to_str()?.to_owned(),
+                    operation_kind: a.get_operation_kind()?.to_str()?.to_owned(),
                     input,
                 });
             }
@@ -530,6 +532,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             resource_label: "Plan".into(),
                             action_label: "Save".into(),
                             description: None,
+                            operation_kind: "effect".into(),
                             input: ExportedInput::None,
                         },
                         ExportedAction {
@@ -539,6 +542,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             resource_label: "Plan".into(),
                             action_label: "Insert image".into(),
                             description: Some("Place an image at the caret".into()),
+                            operation_kind: "document".into(),
                             input: ExportedInput::Text {
                                 prompt: "Which image?".into(),
                                 placeholder: "content hash".into(),
@@ -560,12 +564,14 @@ async fn publish_actions_round_trips_both_input_shapes() {
             // An absent description and an empty one are the same fact,
             // so `None` has to arrive as the empty string.
             assert_eq!(rows[0].description, "");
+            assert_eq!(rows[0].operation_kind, "effect");
             assert_eq!(rows[0].input, PublishedInput::None);
 
             assert_eq!(rows[1].action, "insert-image");
             assert_eq!(rows[1].resource_kind, "document");
             assert_eq!(rows[1].action_label, "Insert image");
             assert_eq!(rows[1].description, "Place an image at the caret");
+            assert_eq!(rows[1].operation_kind, "document");
             assert_eq!(
                 rows[1].input,
                 PublishedInput::Text {

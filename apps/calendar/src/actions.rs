@@ -412,6 +412,7 @@ fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec 
         label: label.to_string(),
         description: None,
         locus: action.locus(),
+        kind: qos_actions::OperationKind::Document,
         input: ActionInput::Immediate(encode(action)),
     })
 }
