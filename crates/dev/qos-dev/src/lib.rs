@@ -6569,6 +6569,8 @@ mod tests {
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("LocalState::new"));
         assert!(library.contains("Text::from_state"));
+        assert!(library.contains("ui::column!["));
+        assert!(!library.contains("Column::new()"));
         assert!(library.contains("with_id(\"name-input\")"));
         assert!(library.contains("on_change(name.text_sink())"));
         assert!(library.contains("pub mod locales;"));
