@@ -43,11 +43,14 @@ mod real {
         );
 
         // And it must be a real picture, not an empty one.
-        assert_eq!((frame.width, frame.height), (1920, 1080));
+        assert_eq!((frame.width, frame.height), (FIXTURE_WIDTH, FIXTURE_HEIGHT));
         let rgba = frame
             .to_rgba()
             .expect("the RGBA path yields a paintable buffer");
-        assert_eq!(rgba.len(), 1920 * 1080 * 4);
+        assert_eq!(
+            rgba.len(),
+            FIXTURE_WIDTH as usize * FIXTURE_HEIGHT as usize * 4
+        );
         assert!(
             rgba.chunks_exact(4)
                 .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8),
