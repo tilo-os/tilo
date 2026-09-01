@@ -8,10 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability};
+use collab_types::caps::{
+    Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability, verb_for_opclass,
+};
 use collab_types::{
-    ArtifactKind, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
-    document_artifact_id, document_attestation_id,
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, SignedOp, document_artifact_id,
+    document_attestation_id, role_permits,
 };
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{Handshake, Request, Response};
@@ -274,7 +276,6 @@ fn sign_collaboration_op(
     if op.author != author
         || op.artifact != expected_artifact
         || op.attestation_id != expected_attestation
-        || op.op_class != OpClass::Splice
         || op.encryption.is_some()
         || DocumentMutation::decode(&op.payload).is_err()
         || op.timestamp < earliest
@@ -308,19 +309,20 @@ fn sign_collaboration_op(
             kind: ArtifactKind::Note,
             instance: expected_artifact,
         };
+        let required = verb_for_opclass(op.op_class);
         let decision = decide_capability(
             &actor,
             &resource,
-            Verb::Write,
+            required,
             &workspace.capabilities,
             Some(now_unix()),
         );
-        let role_can_write = !matches!(role, Role::Commenter | Role::Viewer | Role::Denied);
+        let role_allows = role_permits(role, ArtifactKind::Note, op.op_class);
         drop(tree);
-        decision == CapDecision::Allow && role_can_write
+        decision == CapDecision::Allow && role_allows
     };
     if !allowed {
-        return Response::Denied("workspace role or capability denies document editing".into());
+        return Response::Denied("workspace role or capability denies this document action".into());
     }
     let signing_bytes = match op.signing_bytes() {
         Ok(bytes) => bytes,
@@ -534,7 +536,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(identity_env)]
-    fn collaboration_signing_binds_route_payload_and_live_editor_role() {
+    fn collaboration_signing_binds_route_payload_and_live_action_role() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
         let system_root = temp.path().join("system");
@@ -577,7 +579,7 @@ mod tests {
             document_artifact_id(app_id, &workspace_id, record_id),
             author,
             document_attestation_id(app_id, &workspace_id, record_id),
-            OpClass::Splice,
+            collab_types::OpClass::Splice,
             now,
             1,
         );
@@ -637,10 +639,26 @@ mod tests {
             workspace.capabilities.push(CapOverride::membership(
                 Subject::person(profile.principal_id()),
                 workspace_id.clone(),
-                Verb::Read,
+                Verb::Comment,
             ));
-            drop(tree);
         }
+        op.payload = DocumentMutation::Incremental(b"comment".to_vec())
+            .encode()
+            .expect("typed comment mutation");
+        op.op_class = collab_types::OpClass::Comment;
+        let comment = postcard::to_stdvec(&op).expect("comment envelope");
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &comment,
+            ),
+            Response::Signature(_)
+        ));
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
@@ -651,7 +669,29 @@ mod tests {
                 record_id,
                 &unsigned,
             ),
-            Response::Denied(reason) if reason.contains("denies document editing")
+            Response::Denied(reason) if reason.contains("denies this document action")
+        ));
+        {
+            let mut tree = tree.write();
+            let workspace = &mut tree.workspaces[0];
+            workspace.capabilities.clear();
+            workspace.capabilities.push(CapOverride::membership(
+                Subject::person(profile.principal_id()),
+                workspace_id.clone(),
+                Verb::Read,
+            ));
+        }
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &comment,
+            ),
+            Response::Denied(reason) if reason.contains("denies this document action")
         ));
 
         unsafe {
@@ -762,7 +802,7 @@ mod tests {
             document_artifact_id("dev.qos.notes", &workspace_id, record_id),
             Ed25519PublicKey::from_bytes(identity.signing_public_key()),
             document_attestation_id("dev.qos.notes", &workspace_id, record_id),
-            OpClass::Splice,
+            collab_types::OpClass::Splice,
             now,
             1,
         );
