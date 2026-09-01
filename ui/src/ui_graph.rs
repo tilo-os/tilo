@@ -10,7 +10,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{
     Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
-    TextInput, Toggle, Widget,
+    TextInput, Toggle, Widget, labeled_field,
 };
 use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
@@ -254,6 +254,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
         }
         UiNode::TextInput {
             id,
+            label,
             accessible_name,
             placeholder,
             value_path,
@@ -261,9 +262,10 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
             multiline,
             disabled,
         } => {
+            let name = label.as_deref().unwrap_or(accessible_name);
             let mut input = TextInput::local()
                 .with_id(id)
-                .with_accessible_name(accessible_name)
+                .with_accessible_name(name)
                 .with_placeholder(placeholder)
                 .with_initial_value(initial_value)
                 .multiline(*multiline)
@@ -271,7 +273,11 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
             if let Some(path) = value_path {
                 input = input.with_on_change_path(path);
             }
-            Box::new(input)
+            if let Some(label) = label {
+                Box::new(labeled_field(label, input))
+            } else {
+                Box::new(input)
+            }
         }
         UiNode::Checkbox {
             id,
@@ -1022,6 +1028,7 @@ enum EditableProperty {
     ButtonClickValue,
     ButtonNavigationRoute,
     StaticText,
+    InputLabel,
     InputAccessibleName,
     InputPlaceholder,
     InputValuePath,
@@ -1392,6 +1399,7 @@ fn editable_properties(
             }
         }
         UiNode::TextInput {
+            label,
             accessible_name,
             placeholder,
             value_path,
@@ -1399,9 +1407,15 @@ fn editable_properties(
             ..
         } => properties.extend([
             (
+                EditableProperty::InputLabel,
+                label.clone().unwrap_or_default(),
+                "Visible label (also the accessible name)",
+                "builder-input-label",
+            ),
+            (
                 EditableProperty::InputAccessibleName,
                 accessible_name.clone(),
-                "Accessible name",
+                "Accessible name (only without a visible label)",
                 "builder-input-accessible-name",
             ),
             (
@@ -1487,6 +1501,7 @@ fn parse_editable_property(
             | EditableProperty::ButtonTooltip
             | EditableProperty::ButtonClickPath
             | EditableProperty::ButtonClickValue
+            | EditableProperty::InputLabel
             | EditableProperty::InputValuePath
     ) {
         return Ok(ParsedProperty::OptionalText(
@@ -1584,12 +1599,33 @@ fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: P
         ) => *text = value,
         (
             UiNode::TextInput {
-                accessible_name, ..
+                label,
+                accessible_name,
+                ..
+            },
+            EditableProperty::InputLabel,
+            ParsedProperty::OptionalText(value),
+        ) => {
+            *label = value;
+            if label.is_some() {
+                accessible_name.clear();
+            }
+        }
+        (
+            UiNode::TextInput {
+                label,
+                accessible_name,
+                ..
             },
             EditableProperty::InputAccessibleName,
             ParsedProperty::Text(value),
-        )
-        | (
+        ) => {
+            *accessible_name = value;
+            if !accessible_name.trim().is_empty() {
+                *label = None;
+            }
+        }
+        (
             UiNode::Checkbox {
                 accessible_name, ..
             }
@@ -2149,7 +2185,8 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
         },
         InsertKind::TextInput => UiNode::TextInput {
             id,
-            accessible_name: "Text input".to_owned(),
+            label: Some("Text input".to_owned()),
+            accessible_name: String::new(),
             placeholder: "Enter text".to_owned(),
             value_path: None,
             initial_value: String::new(),
@@ -2448,7 +2485,8 @@ mod tests {
                 },
                 UiNode::TextInput {
                     id: "title-input".into(),
-                    accessible_name: "Title".into(),
+                    label: Some("Title".into()),
+                    accessible_name: String::new(),
                     placeholder: "Untitled".into(),
                     value_path: Some("title".into()),
                     initial_value: String::new(),
@@ -2497,6 +2535,13 @@ mod tests {
         );
         let inspection = driver.inspection();
         assert!(has_title(&inspection.root));
+        driver
+            .expect(
+                &crate::headless::SemanticExpectation::named("title-input")
+                    .role(Role::TextInput)
+                    .name("Title"),
+            )
+            .expect("serialized label names the real input");
         assert!(
             driver.targets().contains_key("title-view"),
             "serialized text ids remain addressable in scenarios"

@@ -488,7 +488,7 @@ Rust construction; it does not introduce a second renderer or event model.
       {
         "type": "text-input",
         "id": "title-input",
-        "accessible_name": "Title",
+        "label": "Title",
         "placeholder": "Untitled",
         "value_path": "title"
       },
@@ -504,6 +504,12 @@ Rust construction; it does not introduce a second renderer or event model.
   }
 }
 ```
+
+For form inputs, `label` renders semantic label text and names the control in
+the accessibility tree. It is deliberately one property: changing locale or
+editing a screen cannot make the visible and spoken labels disagree. Use
+`accessible_name` only for an intentionally unlabeled control; validation
+rejects specifying both.
 
 Start an app on this format directly, or add a graph to an existing app:
 

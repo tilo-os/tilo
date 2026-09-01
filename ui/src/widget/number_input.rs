@@ -126,6 +126,8 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 )]
 pub struct NumberInput {
     id: String,
+    /// Fluent message id spoken for the composite control.
+    accessible_name: Option<String>,
     /// Canonical value — the single source of truth. The embedded field's
     /// text is a *view* of this (re-synced on every commit); `value` is
     /// what [`value`](NumberInput::value) and the CRDT reflect.
@@ -176,6 +178,7 @@ impl NumberInput {
     pub fn new(value: f64) -> Self {
         let mut s = Self {
             id: String::new(),
+            accessible_name: None,
             value,
             min: f64::NEG_INFINITY,
             max: f64::INFINITY,
@@ -246,6 +249,13 @@ impl NumberInput {
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
+        self
+    }
+
+    /// Name the complete number input for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -727,6 +737,7 @@ impl Widget for NumberInput {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::SpinButton)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.format_value())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
