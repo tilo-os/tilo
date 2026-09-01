@@ -1123,6 +1123,10 @@ struct EventRouteCtx<'a> {
 // ===========================================================================
 
 impl Widget for RemoteApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::REMOTE_OPERATION_TYPE]
+    }
+
     /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
     /// delete) so the shell's one action palette scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in

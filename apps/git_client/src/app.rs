@@ -2188,6 +2188,10 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if self.settings_seeded {
             // Adopt document changes: remote collaborators, and this app's own

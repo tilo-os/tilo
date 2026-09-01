@@ -400,6 +400,10 @@ impl Default for PlayerApp {
 }
 
 impl Widget for PlayerApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::OPERATION_TYPE]
+    }
+
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         crate::actions::resources(&self.title, self.player.latest_frame().is_some(), doc)
     }

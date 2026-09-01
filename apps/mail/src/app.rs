@@ -2512,6 +2512,10 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::MAIL_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Drain any engine results first so freshly-fetched messages are present
         // before layout/draw.

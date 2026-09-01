@@ -4836,6 +4836,16 @@ impl FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "files.refresh",
+            "files.new-folder",
+            "files.paste",
+            "files.navigate",
+            "files.open",
+        ]
+    }
+
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut folder = Resource::new(
             format!("folder:{}", self.current_path.display()),
@@ -4870,6 +4880,7 @@ impl Widget for FileExplorerWidget {
                 "Folder path",
                 "/path/to/folder",
                 OperationKind::View,
+                "files.navigate",
                 |path| {
                     EncodedAction::encode_operation("files.navigate", &path)
                         .expect("string payload")

@@ -877,6 +877,14 @@ impl WindowsApp {
 }
 
 impl Widget for WindowsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "windows.launch",
+            "windows.launch-vm-fallback",
+            "windows.publish",
+        ]
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         self.drain_portal();
         self.drain_document_portal();

@@ -2507,6 +2507,10 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
