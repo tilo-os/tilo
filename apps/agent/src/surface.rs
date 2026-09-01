@@ -655,6 +655,7 @@ fn openable(
                 // over the socket instead, since starting an application is
                 // work only the session hosting the room can do.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
+                kind: qos_actions::OperationKind::Effect,
                 input: onto.clone(),
             },
         })
@@ -1128,6 +1129,7 @@ mod tests {
                 action_label: label.to_string(),
                 description: None,
                 locus: qos_actions::ExecutionLocus::ClientLocal,
+                kind: qos_actions::OperationKind::Document,
                 input,
             },
         }

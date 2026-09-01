@@ -1062,6 +1062,7 @@ impl CodeApp {
             .map(|b| actions::OpenFileRef {
                 node: b.node as u64,
                 name: b.name.clone(),
+                can_save: b.path.is_some(),
             })
             .collect();
         actions::CodeEditorResourceCtx {
@@ -3690,6 +3691,39 @@ impl Widget for CodeApp {
     /// [`Self::apply_command`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::CodeEditorOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CodeEditorOperation::Open { node },
+            ) => {
+                self.open_node(node as TreeId);
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::CodeEditorOperation::Save { node },
+            ) => {
+                if !self.save_buffer(doc, node as TreeId, false) {
+                    return Err("file could not be saved without user input".to_string());
+                }
+            }
+            _ => return Err("operation kind does not match Code operation".to_string()),
+        }
+        Ok(true)
     }
 
     /// Fold the open buffers and revealed project files into the unified Ctrl+K

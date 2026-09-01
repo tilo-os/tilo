@@ -217,6 +217,9 @@ struct ExportedAction {
   # fact here, so there is no separate flag.
   description   @5 :Text;
   input         @6 :ActionInput;
+  # `document`, `effect`, or `view`. Empty from an older client means
+  # `document` for backwards compatibility.
+  operationKind @7 :Text;
 }
 
 # What one exported action's invocation must supply.

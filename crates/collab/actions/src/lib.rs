@@ -63,7 +63,9 @@ pub mod executor;
 pub mod registry;
 pub mod resource;
 
-pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+pub use action::{
+    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
+};
 pub use context::{
     ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
 };
