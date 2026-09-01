@@ -9864,7 +9864,7 @@ impl ShellOverlayHost {
         let invite_url = if can_invite {
             "Choose a person and role; qOS signs a one-hour invite."
         } else {
-            "Only the governing owner can create workspace invites."
+            "Only a governing administrator can create workspace invites."
         };
         text_renderer.draw_text(
             scene,
