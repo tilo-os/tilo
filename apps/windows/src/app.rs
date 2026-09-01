@@ -779,7 +779,7 @@ impl Widget for WindowsApp {
             theme.text_dim,
             TextWeight::Regular,
         );
-        let manage_y = detail.y1 - 70.0;
+        let manage_y = (info.y1 + 48.0).min(detail.y1 - 70.0);
         let mut manage_x = detail.x0;
         if app.can_retry_install
             || app.can_remove_launcher
