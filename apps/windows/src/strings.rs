@@ -35,6 +35,7 @@ mod tests {
             "windows-suspend-appliance",
             "windows-resume-appliance",
             "windows-shutdown-appliance",
+            "windows-connect-temporarily",
         ] {
             assert_ne!(t(key), key, "missing Fluent key: {key}");
         }
