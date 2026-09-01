@@ -308,6 +308,32 @@ also the seam for deterministic app tests. Use toolkit widgets for controls so
 focus, keyboard input, IME positioning, accessibility, theme behavior, and
 testing metadata remain one implementation rather than app-local replicas.
 
+Compose ordinary heterogeneous children with the layout macros instead of
+writing one allocation step per child:
+
+```rust
+use ui::tokens::TextRole;
+use ui::widget::{Button, Text, TextInput, Widget};
+
+pub fn app_root() -> Box<dyn Widget> {
+    Box::new(ui::column![
+        Text::new("projects-title").with_role(TextRole::Title),
+        TextInput::local().with_accessible_name("project-name-label"),
+        ui::row![
+            Button::new("cancel", "cancel-label", None),
+            Button::new("save", "save-label", None).primary(),
+        ],
+    ])
+}
+```
+
+`column!`, `row!`, and `stack!` return the normal concrete `Column`, `Row`,
+and `Stack`, not a second UI language. Their standard modifiers remain
+chainable (`ui::column![...].with_gap(12.0)`), and every child keeps the same
+retained lifecycle, focus, accessibility, and inspection behavior. Use the
+ordinary `push` builder when adding an already type-erased
+`Box<dyn Widget>` conditionally.
+
 ### Pointer, touch, and keyboard
 
 Declare a semantic control once. Pointer, direct-touch tap, keyboard, and
@@ -1117,11 +1143,10 @@ let list = VirtualList::from_items(
     40.0,
     |contact| contact.id,
     |contact, _index, _key| {
-        Box::new(
-            Row::new()
-                .push(Box::new(Text::new(&contact.name)))
-                .push(Box::new(Button::new("message", "Message", None))),
-        )
+        Box::new(ui::row![
+            Text::new(&contact.name),
+            Button::new("message", "Message", None),
+        ])
     },
 )?
 .with_id("contacts-list")
@@ -1317,11 +1342,10 @@ widget subtree:
 let tree = TreeView::from_model(files)
     .with_expanded([root_id])
     .with_row_delegate(|model, id, _depth| {
-        Box::new(
-            Row::new()
-                .push(Box::new(Text::new(model.label(id).unwrap_or(""))))
-                .push(Box::new(Button::new("more", "More actions", None))),
-        )
+        Box::new(ui::row![
+            Text::new(model.label(id).unwrap_or("")),
+            Button::new("more", "More actions", None),
+        ])
     });
 ```
 
