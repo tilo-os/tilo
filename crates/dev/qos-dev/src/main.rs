@@ -247,6 +247,12 @@ enum UiCommand {
         #[command(flatten)]
         edit: PropertyEditArgs,
     },
+    /// Apply a JSON array of graph edits as one validated publication.
+    Apply {
+        file: PathBuf,
+        /// JSON file containing tagged insert/remove/replace/move/set operations.
+        edits: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -762,20 +768,25 @@ fn run_ui(args: UiArgs) -> Result<()> {
             property,
             edit,
         } => {
-            let value = match (edit.value, edit.unset) {
-                (Some(source), false) => Some(parse_ui_property_value(source)),
-                (None, true) => None,
-                _ => anyhow::bail!("choose exactly one of --value or --unset"),
-            };
-            qos_dev::edit_ui_graph(
-                &file,
-                qos_dev::UiGraphEdit::SetProperty {
+            let graph_edit = match (edit.value, edit.unset) {
+                (Some(source), false) => qos_dev::UiGraphEdit::SetProperty {
                     id,
                     property,
-                    value,
+                    value: parse_ui_property_value(source),
                 },
-            )?;
+                (None, true) => qos_dev::UiGraphEdit::UnsetProperty { id, property },
+                _ => anyhow::bail!("choose exactly one of --value or --unset"),
+            };
+            qos_dev::edit_ui_graph(&file, graph_edit)?;
             println!("Updated {}", file.display());
+        }
+        UiCommand::Apply { file, edits } => {
+            let source = std::fs::read_to_string(&edits)
+                .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
+            let edits = qos_dev::parse_ui_graph_edits(&source)?;
+            let count = edits.len();
+            qos_dev::edit_ui_graph_batch(&file, edits)?;
+            println!("Applied {count} edits to {}", file.display());
         }
     }
     Ok(())
@@ -1543,6 +1554,49 @@ mod tests {
         assert_eq!(
             parse_ui_property_value("Recent projects".into()),
             serde_json::json!("Recent projects")
+        );
+
+        let apply =
+            Cli::try_parse_from(["qos-dev", "ui", "apply", "ui/main.json", "ui/edits.json"])
+                .expect("UI batch command");
+        assert!(matches!(
+            apply.command,
+            Command::Ui(UiArgs {
+                command: UiCommand::Apply { file, edits }
+            }) if file.as_path() == std::path::Path::new("ui/main.json")
+                && edits.as_path() == std::path::Path::new("ui/edits.json")
+        ));
+    }
+
+    #[test]
+    fn ui_apply_reads_and_publishes_one_complete_batch() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("main.json");
+        let edits = temp.path().join("edits.json");
+        qos_dev::init_ui_graph(&graph, "Projects", false).unwrap();
+        std::fs::write(
+            &edits,
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"open","label":"Open"}}
+            ]"#,
+        )
+        .unwrap();
+
+        run_ui(UiArgs {
+            command: UiCommand::Apply {
+                file: graph.clone(),
+                edits,
+            },
+        })
+        .expect("apply batch through CLI handler");
+
+        let document = qos_dev::load_ui_graph(&graph).unwrap();
+        assert!(document.node("open").is_some());
+        assert!(
+            std::fs::read_to_string(graph)
+                .unwrap()
+                .contains("Recent projects")
         );
     }
 }
