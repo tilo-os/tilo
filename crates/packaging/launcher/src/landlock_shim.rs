@@ -60,6 +60,7 @@ pub struct ShimArgs {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ShimParseError {
     DanglingValue(String),
+    UnknownFlag(String),
     MissingSeparator,
     EmptyCommand,
 }
@@ -70,6 +71,7 @@ impl std::fmt::Display for ShimParseError {
             ShimParseError::DanglingValue(flag) => {
                 write!(f, "flag `{flag}` expects a path argument")
             }
+            ShimParseError::UnknownFlag(flag) => write!(f, "unknown sandbox flag `{flag}`"),
             ShimParseError::MissingSeparator => write!(f, "missing `--` separator"),
             ShimParseError::EmptyCommand => write!(f, "no command after `--`"),
         }
@@ -84,7 +86,9 @@ impl ShimArgs {
     /// Grammar:
     /// `[--ro <p>]* [--rw <p>]* [--net-restricted] [--no-landlock]
     ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
-    /// Unknown flags before `--` are silently skipped (forward-compat).
+    /// Unknown flags before `--` are rejected. The shim is a security-policy
+    /// parser, so version skew must fail closed rather than silently omitting a
+    /// restriction the parent believed it requested.
     ///
     /// # Errors
     ///
@@ -131,7 +135,7 @@ impl ShimArgs {
                     }
                     i = i.saturating_add(1);
                 }
-                _ => {}
+                _ => return Err(ShimParseError::UnknownFlag(arg.clone())),
             }
             i = i.saturating_add(1);
         }
@@ -416,6 +420,15 @@ mod tests {
             ShimArgs::parse(&args),
             Err(ShimParseError::DanglingValue(_))
         ));
+    }
+
+    #[test]
+    fn unknown_policy_flag_is_error_instead_of_a_silent_downgrade() {
+        let args = vec!["--future-restriction".into(), "--".into(), "/app".into()];
+        assert_eq!(
+            ShimArgs::parse(&args),
+            Err(ShimParseError::UnknownFlag("--future-restriction".into()))
+        );
     }
 
     #[test]
