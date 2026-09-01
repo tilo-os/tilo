@@ -14,6 +14,8 @@ use crate::widget::{
 };
 use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fmt;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::style_helpers::percent;
@@ -27,16 +29,67 @@ pub use qos_ui_graph::{
     UiTextSource,
 };
 
+/// Inputs passed to one app-owned serialized-graph component factory.
+#[derive(Clone, Copy, Debug)]
+pub struct UiComponentRequest<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub props: &'a serde_json::Map<String, serde_json::Value>,
+}
+
+type UiComponentFactory =
+    dyn for<'a> Fn(UiComponentRequest<'a>) -> Result<Element, String> + 'static;
+
 /// Process-local services available while compiling a serialized graph.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct UiBuildContext {
     router: Option<crate::widget::RouteHandle>,
+    components: Rc<HashMap<String, Rc<UiComponentFactory>>>,
+    component_placeholders: bool,
+}
+
+impl fmt::Debug for UiBuildContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut components: Vec<_> = self.components.keys().collect();
+        components.sort_unstable();
+        formatter
+            .debug_struct("UiBuildContext")
+            .field("router", &self.router)
+            .field("components", &components)
+            .field("component_placeholders", &self.component_placeholders)
+            .finish()
+    }
 }
 
 impl UiBuildContext {
     #[must_use]
     pub fn with_router(mut self, router: crate::widget::RouteHandle) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    /// Register one app-owned component factory by its stable graph name.
+    ///
+    /// The factory receives the node id and its serialized props. Return a
+    /// normal retained widget with that id so inspection, scenarios, and
+    /// accessibility address the component consistently.
+    #[must_use]
+    pub fn with_component(
+        mut self,
+        name: impl Into<String>,
+        factory: impl for<'a> Fn(UiComponentRequest<'a>) -> Result<Element, String> + 'static,
+    ) -> Self {
+        Rc::make_mut(&mut self.components).insert(name.into(), Rc::new(factory));
+        self
+    }
+
+    /// Render unresolved components as named text placeholders.
+    ///
+    /// Intended for graph editors that cannot load application code. Normal
+    /// app builds reject an unregistered component instead.
+    #[must_use]
+    pub fn with_component_placeholders(mut self) -> Self {
+        self.component_placeholders = true;
         self
     }
 }
@@ -95,7 +148,7 @@ impl UiDocumentExt for UiDocument {
         context: &UiBuildContext,
     ) -> Result<Element, UiGraphError> {
         self.validate()?;
-        Ok(build_node(&self.root, context))
+        build_node(&self.root, context)
     }
 }
 
@@ -103,8 +156,8 @@ impl UiDocumentExt for UiDocument {
     clippy::too_many_lines,
     reason = "one exhaustive source-node-to-widget match keeps graph construction reviewable and compiler-checked"
 )]
-fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
-    match node {
+fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGraphError> {
+    Ok(match node {
         UiNode::Column {
             children,
             gap,
@@ -126,9 +179,10 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
             if *fill_remaining_height {
                 column = column.with_fill_remaining_height();
             }
-            Box::new(children.iter().fold(column, |column, child| {
-                column.push(build_node(child, context))
-            }))
+            for child in children {
+                column = column.push(build_node(child, context)?);
+            }
+            Box::new(column)
         }
         UiNode::Row {
             children,
@@ -143,11 +197,10 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
             if *fill_remaining_height {
                 row = row.with_fill_remaining_height();
             }
-            Box::new(
-                children
-                    .iter()
-                    .fold(row, |row, child| row.push(build_node(child, context))),
-            )
+            for child in children {
+                row = row.push(build_node(child, context)?);
+            }
+            Box::new(row)
         }
         UiNode::Container {
             child,
@@ -158,7 +211,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
             height,
             ..
         } => {
-            let mut container = Container::new().with_child(build_node(child, context));
+            let mut container = Container::new().with_child(build_node(child, context)?);
             if *background {
                 container = container.with_background();
             }
@@ -315,8 +368,30 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
                 Box::new(control)
             }
         }
+        UiNode::Component { id, name, props } => {
+            if let Some(factory) = context.components.get(name) {
+                factory(UiComponentRequest { id, name, props }).map_err(|message| {
+                    UiGraphError::ComponentBuild {
+                        id: id.clone(),
+                        name: name.clone(),
+                        message,
+                    }
+                })?
+            } else if context.component_placeholders {
+                Box::new(
+                    Text::new(&format!("Component: {name}"))
+                        .with_role(TextRole::Label)
+                        .with_id(id),
+                )
+            } else {
+                return Err(UiGraphError::UnknownComponent {
+                    id: id.clone(),
+                    name: name.clone(),
+                });
+            }
+        }
         UiNode::Spacer { .. } => Box::new(Spacer::new()),
-    }
+    })
 }
 
 #[derive(Clone)]
@@ -1024,6 +1099,7 @@ enum InsertKind {
     TextInput,
     Checkbox,
     Toggle,
+    Component,
     Spacer,
 }
 
@@ -1050,6 +1126,8 @@ enum EditableProperty {
     CheckAccessibleName,
     CheckLabel,
     CheckValuePath,
+    ComponentName,
+    ComponentProps,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1153,6 +1231,11 @@ fn build_editor_child(
         ("builder-add-input", "+ Input", InsertKind::TextInput),
         ("builder-add-checkbox", "+ Checkbox", InsertKind::Checkbox),
         ("builder-add-toggle", "+ Toggle", InsertKind::Toggle),
+        (
+            "builder-add-component",
+            "+ Component",
+            InsertKind::Component,
+        ),
         ("builder-add-spacer", "+ Spacer", InsertKind::Spacer),
     ] {
         toolbar = toolbar.push(Box::new(add_button(
@@ -1253,7 +1336,10 @@ fn build_editor_child(
     let inspector = Scrollable::new_vertical()
         .fill_parent_height()
         .with_child(Box::new(inspector));
-    let preview = handle.widget(theme)?;
+    let preview = handle.widget_with(
+        theme,
+        UiBuildContext::default().with_component_placeholders(),
+    )?;
     let body = Row::new()
         .with_fill_remaining_height()
         .no_wrap()
@@ -1302,6 +1388,7 @@ fn node_kind(node: &UiNode) -> &'static str {
         UiNode::TextInput { .. } => "Text input",
         UiNode::Checkbox { .. } => "Checkbox",
         UiNode::Toggle { .. } => "Toggle",
+        UiNode::Component { .. } => "Component",
         UiNode::Spacer { .. } => "Spacer",
     }
 }
@@ -1483,6 +1570,20 @@ fn editable_properties(
                 "builder-check-value-path",
             ),
         ]),
+        UiNode::Component { name, props, .. } => properties.extend([
+            (
+                EditableProperty::ComponentName,
+                name.clone(),
+                "Component name",
+                "builder-component-name",
+            ),
+            (
+                EditableProperty::ComponentProps,
+                serde_json::to_string(props).unwrap_or_else(|_| "{}".to_owned()),
+                "Props (JSON object)",
+                "builder-component-props",
+            ),
+        ]),
         UiNode::Row { .. } | UiNode::Spacer { .. } => {}
     }
     properties
@@ -1496,12 +1597,18 @@ enum ParsedProperty {
     Text(String),
     OptionalText(Option<String>),
     OptionalNumber(Option<f32>),
+    JsonObject(serde_json::Map<String, serde_json::Value>),
 }
 
 fn parse_editable_property(
     property: EditableProperty,
     raw: &str,
 ) -> Result<ParsedProperty, String> {
+    if property == EditableProperty::ComponentProps {
+        return serde_json::from_str(raw)
+            .map(ParsedProperty::JsonObject)
+            .map_err(|error| format!("props must be a JSON object: {error}"));
+    }
     if matches!(
         property,
         EditableProperty::ColumnGap
@@ -1538,6 +1645,7 @@ fn parse_editable_property(
             | EditableProperty::TextDocumentPath
             | EditableProperty::ButtonNavigationRoute
             | EditableProperty::CheckValuePath
+            | EditableProperty::ComponentName
     ) {
         raw.trim().to_owned()
     } else {
@@ -1697,6 +1805,16 @@ fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: P
             EditableProperty::CheckValuePath,
             ParsedProperty::Text(value),
         ) => *value_path = value,
+        (
+            UiNode::Component { name, .. },
+            EditableProperty::ComponentName,
+            ParsedProperty::Text(value),
+        ) => *name = value,
+        (
+            UiNode::Component { props, .. },
+            EditableProperty::ComponentProps,
+            ParsedProperty::JsonObject(value),
+        ) => *props = value,
         _ => {}
     }
 }
@@ -1711,6 +1829,7 @@ fn set_node_id(node: &mut UiNode, value: String) {
         | UiNode::TextInput { id, .. }
         | UiNode::Checkbox { id, .. }
         | UiNode::Toggle { id, .. }
+        | UiNode::Component { id, .. }
         | UiNode::Spacer { id } => *id = value,
     }
 }
@@ -1819,7 +1938,7 @@ fn editable_bools(node: &UiNode) -> Vec<(EditableBool, bool, &'static str, &'sta
             "Enabled",
             "builder-check-enabled",
         )],
-        UiNode::Text { .. } | UiNode::Spacer { .. } => Vec::new(),
+        UiNode::Text { .. } | UiNode::Component { .. } | UiNode::Spacer { .. } => Vec::new(),
     }
 }
 
@@ -2172,6 +2291,7 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
         InsertKind::TextInput => "input",
         InsertKind::Checkbox => "checkbox",
         InsertKind::Toggle => "toggle",
+        InsertKind::Component => "component",
         InsertKind::Spacer => "spacer",
     };
     let id = unique_node_id(document, base);
@@ -2248,6 +2368,11 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
             label: Some("Toggle".to_owned()),
             accessible_name: String::new(),
             enabled: true,
+        },
+        InsertKind::Component => UiNode::Component {
+            id,
+            name: "app-component".to_owned(),
+            props: serde_json::Map::new(),
         },
         InsertKind::Spacer => UiNode::Spacer { id },
     }
@@ -2554,6 +2679,90 @@ mod tests {
             intrinsic_height: false,
             fill_remaining_height: false,
         })
+    }
+
+    #[test]
+    fn app_component_factories_receive_props_and_keep_graph_lifecycle() {
+        let document = UiDocument::from_json(
+            r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            document.build(&Theme::dark()),
+            Err(UiGraphError::UnknownComponent { id, name })
+                if id == "profile" && name == "profile-card"
+        ));
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen_by_factory = Rc::clone(&seen);
+        let context = UiBuildContext::default().with_component("profile-card", move |request| {
+            seen_by_factory.borrow_mut().push((
+                request.id.to_owned(),
+                request.name.to_owned(),
+                request.props.get("title").cloned(),
+            ));
+            let title = request
+                .props
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "title must be a string".to_owned())?;
+            Ok(Box::new(Text::new(title).with_id(request.id)))
+        });
+        let widget = document.build_with(&Theme::dark(), &context).unwrap();
+        let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
+        app.expect(
+            &crate::headless::SemanticExpectation::named("profile")
+                .role(Role::StaticText)
+                .name("Ada"),
+        )
+        .expect("factory result remains a normal graph widget");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            [(
+                "profile".to_owned(),
+                "profile-card".to_owned(),
+                Some(serde_json::json!("Ada"))
+            )]
+        );
+
+        let failing = UiBuildContext::default()
+            .with_component("profile-card", |_| Err("missing account".to_owned()));
+        assert!(matches!(
+            document.build_with(&Theme::dark(), &failing),
+            Err(UiGraphError::ComponentBuild { message, .. }) if message == "missing account"
+        ));
+    }
+
+    #[test]
+    fn builder_previews_and_edits_unloaded_app_components() {
+        let document = UiDocument::from_json(
+            r#"{"version":1,"root":{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}}"#,
+        )
+        .unwrap();
+        let handle = UiGraphHandle::new(document).unwrap();
+        let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
+        let mut app =
+            crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
+        app.expect(
+            &crate::headless::SemanticExpectation::named("profile")
+                .role(Role::StaticText)
+                .name("Component: profile-card"),
+        )
+        .expect("builder uses a named placeholder without app code");
+
+        let mut component = handle.node("profile").unwrap();
+        set_editable_property(
+            &mut component,
+            EditableProperty::ComponentProps,
+            parse_editable_property(EditableProperty::ComponentProps, r#"{"title":"Grace"}"#)
+                .unwrap(),
+        );
+        handle.replace_node("profile", component).unwrap();
+        assert!(matches!(
+            handle.node("profile"),
+            Ok(UiNode::Component { props, .. })
+                if props.get("title") == Some(&serde_json::json!("Grace"))
+        ));
     }
 
     #[test]
