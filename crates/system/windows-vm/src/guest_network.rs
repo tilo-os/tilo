@@ -49,6 +49,8 @@ pub enum GuestNetworkError {
     InvalidHost(String),
     #[error("could not bind the host-only Windows egress relay: {0}")]
     Bind(#[source] io::Error),
+    #[error("the guest network lease policy lock is unavailable")]
+    PolicyUnavailable,
 }
 
 /// A real, token-authenticated CONNECT relay for one materialized lease.
@@ -58,6 +60,7 @@ pub enum GuestNetworkError {
 /// host makes exactly one name-based decision before every TCP connection.
 pub struct GuestNetworkProxy {
     binding: GuestNetworkBinding,
+    hosts: Arc<std::sync::Mutex<Vec<String>>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -86,24 +89,39 @@ impl GuestNetworkProxy {
         let token = hex::encode(random);
         random.fill(0);
         let binding = GuestNetworkBinding { endpoint, token };
+        let hosts = Arc::new(std::sync::Mutex::new(hosts));
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
         let worker_token = binding.token.clone();
+        let worker_hosts = Arc::clone(&hosts);
         thread::spawn(move || {
             serve(
                 listener,
-                hosts,
+                worker_hosts,
                 worker_token,
                 require_guest_peer,
                 worker_shutdown,
             )
         });
-        Ok(Self { binding, shutdown })
+        Ok(Self {
+            binding,
+            hosts,
+            shutdown,
+        })
     }
 
     #[must_use]
     pub fn binding(&self) -> &GuestNetworkBinding {
         &self.binding
+    }
+
+    pub fn replace_hosts(&self, hosts: Vec<String>) -> Result<(), GuestNetworkError> {
+        validate_hosts(&hosts)?;
+        *self
+            .hosts
+            .lock()
+            .map_err(|_| GuestNetworkError::PolicyUnavailable)? = hosts;
+        Ok(())
     }
 }
 
@@ -133,7 +151,7 @@ fn validate_hosts(hosts: &[String]) -> Result<(), GuestNetworkError> {
 
 fn serve(
     listener: TcpListener,
-    hosts: Vec<String>,
+    hosts: Arc<std::sync::Mutex<Vec<String>>>,
     token: String,
     require_guest_peer: bool,
     shutdown: Arc<AtomicBool>,
@@ -148,7 +166,7 @@ fn serve(
         {
             continue;
         }
-        let hosts = hosts.clone();
+        let hosts = Arc::clone(&hosts);
         let token = token.clone();
         let shutdown = Arc::clone(&shutdown);
         thread::spawn(move || {
@@ -159,7 +177,7 @@ fn serve(
 
 fn serve_connect(
     mut client: TcpStream,
-    hosts: &[String],
+    hosts: &std::sync::Mutex<Vec<String>>,
     token: &str,
     shutdown: &AtomicBool,
 ) -> io::Result<()> {
@@ -175,7 +193,12 @@ fn serve_connect(
     // Do not resolve here. `connect_upstream` is the canonical qOS NetHost
     // path: it resolves after policy, rejects address-literal bypasses, and
     // removes loopback/link-local/this-host addresses unless named exactly.
-    let policy = EgressPolicy::new(hosts.to_vec());
+    let policy = EgressPolicy::new(
+        hosts
+            .lock()
+            .map_err(|_| io::Error::other("network lease policy unavailable"))?
+            .clone(),
+    );
     if !policy.permits(&host) {
         return write_response(&mut client, "502 Bad Gateway");
     }
