@@ -13,9 +13,12 @@
 //! the action's [`ActionId`]) and commit timestamp on every apply, so
 //! the resulting change is content-addressed identical everywhere.
 //!
-//! Actions are strictly **not presentation** — anything local-only
-//! (rendering, scroll, selection) never becomes an action; only
-//! shared-CRDT mutations do.
+//! Replayable [`Action`] values are strictly **not presentation** and mutate
+//! only shared CRDT state. The wider resource/action protocol also describes
+//! client-local [`OperationKind::View`] and external
+//! [`OperationKind::Effect`] operations. Those use the same typed descriptors,
+//! permission checks and invocation receipts, but are dispatched through the
+//! toolkit's operation handler instead of being replayed as document history.
 //!
 //! ## Resources
 //!

@@ -85,6 +85,8 @@ cargo run -q --bin qos-control -- actions list
 ```
 
 Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
+The required application-facing resource/action contract is documented in
+[`apps/README.md`](apps/README.md#application-contract-required).
 
 ## Where to read first
 
