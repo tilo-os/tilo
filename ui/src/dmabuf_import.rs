@@ -272,6 +272,12 @@ fn is_linear(modifier: u64) -> bool {
 /// the duplicated fds) and release them when dropped. Releasing them is what
 /// returns the buffer to the producer's pool, so do not hold them longer than
 /// the GPU needs them.
+///
+/// # Errors
+///
+/// Returns [`ImportError`] when the buffer's format, modifier, or plane layout
+/// is unsupported, the device is not backed by Vulkan, or Vulkan cannot import
+/// one of the planes.
 pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPlanes, ImportError> {
     if !is_linear(image.modifier) {
         return Err(ImportError::UnsupportedModifier {
@@ -307,22 +313,12 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
         let ext_fd = ash::khr::external_memory_fd::Device::new(instance, dev);
 
         let mut built = Vec::with_capacity(specs.len());
-        for (i, spec) in specs.iter().enumerate() {
+        for (i, (plane, spec)) in image.planes.iter().zip(&specs).enumerate() {
             // On failure, hal textures already built are dropped here without
             // ever reaching wgpu. Their drop callbacks are not run by `Drop`
             // (a hal texture is a plain handle), so free them explicitly.
-            let made = unsafe {
-                import_plane(
-                    dev,
-                    phys,
-                    instance,
-                    &ext_fd,
-                    hal_device,
-                    &image.planes[i],
-                    spec,
-                    i,
-                )
-            };
+            let made =
+                unsafe { import_plane(dev, phys, instance, &ext_fd, hal_device, plane, spec, i) };
             match made {
                 Ok(t) => built.push(t),
                 Err(e) => {
@@ -371,6 +367,9 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
 
 /// Import one plane as a `wgpu::Texture`.
 #[allow(clippy::too_many_arguments)]
+// Keeping acquisition and cleanup together makes the ownership transfer to
+// Vulkan auditable; splitting this sequence would obscure its early returns.
+#[allow(clippy::too_many_lines)]
 unsafe fn import_plane(
     dev: &ash::Device,
     phys: vk::PhysicalDevice,
@@ -423,7 +422,7 @@ unsafe fn import_plane(
         array_layer: 0,
     };
     let sub_layout = unsafe { dev.get_image_subresource_layout(vk_image, sub) };
-    if sub_layout.row_pitch != plane.stride as u64 {
+    if sub_layout.row_pitch != u64::from(plane.stride) {
         // A stride that is merely *larger* is still unusable: the sampler
         // steps by the driver's pitch, so rows would drift.
         cleanup_image(dev);
@@ -456,15 +455,12 @@ unsafe fn import_plane(
         }
     };
     let allowed = reqs.memory_type_bits & fd_props;
-    let mem_type = match find_memory_type(instance, phys, allowed) {
-        Some(t) => t,
-        None => {
-            cleanup_image(dev);
-            return Err(ImportError::Vulkan(format!(
-                "no memory type accepts the imported dmabuf (image mask {:#x}, fd mask {fd_props:#x})",
-                reqs.memory_type_bits
-            )));
-        }
+    let Some(mem_type) = find_memory_type(instance, phys, allowed) else {
+        cleanup_image(dev);
+        return Err(ImportError::Vulkan(format!(
+            "no memory type accepts the imported dmabuf (image mask {:#x}, fd mask {fd_props:#x})",
+            reqs.memory_type_bits
+        )));
     };
 
     let mut import_info = vk::ImportMemoryFdInfoKHR::default()
@@ -475,7 +471,13 @@ unsafe fn import_plane(
     let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(vk_image);
     let use_dedicated = plane.offset == 0;
     // The allocation must cover the plane's offset as well as its size.
-    let size = reqs.size + plane.offset as u64;
+    let Some(size) = reqs.size.checked_add(u64::from(plane.offset)) else {
+        cleanup_image(dev);
+        return Err(ImportError::Vulkan(format!(
+            "dmabuf allocation size overflows (image size {}, plane offset {})",
+            reqs.size, plane.offset
+        )));
+    };
 
     let mut alloc_info = vk::MemoryAllocateInfo::default()
         .allocation_size(size)
@@ -498,7 +500,7 @@ unsafe fn import_plane(
         }
     };
 
-    if let Err(e) = unsafe { dev.bind_image_memory(vk_image, memory, plane.offset as u64) } {
+    if let Err(e) = unsafe { dev.bind_image_memory(vk_image, memory, u64::from(plane.offset)) } {
         unsafe { dev.free_memory(memory, None) };
         cleanup_image(dev);
         return Err(ImportError::Vulkan(format!("vkBindImageMemory: {e:?}")));
