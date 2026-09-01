@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -87,6 +88,24 @@ class SelectorTests(unittest.TestCase):
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
+
+    def test_changed_files_compares_shallow_base_and_head_trees(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        (self.root / "base.rs").write_text("fn base() {}\n")
+        subprocess.run(["git", "add", "base.rs"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        subprocess.run(["git", "checkout", "--orphan", "shallow-head", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "rm", "-qf", "base.rs"], cwd=self.root, check=True)
+        (self.root / "head.rs").write_text("fn head() {}\n")
+        subprocess.run(["git", "add", "head.rs"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "head"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        self.assertEqual(ci_select.changed_files(self.root, base, head), ["base.rs", "head.rs"])
 
 
 if __name__ == "__main__":
