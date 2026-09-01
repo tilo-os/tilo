@@ -326,6 +326,12 @@ pub enum UiNode {
     },
     TextInput {
         id: String,
+        /// Optional visible Fluent label. When present it is also the
+        /// control's accessible name, so serialized forms have one source of
+        /// truth for both presentations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         accessible_name: String,
         #[serde(default)]
         placeholder: String,
@@ -544,11 +550,16 @@ impl UiNode {
                 }
             }
             Self::TextInput {
+                label,
                 accessible_name,
                 value_path,
                 ..
             } => {
-                validate_accessible_name(accessible_name, id)?;
+                let effective_name = label.as_deref().unwrap_or(accessible_name);
+                validate_accessible_name(effective_name, id)?;
+                if label.is_some() && !accessible_name.trim().is_empty() {
+                    return Err(UiGraphError::ConflictingLabels(id.to_owned()));
+                }
                 if let Some(binding) = value_path {
                     validate_binding(binding, id)?;
                 }
@@ -637,6 +648,8 @@ pub enum UiGraphError {
     TooManyNodes { max: usize },
     #[error("UI node {0:?} needs a visible label or accessible name")]
     MissingAccessibleName(String),
+    #[error("UI node {0:?} must use either label or accessible_name, not both")]
+    ConflictingLabels(String),
     #[error("UI node {id:?} has invalid model binding {binding:?}")]
     InvalidBinding { id: String, binding: String },
     #[error("UI node {id:?} has invalid {property}")]
@@ -776,6 +789,43 @@ mod tests {
         assert!(matches!(
             document.validate(),
             Err(UiGraphError::InvalidBinding { .. })
+        ));
+    }
+
+    #[test]
+    fn text_input_label_is_the_single_visible_and_accessible_source() {
+        let mut document = sample();
+        document
+            .insert_child(
+                "root",
+                1,
+                UiNode::TextInput {
+                    id: "name".into(),
+                    label: Some("profile-name-label".into()),
+                    accessible_name: String::new(),
+                    placeholder: String::new(),
+                    value_path: None,
+                    initial_value: String::new(),
+                    multiline: false,
+                    disabled: false,
+                },
+            )
+            .unwrap();
+
+        let json = document.to_json_pretty().unwrap();
+        assert!(json.contains(r#""label": "profile-name-label""#));
+        assert!(!json.contains("accessible_name"));
+        assert_eq!(UiDocument::from_json(&json).unwrap(), document);
+
+        if let Some(UiNode::TextInput {
+            accessible_name, ..
+        }) = document.node_mut("name")
+        {
+            *accessible_name = "duplicate-name".into();
+        }
+        assert!(matches!(
+            document.validate(),
+            Err(UiGraphError::ConflictingLabels(id)) if id == "name"
         ));
     }
 }

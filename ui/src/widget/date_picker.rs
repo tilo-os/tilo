@@ -39,6 +39,8 @@ const GRID_COLS: usize = 7;
 const WEEKDAY_LABELS: [&str; GRID_COLS] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
 pub struct DatePicker {
+    /// Fluent message id spoken for the composite calendar control.
+    accessible_name: Option<String>,
     selected: NaiveDate,
     month_view: (i32, u32),
     on_change: Option<Box<dyn FnMut(NaiveDate)>>,
@@ -55,6 +57,7 @@ pub struct DatePicker {
 impl DatePicker {
     pub fn new(initial: NaiveDate) -> Self {
         Self {
+            accessible_name: None,
             selected: initial,
             month_view: (initial.year(), initial.month()),
             on_change: None,
@@ -69,6 +72,13 @@ impl DatePicker {
 
     pub fn selected(&self) -> NaiveDate {
         self.selected
+    }
+
+    /// Name the date picker for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     pub fn month_view(&self) -> (i32, u32) {
@@ -409,9 +419,11 @@ impl Widget for DatePicker {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.selected.format("%Y-%m-%d").to_string())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
+                    focused: self.is_focused(),
                     ..Default::default()
                 }),
         )
