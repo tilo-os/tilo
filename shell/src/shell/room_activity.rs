@@ -26,7 +26,7 @@ use ui::text_render::TextRenderer;
 use ui::widget::{ArtifactKind, HistoryEntry, HistoryEntryId, HistoryFilter};
 use ui::{
     ActivityDigest, ActivityTimeline, AuthorDirectory, GroupNameRequest, HistoryFacetIndex,
-    HistorySource, NamedRange, Theme, Widget,
+    HistorySeenFrontier, HistorySource, NamedRange, RecordStore, Theme, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -35,6 +35,9 @@ use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::state::WorkspaceTree;
+use crate::shell::workspace_history::{
+    FeedCoverage, WorkspaceHistoryId, WorkspaceHistoryIndex, WorkspaceHistoryQuery,
+};
 
 /// Widest the sheet ever gets. Past this the rows stop gaining information
 /// and start becoming hard to scan across.
@@ -196,6 +199,12 @@ pub struct RoomActivityPane {
     /// to (`None` for no single workspace). [`Self::scope`] selects the
     /// subset handed to the timeline.
     derived: Vec<(HistoryEntry, Option<u64>)>,
+    /// Tree rows after workspace scoping, retained as the shell-document
+    /// contribution to the workspace-wide multi-document index.
+    scoped_tree_rows: Vec<HistoryEntry>,
+    history_index: WorkspaceHistoryIndex,
+    projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
+    feed_coverage: FeedCoverage,
     scope: RoomScope,
     scope_rects: Vec<(RoomScope, Rect)>,
     author: Option<String>,
@@ -215,11 +224,11 @@ pub struct RoomActivityPane {
     /// wouldn't notice — but it changes which rows are this room's.
     last_active: Option<u64>,
     now_override: Option<SystemTime>,
-    /// Per-workspace private frontier. This is deliberately a wall-clock
-    /// reduction rather than a document write: opening history must not
-    /// create collaborative history.
-    seen_at: HashMap<u64, SystemTime>,
-    catchup_since: SystemTime,
+    /// Per-workspace private causal frontier. Opening history must not create
+    /// collaborative history, and timestamps cannot identify delayed or
+    /// concurrent CRDT changes correctly.
+    seen_frontiers: HashMap<u64, HistorySeenFrontier>,
+    catchup_frontier: HistorySeenFrontier,
     persistent_frontiers: bool,
     view: ActivityView,
     view_rects: Vec<(ActivityView, Rect)>,
@@ -259,6 +268,10 @@ impl RoomActivityPane {
             last_heads: Vec::new(),
             period: Period::default(),
             derived: Vec::new(),
+            scoped_tree_rows: Vec::new(),
+            history_index: WorkspaceHistoryIndex::new(),
+            projected_origins: HashMap::new(),
+            feed_coverage: FeedCoverage::default(),
             scope: RoomScope::default(),
             scope_rects: Vec::new(),
             author: None,
@@ -271,8 +284,8 @@ impl RoomActivityPane {
             digest: ActivityDigest::default(),
             last_active: None,
             now_override: None,
-            seen_at: HashMap::new(),
-            catchup_since: SystemTime::UNIX_EPOCH,
+            seen_frontiers: HashMap::new(),
+            catchup_frontier: HistorySeenFrontier::default(),
             persistent_frontiers: false,
             view: ActivityView::default(),
             view_rects: Vec::new(),
@@ -293,11 +306,17 @@ impl RoomActivityPane {
         let section = settings_store::load_section("history");
         if let Some(frontiers) = section.get("seen_frontiers").and_then(|v| v.as_object()) {
             for (workspace, value) in frontiers {
-                let (Ok(id), Some(seconds)) = (workspace.parse::<u64>(), value.as_u64()) else {
+                let (Ok(id), Some(encoded)) = (workspace.parse::<u64>(), value.as_array()) else {
                     continue;
                 };
-                pane.seen_at
-                    .insert(id, SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+                pane.seen_frontiers.insert(
+                    id,
+                    HistorySeenFrontier::from_hex(
+                        encoded
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned)),
+                    ),
+                );
             }
         }
         pane
@@ -333,26 +352,21 @@ impl RoomActivityPane {
     /// shown. It advances only when the surface closes, so opening it cannot
     /// erase the very summary the user came to read.
     pub fn begin_view(&mut self, workspace: u64) {
-        self.catchup_since = self
-            .seen_at
+        self.catchup_frontier = self
+            .seen_frontiers
             .get(&workspace)
-            .copied()
-            .unwrap_or(SystemTime::UNIX_EPOCH);
+            .cloned()
+            .unwrap_or_default();
         self.rebuild_digest_since_frontier();
     }
 
     pub fn finish_view(&mut self, workspace: u64) {
-        let Some(latest) = self
-            .timeline
-            .entries()
-            .iter()
-            .map(|entry| entry.timestamp)
-            .max()
-        else {
+        if self.timeline.entries().is_empty() {
             return;
-        };
-        self.seen_at.insert(workspace, latest);
-        self.catchup_since = latest;
+        }
+        let frontier = self.seen_frontiers.entry(workspace).or_default();
+        frontier.mark_seen(self.timeline.entries());
+        self.catchup_frontier = frontier.clone();
         self.rebuild_digest_since_frontier();
         if self.persistent_frontiers {
             self.persist_frontiers();
@@ -362,17 +376,12 @@ impl RoomActivityPane {
     /// `(headline, unread, pulse)` consumed by passive chrome. `pulse` is a
     /// stable projection of the newest content id, not a frame counter.
     pub fn glance_signal(&self, workspace: u64) -> (Option<String>, usize, u64) {
-        let since = self
-            .seen_at
-            .get(&workspace)
-            .copied()
-            .unwrap_or(SystemTime::UNIX_EPOCH);
         let unread = self
-            .timeline
-            .entries()
-            .iter()
-            .filter(|entry| entry.timestamp > since)
-            .count();
+            .seen_frontiers
+            .get(&workspace)
+            .map_or(self.timeline.entries().len(), |frontier| {
+                frontier.unread_count(self.timeline.entries())
+            });
         let latest = self
             .timeline
             .entries()
@@ -387,17 +396,23 @@ impl RoomActivityPane {
     }
 
     fn rebuild_digest_since_frontier(&mut self) {
-        self.digest = ActivityDigest::from_entries(self.timeline.entries(), self.catchup_since, 5);
+        self.digest =
+            ActivityDigest::from_unseen(self.timeline.entries(), &self.catchup_frontier, 5);
     }
 
     fn persist_frontiers(&self) {
         let mut frontiers = serde_json::Map::new();
-        for (workspace, time) in &self.seen_at {
-            let seconds = time
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            frontiers.insert(workspace.to_string(), serde_json::Value::from(seconds));
+        for (workspace, frontier) in &self.seen_frontiers {
+            frontiers.insert(
+                workspace.to_string(),
+                serde_json::Value::Array(
+                    frontier
+                        .to_hex()
+                        .into_iter()
+                        .map(serde_json::Value::from)
+                        .collect(),
+                ),
+            );
         }
         let mut section = serde_json::Map::new();
         section.insert(
@@ -561,9 +576,50 @@ impl RoomActivityPane {
                 }
             }
         }
+        self.scoped_tree_rows.clone_from(&rows);
+        self.install_rows(rows);
+    }
+
+    /// Join the room's shell history with every locally available record in
+    /// that room. The projected id map keeps callbacks compact while every
+    /// authoritative operation can still resolve the originating document.
+    pub fn refresh_records(&mut self, tree: &mut WorkspaceTree, records: &RecordStore) {
+        let query = match self.scope {
+            RoomScope::ThisRoom => tree
+                .active_workspace()
+                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room))
+                .unwrap_or_default(),
+            RoomScope::AllWorkspaces => WorkspaceHistoryQuery::default(),
+        };
+        let _ = self.history_index.refresh_with_workspace_entries(
+            tree,
+            records,
+            query,
+            &self.scoped_tree_rows,
+        );
+        self.feed_coverage = self.history_index.coverage().clone();
+        self.projected_origins.clear();
+        let rows: Vec<HistoryEntry> = self
+            .history_index
+            .entries()
+            .iter()
+            .map(|row| {
+                let projected = row.timeline_entry();
+                self.projected_origins.insert(projected.id, row.id.clone());
+                projected
+            })
+            .collect();
+        self.install_rows(rows);
+    }
+
+    pub fn feed_coverage(&self) -> &FeedCoverage {
+        &self.feed_coverage
+    }
+
+    fn install_rows(&mut self, rows: Vec<HistoryEntry>) {
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
-        self.digest = ActivityDigest::from_entries(&rows, self.catchup_since, 5);
+        self.digest = ActivityDigest::from_unseen(&rows, &self.catchup_frontier, 5);
 
         let mut seen: HashSet<String> = HashSet::new();
         self.contributors = rows
