@@ -959,6 +959,16 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
+    /// Activate the identity-only OOBE for a qOS session installed on an
+    /// existing Linux host. It retains the trusted chrome boundary and the
+    /// identity/backup gates of full-system onboarding.
+    pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.onboarding =
+            Some(crate::onboarding_view::OnboardingView::new_for_host_desktop(identity_dir));
+        self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
+    }
+
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
