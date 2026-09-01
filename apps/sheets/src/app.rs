@@ -3165,6 +3165,32 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            actions::SheetsOperation::ImportCsv => self.begin_import(Interchange::Csv),
+            actions::SheetsOperation::ImportXlsx => self.begin_import(Interchange::Xlsx),
+            actions::SheetsOperation::ImportOds => self.begin_import(Interchange::Ods),
+            actions::SheetsOperation::ExportCsv => self.begin_export(Interchange::Csv),
+            actions::SheetsOperation::ExportXlsx => self.begin_export(Interchange::Xlsx),
+            actions::SheetsOperation::ExportOds => self.begin_export(Interchange::Ods),
+            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(),
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.pending.seeded {
             // Pull the shared global defaults once at startup.

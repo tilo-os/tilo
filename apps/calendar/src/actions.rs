@@ -31,8 +31,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    RetryPolicy,
+    ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::CalDoc;
@@ -65,9 +64,7 @@ fn calendar_operation(
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
         | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
-        CalendarOperation::Sync => spec
-            .execution(ExecutionMode::Background { cancellable: false })
-            .retry_policy(RetryPolicy::Idempotent),
+        CalendarOperation::Sync => spec.retry_policy(RetryPolicy::Idempotent),
         CalendarOperation::ExportIcs => spec.destructive(),
     }
 }

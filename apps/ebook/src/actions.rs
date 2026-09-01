@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc::BooksDoc;
@@ -27,6 +27,31 @@ use crate::model::{AnnoKind, Annotation, HiColor};
 
 /// Registry `type_id` for every Books action.
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
+pub const EBOOK_OPERATION_TYPE: &str = "ebook.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EbookOperation {
+    PreviousPage,
+    NextPage,
+    ToggleContents,
+    ToggleNotes,
+    OpenSettings,
+    OpenBook,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOperation>, String> {
+    if type_id != EBOOK_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: EbookOperation) -> ActionSpec {
+    ActionSpec::operation(id, label, kind, EBOOK_OPERATION_TYPE, &value)
+        .expect("EbookOperation is always serializable")
+}
 
 /// One per-block piece of a ranged highlight. A selection that spans several
 /// paragraphs is stored as one highlight row per touched block, all sharing the
@@ -860,6 +885,46 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         ctx.book_title.clone(),
     );
     let mut root = book_level_actions(root, ctx);
+    for (id, label, kind, value) in [
+        (
+            "previous-page",
+            "Previous page",
+            OperationKind::View,
+            EbookOperation::PreviousPage,
+        ),
+        (
+            "next-page",
+            "Next page",
+            OperationKind::View,
+            EbookOperation::NextPage,
+        ),
+        (
+            "contents",
+            "Toggle table of contents",
+            OperationKind::View,
+            EbookOperation::ToggleContents,
+        ),
+        (
+            "notes",
+            "Toggle notes",
+            OperationKind::View,
+            EbookOperation::ToggleNotes,
+        ),
+        (
+            "settings",
+            "Open reading settings",
+            OperationKind::View,
+            EbookOperation::OpenSettings,
+        ),
+        (
+            "open-book",
+            "Open book",
+            OperationKind::Effect,
+            EbookOperation::OpenBook,
+        ),
+    ] {
+        root = root.with_action(operation(id, label, kind, value));
+    }
 
     let annos = BooksDoc::annotations_for(doc, &ctx.book_id);
     let (highlights, highlight_groups) = highlight_resources(&annos, &ctx.book_id);
@@ -1020,15 +1085,20 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("Toggle bookmark");
         let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Toggle bookmark")),
             "{labels:?}"
         );
+        palette.set_query("Delete highlight");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete highlight")),
             "{labels:?}"
         );
+        palette.set_query("Delete comment");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete comment")),
             "{labels:?}"

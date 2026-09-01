@@ -46,8 +46,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::SlidesDoc;
@@ -57,6 +57,40 @@ use crate::model::{
 
 /// Registry `type_id` for every Slides action.
 pub const SLIDES_ACTION_TYPE: &str = "slides.action";
+pub const SLIDES_OPERATION_TYPE: &str = "slides.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlidesOperation {
+    ShowEditor,
+    ShowOverview,
+    StartPresentation,
+    EndPresentation,
+    Open,
+    SaveAs,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SlidesOperation>, String> {
+    if type_id != SLIDES_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, SLIDES_OPERATION_TYPE, &value)
+        .expect("SlidesOperation is always serializable");
+    match value {
+        SlidesOperation::ShowEditor | SlidesOperation::ShowOverview => spec
+            .with_contract(ActionContract::view())
+            .retry_policy(RetryPolicy::Idempotent),
+        SlidesOperation::StartPresentation | SlidesOperation::EndPresentation => {
+            spec.with_contract(ActionContract::view())
+        }
+        SlidesOperation::Open | SlidesOperation::SaveAs => spec.destructive(),
+    }
+}
 
 // ===========================================================================
 // Serializable snapshots — the document shape, so `apply` is a pure write.
@@ -610,7 +644,14 @@ pub struct SlidesResourceCtx {
     reason = "SlidesAction always serializes; see encode()'s doc comment"
 )]
 fn immediate_spec(id: &str, label: &str, action: &SlidesAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, SLIDES_ACTION_TYPE, action).expect("encode slides action")
+    let spec = ActionSpec::immediate(id, label, SLIDES_ACTION_TYPE, action)
+        .expect("encode slides action")
+        .reversible();
+    if id.contains("delete") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// A one-line label for an element in the palette: a text element shows its
@@ -641,6 +682,47 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
     let title = ctx.deck_title.trim();
     let deck_label = if title.is_empty() { "Deck" } else { title };
     let mut deck = Resource::new("slides.deck", "slides.deck", deck_label);
+
+    for (id, label, kind, value) in [
+        (
+            "editor",
+            "Show editor",
+            OperationKind::View,
+            SlidesOperation::ShowEditor,
+        ),
+        (
+            "overview",
+            "Show slide overview",
+            OperationKind::View,
+            SlidesOperation::ShowOverview,
+        ),
+        (
+            "present",
+            "Start presentation",
+            OperationKind::View,
+            SlidesOperation::StartPresentation,
+        ),
+        (
+            "end-presentation",
+            "End presentation",
+            OperationKind::View,
+            SlidesOperation::EndPresentation,
+        ),
+        (
+            "open",
+            "Open presentation",
+            OperationKind::Effect,
+            SlidesOperation::Open,
+        ),
+        (
+            "save-as",
+            "Save presentation",
+            OperationKind::Effect,
+            SlidesOperation::SaveAs,
+        ),
+    ] {
+        deck = deck.with_action(operation(id, label, kind, value));
+    }
 
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
@@ -816,8 +898,11 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("Add slide");
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Add slide")), "{labels:?}");
+        palette.set_query("Delete slide");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete slide")),
             "{labels:?}"
