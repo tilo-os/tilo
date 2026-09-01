@@ -284,7 +284,18 @@ impl PlayerApp {
                 CollabEvent::CRDTIncremental { data } => collab.ingest(&data),
                 CollabEvent::CRDTUpdate { data } => collab.ingest_snapshot(&data),
                 CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                    collab.ingest(&envelope.payload);
+                    if let Ok(collab_types::DocumentMutation::Incremental(data)) =
+                        collab_types::DocumentMutation::decode(&envelope.payload)
+                    {
+                        collab.ingest(&data);
+                    }
+                }
+                CollabEvent::SignedCRDTUpdate { envelope, .. } => {
+                    if let Ok(collab_types::DocumentMutation::Snapshot(data)) =
+                        collab_types::DocumentMutation::decode(&envelope.payload)
+                    {
+                        collab.ingest_snapshot(&data);
+                    }
                 }
                 _ => {}
             }

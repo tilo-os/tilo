@@ -8,7 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability};
+use collab_types::{
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
+    document_artifact_id, document_attestation_id,
+};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{Handshake, Request, Response};
 
@@ -79,13 +83,13 @@ fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
         return;
     };
     let Some(room) = RoomId::parse(&handshake.workspace_id) else {
-        let _ = write_frame(
+        let _ = write_action_frame(
             &mut stream,
             &Response::Denied("invalid workspace identity".into()),
         );
         return;
     };
-    while let Ok(request) = read_frame::<Request>(&mut stream) {
+    while let Ok(request) = read_action_frame::<Request>(&mut stream) {
         let response = match request {
             Request::Metadata => metadata(&room),
             Request::Sign { action, message } => {
@@ -94,8 +98,22 @@ fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
             Request::CollaborationJoin { workspace_id } => {
                 sign_collaboration_join(&room, &workspace_id)
             }
+            Request::CollaborationOp {
+                workspace_id,
+                app_id,
+                record_id,
+                unsigned_op,
+            } => sign_collaboration_op(
+                tree,
+                &room,
+                &handshake.app_id,
+                &workspace_id,
+                &app_id,
+                &record_id,
+                &unsigned_op,
+            ),
         };
-        if write_frame(&mut stream, &response).is_err() {
+        if write_action_frame(&mut stream, &response).is_err() {
             return;
         }
     }
@@ -204,6 +222,113 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
     }
 }
 
+/// Validate the entire unsigned document envelope before lending it the
+/// certified device signature. The app cannot turn this into a generic
+/// signing oracle: workspace/app are fixed by the launch handshake, artifact
+/// and attestation ids are route-derived, and only typed `Splice` document
+/// payloads pass.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is an independently authenticated boundary value: live tree, bound workspace/app, requested route, and opaque envelope"
+)]
+fn sign_collaboration_op(
+    tree: &WorkspaceTreeHandle,
+    bound_room: &RoomId,
+    bound_app_id: &str,
+    workspace_id: &str,
+    app_id: &str,
+    record_id: &str,
+    unsigned_op: &[u8],
+) -> Response {
+    if workspace_id != bound_room.to_string() || app_id != bound_app_id {
+        return Response::Denied(
+            "collaboration operation requested for a different launch route".into(),
+        );
+    }
+    let profile = match crate::identity_registry::selected_identity_profile(workspace_id) {
+        Ok(Some(profile)) => profile,
+        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Err(error) => return Response::Error(error.to_string()),
+    };
+    let (device, _) = match require_trusted_current_device(&profile) {
+        Ok(material) => material,
+        Err(error) => return Response::Denied(error.to_string()),
+    };
+    let op: SignedOp = match postcard::from_bytes(unsigned_op) {
+        Ok(op) => op,
+        Err(error) => {
+            return Response::Denied(format!(
+                "collaboration operation is not a SignedOp: {error}"
+            ));
+        }
+    };
+    let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+    let expected_artifact = document_artifact_id(app_id, workspace_id, record_id);
+    let expected_attestation = document_attestation_id(app_id, workspace_id, record_id);
+    let now = std::time::SystemTime::now();
+    let skew = Duration::from_secs(300);
+    let earliest = now
+        .checked_sub(skew)
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let latest = now.checked_add(skew).unwrap_or(now);
+    if op.author != author
+        || op.artifact != expected_artifact
+        || op.attestation_id != expected_attestation
+        || op.op_class != OpClass::Splice
+        || op.encryption.is_some()
+        || DocumentMutation::decode(&op.payload).is_err()
+        || op.timestamp < earliest
+        || op.timestamp > latest
+    {
+        return Response::Denied(
+            "collaboration operation fields do not match its certified document route".into(),
+        );
+    }
+    let principal_id =
+        Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
+            .id()
+            .to_string();
+    let allowed = {
+        let tree = tree.read();
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| &workspace.room == bound_room)
+        else {
+            return Response::Denied("workspace is not available".into());
+        };
+        let Some(role) = workspace.role_of(&principal_id) else {
+            return Response::Denied("identity is not a workspace member".into());
+        };
+        let actor = Actor::person(Some(role), &principal_id)
+            .with_principal(Principal::App(app_id.to_string()))
+            .in_room(workspace_id.to_string());
+        let resource = ResourceRef::Artifact {
+            app: Some(app_id.to_string()),
+            kind: ArtifactKind::Note,
+            instance: expected_artifact,
+        };
+        let decision = decide_capability(
+            &actor,
+            &resource,
+            Verb::Write,
+            &workspace.capabilities,
+            Some(now_unix()),
+        );
+        let role_can_write = !matches!(role, Role::Commenter | Role::Viewer | Role::Denied);
+        drop(tree);
+        decision == CapDecision::Allow && role_can_write
+    };
+    if !allowed {
+        return Response::Denied("workspace role or capability denies document editing".into());
+    }
+    let signing_bytes = match op.signing_bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => return Response::Error(error.to_string()),
+    };
+    Response::Signature(device.sign(&signing_bytes).to_bytes().to_vec())
+}
+
 /// Root-key operations are available only while this machine is covered by
 /// a valid, non-revoked `identity -> device` certificate. Apps never receive
 /// either key; this check makes revocation effective at the local broker too.
@@ -261,9 +386,43 @@ fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Re
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+#[cfg(test)]
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let len = u32::try_from(bytes.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "identity frame too large"))?;
+    stream.write_all(&len.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()
+}
+
+const MAX_ACTION_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+fn read_action_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+    let mut len = [0_u8; 4];
+    stream.read_exact(&mut len)?;
+    let len = u32::from_le_bytes(len) as usize;
+    if len > MAX_ACTION_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity action frame exceeds 64 MiB",
+        ));
+    }
+    let mut bytes = vec![0_u8; len];
+    stream.read_exact(&mut bytes)?;
+    postcard::from_bytes(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
+    let bytes = postcard::to_allocvec(value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if bytes.len() > MAX_ACTION_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity action frame exceeds 64 MiB",
+        ));
+    }
     let len = u32::try_from(bytes.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "identity frame too large"))?;
     stream.write_all(&len.to_le_bytes())?;
@@ -375,6 +534,140 @@ mod tests {
 
     #[test]
     #[serial_test::serial(identity_env)]
+    fn collaboration_signing_binds_route_payload_and_live_editor_role() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+            std::env::set_var("QOS_IDENTITY_ROOT", &system_root);
+        }
+        let identity_dir = xdg.join("qos/identity");
+        let paths = qos_user_identity::IdentityPaths::under(&system_root);
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+
+        let room = RoomId::new();
+        let workspace_id = room.to_string();
+        let app_id = "dev.qos.notes";
+        let record_id = "meeting-notes";
+        let profile = crate::identity_registry::selected_identity_profile(&workspace_id)
+            .expect("registry")
+            .expect("profile");
+        let device =
+            qos_user_identity::persist::read_device_key(&paths.device_privkey).expect("device key");
+        let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(1),
+            "Room",
+        );
+        workspace.room = room;
+        workspace.set_owner(profile.principal_id());
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let tree = tree.shared();
+
+        let now = std::time::SystemTime::now();
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"automerge document".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            document_artifact_id(app_id, &workspace_id, record_id),
+            author,
+            document_attestation_id(app_id, &workspace_id, record_id),
+            OpClass::Splice,
+            now,
+            1,
+        );
+        let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
+        let Response::Signature(signature) = sign_collaboration_op(
+            &tree,
+            &room,
+            app_id,
+            &workspace_id,
+            app_id,
+            record_id,
+            &unsigned,
+        ) else {
+            panic!("valid certified document operation was not signed");
+        };
+        let signature = <[u8; 64]>::try_from(signature).expect("64-byte signature");
+        device
+            .verifying_key()
+            .verify(
+                &op.signing_bytes().expect("signing bytes"),
+                &Signature::from_bytes(&signature),
+            )
+            .expect("device signature");
+
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                "dev.qos.calendar",
+                record_id,
+                &unsigned,
+            ),
+            Response::Denied(_)
+        ));
+        op.payload = b"untyped legacy bytes".to_vec();
+        let malformed = postcard::to_stdvec(&op).expect("malformed envelope");
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &malformed,
+            ),
+            Response::Denied(_)
+        ));
+
+        {
+            let mut tree = tree.write();
+            let workspace = &mut tree.workspaces[0];
+            workspace.owner = None;
+            workspace.capabilities.clear();
+            workspace.capabilities.push(CapOverride::membership(
+                Subject::person(profile.principal_id()),
+                workspace_id.clone(),
+                Verb::Read,
+            ));
+            drop(tree);
+        }
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &room,
+                app_id,
+                &workspace_id,
+                app_id,
+                record_id,
+                &unsigned,
+            ),
+            Response::Denied(reason) if reason.contains("denies document editing")
+        ));
+
+        unsafe {
+            match old_xdg {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match old_root {
+                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
+                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(identity_env)]
     fn runtime_client_gets_metadata_and_only_granted_signing() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
@@ -392,11 +685,16 @@ mod tests {
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
         let room = RoomId::new();
+        let workspace_id = room.to_string();
+        let profile = crate::identity_registry::selected_identity_profile(&workspace_id)
+            .expect("registry")
+            .expect("profile");
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(1),
             "Room",
         );
         workspace.room = room;
+        workspace.set_owner(profile.principal_id());
         workspace.capabilities.push(CapOverride::grant(
             Subject::app("dev.qos.notes"),
             Scope::Action {
@@ -440,12 +738,12 @@ mod tests {
             .verify(b"saved", &Signature::from_bytes(&signature))
             .expect("signature");
         let join_proof = identity
-            .sign_collaboration_join(&room.to_string())
+            .sign_collaboration_join(&workspace_id)
             .expect("the launcher-bound workspace may request a join proof");
         VerifyingKey::from_bytes(&identity.signing_public_key())
             .expect("device key")
             .verify(
-                &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+                &runtime_identity::collaboration_join_signing_bytes(&workspace_id),
                 &Signature::from_bytes(&join_proof),
             )
             .expect("workspace-scoped device proof");
@@ -455,6 +753,29 @@ mod tests {
                 .is_err(),
             "the identity broker must not sign a join for another workspace"
         );
+        let record_id = "record-1";
+        let now = std::time::SystemTime::now();
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(b"automerge changes".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            document_artifact_id("dev.qos.notes", &workspace_id, record_id),
+            Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+            document_attestation_id("dev.qos.notes", &workspace_id, record_id),
+            OpClass::Splice,
+            now,
+            1,
+        );
+        let op_signature = identity
+            .sign_collaboration_op(
+                &workspace_id,
+                "dev.qos.notes",
+                record_id,
+                &postcard::to_stdvec(&op).expect("unsigned envelope"),
+            )
+            .expect("owner may sign a typed document operation");
+        op.signature = collab_types::Signature::from_bytes(op_signature);
+        collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
         drop(identity);
 
