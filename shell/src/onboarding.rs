@@ -238,18 +238,37 @@ impl Error for OnboardingError {}
 /// already exists but its fingerprint can't be read back.
 pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
     let identity_paths = crate::firstboot::collaboration_identity_paths();
-    mint_into_with_paths(identity_dir, &identity_paths)
+    mint_into_with_paths(identity_dir, &identity_paths, false)
+}
+
+/// Mint for qDesktop running on a pre-existing Linux distribution.
+///
+/// This is the only path that associates a fresh identity with the current
+/// Unix account's passwd display name.
+pub fn mint_into_for_legacy_linux_host(
+    identity_dir: &Path,
+) -> Result<MintedIdentity, OnboardingError> {
+    let identity_paths = crate::firstboot::collaboration_identity_paths();
+    mint_into_with_paths(identity_dir, &identity_paths, true)
 }
 
 fn mint_into_with_paths(
     identity_dir: &Path,
     identity_paths: &qos_user_identity::IdentityPaths,
+    legacy_linux_host: bool,
 ) -> Result<MintedIdentity, OnboardingError> {
-    use crate::firstboot::{ProvisionOutcome, ensure_collaboration_identity};
+    use crate::firstboot::{
+        ProvisionOutcome, ensure_collaboration_identity,
+        ensure_collaboration_identity_for_legacy_linux_host,
+    };
     let path = identity_dir.join("primary.json");
-    match ensure_collaboration_identity(identity_dir, identity_paths)
-        .map_err(|e| OnboardingError::Mint(e.to_string()))?
-    {
+    let outcome = if legacy_linux_host {
+        ensure_collaboration_identity_for_legacy_linux_host(identity_dir, identity_paths)
+    } else {
+        ensure_collaboration_identity(identity_dir, identity_paths)
+    }
+    .map_err(|e| OnboardingError::Mint(e.to_string()))?;
+    match outcome {
         ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
             fingerprint: pubkey_hex,
             path,
@@ -437,12 +456,12 @@ mod tests {
                 .map_or(0, |d| d.as_nanos())
         ));
         let system = qos_user_identity::IdentityPaths::under(dir.join("system"));
-        let minted = mint_into_with_paths(&dir, &system).expect("mint");
+        let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
         assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
         assert!(minted.path.exists());
 
         // Minting again reports the same key rather than a fresh one.
-        let again = mint_into_with_paths(&dir, &system).expect("second mint is idempotent");
+        let again = mint_into_with_paths(&dir, &system, false).expect("second mint is idempotent");
         assert_eq!(again.fingerprint, minted.fingerprint);
 
         let _ = std::fs::remove_dir_all(&dir);
