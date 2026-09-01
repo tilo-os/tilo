@@ -21,6 +21,11 @@ use vello::peniko::{Color, Fill};
 pub enum Icon {
     LayoutGrid,
     Settings2,
+    Mouse,
+    Keyboard,
+    Users,
+    Printer,
+    Globe,
     Wifi,
     Bluetooth,
     Monitor,
@@ -199,6 +204,33 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M19 7h-9"),
             circle_path(17.0, 17.0, 3.0),
             circle_path(7.0, 7.0, 3.0),
+        ],
+        Icon::Mouse => vec![
+            rect_path(5.0, 2.0, 14.0, 20.0, 7.0),
+            line_path(12.0, 6.0, 12.0, 10.0),
+        ],
+        Icon::Keyboard => vec![
+            rect_path(2.0, 4.0, 20.0, 16.0, 2.0),
+            path_from_d("M6 8h.01M10 8h.01M14 8h.01M18 8h.01"),
+            path_from_d("M6 12h.01M10 12h.01M14 12h.01M18 12h.01"),
+            line_path(8.0, 16.0, 16.0, 16.0),
+        ],
+        Icon::Users => vec![
+            circle_path(9.0, 7.0, 4.0),
+            path_from_d("M2 21v-2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v2"),
+            path_from_d("M16 3.13a4 4 0 0 1 0 7.75M22 21v-2a6 6 0 0 0-4.5-5.81"),
+        ],
+        Icon::Printer => vec![
+            path_from_d("M6 9V2h12v7"),
+            path_from_d(
+                "M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2",
+            ),
+            rect_path(6.0, 14.0, 12.0, 8.0, 0.0),
+        ],
+        Icon::Globe => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M2 12h20"),
+            path_from_d("M12 2a15.3 15.3 0 0 1 0 20M12 2a15.3 15.3 0 0 0 0 20"),
         ],
         Icon::Wifi => vec![
             path_from_d("M12 20h.01"),
@@ -987,6 +1019,11 @@ mod tests {
         for icon in [
             Icon::LayoutGrid,
             Icon::Settings2,
+            Icon::Mouse,
+            Icon::Keyboard,
+            Icon::Users,
+            Icon::Printer,
+            Icon::Globe,
             Icon::Wifi,
             Icon::Bluetooth,
             Icon::Monitor,
