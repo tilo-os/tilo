@@ -381,7 +381,7 @@ fn create_device_key_claim_temp(
                 }
                 return Ok(temp);
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(PersistError::Io(error)),
         }
     }
@@ -420,7 +420,7 @@ pub fn adopt_device_key(
     // Read back the claimed final path: this validates the key's required
     // mode and keeps adoption subject to the same persistence contract as
     // ordinary first-boot creation.
-    Ok(read_device_key(path)?)
+    read_device_key(path)
 }
 
 /// Read a signed device cert from disk.

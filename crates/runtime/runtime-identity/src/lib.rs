@@ -313,14 +313,24 @@ impl IdentityLock {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(dir.join(LOCK_FILE))?;
-        let meta = file.metadata()?;
-        if !meta.file_type().is_file()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.permissions().mode() & 0o077 != 0
-        {
+        let mut meta = file.metadata()?;
+        if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity lifecycle lock must be a private user-owned regular file",
+            ));
+        }
+        // Older releases created this non-secret advisory file under a
+        // shared-group umask. Tighten an otherwise valid, user-owned lock in
+        // place so the security check does not strand upgraded identities.
+        if meta.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            meta = file.metadata()?;
+        }
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity lifecycle lock must be private",
             ));
         }
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
@@ -727,8 +737,11 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 /// Wire-format types the loader deserialises from disk, mirroring
 /// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
-    use serde::{Deserialize, Serialize};
-    use serde_bytes as serde_bytes_codec;
+    use std::fmt;
+
+    use serde::de::{SeqAccess, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use zeroize::Zeroizing;
 
     use crate::{KeyProtection, SecretReference};
 
@@ -772,10 +785,71 @@ mod ondisk {
         pub share_index: u16,
         #[serde(
             default,
-            with = "serde_bytes_codec",
-            skip_serializing_if = "Vec::is_empty"
+            with = "zeroizing_bytes_codec",
+            skip_serializing_if = "zeroizing_bytes_codec::is_empty"
         )]
-        pub secret_bytes: Vec<u8>,
+        pub secret_bytes: Zeroizing<Vec<u8>>,
+    }
+
+    /// `serde_bytes` preserves the compact on-disk representation, but its
+    /// normal deserializer returns a plain `Vec`. Root signing shares parsed
+    /// from a decrypted portable record must remain zeroizing even on every
+    /// error path after deserialization.
+    mod zeroizing_bytes_codec {
+        use super::{Deserializer, SeqAccess, Serializer, Visitor, Zeroizing, fmt};
+
+        pub fn is_empty(bytes: &Zeroizing<Vec<u8>>) -> bool {
+            bytes.is_empty()
+        }
+
+        pub fn serialize<S>(bytes: &Zeroizing<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serde_bytes::serialize(bytes.as_slice(), serializer)
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct ZeroizingBytesVisitor;
+
+            impl<'de> Visitor<'de> for ZeroizingBytesVisitor {
+                type Value = Zeroizing<Vec<u8>>;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a byte sequence")
+                }
+
+                fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok(Zeroizing::new(bytes.to_vec()))
+                }
+
+                fn visit_byte_buf<E>(self, bytes: Vec<u8>) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok(Zeroizing::new(bytes))
+                }
+
+                fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                where
+                    A: SeqAccess<'de>,
+                {
+                    let mut bytes = Zeroizing::new(Vec::new());
+                    while let Some(byte) = sequence.next_element()? {
+                        bytes.push(byte);
+                    }
+                    Ok(bytes)
+                }
+            }
+
+            deserializer.deserialize_byte_buf(ZeroizingBytesVisitor)
+        }
     }
 }
 
@@ -1424,7 +1498,7 @@ fn identity_from_record(
     }
 
     let signing_key = if ti.single_device && !secret.is_empty() {
-        let mut scalar = [0u8; 32];
+        let mut scalar = Zeroizing::new([0u8; 32]);
         scalar.copy_from_slice(secret);
         // SigningKey::from_bytes is infallible today; if a future dalek revision
         // surfaces validation errors, catch them here.
@@ -1475,6 +1549,29 @@ fn _static_no_serialize() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_group_writable_lifecycle_lock_is_tightened() {
+        let dir = tempfile::tempdir().expect("identity directory");
+        let lock = dir.path().join(LOCK_FILE);
+        fs::write(&lock, []).expect("legacy lock");
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
+
+        assert!(
+            list_identities(dir.path())
+                .expect("upgrade lock")
+                .is_empty()
+        );
+        assert_eq!(
+            fs::metadata(lock)
+                .expect("lock metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn action_frames_keep_multi_megabyte_document_bytes_compact() {

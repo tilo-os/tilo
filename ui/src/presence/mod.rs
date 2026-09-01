@@ -8,8 +8,8 @@ mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use render::{
-    PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_remote_cursors,
-    draw_remote_presence, layout_peer_pills,
+    PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
+    draw_remote_cursors, draw_remote_presence, layout_peer_pills,
 };
 
 /// How long a "just typed" highlight lingers before fading out.

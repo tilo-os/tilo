@@ -146,9 +146,9 @@ pub fn import_portable_backup(
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`import_portable_backup`], and also rejects an
-/// otherwise valid backup whose authenticated public key differs from
-/// `expected_key`.
+/// Returns an error when the backup cannot be safely opened, authenticated,
+/// decoded, or imported, when its identity differs from `expected_key`, or
+/// when the destination identity already conflicts with another record.
 pub fn import_portable_backup_matching(
     backup_path: impl AsRef<Path>,
     passphrase: &[u8],
@@ -297,7 +297,7 @@ fn portable_record(path: &Path) -> io::Result<(Zeroizing<Vec<u8>>, [u8; 32])> {
     }
     let group_public_key = identity.group_public_key();
 
-    record.threshold_identity.secret_bytes = secret.to_vec();
+    record.threshold_identity.secret_bytes = Zeroizing::new(secret.to_vec());
     record.schema_version = 1;
     record.secret_ref = None;
     let portable = serde_json::to_vec_pretty(&record)
@@ -321,7 +321,7 @@ fn record_for_validation(record: &super::ondisk::IdentityRecord) -> super::ondis
             threshold: record.threshold_identity.threshold,
             total_shares: record.threshold_identity.total_shares,
             share_index: record.threshold_identity.share_index,
-            secret_bytes: Vec::new(),
+            secret_bytes: Zeroizing::new(Vec::new()),
         },
         created_at: record.created_at.clone(),
         schema_version: record.schema_version,
@@ -362,7 +362,7 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
         ARGON_MEMORY_KIB,
         ARGON_ITERATIONS,
         ARGON_LANES,
-    );
+    )?;
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_slice())
         .map_err(|_| io::Error::other("could not initialize portable backup encryption"))?;
     let ciphertext = cipher
@@ -393,7 +393,7 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
 fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     validate_passphrase(passphrase)?;
     let header = parse_header(blob)?;
-    let ciphertext = &blob[HEADER_LEN..];
+    let ciphertext = blob.get(HEADER_LEN..).ok_or_else(invalid_backup)?;
     if ciphertext.len() < AEAD_TAG_LEN {
         return Err(invalid_backup());
     }
@@ -410,7 +410,7 @@ fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>>
             XNonce::from_slice(&header.nonce),
             Payload {
                 msg: ciphertext,
-                aad: &blob[..HEADER_LEN],
+                aad: blob.get(..HEADER_LEN).ok_or_else(invalid_backup)?,
             },
         )
         .map(Zeroizing::new)
@@ -472,21 +472,32 @@ fn encode_header(
     memory_kib: u32,
     iterations: u32,
     lanes: u32,
-) -> [u8; HEADER_LEN] {
+) -> io::Result<[u8; HEADER_LEN]> {
     let mut out = [0_u8; HEADER_LEN];
     let mut at = 0;
-    out[..MAGIC.len()].copy_from_slice(MAGIC);
-    at += MAGIC.len();
-    out[at] = FORMAT_VERSION;
-    at += 1;
+    write_header_part(&mut out, &mut at, MAGIC)?;
+    write_header_part(&mut out, &mut at, &[FORMAT_VERSION])?;
     for value in [memory_kib, iterations, lanes] {
-        out[at..at + 4].copy_from_slice(&value.to_le_bytes());
-        at += 4;
+        write_header_part(&mut out, &mut at, &value.to_le_bytes())?;
     }
-    out[at..at + SALT_LEN].copy_from_slice(salt);
-    at += SALT_LEN;
-    out[at..at + NONCE_LEN].copy_from_slice(nonce);
-    out
+    write_header_part(&mut out, &mut at, salt)?;
+    write_header_part(&mut out, &mut at, nonce)?;
+    Ok(out)
+}
+
+fn write_header_part(out: &mut [u8], offset: &mut usize, value: &[u8]) -> io::Result<()> {
+    let end = offset.checked_add(value.len()).ok_or_else(invalid_backup)?;
+    let destination = out.get_mut(*offset..end).ok_or_else(invalid_backup)?;
+    destination.copy_from_slice(value);
+    *offset = end;
+    Ok(())
+}
+
+fn read_header_part<'a>(blob: &'a [u8], offset: &mut usize, len: usize) -> io::Result<&'a [u8]> {
+    let end = offset.checked_add(len).ok_or_else(invalid_backup)?;
+    let value = blob.get(*offset..end).ok_or_else(invalid_backup)?;
+    *offset = end;
+    Ok(value)
 }
 
 #[allow(
@@ -495,28 +506,25 @@ fn encode_header(
     reason = "the initial HEADER_LEN check bounds every fixed-format offset"
 )]
 fn parse_header(blob: &[u8]) -> io::Result<Header> {
-    if blob.len() < HEADER_LEN || &blob[..MAGIC.len()] != MAGIC {
+    if blob.len() < HEADER_LEN || blob.get(..MAGIC.len()) != Some(MAGIC) {
         return Err(invalid_backup());
     }
     let mut at = MAGIC.len();
-    if blob[at] != FORMAT_VERSION {
+    if read_header_part(blob, &mut at, 1)?.first().copied() != Some(FORMAT_VERSION) {
         return Err(invalid_backup());
     }
-    at += 1;
-    let read_u32 = |offset: &mut usize| {
+    let read_u32 = |offset: &mut usize| -> io::Result<u32> {
         let mut raw = [0_u8; 4];
-        raw.copy_from_slice(&blob[*offset..*offset + 4]);
-        *offset += 4;
-        u32::from_le_bytes(raw)
+        raw.copy_from_slice(read_header_part(blob, offset, 4)?);
+        Ok(u32::from_le_bytes(raw))
     };
-    let memory_kib = read_u32(&mut at);
-    let iterations = read_u32(&mut at);
-    let lanes = read_u32(&mut at);
+    let memory_kib = read_u32(&mut at)?;
+    let iterations = read_u32(&mut at)?;
+    let lanes = read_u32(&mut at)?;
     let mut salt = [0_u8; SALT_LEN];
-    salt.copy_from_slice(&blob[at..at + SALT_LEN]);
-    at += SALT_LEN;
+    salt.copy_from_slice(read_header_part(blob, &mut at, SALT_LEN)?);
     let mut nonce = [0_u8; NONCE_LEN];
-    nonce.copy_from_slice(&blob[at..at + NONCE_LEN]);
+    nonce.copy_from_slice(read_header_part(blob, &mut at, NONCE_LEN)?);
     Ok(Header {
         memory_kib,
         iterations,
