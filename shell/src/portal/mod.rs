@@ -60,7 +60,7 @@ pub use remote_desktop::{
 pub use screencast::ScreenCastBackend;
 pub use screencast_pipewire::{
     MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError, ScreenCastStreamProvisioner,
-    ScreenCastStreamProvisionerHandle,
+    ScreenCastStreamProvisionerHandle, UnavailableScreenCastProvisioner,
 };
 
 use std::collections::HashMap;
@@ -437,8 +437,8 @@ pub struct PortalContext {
 
 impl PortalContext {
     /// Build a context wired with null spawners — `FileChooser` cancels every
-    /// request, the `ScreenCast` provisioner returns a synthetic node-id.
-    /// Used by tests that only care about the response-code path; production always injects real spawners via field initialisers.
+    /// request and `ScreenCast` explicitly reports that no capture producer is
+    /// available. Used by tests that only care about the response-code path.
     pub fn new_with_null_spawners(
         grants: GrantStoreHandle,
         prompts: PromptQueueHandle,
@@ -450,7 +450,9 @@ impl PortalContext {
             caller_map,
             file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
-                MockScreenCastProvisioner::new_with_node(1, "default"),
+                UnavailableScreenCastProvisioner::new(
+                    "this qOS session has no PipeWire capture producer",
+                ),
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
             documents: DocumentStoreHandle::host_paths(),

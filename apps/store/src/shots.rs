@@ -78,14 +78,14 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
     vec![
         qos(
             "Notes",
-            "CRDT-native note-taking. Fast, spatial, collaborative.",
+            "Capture ideas, organise projects, and work together in real time.",
             "Productivity",
             InstalledState::Not,
             "0.1.0",
         ),
         qos(
             "Terminal",
-            "GPU-accelerated terminal built on the ui toolkit.",
+            "A fast terminal for commands, scripts, and development tools.",
             "System",
             // Cached + marked installed (pinned): Open + Installed + Remove.
             InstalledState::Installed {
@@ -97,7 +97,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         ),
         qos(
             "Files",
-            "Spatial file manager that speaks the FUSE mount.",
+            "Browse, organise, and share files across your workspaces.",
             "System",
             // Cached, not pinned, update available: Update + Mark installed.
             InstalledState::Installed {
@@ -109,7 +109,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         ),
         fh(
             "Chess",
-            "The GNU Chess board Flatpak — legacy but keeps working.",
+            "Play a classic game of chess against a person or the computer.",
             "Games",
             InstalledState::Not,
         ),
@@ -138,7 +138,7 @@ pub fn seeded_app() -> StoreApp {
     let mut app = StoreApp::new();
     app.set_flatpak_available(true);
     app.set_items(fixture_catalog());
-    app.set_status_line("Loaded 6 apps from qOS main + Flathub.");
+    app.set_status_line("6 apps available.");
     app
 }
 

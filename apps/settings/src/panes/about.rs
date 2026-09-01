@@ -138,7 +138,7 @@ pub fn build() -> Box<dyn Widget> {
 
 pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
     // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = hero("\u{f0322}", &info.hostname, &info.pretty_name); // laptop glyph
+    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
 
     let identity = card(
         "Workspace identity",

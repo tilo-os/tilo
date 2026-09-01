@@ -21,6 +21,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
+use shell::compositor::capture::CaptureExecutor;
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
@@ -47,6 +48,10 @@ pub struct ShellDriver {
     modifiers: Modifiers,
     focus: Option<NodeId>,
     last_cursor: Point,
+    /// Opt-in because screenshot/recording intents perform filesystem/GPU
+    /// work; scenarios enable it only when they are explicitly verifying the
+    /// production capture handoff.
+    capture_executor: Option<CaptureExecutor>,
 }
 
 impl ShellDriver {
@@ -72,6 +77,7 @@ impl ShellDriver {
             modifiers: Modifiers::default(),
             focus: None,
             last_cursor: Point::ORIGIN,
+            capture_executor: None,
         }
     }
 
@@ -227,6 +233,16 @@ impl ShellDriver {
     /// events, release at `to`. Used by scenarios that exercise the
     /// tab-drag / wheel-spin flows.
     pub fn drag(&mut self, from: Point, to: Point, steps: u32) {
+        self.drag_with_button(from, to, steps, MouseButton::Left);
+    }
+
+    /// Drag with the middle button. The markup viewport reserves this
+    /// gesture for panning so drawing can remain a one-step left drag.
+    pub fn middle_drag(&mut self, from: Point, to: Point, steps: u32) {
+        self.drag_with_button(from, to, steps, MouseButton::Middle);
+    }
+
+    fn drag_with_button(&mut self, from: Point, to: Point, steps: u32, button: MouseButton) {
         self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(from.x, from.y),
@@ -234,7 +250,7 @@ impl ShellDriver {
         self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
-            button: MouseButton::Left,
+            button,
         });
         let n = f64::from(steps.max(1));
         for s in 1..=steps.max(1) {
@@ -248,7 +264,7 @@ impl ShellDriver {
         self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
-            button: MouseButton::Left,
+            button,
         });
     }
 
@@ -286,14 +302,102 @@ impl ShellDriver {
             self.fb.host_mut().update(&mut self.state, &self.root_obj);
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
-            let _ = self.fb.paint();
+            let _ = self.paint();
         }
     }
 
     /// Render the current frame into a fresh Vello scene. Caller is
     /// responsible for passing it to a renderer (offscreen or live).
     pub fn paint(&mut self) -> Scene {
-        self.fb.paint()
+        let mut scene = self.fb.paint();
+        if let Some(executor) = self.capture_executor.as_mut() {
+            let _ = executor.execute_ready(&mut self.fb, &mut scene);
+        } else {
+            self.fb.draw_capture_overlays(&mut scene);
+        }
+        scene
+    }
+
+    pub fn set_capture_execution_enabled(&mut self, enabled: bool) {
+        self.capture_executor = enabled.then(CaptureExecutor::default);
+    }
+
+    pub fn set_capture_recording_active(&mut self, active: bool) {
+        self.fb.set_capture_recording_active(active);
+    }
+
+    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
+        self.fb.set_capture_recording_transition_progress(permille);
+    }
+
+    pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
+        self.fb.set_capture_pip_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_paused(&mut self, paused: bool) {
+        self.fb.set_capture_recording_paused(paused);
+    }
+
+    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
+        self.fb
+            .set_capture_recording_state_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
+        self.fb
+            .set_capture_recording_receipt_transition_progress(permille);
+    }
+
+    pub fn set_capture_recording_finished(&mut self) {
+        self.fb.set_capture_recording_finished();
+    }
+
+    pub fn set_capture_replay_active(&mut self, active: bool, audio: ui::widget::AudioCaptureMode) {
+        self.fb.set_capture_replay_active(active, audio);
+    }
+
+    pub fn set_capture_replay_buffered_seconds(&mut self, seconds: u8) {
+        self.fb.set_capture_replay_buffered_seconds(seconds);
+    }
+
+    pub fn set_capture_replay_saved(&mut self) {
+        self.fb.set_capture_replay_saved();
+    }
+
+    pub fn set_capture_screenshot_finished(&mut self, copied: bool) {
+        let palette = [
+            [17, 19, 24, 255],
+            [24, 29, 39, 255],
+            [31, 46, 70, 255],
+            [54, 104, 180, 255],
+            [88, 142, 224, 255],
+            [22, 24, 30, 255],
+        ];
+        let pixels = (0..24)
+            .map(|index| palette[index % palette.len()])
+            .collect();
+        self.fb.set_capture_screenshot_finished(
+            copied,
+            1_584,
+            716,
+            ui::widget::CapturePreview {
+                columns: 6,
+                rows: 4,
+                pixels,
+            },
+        );
+    }
+
+    pub fn set_capture_screenshot_transition_progress(&mut self, permille: u16) {
+        self.fb.set_capture_screenshot_transition_progress(permille);
+    }
+
+    pub fn set_screenshot_markup_transition_progress(&mut self, permille: u16) {
+        self.fb.set_screenshot_markup_transition_progress(permille);
+    }
+
+    pub fn set_capture_audio_available(&mut self, available: bool) {
+        self.fb.set_capture_audio_available(available, available);
     }
 
     /// Convenience: relayout + draw. Used by the offscreen scene-set
