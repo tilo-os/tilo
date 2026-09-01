@@ -41,7 +41,8 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec,
 };
 
 use crate::doc::VideoDoc;
@@ -57,11 +58,11 @@ pub const VIDEO_EDITOR_OPERATION_TYPE: &str = "video_editor.operation";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VideoEditorOperation {
-    ImportMedia,
-    OpenProject,
-    SaveProject,
-    SaveProjectAs,
-    Export,
+    ImportMedia { path: Option<String> },
+    OpenProject { path: Option<String> },
+    SaveProject { path: Option<String> },
+    SaveProjectAs { path: Option<String> },
+    Export { path: Option<String> },
     CancelExport,
 }
 
@@ -863,32 +864,49 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             p.name.clone()
         },
     );
-    for (id, label, operation) in [
-        ("import", "Import media", VideoEditorOperation::ImportMedia),
-        ("open", "Open project", VideoEditorOperation::OpenProject),
-        ("save", "Save project", VideoEditorOperation::SaveProject),
-        (
-            "save-as",
-            "Save project as",
-            VideoEditorOperation::SaveProjectAs,
-        ),
+    for (id, label, variant) in [
+        ("import", "Import media", 0_u8),
+        ("open", "Open project", 1),
+        ("save", "Save project", 2),
+        ("save-as", "Save project as", 3),
     ] {
-        if let Ok(spec) = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::Effect,
-            VIDEO_EDITOR_OPERATION_TYPE,
-            &operation,
-        ) {
-            root = root.with_action(spec);
-        }
+        root = root.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system picker/current project)",
+                OperationKind::Effect,
+                VIDEO_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct filesystem path",
+                )],
+                move |args: &ActionArgs| {
+                    let path = args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string);
+                    let op = match variant {
+                        0 => VideoEditorOperation::ImportMedia { path },
+                        1 => VideoEditorOperation::OpenProject { path },
+                        2 => VideoEditorOperation::SaveProject { path },
+                        _ => VideoEditorOperation::SaveProjectAs { path },
+                    };
+                    EncodedAction::encode_operation(VIDEO_EDITOR_OPERATION_TYPE, &op)
+                        .expect("video operation serializes")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        );
     }
     if let Ok(spec) = ActionSpec::operation(
         "export",
         "Export video",
         OperationKind::Effect,
         VIDEO_EDITOR_OPERATION_TYPE,
-        &VideoEditorOperation::Export,
+        &VideoEditorOperation::Export { path: None },
     ) {
         root = root.with_action(if crate::export::unavailable_reason().is_some() {
             spec.unavailable(
@@ -896,7 +914,32 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "Video export is unavailable on this system",
             )
         } else {
-            spec
+            ActionSpec::typed_operation(
+                "export",
+                "Export video",
+                "path (omit to use the system picker)",
+                OperationKind::Effect,
+                VIDEO_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct export path",
+                )],
+                |args: &ActionArgs| {
+                    EncodedAction::encode_operation(
+                        VIDEO_EDITOR_OPERATION_TYPE,
+                        &VideoEditorOperation::Export {
+                            path: args
+                                .text("path")
+                                .filter(|p| !p.trim().is_empty())
+                                .map(str::to_string),
+                        },
+                    )
+                    .expect("export operation serializes")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job)
         });
     }
     if let Ok(spec) = ActionSpec::operation(
@@ -4416,6 +4459,14 @@ mod tests {
             let action = root.actions.iter().find(|action| action.id == id).unwrap();
             assert_eq!(action.kind, OperationKind::Effect, "{id}");
             assert!(!action.contract.reversible, "{id}");
+            if id != "cancel-export" {
+                assert!(
+                    matches!(action.contract.execution, ExecutionMode::Background { .. }),
+                    "{id}"
+                );
+                assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
+                assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
+            }
         }
         let cancel = root
             .actions

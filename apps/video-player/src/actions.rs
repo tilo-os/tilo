@@ -2,8 +2,8 @@
 
 use automerge::AutoCommit;
 use qos_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    Resource, RetryPolicy,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +11,7 @@ pub const OPERATION_TYPE: &str = "video-player.operation";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PlayerOperation {
-    OpenPicker,
-    OpenPath(String),
+    Open { path: Option<String> },
     TogglePlayback,
     ToggleMute,
     SeekSeconds(f64),
@@ -31,40 +30,33 @@ pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resourc
         tags: vec!["filesystem".into(), "media".into()],
         ..ActionContract::default()
     };
-    let mut player = Resource::new("video-player.current", "media.video", title)
-        .with_action(
-            ActionSpec::operation(
-                "open",
-                "Open video",
-                OperationKind::Effect,
-                OPERATION_TYPE,
-                &PlayerOperation::OpenPicker,
-            )
-            .unwrap_or_else(|_| {
-                ActionSpec::prompted_operation(
-                    "open-path",
-                    "Open video path",
-                    "Video path",
-                    "/path/to/video.mp4",
-                    OperationKind::Effect,
-                    OPERATION_TYPE,
-                    |path| encode(&PlayerOperation::OpenPath(path.to_string())),
-                )
-            })
-            .with_contract(open_contract.clone()),
+    let mut player = Resource::new("video-player.current", "media.video", title).with_action(
+        ActionSpec::typed_operation(
+            "open",
+            "Open video",
+            "path (omit to use the system file picker)",
+            OperationKind::Effect,
+            OPERATION_TYPE,
+            vec![ActionParam::optional_owned(
+                "path",
+                ParamType::Text,
+                "Direct video path",
+            )],
+            |args: &ActionArgs| {
+                encode(&PlayerOperation::Open {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string),
+                })
+            },
         )
-        .with_action(
-            ActionSpec::prompted_operation(
-                "open-path",
-                "Open video path",
-                "Video path",
-                "/path/to/video.mp4",
-                OperationKind::Effect,
-                OPERATION_TYPE,
-                |path| encode(&PlayerOperation::OpenPath(path.to_string())),
-            )
-            .with_contract(open_contract),
-        );
+        .with_contract(ActionContract {
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..open_contract
+        }),
+    );
     for (id, label, op) in [
         (
             "play-pause",
@@ -127,9 +119,9 @@ mod tests {
         let open = actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Immediate
+            qos_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(open.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
         let play = actions.iter().find(|a| a.id == "play-pause").unwrap();
         assert!(!play.contract.availability.is_available());
         let seek = actions.iter().find(|a| a.id == "seek").unwrap();
