@@ -305,6 +305,12 @@ pub fn make_invite_token_with_identity(
 
 /// Mint an identity-bound invite whose signed payload limits the role granted
 /// on redemption.
+///
+/// # Errors
+///
+/// Returns an error when the workspace or endpoint is invalid, the optional
+/// device certificate does not match the signing key, or the token cannot be
+/// encoded.
 pub fn make_invite_token_with_identity_and_role(
     key: &iroh::SecretKey,
     workspace: &Workspace,

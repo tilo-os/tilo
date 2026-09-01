@@ -1292,11 +1292,10 @@ fn role_verb(role: CapRole) -> Option<Verb> {
         // Ownership is a structural governance transfer, not a role-chip
         // mutation. Until that ceremony is signed and replicated end-to-end,
         // this panel must never manufacture a second apparent owner.
-        CapRole::Owner => None,
+        CapRole::Owner | CapRole::Denied => None,
         CapRole::Editor => Some(Verb::Write),
         CapRole::Commenter => Some(Verb::Comment),
         CapRole::Viewer => Some(Verb::Read),
-        CapRole::Denied => None,
     }
 }
 

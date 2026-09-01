@@ -2832,7 +2832,11 @@ impl ShellOverlayHost {
         let command = self.chrome.as_ref().and_then(|chrome| {
             let state = chrome.borrow();
             let tree = state.tree();
-            let workspace = tree.active_workspace()?;
+            let Some(workspace) = tree.active_workspace() else {
+                drop(tree);
+                drop(state);
+                return None;
+            };
             let target = self.followed_peer.as_deref().map(|id| {
                 workspace
                     .collaborators
@@ -2841,7 +2845,10 @@ impl ShellOverlayHost {
                     .and_then(|participant| participant.session)
                     .map_or_else(|| id.to_string(), |session| format!("peer@{session}"))
             });
-            Some((workspace.room, target))
+            let command = (workspace.room, target);
+            drop(tree);
+            drop(state);
+            Some(command)
         });
         if let (Some(bridge), Some((room, target))) = (self.follow_bridge.as_ref(), command) {
             bridge(room, target);
@@ -4021,6 +4028,14 @@ impl ShellOverlayHost {
         self.refresh_room_activity();
     }
 
+    /// Settle the room-activity sheet in its closed state after a shot driver
+    /// action closes it, preventing the following capture from containing the
+    /// tail of the dismissal animation.
+    pub fn force_room_activity_closed_for_shots(&mut self) {
+        self.room_activity_transition = ui::Transition::closed();
+        self.room_activity_was_open = false;
+    }
+
     /// Name-input rect inside the ws-settings modal. Matches the drawn
     /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
     fn ws_settings_name_rect(&self) -> Rect {
@@ -4636,7 +4651,7 @@ impl ShellOverlayHost {
             state.bump();
             state.push_notification(
                 "Named a version",
-                "Saved in this room's history, so everyone here sees it.",
+                "Saved in this workspace's history, so everyone here sees it.",
             );
         }
     }
@@ -4823,6 +4838,9 @@ impl ShellOverlayHost {
         // character, and a `k` in one must not open search instead.
         if self.handle_wifi_password_key(logical_key, modifiers) {
             *handled = true;
+            return true;
+        }
+        if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
             return true;
         }
         // Captured ahead of the modifier-only branch so Character('K')
@@ -5793,6 +5811,91 @@ impl ShellOverlayHost {
             self.qs_root
                 .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
         };
+        self.apply_quick_settings_root_action(action, &chrome);
+    }
+
+    /// Keyboard parity for the immediate-mode quick-settings root. Tab uses
+    /// paint order, Enter/Space route through the same action dispatcher as a
+    /// pointer click, and arrows adjust the two range controls in small steps.
+    fn handle_quick_settings_keyboard(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+        handled: &mut bool,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let at_root = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+        };
+        if !at_root {
+            return false;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let mut state = chrome.borrow_mut();
+            self.qs_root.focus_next(&state.quick_settings, backwards);
+            state.bump();
+            *handled = true;
+            return true;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            let action = {
+                let mut state = chrome.borrow_mut();
+                self.qs_root
+                    .activate_focused(self.quick_settings_rect(), &mut state.quick_settings)
+            };
+            self.apply_quick_settings_root_action(action, &chrome);
+            *handled = true;
+            return true;
+        }
+
+        let direction = if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown)
+        ) {
+            -1.0
+        } else if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp)
+        ) {
+            1.0
+        } else {
+            return false;
+        };
+        let commit = {
+            let mut state = chrome.borrow_mut();
+            let commit = self
+                .qs_root
+                .adjust_focused_slider(&mut state.quick_settings, direction);
+            if commit.is_some() {
+                state.bump();
+            }
+            commit
+        };
+        match commit {
+            Some(SliderCommit::Brightness(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_brightness",
+                self.qs_actions.set_brightness(value_pct),
+            ),
+            Some(SliderCommit::Volume(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_volume",
+                self.qs_actions.set_volume(value_pct),
+            ),
+            None => return false,
+        }
+        *handled = true;
+        true
+    }
+
+    fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
             RootAction::Enter(level) => {
@@ -6951,18 +7054,66 @@ impl Widget for ShellOverlayHost {
             root.children
                 .push(self.room_activity.accessibility_snapshot());
         }
+        if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            if state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+            {
+                root.children
+                    .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+            }
+        }
         Some(root)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        self.overlay_flags()
-            .room_activity
-            .then(|| self.room_activity.accessibility_rect_for_path(path))
-            .flatten()
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.accessibility_rect_for_path(path);
+        }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return None;
+        }
+        let child_path = path.get(1..)?;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        (state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ))
+        .then(|| self.qs_root.accessibility_rect_for_path(child_path))
+        .flatten()
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        self.overlay_flags().room_activity && self.room_activity.focus_accessibility_path(path)
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.focus_accessibility_path(path);
+        }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return false;
+        }
+        let Some(child_path) = path.get(1..) else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            )
+            && self
+                .qs_root
+                .focus_accessibility_path(child_path, &state.quick_settings)
     }
 
     /// Expose content + palette + sidebar as direct children so trait
@@ -7849,6 +8000,7 @@ impl ShellOverlayHost {
             // see `qs_refresh`.
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
+            self.qs_root.reset_focus();
         }
         self.qs_was_open = flags.quick_settings;
         self.apply_quick_settings_readings();
@@ -8525,6 +8677,7 @@ impl ShellOverlayHost {
             is_current: false,
             people: Vec::new(),
             shares: Vec::new(),
+            strips: Vec::new(),
         };
         let here_card = here_idx.and_then(|i| cards.get(i)).unwrap_or(&empty_card);
         if here_card.shares.is_empty() {
@@ -8583,7 +8736,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Nothing in this room is shared out of it",
+            "Nothing in this workspace is shared out of it",
             body_size,
             colors.text_dim,
             transform.pre_translate(
@@ -8812,10 +8965,10 @@ impl ShellOverlayHost {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let add_size = tokens.typography.scale.base;
-        let (_, add_h) = text_renderer.measure("New room", add_size, None);
+        let (_, add_h) = text_renderer.measure("New workspace", add_size, None);
         text_renderer.draw_text(
             scene,
-            "New room",
+            "New workspace",
             add_size,
             add_color,
             transform.pre_translate((gx + glyph + 10.0, gcy - f64::from(add_h) / 2.0).into()),
@@ -9259,8 +9412,15 @@ impl ShellOverlayHost {
             return;
         }
 
-        self.qs_root
-            .draw(scene, transform, text_renderer, theme, rect, &qs);
+        self.qs_root.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            self.last_cursor,
+            &qs,
+        );
     }
 
     /// The quick-settings popover's elevated card: shadow, fill and
