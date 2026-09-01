@@ -31,6 +31,7 @@
 mod appliance;
 mod command;
 mod config;
+mod graphics;
 mod guest;
 mod guest_network;
 mod https_guest;
@@ -49,6 +50,10 @@ pub use appliance::{
 pub use command::{CommandError, CommandOutput, CommandRequest, CommandRunner, StdCommandRunner};
 pub use config::{
     APPLIANCE_DOMAIN_NAME, ApplianceConfig, ConfigError, CpuMode, FirmwareConfig, PerformanceConfig,
+};
+pub use graphics::{
+    GraphicsAssignment, GraphicsCapabilities, GraphicsDeviceCapability, GraphicsProbeError,
+    GraphicsRecommendation, MediatedTypeCapability, SriovCapability,
 };
 pub use guest::{
     AgentError, AgentHealth, GuestAgent, GuestLaunch, GuestSession, RdpEndpoint, Secret,
