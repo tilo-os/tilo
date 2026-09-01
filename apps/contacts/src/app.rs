@@ -824,6 +824,8 @@ impl ContactsApp {
     pub(crate) fn contacts_resource_ctx(&self) -> crate::actions::ContactsResourceCtx {
         crate::actions::ContactsResourceCtx {
             contacts: self.store.contacts.clone(),
+            import_busy: self.import_rx.is_some(),
+            export_busy: self.export_rx.is_some(),
         }
     }
 
@@ -3498,6 +3500,59 @@ impl Widget for ContactsApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                if self.store.get(id).is_none() {
+                    return Err("contact no longer exists".into());
+                }
+                self.reveal_contact(id);
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportVcard,
+            ) => {
+                if self.import_rx.is_some() {
+                    return Err("a contact import is already in progress".into());
+                }
+                self.request_import();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportAllVcard,
+            ) => {
+                if self.export_rx.is_some() {
+                    return Err("a contact export is already in progress".into());
+                }
+                let ids = self
+                    .store
+                    .contacts
+                    .iter()
+                    .map(|contact| contact.id)
+                    .collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    return Err("there are no contacts to export".into());
+                }
+            }
+            _ => return Err("operation kind does not match Contacts operation".into()),
+        }
+        Ok(true)
     }
 
     /// Fold the address book into the unified Ctrl+K palette: a snapshot

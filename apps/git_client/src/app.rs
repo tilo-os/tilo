@@ -2407,6 +2407,59 @@ impl Widget for GitClientApp {
         self.actions.take_committed()
     }
 
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::GitClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::GitClientOperation::ShowChanges) => {
+                self.switch_screen(Screen::Changes);
+            }
+            (qos_actions::OperationKind::View, crate::actions::GitClientOperation::ShowHistory) => {
+                self.switch_screen(Screen::History);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::GitClientOperation::ShowBranches,
+            ) => {
+                self.switch_screen(Screen::Panels);
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
+                self.stage_all();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::UnstageAll,
+            ) => {
+                self.unstage_all();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::Commit { message },
+            ) => {
+                if self.model.staged.is_empty() {
+                    return Err("there are no staged changes to commit".into());
+                }
+                if message.trim().is_empty() {
+                    return Err("commit message cannot be empty".into());
+                }
+                self.commit_input.set_text(&message);
+                self.do_commit();
+            }
+            _ => return Err("operation kind does not match Git operation".into()),
+        }
+        Ok(true)
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Redraw while the flap animates, and while any embedded text field is
         // focused so its caret keeps blinking.
