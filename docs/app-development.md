@@ -35,7 +35,7 @@ flows. Arguments after `--` are forwarded to the Cargo test harness.
 For serialized screens, that structural preflight crosses file boundaries: it
 checks every component node against `src/components/mod.rs`, verifies each
 registered module and graph factory still exists, and validates the generated
-display factory's required string props with the screen path and node id in the
+display/form factory's typed props with the screen path and node id in the
 diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
@@ -85,6 +85,8 @@ qos-dev add
 qos-dev add component profile-card --template form
 qos-dev add component activity-card --mount main \
   --props '{"title":"Recent activity","detail":"Nothing pending"}'
+qos-dev add component profile-form --template form --mount main \
+  --props '{"value":"Ada","enabled":true}'
 qos-dev add component project-tree --template tree
 qos-dev add component activity-list --template list
 qos-dev add component results-table --template table
@@ -104,9 +106,9 @@ or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
 typed-props display, a typed-state form, a source-agnostic virtualized tree, a
 sparse variable-height list, a model-backed table, or advanced text. The wizard
-offers to place a display component directly into a generated graph screen,
-including starter title and detail props. It reviews the resolved artifact
-before entering the same atomic publication path as the explicit commands.
+offers to place a display or form component directly into a generated graph
+screen, including typed initial props. It reviews the resolved artifact before
+entering the same atomic publication path as the explicit commands.
 Scripts and CI should continue to use the fully specified subcommands.
 
 `add component profile-card --template form` creates
@@ -124,11 +126,16 @@ let value_for_save = profile.value.clone();
 The instance ID prefixes every semantic control ID, allowing the same component
 to appear more than once. Its text and checkbox use two-way `LocalState`
 bindings, visible/accessibility labels share generated Fluent messages, and a
-headless component test exercises both controls. The `display` template instead
-generates a typed props struct plus a heading/detail view. Component source,
-registry, library wiring, and locale updates publish as one rollback-safe batch;
-an app-owned registry or existing component is protected unless replacement is
-explicit.
+headless component test exercises both controls. In a generated graph app,
+`--mount main` also creates a graph adapter whose `value` string and `enabled`
+boolean initialize independent retained state for each instance. The `display`
+template instead generates a typed props struct plus a heading/detail view.
+Component source, registry, library wiring, and locale updates publish as one
+rollback-safe batch; an app-owned registry or existing component is protected
+unless replacement is explicit. Even with `--force`, changing a generated
+component template is refused while an existing graph node has incompatible
+props or the replacement has no graph factory; update or remove those nodes
+first, so generation cannot leave the app unbuildable.
 
 `add component project-tree --template tree` starts at the professional tree
 boundary without choosing the app's data source. Its function accepts any
@@ -708,21 +715,23 @@ props:
 }
 ```
 
-For the common typed display case, generate both the Rust component and its
+For typed display and form components, generate both the Rust component and its
 validated graph adapter, then insert an instance without writing JSON by hand:
 
 ```bash
 qos-dev add component profile-card --mount main \
   --props '{"title":"Ada","detail":"Workspace owner"}'
+qos-dev add component profile-form --template form --mount main \
+  --props '{"value":"Ada","enabled":true}'
 ```
 
 That one command generates the typed Rust component, updates its module and
 factory registries, migrates an untouched older generated graph root when
 needed, and appends the first instance to `ui/main.json`. All candidate files
 validate before publication; any failure leaves the component, registry, app
-root, and screen byte-for-byte as they were. `--mount` currently applies to the
-graph-compatible `display` template. Omit it to generate other component
-templates without placing them.
+root, and screen byte-for-byte as they were. Model-backed tree, list, and table
+templates still require an app-supplied model in Rust, and advanced text accepts
+Rust-native style/engine values, so generate those templates without `--mount`.
 
 For an existing component, or an app-owned router context, insert only the node:
 
@@ -748,12 +757,14 @@ let app = screens::router_with(
 )?;
 ```
 
-The generated `from_ui_graph` function converts `title` and `detail` into the
-same typed `ProfileCardProps` used by ordinary Rust callers and returns precise
-field errors. Older generated graph roots are migrated when their original
-router call is still intact; customized app roots are never rewritten. For a
-custom component shape, write the equivalent small function from
-`UiComponentRequest` to `Element` and register it with
+The generated display `from_ui_graph` function converts `title` and `detail`
+into the same typed `ProfileCardProps` used by ordinary Rust callers. The form
+adapter validates `value` and `enabled`, then creates independent local state
+for the mounted controls. Both return precise field errors, and `qos-dev doctor`
+checks those generated prop contracts before compilation. Older generated graph
+roots are migrated when their original router call is still intact; customized
+app roots are never rewritten. For a custom component shape, write the
+equivalent small function from `UiComponentRequest` to `Element` and register it with
 `UiBuildContext::with_component` or extend the app-owned context explicitly.
 
 The factory returns an ordinary retained widget, so its child controls, model
