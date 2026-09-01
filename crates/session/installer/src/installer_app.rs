@@ -592,9 +592,6 @@ pub struct InstallerApp {
     /// Enroll a FIDO2 security key as an extra unlock factor (only with
     /// encryption). Default `false`.
     fido2: bool,
-    /// Cached TPM2 unlock PIN held outside Automerge. Empty ⇒ no PIN slot is
-    /// enrolled. Only used with encryption.
-    pin: Arc<Mutex<String>>,
     /// User has acknowledged they will save the install-time recovery key.
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
@@ -668,7 +665,6 @@ impl InstallerApp {
             selected_disk: None,
             selected_fs: 0,
             fido2: false,
-            pin: Arc::new(Mutex::new(String::new())),
             recovery_ack: false,
             tpm2: has_tpm2(),
             step: Step::Keyboard,
@@ -793,7 +789,8 @@ impl InstallerApp {
     /// always requires both a reproducible recovery factor and a startup
     /// secret: a TPM2-bound PIN where supported, otherwise a disk passphrase.
     fn encryption_ready(&self) -> bool {
-        self.recovery_ack && validate_startup_secret(&secret_copy(&self.pin), self.tpm2).is_ok()
+        self.recovery_ack
+            && validate_startup_secret(&secret_copy(&self.password), self.tpm2).is_ok()
     }
 
     /// Human-readable summary of the encryption factors for the Review step.
@@ -801,7 +798,7 @@ impl InstallerApp {
         // Recovery key is always present; TPM is PIN-protected iff a PIN was
         // entered; FIDO2 is listed only when enrolling.
         let mut factors = vec!["recovery key".to_string()];
-        match (self.tpm2, secret_copy(&self.pin).trim().is_empty()) {
+        match (self.tpm2, secret_copy(&self.password).trim().is_empty()) {
             (true, true) => factors.push("TPM2 + startup PIN required".to_string()),
             (true, false) => factors.push("TPM2 + PIN".to_string()),
             // No TPM: the same secret is enrolled as an ordinary passphrase
@@ -823,7 +820,7 @@ impl InstallerApp {
             timezone: self.timezone.trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
-            pin: secret_copy(&self.pin),
+            pin: secret_copy(&self.password),
             fido2: self.fido2,
         }
     }
@@ -933,6 +930,13 @@ impl InstallerApp {
                     self.set_status(&message);
                     return;
                 }
+                if self.step == Step::Account
+                    && let Err(message) =
+                        validate_startup_secret(&secret_copy(&self.password), self.tpm2)
+                {
+                    self.set_status(message);
+                    return;
+                }
                 if let Some(n) = next_step(self.step) {
                     // Never auto-advance into Install via Next; the Begin
                     // button (begin flag) is the only entry into install.
@@ -988,7 +992,7 @@ impl InstallerApp {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if let Err(message) = validate_startup_secret(&secret_copy(&self.pin), self.tpm2) {
+        if let Err(message) = validate_startup_secret(&secret_copy(&self.password), self.tpm2) {
             self.set_status(message);
             return;
         }
@@ -1006,7 +1010,6 @@ impl InstallerApp {
         // secrets sitting in the live session's editable document.
         clear_secret_buffer(&self.password);
         clear_secret_buffer(&self.password_confirmation);
-        clear_secret_buffer(&self.pin);
 
         self.step = Step::Install;
         self.install_state = InstallState::Running;
@@ -1290,19 +1293,32 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
-        children.push(Box::new(Text::new("Password").with_size(base)));
+        let credential_label = if self.tpm2 {
+            "Startup and unlock PIN"
+        } else {
+            "Startup and unlock passphrase"
+        };
+        children.push(Box::new(Text::new(credential_label).with_size(base)));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
+        let credential_help = if self.tpm2 {
+            "Choose 6–12 digits. Enter this once at startup; it also unlocks your session later."
+        } else {
+            "Choose at least 12 characters. It decrypts the disk at startup and unlocks your session later."
+        };
         children.push(Box::new(
-            Text::new("Choose a strong password; you'll use it to log in.")
-                .with_size(sm)
-                .with_color(dim),
+            Text::new(credential_help).with_size(sm).with_color(dim),
         ));
-        children.push(Box::new(Text::new("Confirm password").with_size(base)));
+        let confirmation_label = if self.tpm2 {
+            "Confirm startup and unlock PIN"
+        } else {
+            "Confirm startup and unlock passphrase"
+        };
+        children.push(Box::new(Text::new(confirmation_label).with_size(base)));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
@@ -1366,25 +1382,6 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
-
-        let pin_label = if self.tpm2 {
-            "Startup PIN (required)"
-        } else {
-            "Disk passphrase (required — no TPM2 chip)"
-        };
-        children.push(Box::new(Text::new(pin_label).with_size(base)));
-        children.push(Box::new(
-            TextInput::new(Vec::new())
-                .with_id("installer.pin")
-                .with_external_buffer(Arc::clone(&self.pin))
-                .with_secret(true),
-        ));
-        let pin_help = if self.tpm2 {
-            "This is the one PIN you enter at startup; it protects a key sealed to this computer's TPM2 chip."
-        } else {
-            "This passphrase decrypts the disk at startup. Use a normal strong password because there is no TPM2 hardware protection."
-        };
-        children.push(Box::new(Text::new(pin_help).with_size(sm).with_color(dim)));
 
         children.push(Box::new(Text::new("Security key").with_size(base)));
         children.push(Box::new(
@@ -2206,7 +2203,6 @@ mod tests {
             "installer.password",
             "installer.password_confirm",
             "installer.wifi_password",
-            "installer.pin",
         ] {
             assert!(doc.get(&automerge::ROOT, path).unwrap().is_none(), "{path}");
         }
@@ -2288,6 +2284,7 @@ mod tests {
     #[test]
     fn account_step_requires_username_before_advancing() {
         let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = false;
         app.selected_disk = Some(0);
         app.step = Step::Account;
         let mut doc = AutoCommit::new();
@@ -2378,9 +2375,9 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
 
-        *app.pin.lock().unwrap() = "246810".to_string();
+        *app.password.lock().unwrap() = "246810".to_string();
         app.sync(&mut doc, &root);
-        assert_eq!(&*secret_copy(&app.pin), "246810");
+        assert_eq!(&*secret_copy(&app.password), "246810");
         assert_eq!(app.install_options().pin.as_str(), "246810");
     }
 
@@ -2427,7 +2424,7 @@ mod tests {
             "On (LUKS — recovery key, TPM2 + startup PIN required)"
         );
 
-        *app.pin.lock().unwrap() = "123456".to_string();
+        *app.password.lock().unwrap() = "123456".to_string();
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, TPM2 + PIN)"
@@ -2456,11 +2453,11 @@ mod tests {
             "no TPM and no passphrase must not be installable"
         );
 
-        *app.pin.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready(), "a passphrase unblocks it");
 
         // Whitespace is not a passphrase.
-        *app.pin.lock().unwrap() = "   ".to_string();
+        *app.password.lock().unwrap() = "   ".to_string();
         assert!(
             !app.encryption_ready(),
             "blank passphrase is still no passphrase"
@@ -2477,7 +2474,7 @@ mod tests {
             !app.encryption_ready(),
             "silent TPM-only unlock is not a hardened startup boundary"
         );
-        *app.pin.lock().unwrap() = "246810".to_string();
+        *app.password.lock().unwrap() = "246810".to_string();
         assert!(app.encryption_ready());
     }
 
@@ -2495,14 +2492,14 @@ mod tests {
     fn summary_and_description_name_the_passphrase_when_there_is_no_tpm() {
         let mut app = InstallerApp::with_disks(sample());
         app.tpm2 = false;
-        *app.pin.lock().unwrap() = "correct horse".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, boot passphrase)",
             "the review step must not claim a TPM factor this machine cannot provide"
         );
 
-        clear_secret_buffer(&app.pin);
+        clear_secret_buffer(&app.password);
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
         assert!(
@@ -2537,7 +2534,7 @@ mod tests {
         app2.step = Step::Review;
         app2.tpm2 = true;
         app2.recovery_ack = true;
-        *app2.pin.lock().unwrap() = "246810".to_string();
+        *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
         let card2 = app2.children()[0];
         let begin_enabled = card2
