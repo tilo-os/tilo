@@ -14,11 +14,10 @@
 //! ```
 //!
 //! The room comes from `QOS_WORKSPACE_ID` (as for every qOS app); the
-//! payload is a genuine Automerge document — `write` publishes a certified,
-//! signed typed mutation through the same identity and collaboration services
-//! the UI toolkit uses on every keystroke, and `read` verifies the envelope
-//! shape before loading what arrives. A line from `read` means a real CRDT
-//! edit converged.
+//! payload is a genuine Automerge document — `write` publishes a typed,
+//! route-bound, signed incremental change via the same broker path as the UI
+//! toolkit, and `read` loads the signed change into its own document. A line
+//! from `read` means a real CRDT edit converged.
 //!
 //! Exit status is the verdict (0 only on real success); every failure
 //! names the step, since "collaboration is off" / "no peer connected"
@@ -41,8 +40,10 @@ use std::process::ExitCode;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
+use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, Signature, SignedOp};
 
-/// Root key the probe reads and writes — one flat string, since the probe proves delivery, not a document model.
+/// Root key the probe reads and writes. One flat string is enough because the
+/// probe proves delivery, not a document model.
 const FIELD: &str = "text";
 const APP_ID: &str = "dev.qos.collab-probe";
 const RECORD_ID: &str = "";
@@ -119,15 +120,40 @@ fn main() -> ExitCode {
     })
 }
 
-/// Dial the broker over the launcher-supplied descriptor and join one
-/// channel; `channel` is the broker's routing key verbatim (room uuid, or `<room>#record:<id>`).
+fn channel_key(workspace_id: &str) -> String {
+    format!("{workspace_id}#app:{APP_ID}")
+}
+
+fn certified_join(
+    workspace_id: &str,
+) -> Result<(Vec<u8>, runtime_identity::SigningIdentity), String> {
+    let identity = runtime_identity::load()
+        .map_err(|error| format!("could not reach the workspace identity service: {error}"))?;
+    let certificate = identity
+        .device_certificate()
+        .ok_or_else(|| "workspace identity has no certified device".to_string())?;
+    let proof = identity
+        .sign_collaboration_join(workspace_id)
+        .map_err(|error| format!("collaboration join was denied: {error}"))?;
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: workspace_id.to_string(),
+        device_certificate: certificate.to_vec(),
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .map_err(|error| format!("could not encode the certified join: {error}"))?;
+    Ok((presentation, identity))
+}
+
+/// Dial the broker over the launcher-supplied descriptor and join the probe's
+/// app-scoped channel with the launcher's certified workspace identity.
 #[allow(
     clippy::future_not_send,
     reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
               never spawned across threads"
 )]
 async fn join(
-    channel: &str,
+    workspace_id: &str,
 ) -> Result<
     (
         runtime_collab::ChannelHandle,
@@ -135,36 +161,83 @@ async fn join(
     ),
     String,
 > {
-    let identity = runtime_identity::load()
-        .map_err(|error| format!("could not load launcher-bound identity: {error}"))?;
-    let certificate = identity
-        .device_certificate()
-        .ok_or_else(|| "launcher-bound identity has no certified device".to_string())?;
-    let proof = identity
-        .sign_collaboration_join(channel)
-        .map_err(|error| format!("identity service denied channel join: {error}"))?;
-    let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: channel.to_string(),
-        device_certificate: certificate.to_vec(),
-        proof: proof.to_vec(),
-    }
-    .encode()
-    .map_err(|error| format!("could not encode certified channel join: {error}"))?;
-
-    let broker = runtime_collab::try_connect().map_err(|e| {
-        eprintln!("probe: FAIL could not reach the broker over the service fd: {e}");
-        e.to_string()
-    })?;
+    let (presentation, identity) = certified_join(workspace_id)?;
+    let broker = runtime_collab::try_connect()
+        .map_err(|error| format!("could not reach the broker over the service fd: {error}"))?;
     println!("probe: connected to the broker");
+    let channel = channel_key(workspace_id);
     let handle = broker
-        .join_channel(channel, &presentation)
+        .join_channel(&channel, &presentation)
         .await
-        .map_err(|e| {
-            eprintln!("probe: FAIL join_channel({channel}): {e}");
-            e.to_string()
-        })?;
+        .map_err(|error| format!("join_channel({channel}) failed: {error}"))?;
     println!("probe: joined channel {channel}");
     Ok((handle, identity))
+}
+
+fn signed_incremental(
+    identity: &runtime_identity::SigningIdentity,
+    workspace_id: &str,
+    bytes: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    let payload = DocumentMutation::Incremental(bytes)
+        .encode()
+        .map_err(|error| format!("typed mutation would not encode: {error}"))?;
+    let now = std::time::SystemTime::now();
+    let seq = now
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+        });
+    let mut op = SignedOp::new_unsigned(
+        payload,
+        collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
+        Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+        collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
+        OpClass::Splice,
+        now,
+        seq,
+    );
+    let unsigned = postcard::to_stdvec(&op)
+        .map_err(|error| format!("unsigned operation would not encode: {error}"))?;
+    let signature = identity
+        .sign_collaboration_op(workspace_id, APP_ID, RECORD_ID, &unsigned)
+        .map_err(|error| format!("workspace policy denied the operation: {error}"))?;
+    op.signature = Signature::from_bytes(signature);
+    postcard::to_stdvec(&op).map_err(|error| format!("signed operation would not encode: {error}"))
+}
+
+fn apply_signed_document(
+    doc: &mut AutoCommit,
+    workspace_id: &str,
+    bytes: &[u8],
+) -> Result<Option<String>, String> {
+    let envelope: SignedOp =
+        postcard::from_bytes(bytes).map_err(|error| format!("invalid signed envelope: {error}"))?;
+    collab_types::verify_op(&envelope)
+        .map_err(|error| format!("invalid operation signature: {error}"))?;
+    if envelope.artifact != collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID)
+        || envelope.attestation_id
+            != collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID)
+    {
+        return Err("signed operation belongs to another document route".to_string());
+    }
+    let mutation = DocumentMutation::decode(&envelope.payload)
+        .map_err(|error| format!("untyped document operation: {error}"))?;
+    match mutation {
+        DocumentMutation::Incremental(bytes) => doc
+            .load_incremental(&bytes)
+            .map(|_| ())
+            .map_err(|error| format!("incremental document bytes did not load: {error}"))?,
+        DocumentMutation::Snapshot(bytes) => {
+            let mut incoming = AutoCommit::load(&bytes)
+                .map_err(|error| format!("document snapshot did not load: {error}"))?;
+            doc.merge(&mut incoming)
+                .map_err(|error| format!("document snapshot did not merge: {error}"))?;
+        }
+    }
+    doc.get(&ROOT, FIELD)
+        .map(|value| value.map(|(value, _)| value.to_str().unwrap_or_default().to_string()))
+        .map_err(|error| format!("document field could not be read: {error}"))
 }
 
 #[allow(
@@ -172,8 +245,8 @@ async fn join(
     reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
               never spawned across threads"
 )]
-async fn write(channel: &str, text: &str) -> ExitCode {
-    let (handle, identity) = match join(channel).await {
+async fn write(workspace_id: &str, text: &str) -> ExitCode {
+    let (handle, identity) = match join(workspace_id).await {
         Ok(joined) => joined,
         Err(error) => {
             eprintln!("probe: FAIL {error}");
@@ -186,58 +259,20 @@ async fn write(channel: &str, text: &str) -> ExitCode {
         eprintln!("probe: FAIL building the document: {e}");
         return ExitCode::from(6);
     }
-    // A fresh document's save is its complete change set, which is what a
-    // peer starting from nothing needs to apply it.
-    let bytes = doc.save();
-    let payload = match collab_types::DocumentMutation::Snapshot(bytes.clone()).encode() {
-        Ok(payload) => payload,
+    let bytes = doc.save_incremental();
+    let signed = match signed_incremental(&identity, workspace_id, bytes) {
+        Ok(signed) => signed,
         Err(error) => {
-            eprintln!("probe: FAIL encoding typed document mutation: {error}");
+            eprintln!("probe: FAIL {error}");
             return ExitCode::from(7);
         }
     };
-    let now = std::time::SystemTime::now();
-    let seq = now
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(1, |duration| {
-            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
-        });
-    let mut op = collab_types::SignedOp::new_unsigned(
-        payload,
-        collab_types::document_artifact_id(APP_ID, channel, RECORD_ID),
-        collab_types::Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-        collab_types::document_attestation_id(APP_ID, channel, RECORD_ID),
-        collab_types::OpClass::Splice,
-        now,
-        seq,
-    );
-    let unsigned = match postcard::to_stdvec(&op) {
-        Ok(unsigned) => unsigned,
-        Err(error) => {
-            eprintln!("probe: FAIL encoding unsigned operation: {error}");
-            return ExitCode::from(7);
-        }
-    };
-    let signature = match identity.sign_collaboration_op(channel, APP_ID, RECORD_ID, &unsigned) {
-        Ok(signature) => signature,
-        Err(error) => {
-            eprintln!("probe: FAIL identity service denied document operation: {error}");
-            return ExitCode::from(7);
-        }
-    };
-    op.signature = collab_types::Signature::from_bytes(signature);
-    let encoded = match postcard::to_stdvec(&op) {
-        Ok(encoded) => encoded,
-        Err(error) => {
-            eprintln!("probe: FAIL encoding signed operation: {error}");
-            return ExitCode::from(7);
-        }
-    };
-    if let Err(e) = handle.send(&encoded).await {
-        eprintln!("probe: FAIL send signed operation: {e}");
+
+    if let Err(e) = handle.send(&signed).await {
+        eprintln!("probe: FAIL sending signed operation: {e}");
         return ExitCode::from(7);
     }
-    println!("probe: WROTE {} bytes: {text:?}", bytes.len());
+    println!("probe: WROTE {} signed bytes: {text:?}", signed.len());
     // The broker's publish is fire-and-forget onto an actor queue and
     // this process is about to exit — give the frame a moment to leave rather than racing teardown.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -249,8 +284,8 @@ async fn write(channel: &str, text: &str) -> ExitCode {
     reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
               never spawned across threads"
 )]
-async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
-    let (handle, _identity) = match join(channel).await {
+async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
+    let (handle, _identity) = match join(workspace_id).await {
         Ok(joined) => joined,
         Err(error) => {
             eprintln!("probe: FAIL {error}");
@@ -273,23 +308,12 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
             let Ok(event) = stream.read().await else {
                 return None;
             };
-            let Ok(envelope) = postcard::from_bytes::<collab_types::SignedOp>(&event.op) else {
-                eprintln!(
-                    "probe: received {} bytes that were not a signed op",
-                    event.op.len()
-                );
-                continue;
-            };
-            let Ok(mutation) = collab_types::DocumentMutation::decode(&envelope.payload) else {
-                eprintln!("probe: received a signed op without a typed document mutation");
-                continue;
-            };
-            if doc.load_incremental(mutation.data()).is_err() {
-                eprintln!("probe: received document bytes that did not load");
-                continue;
-            }
-            if let Ok(Some((value, _))) = doc.get(&ROOT, FIELD) {
-                return Some(value.to_str().unwrap_or_default().to_string());
+            match apply_signed_document(&mut doc, workspace_id, &event.op) {
+                Ok(Some(text)) => return Some(text),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("probe: received an operation that was not applicable: {error}");
+                }
             }
         }
     })
@@ -311,5 +335,54 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
             );
             ExitCode::from(10)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signed_change(workspace_id: &str, text: &str) -> Vec<u8> {
+        let mut doc = AutoCommit::new();
+        doc.put(&ROOT, FIELD, text).unwrap();
+        let payload = DocumentMutation::Incremental(doc.save_incremental())
+            .encode()
+            .unwrap();
+        let (key, author) = collab_types::generate_keypair();
+        let mut op = SignedOp::new_unsigned(
+            payload,
+            collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
+            author,
+            collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
+            OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &key).unwrap();
+        postcard::to_stdvec(&op).unwrap()
+    }
+
+    #[test]
+    fn applies_a_typed_signed_incremental_change() {
+        let mut doc = AutoCommit::new();
+        let text = apply_signed_document(
+            &mut doc,
+            "workspace-a",
+            &signed_change("workspace-a", "hello"),
+        )
+        .unwrap();
+        assert_eq!(text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn rejects_a_valid_operation_for_another_route() {
+        let mut doc = AutoCommit::new();
+        let error = apply_signed_document(
+            &mut doc,
+            "workspace-b",
+            &signed_change("workspace-a", "hello"),
+        )
+        .unwrap_err();
+        assert!(error.contains("another document route"));
     }
 }
