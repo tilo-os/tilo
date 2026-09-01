@@ -69,6 +69,7 @@ pub struct LaunchSpec {
     configure_app: Option<ConfigureApp>,
     live_handler: Option<LiveHandler>,
     command_handler: Option<CommandHandler>,
+    headless_enabled: bool,
     open_state: OpenState,
     open_state_with_args: Option<OpenStateWithArgs>,
     allowed_flags: &'static [&'static str],
@@ -91,6 +92,7 @@ impl LaunchSpec {
             configure_app: None,
             live_handler: None,
             command_handler: None,
+            headless_enabled: true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -115,6 +117,7 @@ impl LaunchSpec {
             configure_app: None,
             live_handler: None,
             command_handler: None,
+            headless_enabled: true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -184,6 +187,15 @@ impl LaunchSpec {
     #[must_use]
     pub fn command_handler(mut self, handler: CommandHandler) -> Self {
         self.command_handler = Some(handler);
+        self
+    }
+
+    /// Reject headless input driving for apps whose widgets have privileged
+    /// side effects, such as an on-screen keyboard that injects keystrokes into
+    /// another application.
+    #[must_use]
+    pub fn disable_headless(mut self) -> Self {
+        self.headless_enabled = false;
         self
     }
 
@@ -276,6 +288,7 @@ pub enum LaunchError {
     ConflictingModes,
     ShotsOnly(String),
     ShotsUnsupported,
+    HeadlessUnsupported,
     Scenario(String),
     Operation(String),
 }
@@ -295,6 +308,9 @@ impl fmt::Display for LaunchError {
             }
             Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
+            Self::HeadlessUnsupported => {
+                write!(f, "this application does not support --headless-drive")
+            }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
         }
     }
@@ -402,6 +418,9 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if args.headless.is_some() && !spec.headless_enabled {
+        return Err(LaunchError::HeadlessUnsupported);
+    }
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
     {
@@ -678,6 +697,13 @@ mod tests {
             .command_handler(custom_command);
         run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
         assert!(CUSTOM_COMMAND_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn privileged_app_can_reject_headless_driving() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).disable_headless();
+        let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
+        assert_eq!(result, Err(LaunchError::HeadlessUnsupported));
     }
 
     #[test]
