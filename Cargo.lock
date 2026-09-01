@@ -499,6 +499,7 @@ name = "app-catalogue"
 version = "0.1.0"
 dependencies = [
  "app-registry",
+ "atomic-file",
  "clap",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",

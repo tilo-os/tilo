@@ -767,7 +767,7 @@ impl SearchProvider for ActionsProvider {
             }
             let label_lower = action.label.to_lowercase();
             let subtitle_lower = action.subtitle.to_lowercase();
-            let score = match_score(&needle_lower, &label_lower, &subtitle_lower);
+            let score = match_score(&needle_lower, &label_lower, &subtitle_lower, action.id);
             if let Some(score) = score {
                 let apply = action.apply;
                 out.push(SearchResult {
@@ -797,10 +797,12 @@ impl SearchProvider for ActionsProvider {
 /// Case-insensitive scoring:
 /// - Prefix match on label → 100
 /// - Substring match on label → 50
-/// - Substring match on subtitle → 25
+/// - Exact action id → 90
+/// - Substring match on subtitle or id → 25
+/// - Multi-word terms spanning label/subtitle/id → 20
 /// - Fuzzy subsequence on label → 10
 /// - Empty needle → 0 (matches everything, sort by kind order)
-fn match_score(needle: &str, label: &str, subtitle: &str) -> Option<i32> {
+fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -810,8 +812,19 @@ fn match_score(needle: &str, label: &str, subtitle: &str) -> Option<i32> {
     if label.contains(needle) {
         return Some(50);
     }
-    if subtitle.contains(needle) {
+    if id == needle {
+        return Some(90);
+    }
+    if subtitle.contains(needle) || id.contains(needle) {
         return Some(25);
+    }
+    let terms: Vec<&str> = needle.split_whitespace().collect();
+    if terms.len() > 1
+        && terms
+            .iter()
+            .all(|term| label.contains(term) || subtitle.contains(term) || id.contains(term))
+    {
+        return Some(20);
     }
     if fuzzy_subsequence(needle, label) {
         return Some(10);
@@ -873,6 +886,28 @@ mod tests {
         });
         let opens: Vec<_> = out.iter().filter(|r| r.title.starts_with("Open")).collect();
         assert!(opens.iter().all(|r| r.score == 100));
+    }
+
+    #[test]
+    fn action_ids_and_out_of_order_terms_are_searchable() {
+        assert_eq!(
+            match_score(
+                "settings.privacy.open",
+                "open workspace privacy & security",
+                "app grants and enforced access for this workspace",
+                "settings.privacy.open",
+            ),
+            Some(90),
+        );
+        assert_eq!(
+            match_score(
+                "security workspace",
+                "open workspace privacy & security",
+                "app grants and enforced access for this workspace",
+                "settings.privacy.open",
+            ),
+            Some(20),
+        );
     }
 
     #[test]
