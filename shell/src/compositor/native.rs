@@ -2327,6 +2327,18 @@ pub fn run() -> ! {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    let _windows_compat = match crate::shell::windows_compat::spawn(
+        frame_builder.chrome_handle().borrow().tree_handle(),
+    ) {
+        Ok(service) => {
+            tracing::info!("windows compatibility session service ready");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "windows compatibility session service unavailable");
+            None
+        }
+    };
 
     if let Err(err) =
         event_loop
