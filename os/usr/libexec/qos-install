@@ -454,6 +454,27 @@ install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
 log "  restored the normal greeter configuration"
 
+# NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
+# files in the live medium. Preserve those profiles so a connection made in
+# the optional Network step also works on first boot. Never follow links or
+# copy subdirectories, and reassert NetworkManager's private file mode.
+LIVE_CONNECTIONS=/etc/NetworkManager/system-connections
+TARGET_CONNECTIONS="$DEPLOY_ETC/NetworkManager/system-connections"
+COPIED_CONNECTIONS=0
+if [ -d "$LIVE_CONNECTIONS" ]; then
+  install -d -m 0700 "$TARGET_CONNECTIONS"
+  chcon --reference="$LIVE_CONNECTIONS" "$TARGET_CONNECTIONS" 2>/dev/null || true
+  while IFS= read -r -d '' PROFILE; do
+    TARGET_PROFILE="$TARGET_CONNECTIONS/$(basename "$PROFILE")"
+    install -m 0600 "$PROFILE" "$TARGET_PROFILE"
+    chcon --reference="$PROFILE" "$TARGET_PROFILE" 2>/dev/null || true
+    COPIED_CONNECTIONS=$((COPIED_CONNECTIONS + 1))
+  done < <(find "$LIVE_CONNECTIONS" -mindepth 1 -maxdepth 1 -type f -print0)
+fi
+if [ "$COPIED_CONNECTIONS" -gt 0 ]; then
+  log "  preserved $COPIED_CONNECTIONS NetworkManager connection profile(s) for first boot"
+fi
+
 install -d -m 0755 "$DEPLOY_ETC/qos"
 CONF="$DEPLOY_ETC/qos/install-user.conf"
 printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF"
