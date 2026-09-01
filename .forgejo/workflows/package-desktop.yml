@@ -28,6 +28,7 @@ on:
       - "codex/package-desktop-release"
       # Temporary recovery-proof branch; delete after the runner incident is
       # classified without changing the packaging branch under development.
+      # The second proof run starts only after the corrected drain hook is live.
       - "codex/runner-packaging-proof"
     tags: ["v*"]
   workflow_dispatch:
