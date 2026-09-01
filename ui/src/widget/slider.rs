@@ -36,6 +36,8 @@ pub struct Slider {
     is_focused: bool,
     value: f64, // 0.0 to 1.0
     on_change_path: String,
+    local_state: Option<crate::local_state::LocalBinding<f64>>,
+    on_change: Option<Box<dyn FnMut(f64)>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// When `false` the slider is disabled: skipped by focus, rejects
@@ -72,6 +74,8 @@ impl Slider {
             is_focused: false,
             value: 0.5,
             on_change_path: on_change_path.to_string(),
+            local_state: None,
+            on_change: None,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -79,6 +83,48 @@ impl Slider {
             id_override: None,
             accessible_name: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+        }
+    }
+
+    /// Create a normalized slider bound to typed process-local state.
+    ///
+    /// Pointer drags and accessibility actions update `state`; mutations
+    /// through any clone update this slider on the next synchronization pass.
+    /// Values are clamped to `0.0..=1.0` at the control boundary.
+    pub fn from_state(state: &crate::LocalState<f64>) -> Self {
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let mut slider = Self::new("slider", "");
+        slider.value = value.clamp(0.0, 1.0);
+        slider.local_state = Some(binding);
+        slider.publish_local_state();
+        slider
+    }
+
+    /// Observe values produced by user interaction.
+    ///
+    /// Model synchronization and [`Self::set_value`] do not invoke this
+    /// callback.
+    #[must_use]
+    pub fn on_change(mut self, callback: impl FnMut(f64) + 'static) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self
+    }
+
+    /// Return the normalized value currently presented by this slider.
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    /// Set the normalized value programmatically and update a bound local
+    /// model without invoking [`Self::on_change`].
+    pub fn set_value(&mut self, value: f64) {
+        self.value = value.clamp(0.0, 1.0);
+        self.publish_local_state();
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.value);
         }
     }
 
@@ -164,11 +210,18 @@ impl Slider {
             return false;
         }
         self.value = new_value;
-        let _ = state.put(
-            root,
-            self.on_change_path.as_str(),
-            automerge::ScalarValue::F64(self.value),
-        );
+        if self.local_state.is_some() {
+            self.publish_local_state();
+        } else {
+            let _ = state.put(
+                root,
+                self.on_change_path.as_str(),
+                automerge::ScalarValue::F64(self.value),
+            );
+        }
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(self.value);
+        }
         true
     }
 }
@@ -370,6 +423,17 @@ impl Widget for Slider {
         reason = "Automerge integer values are normalized into this f64 slider model"
     )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(value) = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll)
+        {
+            self.value = value.clamp(0.0, 1.0);
+            return;
+        }
+        if self.local_state.is_some() {
+            return;
+        }
         if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
             && let Value::Scalar(s) = val
         {
@@ -790,6 +854,43 @@ mod tests {
     fn slider_test_id_can_be_overridden() {
         let s = Slider::new("any", "value").with_id("volume");
         assert_eq!(Widget::test_id(&s), Some("volume"));
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_sliders() {
+        use crate::a11y::Action;
+
+        let state = crate::LocalState::new(0.25);
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut first =
+            Slider::from_state(&state).on_change(move |value| captured.borrow_mut().push(value));
+        let mut second = Slider::from_state(&state);
+        let mut document = AutoCommit::new();
+
+        state.set(0.5);
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), 0.5);
+        assert_eq!(second.value(), 0.5);
+        assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &Action::Increment,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), 0.55);
+        assert_eq!(&*changes.borrow(), &[0.55]);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), 0.55);
+
+        second.set_value(0.8);
+        assert_eq!(state.get(), 0.8);
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), 0.8);
+        assert_eq!(&*changes.borrow(), &[0.55]);
     }
 
     #[test]

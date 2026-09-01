@@ -75,6 +75,7 @@ Grow an existing app from any directory inside it with `add`:
 
 ```bash
 qos-dev add
+qos-dev add component profile-card --template form
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -85,11 +86,34 @@ qos-dev locale sync
 ```
 
 With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
-containing app and offers a screen, semantic scenario, or locale. Screen setup
-includes its title, starter shape, and an optional source route (defaulting to
-`main` when present). The wizard reviews the resolved artifact before entering
-the same atomic publication path as the explicit commands. Scripts and CI
-should continue to use the fully specified subcommands.
+containing app and offers a screen, reusable Rust component, semantic scenario,
+or locale. Screen setup includes its title, starter shape, and an optional
+source route (defaulting to `main` when present). Component setup offers a
+typed-props display or a typed-state form. The wizard reviews the resolved
+artifact before entering the same atomic publication path as the explicit
+commands. Scripts and CI should continue to use the fully specified
+subcommands.
+
+`add component profile-card --template form` creates
+`src/components/profile_card.rs`, maintains the generated
+`src/components/mod.rs` registry, and adds one plain `pub mod components;` to
+the app library. The generated state is explicit and cloneable, so app actions
+or workers can retain it without reaching into the widget tree:
+
+```rust
+let profile = components::profile_card::ProfileCardState::default();
+let view = components::profile_card::profile_card("settings-profile", &profile);
+let value_for_save = profile.value.clone();
+```
+
+The instance ID prefixes every semantic control ID, allowing the same component
+to appear more than once. Its text and checkbox use two-way `LocalState`
+bindings, visible/accessibility labels share generated Fluent messages, and a
+headless component test exercises both controls. The `display` template instead
+generates a typed props struct plus a heading/detail view. Component source,
+registry, library wiring, and locale updates publish as one rollback-safe batch;
+an app-owned registry or existing component is protected unless replacement is
+explicit.
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
@@ -651,29 +675,62 @@ State has two deliberate levels:
 - transient presentation state such as hover, an open popover, or a scroll
   offset lives on the widget and never enters the shared document.
 
-That is less magical than implicit two-way binding: the storage boundary is
-visible in types and debuggable as an ordinary document. Reusable actions go
-through `ActionHost`, so a button, command palette entry, agent action, and
-undo history can invoke the same operation.
+The storage boundary stays visible in types: durable fields name a document
+path, while process-local fields bind an explicit typed handle. Reusable
+actions go through `ActionHost`, so a button, command palette entry, agent
+action, and undo history can invoke the same operation.
 
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
-the value, while `Text::from_state` observes its revision and only reruns the
-formatter after a mutation. A complete retained form needs no custom widget:
+the value. `TextInput::from_state` is a true two-way binding: every input edit
+updates the handle, and a mutation through any clone updates every bound input
+on the ordinary synchronization pass. `Text::from_state` observes the same
+revision and only reruns its formatter after a mutation. A complete retained
+form needs no snapshots, callbacks, or custom widget:
 
 ```rust
 let query = LocalState::new(String::from("status:open"));
+let live_updates = LocalState::new(true);
+let opacity = LocalState::new(0.8);
+let region = LocalState::new(String::from("Europe/Berlin"));
+let due_date = LocalState::new(chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+let reminder = LocalState::new(TimeValue::new(9, 30));
+let accent = LocalState::new(ui::peniko::Color::from_rgba8(54, 162, 235, 255));
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
-let input = TextInput::local()
-    .with_initial_value(&query.get())
+let input = TextInput::from_state(&query)
     .with_id("filter-input")
-    .with_accessible_name("Filter")
-    .on_change(query.text_sink());
+    .with_accessible_name("Filter");
+let updates = labeled_check(
+    "live-updates-label",
+    Checkbox::from_state(&live_updates).with_id("live-updates"),
+);
+let opacity_field = NumberInput::from_state(&opacity)
+    .with_range(0.0, 1.0)
+    .with_step(0.05);
+let opacity_slider = Slider::from_state(&opacity);
+let region_field = Dropdown::from_state(
+    vec![String::from("Europe/Berlin"), String::from("Asia/Tokyo")],
+    &region,
+);
+let due_date_field = DatePicker::from_state(&due_date);
+let reminder_field = TimePicker::from_state(&reminder);
+let accent_field = ColorPicker::from_state(&accent);
 ```
 
-`set` replaces a local value and `update` mutates it in place. A bound text
-change invalidates rendering, intrinsic measurement, and accessibility in the
-same synchronization pass. Use `Text::dynamic` when the value comes from an
-existing local owner instead of `LocalState`.
+`TextInput`, `Checkbox`, `Toggle`, `NumberInput`, `Slider`, `Dropdown`,
+`DatePicker`, `TimePicker`, and `ColorPicker` all offer `from_state` with the
+same explicit typed contract. Time fields use `TimeValue`, including an
+optional seconds component, rather than an unlabelled tuple. `set` replaces a
+local value and `update` mutates it in place. A bound text change invalidates
+rendering, multiline intrinsic measurement, and accessibility in the same
+synchronization pass without being misreported as a user edit. Bind several
+controls to the same handle for synchronized master/detail or inspector views;
+the `opacity_field` and `opacity_slider` above stay synchronized without
+app-owned fan-out. An optional `on_change` callback observes committed user
+edits without owning synchronization; programmatic setters and model
+synchronization do not invoke it. Semantic automation can set dates as
+`YYYY-MM-DD`, times as `HH:MM` or `HH:MM:SS`, and colours as `#RRGGBB`, through
+the same user-change path as pointer and keyboard input. Use `Text::dynamic`
+when the value comes from an existing local owner instead of `LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app
