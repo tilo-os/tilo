@@ -25,7 +25,10 @@ fi
 grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && grep -Fq 'no-cache: true' "$workflow" \
   && grep -Fq 'independent OS builds differ' "$workflow" \
-  && ok 'release compares an uncached independent OS rebuild' \
+  && grep -Fq 'final sealed OS images differ' "$workflow" \
+  && grep -Fq 'os/dev/reseal-image.sh' "$workflow" \
+  && grep -Fq -- '--timestamp "$SOURCE_DATE_EPOCH"' "$repo/os/dev/reseal-image.sh" \
+  && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
 sign_line="$(grep -n 'cosign sign ' "$workflow" | head -1 | cut -d: -f1)"
