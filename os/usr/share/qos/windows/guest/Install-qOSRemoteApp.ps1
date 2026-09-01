@@ -1,10 +1,12 @@
 <#
 Installs qOS's Windows-side RemoteApp publication and bridge payload.
 
-This intentionally supports only a user-supplied Windows Server installation
-with the official Remote Desktop Services RemoteApp role. Consumer Windows
-editions do not provide a supported RemoteApp host; qOS will not patch
-termsrv.dll or ship RDP Wrapper just to hide a desktop.
+This uses the official Remote Desktop Services RemoteApp role when the guest is
+Windows Server. On client Windows it enables the same documented application
+allow-list used by WinApps-style integrations as a best-effort native RAIL
+publication. qOS never patches termsrv.dll or installs RDP Wrapper. A client
+guest remains eligible for the app-focused SPICE fallback if the native RAIL
+surface is unavailable.
 #>
 [CmdletBinding()]
 param(
@@ -25,15 +27,16 @@ foreach ($path in @($bridgeScript, $secretPath, $configPath, $ApplicationsPath))
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
-# Native RDS RemoteApp is the supported way to get individual windows. Fail
-# closed rather than presenting a concealed ordinary desktop from a client SKU.
+# Native RDS RemoteApp is the supported way to get individual windows on
+# Server. Client Windows uses the same native allow-list as a best-effort
+# integration and can fall back to an app-focused guest surface.
 $os = Get-CimInstance -ClassName Win32_OperatingSystem
-if ($os.ProductType -ne 3) {
-    throw 'qOS needs a Windows Server ISO with the supported RDS RemoteApp role; client Windows is recovery-only.'
-}
-$rds = Get-WindowsFeature -Name RDS-RD-Server
-if (-not $rds.Installed) {
-    throw 'Install and license the Windows Remote Desktop Services RemoteApp role before enabling qOS publication.'
+$isServer = $os.ProductType -eq 3
+if ($isServer) {
+    $rds = Get-WindowsFeature -Name RDS-RD-Server
+    if (-not $rds.Installed) {
+        throw 'Install and license the Windows Remote Desktop Services RemoteApp role before enabling qOS publication.'
+    }
 }
 
 $apps = Get-Content -Raw -LiteralPath $ApplicationsPath | ConvertFrom-Json
@@ -62,7 +65,8 @@ Copy-Item -LiteralPath $secretPath -Destination (Join-Path $root 'bridge.secret'
 Copy-Item -LiteralPath $configPath -Destination (Join-Path $root 'bridge.json') -Force
 Copy-Item -LiteralPath $ApplicationsPath -Destination (Join-Path $root 'published-applications.json') -Force
 
-$base = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications'
+$allowList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList'
+$base = Join-Path $allowList 'Applications'
 New-Item -Path $base -Force | Out-Null
 foreach ($app in $apps.applications) {
     $key = Join-Path $base $app.id
@@ -73,6 +77,13 @@ foreach ($app in $apps.applications) {
     New-ItemProperty -Path $key -Name ShowInTSWA -PropertyType DWord -Value 0 -Force | Out-Null
 }
 
+# Windows client SKUs do not expose the Server Manager RDS role, but the
+# terminal-services application allow-list is still the native contract used
+# by WinApps-like clients. This is deliberately best-effort: if the local RDP
+# service does not accept RAIL, qOS chooses the app-focused SPICE backend. No
+# unsupported binary patching or RDP Wrapper is involved.
+New-ItemProperty -Path $allowList -Name fDisabledAllowList -PropertyType DWord -Value 0 -Force | Out-Null
+
 # Do not make a host filesystem or clipboard grant by accident. Per-session
 # redirects are supplied by FreeRDP only after qOS's normal workspace broker
 # has materialised a short lease.
@@ -82,6 +93,7 @@ New-ItemProperty -Path $ts -Name fDisableCdm -PropertyType DWord -Value 1 -Force
 New-ItemProperty -Path $ts -Name fDisableClip -PropertyType DWord -Value 1 -Force | Out-Null
 New-ItemProperty -Path $ts -Name fDisableAudioCapture -PropertyType DWord -Value 1 -Force | Out-Null
 New-ItemProperty -Path $ts -Name UserAuthentication -PropertyType DWord -Value 1 -Force | Out-Null
+New-ItemProperty -Path $ts -Name fSingleSessionPerUser -PropertyType DWord -Value 0 -Force | Out-Null
 
 # Never allow RDP from arbitrary LAN peers. The libvirt bridge has no forward,
 # and this additionally admits only its host-side address.
@@ -115,4 +127,5 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Write-Output 'qOS RemoteApp publication installed. The Windows desktop remains a recovery-only surface.'
+$mode = if ($isServer) { 'official RDS RemoteApp' } else { 'native client RAIL (best effort)' }
+Write-Output "qOS application publication installed using $mode. The Windows desktop remains a recovery-only surface."
