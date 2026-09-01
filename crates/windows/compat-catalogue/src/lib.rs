@@ -186,6 +186,12 @@ pub struct ApplicationQuery {
     /// Steam/UMU numeric game ID.
     #[serde(default)]
     pub game_id: Option<String>,
+    /// Store namespace from UMU (for example `egs` or `gog`).
+    #[serde(default)]
+    pub store: Option<String>,
+    /// Store product code (`CODENAME`) within [`Self::store`].
+    #[serde(default)]
+    pub store_product: Option<String>,
     /// Executable filename or relative path.
     #[serde(default)]
     pub executable: Option<String>,
@@ -216,6 +222,8 @@ impl ApplicationQuery {
             package_id: normalize_optional(self.package_id.as_deref()),
             app_id: normalize_optional(self.app_id.as_deref()),
             game_id: normalize_optional(self.game_id.as_deref()),
+            store: normalize_optional(self.store.as_deref()),
+            store_product: normalize_optional(self.store_product.as_deref()),
             executable: normalize_executable(self.executable.as_deref()),
             executable_sha256: normalize_digest(self.executable_sha256.as_deref()),
             installer_sha256: normalize_digest(self.installer_sha256.as_deref()),
@@ -236,6 +244,12 @@ pub struct MatchKey {
     pub app_id: Option<String>,
     #[serde(default)]
     pub game_id: Option<String>,
+    /// Store namespace from a compatibility source.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// Store product code within [`Self::store`].
+    #[serde(default)]
+    pub store_product: Option<String>,
     #[serde(default)]
     pub executable: Option<String>,
     /// Exact executable digest. This outranks every textual identity key.
@@ -262,6 +276,8 @@ impl MatchKey {
             package_id: normalize_optional(self.package_id.as_deref()),
             app_id: normalize_optional(self.app_id.as_deref()),
             game_id: normalize_optional(self.game_id.as_deref()),
+            store: normalize_optional(self.store.as_deref()),
+            store_product: normalize_optional(self.store_product.as_deref()),
             executable: normalize_executable(self.executable.as_deref()),
             executable_sha256: normalize_digest(self.executable_sha256.as_deref()),
             installer_sha256: normalize_digest(self.installer_sha256.as_deref()),
@@ -467,6 +483,7 @@ pub enum MatchKind {
     Executable,
     ExecutableDigest,
     GameId,
+    StoreProduct,
     AppId,
     PackageId,
 }
@@ -479,8 +496,9 @@ impl MatchKind {
             Self::Executable => 2,
             Self::GameId => 3,
             Self::AppId => 4,
-            Self::PackageId => 5,
-            Self::ExecutableDigest => 6,
+            Self::StoreProduct => 5,
+            Self::PackageId => 6,
+            Self::ExecutableDigest => 7,
         }
     }
 }
@@ -553,6 +571,8 @@ pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, Cat
         // AppUserModelId. Keeping the two namespaces distinct preserves
         // deterministic precedence in the resolver.
         game_id: get(&["game_id", "gameId", "appid"]),
+        store: get(&["store", "store_name", "storeName"]),
+        store_product: get(&["store_product", "storeProduct", "codename", "code_name"]),
         executable: get(&["executable", "exe", "command"]),
         executable_sha256: get(&["executable_sha256", "exe_sha256", "sha256"]),
         installer_sha256: get(&["installer_sha256", "installerSha256", "installer_sha256sum"]),
@@ -562,6 +582,8 @@ pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, Cat
     if query.package_id.is_none()
         && query.app_id.is_none()
         && query.game_id.is_none()
+        && query.store.is_none()
+        && query.store_product.is_none()
         && query.executable.is_none()
         && query.executable_sha256.is_none()
         && query.installer_sha256.is_none()
@@ -591,6 +613,8 @@ impl UmuCsvRow {
         ApplicationQuery {
             app_id: Some(self.codename.clone()),
             game_id: Some(self.umu_id.clone()),
+            store: Some(self.store.clone()),
+            store_product: Some(self.codename.clone()),
             product: Some(self.title.clone()),
             ..ApplicationQuery::default()
         }
@@ -690,16 +714,26 @@ pub fn proton_records_from_umu_csv(
                 version: RECORD_VERSION,
                 provenance: Provenance::Vendor,
                 signed: false,
-                matches: vec![MatchKey {
-                    game_id: Some(row.umu_id),
-                    ..MatchKey::default()
-                }],
+                // STORE + CODENAME is the upstream product identity. Keep
+                // UMU_ID as a direct fallback for metadata discovered from
+                // the UMU launcher itself.
+                matches: vec![
+                    MatchKey {
+                        store: Some(row.store.clone()),
+                        store_product: Some(row.codename.clone()),
+                        ..MatchKey::default()
+                    },
+                    MatchKey {
+                        game_id: Some(row.umu_id.clone()),
+                        ..MatchKey::default()
+                    },
+                ],
                 recipe: Recipe {
                     layer: Layer::Proton,
                     runner: runner.clone(),
                     settings: settings.clone(),
                     security_profile: security_profile.clone(),
-                    proton_recipe: Some(format!("umu-{slug}")),
+                    proton_recipe: Some(format!("umu-{}", row.umu_id)),
                 },
             })
         })
@@ -869,6 +903,8 @@ struct NormalizedQuery {
     executable: Option<String>,
     executable_sha256: Option<String>,
     installer_sha256: Option<String>,
+    store: Option<String>,
+    store_product: Option<String>,
     publisher: Option<String>,
     product: Option<String>,
 }
@@ -883,6 +919,8 @@ impl NormalizedKey {
             || self.executable.is_some()
             || self.executable_sha256.is_some()
             || self.installer_sha256.is_some()
+            || self.store.is_some()
+            || self.store_product.is_some()
             || self.publisher.is_some()
             || self.product.is_some()
     }
@@ -903,6 +941,8 @@ impl NormalizedKey {
                 self.installer_sha256.as_ref(),
                 query.installer_sha256.as_ref(),
             )
+            && equal_if_present(self.store.as_ref(), query.store.as_ref())
+            && equal_if_present(self.store_product.as_ref(), query.store_product.as_ref())
             && equal_if_present(self.publisher.as_ref(), query.publisher.as_ref())
             && equal_if_present(self.product.as_ref(), query.product.as_ref())
     }
@@ -921,6 +961,8 @@ fn record_match_kind(record: &Record, query: &NormalizedQuery) -> Option<MatchKi
                 Some(MatchKind::ExecutableDigest)
             } else if key.package_id.is_some() {
                 Some(MatchKind::PackageId)
+            } else if key.store.is_some() || key.store_product.is_some() {
+                Some(MatchKind::StoreProduct)
             } else if key.app_id.is_some() {
                 Some(MatchKind::AppId)
             } else if key.game_id.is_some() {
@@ -941,6 +983,8 @@ fn validate_key(key: &MatchKey, record_id: &str) -> Result<(), CatalogueError> {
         ("package id", key.package_id.as_deref()),
         ("application id", key.app_id.as_deref()),
         ("game id", key.game_id.as_deref()),
+        ("store", key.store.as_deref()),
+        ("store product", key.store_product.as_deref()),
         ("executable", key.executable.as_deref()),
         ("executable SHA-256", key.executable_sha256.as_deref()),
         ("installer SHA-256", key.installer_sha256.as_deref()),
@@ -1341,15 +1385,42 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "A, Great Game");
         assert_eq!(rows[0].query().game_id.as_deref(), Some("123"));
+        assert_eq!(rows[0].query().store.as_deref(), Some("steam"));
+        assert_eq!(rows[0].query().store_product.as_deref(), Some("GreatGame"));
         let runner = Runner::new("umu-proton", "10").expect("valid runner");
         let security_profile = profile();
         let settings = RunnerSettings::default();
         let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
             .expect("valid Proton records");
         assert_eq!(records[0].recipe.layer, Layer::Proton);
+        assert_eq!(records[0].recipe.proton_recipe.as_deref(), Some("umu-123"));
+        let catalogue = Catalogue {
+            schema_version: CATALOGUE_SCHEMA_VERSION,
+            records,
+        };
+        let resolver = catalogue.resolver().expect("valid UMU catalogue");
+        let store_query = ApplicationQuery {
+            store: Some("EGS".to_owned()),
+            store_product: Some("Catnip".to_owned()),
+            ..ApplicationQuery::default()
+        };
+        // The sample row is Steam/GreatGame, so this does not accidentally
+        // resolve by the derived UMU ID.
         assert_eq!(
-            records[0].recipe.proton_recipe.as_deref(),
-            Some("umu-steam-greatgame-123")
+            resolver
+                .resolve(&store_query, VmFallback::Disabled)
+                .match_kind,
+            MatchKind::DefaultWine
+        );
+        let direct_query = ApplicationQuery {
+            game_id: Some("123".to_owned()),
+            ..ApplicationQuery::default()
+        };
+        assert_eq!(
+            resolver
+                .resolve(&direct_query, VmFallback::Disabled)
+                .match_kind,
+            MatchKind::GameId
         );
     }
 
@@ -1357,5 +1428,49 @@ mod tests {
     fn rejects_malformed_umu_csv() {
         assert!(parse_umu_csv("TITLE,STORE\nGame,steam\n").is_err());
         assert!(parse_umu_csv("TITLE,STORE,CODENAME,UMU_ID\n\"unterminated,steam,x,1\n").is_err());
+    }
+
+    #[test]
+    fn store_and_codename_are_primary_for_egs_and_gog_rows() {
+        let csv =
+            "TITLE,STORE,CODENAME,UMU_ID\nCatnip,EGS,Catnip,397540\nGOG title,GOG,123456,765432\n";
+        let rows = parse_umu_csv(csv).expect("valid store catalogue");
+        let runner = Runner::new("umu-proton", "10").expect("valid runner");
+        let security_profile = profile();
+        let settings = RunnerSettings::default();
+        let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
+            .expect("valid Proton records");
+        assert_eq!(
+            records[0].recipe.proton_recipe.as_deref(),
+            Some("umu-397540")
+        );
+        assert_eq!(rows[1].store, "GOG");
+        assert_eq!(rows[1].codename, "123456");
+        let catalogue = Catalogue {
+            schema_version: CATALOGUE_SCHEMA_VERSION,
+            records,
+        };
+        let resolver = catalogue.resolver().expect("valid catalogue");
+        let catnip = ApplicationQuery {
+            store: Some("egs".to_owned()),
+            store_product: Some("catnip".to_owned()),
+            ..ApplicationQuery::default()
+        };
+        assert_eq!(
+            resolver
+                .resolve(&catnip, VmFallback::Disabled)
+                .record_id
+                .as_deref(),
+            Some("umu-egs-catnip-397540")
+        );
+        let gog = ApplicationQuery {
+            store: Some("gog".to_owned()),
+            store_product: Some("123456".to_owned()),
+            ..ApplicationQuery::default()
+        };
+        assert_eq!(
+            resolver.resolve(&gog, VmFallback::Disabled).match_kind,
+            MatchKind::StoreProduct
+        );
     }
 }
