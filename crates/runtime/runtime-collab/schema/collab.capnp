@@ -336,6 +336,11 @@ interface PresenceHandle {
   # to end and never re-keys them, so exactly one receiver can place the
   # position and the rest can tell that it is not theirs.
   publishPointer @7 (keyBytes :Data, x :Float32, y :Float32) -> ();
+
+  # Publish a transient "just typed" range. This is intentionally distinct
+  # from selection: receivers render it as a fading insertion highlight,
+  # while a selection is durable presence until the next caret update.
+  publishTyping @8 (keyBytes :Data, start :UInt64, end :UInt64) -> ();
 }
 
 interface PresenceStream {
@@ -403,6 +408,13 @@ struct PresencePayload {
     pointer :group {
       x @7 :Float32;
       y @8 :Float32;
+    }
+
+    # A transient insertion range. Kept as its own union arm so the local
+    # Cap'n Proto hop preserves the same semantic variant as peer transport.
+    typing :group {
+      start @9 :UInt64;
+      end  @10 :UInt64;
     }
   }
 }

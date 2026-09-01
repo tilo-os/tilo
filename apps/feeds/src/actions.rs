@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::FeedsDoc;
@@ -325,14 +325,13 @@ pub struct FeedsResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, FEEDS_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        kind: qos_actions::OperationKind::Document,
-        input: ActionInput::Immediate(encode(action)),
-    })
+    ActionSpec::immediate(id, label, FEEDS_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// A one-line label for a feed, defaulting to a placeholder when untitled.

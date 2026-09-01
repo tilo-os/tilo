@@ -6,8 +6,156 @@
 //! format.  Exporters remain responsible for those representation choices.
 
 use crate::document::MarkSpan;
-use crate::snapshot::ChangeKind;
+use crate::snapshot::{AttrVal, BlockView, ChangeKind};
 use std::collections::BTreeSet;
+
+/// Canonical block semantics shared by format exporters.
+///
+/// Aliases are normalized here so adding a writer does not require copying the
+/// same string dispatch yet again. Unknown text-bearing kinds deliberately
+/// remain paragraphs, matching the existing exporters' forward-compatible
+/// fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    Paragraph,
+    Heading,
+    Quote,
+    ListItem,
+    Table,
+    Image,
+    Code,
+}
+
+/// Borrowed semantic view of one canonical block.
+#[derive(Clone, Copy, Debug)]
+pub struct ExportBlock<'a> {
+    block: &'a BlockView,
+}
+
+impl<'a> ExportBlock<'a> {
+    pub fn new(block: &'a BlockView) -> Self {
+        Self { block }
+    }
+
+    pub fn kind(self) -> BlockKind {
+        match self.block.kind.as_str() {
+            "heading" => BlockKind::Heading,
+            "quote" | "blockquote" => BlockKind::Quote,
+            "list_item" => BlockKind::ListItem,
+            "table" => BlockKind::Table,
+            "image" => BlockKind::Image,
+            "code" | "code_block" => BlockKind::Code,
+            _ => BlockKind::Paragraph,
+        }
+    }
+
+    /// Heading level in the range supported by the canonical document model.
+    pub fn heading_level(self) -> u8 {
+        match self.block.attrs.get("level") {
+            Some(AttrVal::Int(level)) => u8::try_from((*level).clamp(1, 6)).unwrap_or(1),
+            _ => 1,
+        }
+    }
+}
+
+/// Canonical row/cell view of a table.
+///
+/// Imports may produce nested row blocks or a flat cell list with a `cols`
+/// attribute. Exporters should not each have to rediscover that distinction.
+#[derive(Clone, Debug, Default)]
+pub struct TablePlan<'a> {
+    rows: Vec<Vec<&'a BlockView>>,
+}
+
+impl<'a> TablePlan<'a> {
+    pub fn new(table: &'a BlockView) -> Self {
+        let rows = if table
+            .children
+            .iter()
+            .any(|child| !child.children.is_empty())
+        {
+            table
+                .children
+                .iter()
+                .map(|row| row.children.iter().collect())
+                .collect()
+        } else if table.children.is_empty() {
+            Vec::new()
+        } else {
+            let requested = match table.attrs.get("cols") {
+                Some(AttrVal::Int(cols)) => usize::try_from((*cols).max(1)).unwrap_or(usize::MAX),
+                _ => table.children.len(),
+            };
+            let cols = requested.min(table.children.len()).max(1);
+            table
+                .children
+                .chunks(cols)
+                .map(|row| row.iter().collect())
+                .collect()
+        };
+        Self { rows }
+    }
+
+    pub fn rows(&self) -> &[Vec<&'a BlockView>] {
+        &self.rows
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// Image media recognized from content, independent of container syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageMedia {
+    pub extension: &'static str,
+    pub mime: &'static str,
+}
+
+pub fn detect_image_media(bytes: &[u8]) -> Option<ImageMedia> {
+    let (extension, mime) = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        ("png", "image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        ("jpg", "image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        ("gif", "image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        ("webp", "image/webp")
+    } else if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
+        ("svg", "image/svg+xml")
+    } else {
+        return None;
+    };
+    Some(ImageMedia { extension, mime })
+}
+
+/// Pre-order, depth-first walk over a block forest.
+pub struct BlockWalk<'a> {
+    stack: Vec<std::slice::Iter<'a, BlockView>>,
+}
+
+pub fn walk_blocks(blocks: &[BlockView]) -> BlockWalk<'_> {
+    BlockWalk {
+        stack: vec![blocks.iter()],
+    }
+}
+
+impl<'a> Iterator for BlockWalk<'a> {
+    type Item = &'a BlockView;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let iter = self.stack.last_mut()?;
+            if let Some(block) = iter.next() {
+                if !block.children.is_empty() {
+                    self.stack.push(block.children.iter());
+                }
+                return Some(block);
+            }
+            self.stack.pop();
+        }
+    }
+}
 
 /// The values whose ranges end and start at one character offset.
 ///
@@ -225,6 +373,82 @@ fn change_boundary(marks: &[MarkSpan], offset: usize) -> RangeBoundary<'_> {
 mod tests {
     use super::*;
     use crate::document::MarkValue;
+    use std::collections::BTreeMap;
+
+    fn block(kind: &str, text: &str) -> BlockView {
+        BlockView {
+            id: text.into(),
+            kind: kind.into(),
+            text: text.into(),
+            marks: Vec::new(),
+            attrs: BTreeMap::new(),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn block_semantics_normalize_aliases_levels_and_unknown_kinds() {
+        let mut heading = block("heading", "title");
+        heading.attrs.insert("level".into(), AttrVal::Int(99));
+        assert_eq!(ExportBlock::new(&heading).kind(), BlockKind::Heading);
+        assert_eq!(ExportBlock::new(&heading).heading_level(), 6);
+        assert_eq!(
+            ExportBlock::new(&block("blockquote", "q")).kind(),
+            BlockKind::Quote
+        );
+        assert_eq!(
+            ExportBlock::new(&block("code_block", "c")).kind(),
+            BlockKind::Code
+        );
+        assert_eq!(
+            ExportBlock::new(&block("future-kind", "p")).kind(),
+            BlockKind::Paragraph
+        );
+    }
+
+    #[test]
+    fn table_plan_accepts_nested_and_flat_shapes_without_huge_allocations() {
+        let mut nested = block("table", "nested");
+        let mut row = block("table_row", "row");
+        row.children = vec![block("cell", "a"), block("cell", "b")];
+        nested.children.push(row);
+        assert_eq!(TablePlan::new(&nested).rows()[0].len(), 2);
+
+        let mut flat = block("table", "flat");
+        flat.children = vec![block("cell", "a"), block("cell", "b"), block("cell", "c")];
+        flat.attrs.insert("cols".into(), AttrVal::Int(2));
+        assert_eq!(
+            TablePlan::new(&flat)
+                .rows()
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            [2, 1]
+        );
+        flat.attrs.insert("cols".into(), AttrVal::Int(i64::MAX));
+        assert_eq!(TablePlan::new(&flat).rows().len(), 1);
+    }
+
+    #[test]
+    fn image_detection_and_depth_first_walk_are_canonical() {
+        assert_eq!(
+            detect_image_media(b"RIFFxxxxWEBP").map(|m| m.mime),
+            Some("image/webp")
+        );
+        assert_eq!(detect_image_media(b"not an image"), None);
+
+        let mut root = block("paragraph", "root");
+        let mut child = block("paragraph", "child");
+        child.children.push(block("paragraph", "grandchild"));
+        root.children.push(child);
+        let sibling = block("paragraph", "sibling");
+        assert_eq!(
+            walk_blocks(&[root, sibling])
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>(),
+            ["root", "child", "grandchild", "sibling"]
+        );
+    }
 
     fn mark(start: usize, end: usize, name: &str, value: MarkValue) -> MarkSpan {
         MarkSpan {

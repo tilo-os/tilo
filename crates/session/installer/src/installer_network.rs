@@ -1,6 +1,6 @@
-//! Non-blocking NetworkManager operations for the installer wizard.
+//! Non-blocking `NetworkManager` operations for the installer wizard.
 //!
-//! The live installer must remain usable when NetworkManager, a Wi-Fi adapter,
+//! The live installer must remain usable when `NetworkManager`, a Wi-Fi adapter,
 //! or internet access is absent. All potentially slow `nmcli` work therefore
 //! happens on worker threads. Results are returned through a small shared queue
 //! and the UI event-loop proxy is used only as a redraw wake-up.
@@ -16,12 +16,35 @@ use zeroize::Zeroizing;
 /// worker publishes into its shared result queue.
 pub const NETWORK_WAKE_EVENT: &str = "\u{1}network";
 
-/// Side-effect boundary for live NetworkManager calls. Keeping it narrow makes
+/// Side-effect boundary for live `NetworkManager` calls. Keeping it narrow makes
 /// the installer's decision logic testable without a radio or system bus.
 pub trait NetworkBackend: Send + Sync {
+    /// Query the system's current connectivity state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connectivity state cannot be queried.
     fn connectivity(&self) -> Result<ConnectivityState, String>;
+
+    /// Scan for currently visible Wi-Fi networks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Wi-Fi networks cannot be enumerated.
     fn wifi_networks(&self) -> Result<Vec<WifiNetworkInfo>, String>;
+
+    /// Obtain the sign-in URI for the current captive portal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the captive portal URI cannot be determined.
     fn captive_portal_uri(&self) -> Result<String, String>;
+
+    /// Connect to `ssid`, using `password` when the network is secured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection attempt cannot be started or completed.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
 }
 
@@ -48,7 +71,7 @@ impl NetworkBackend for RealNetworkBackend {
 
 /// One best-effort view of networking. Connectivity and Wi-Fi discovery are
 /// independent: wired internet can be usable when Wi-Fi scanning fails, and a
-/// Wi-Fi list is useful even when NetworkManager's internet check is disabled.
+/// Wi-Fi list is useful even when `NetworkManager`'s internet check is disabled.
 #[derive(Clone, Debug)]
 pub struct NetworkSnapshot {
     pub connectivity: ConnectivityState,
@@ -90,7 +113,7 @@ impl NetworkSnapshot {
         }
     }
 
-    /// Truthful primary status for the current NetworkManager result.
+    /// Truthful primary status for the current `NetworkManager` result.
     pub fn guidance(&self) -> &'static str {
         match self.connectivity {
             ConnectivityState::Full => {
@@ -221,6 +244,12 @@ impl InstallerNetwork {
     /// Validate and start a Wi-Fi connection. The password is moved into a
     /// zeroizing buffer before the worker is launched and never appears in
     /// argv or an external-event payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another network operation is active, no visible
+    /// network is selected, the selected network is already connected, or a
+    /// secured network has no password.
     pub fn start_connect(
         &mut self,
         password: Zeroizing<String>,

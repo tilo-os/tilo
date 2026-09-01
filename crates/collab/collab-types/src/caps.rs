@@ -289,6 +289,9 @@ pub enum Scope {
     /// person, **is** that person's room membership — the same machinery as
     /// any other share, so there is no second sharing system.
     Room(String),
+    /// One stable collaborative-file record. Unlike [`Scope::FsPath`], this
+    /// authority follows renames and moves and can safely key replication.
+    FsRecord(String),
 }
 
 impl Scope {
@@ -350,6 +353,7 @@ impl Scope {
             // before an action is checked. Direct scope matching remains narrow:
             // a room grant cannot masquerade as a filesystem/app/action grant.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
+            (Scope::FsRecord(r), ResourceRef::FsRecord(s)) => r == s,
 
             // Every scope variant is paired with its own condition above; a
             // resource shape that doesn't match the scope's own kind is never
@@ -362,7 +366,8 @@ impl Scope {
                 | Scope::Device(_)
                 | Scope::NetHost(_)
                 | Scope::Action { .. }
-                | Scope::Room(_),
+                | Scope::Room(_)
+                | Scope::FsRecord(_),
                 _,
             ) => false,
         }
@@ -433,6 +438,8 @@ pub enum ResourceRef {
     Action { app: String, action: String },
     /// A room, as the target of a membership capability.
     Room(String),
+    /// A stable collaborative-file record id.
+    FsRecord(String),
 }
 
 /// The resource context an op carries, used to match [`Scope`]s. Built by
@@ -825,7 +832,10 @@ pub fn role_base_applies(resource: &ResourceRef) -> bool {
         | ResourceRef::Artifact { .. }
         | ResourceRef::Action { .. }
         | ResourceRef::Room(_) => true,
-        ResourceRef::FsPath(_) | ResourceRef::Device(_) | ResourceRef::NetHost(_) => false,
+        ResourceRef::FsPath(_)
+        | ResourceRef::FsRecord(_)
+        | ResourceRef::Device(_)
+        | ResourceRef::NetHost(_) => false,
     }
 }
 

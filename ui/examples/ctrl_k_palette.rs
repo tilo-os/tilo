@@ -19,7 +19,7 @@ use ui::ActionPalette;
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionInput, ActionSpec, EncodedAction, ExecutionLocus, Resource};
+use ui::qos_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
 use ui::search::{SearchProvider, SearchResult, fuzzy_score};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -29,17 +29,16 @@ const MARGIN: f64 = 20.0;
 
 /// A demo immediate action, built by hand (no dispatch happens in a shot).
 fn action(id: &str, label: &str, desc: &str) -> ActionSpec {
-    ActionSpec {
-        id: id.into(),
-        label: label.into(),
-        description: Some(desc.into()),
-        locus: ExecutionLocus::ClientLocal,
-        kind: qos_actions::OperationKind::Document,
-        input: ActionInput::Immediate(EncodedAction {
+    ActionSpec::immediate_encoded(
+        id,
+        label,
+        ExecutionLocus::ClientLocal,
+        EncodedAction {
             type_id: format!("demo.{id}"),
             payload: b"{}".to_vec(),
-        }),
-    }
+        },
+    )
+    .with_description(desc)
 }
 
 /// The focused app's open resource + its exported actions (the Actions group).

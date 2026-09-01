@@ -26,12 +26,14 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Toggle, ToggleFace, Widget,
 };
@@ -39,7 +41,7 @@ use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 
 use crate::charts::{self, Series, with_alpha};
 use crate::layout;
-use crate::model::{MonitorModel, ProcessInfo, Ring, fmt_bytes, fmt_rate, fmt_uptime};
+use crate::model::{MonitorModel, ProcessInfo, Ring, fmt_rate, fmt_uptime};
 use crate::prefs::Prefs;
 use crate::responsive::{ProcPane, ProcPush};
 use crate::sampler::{Sampler, StopKind};
@@ -1393,7 +1395,7 @@ impl MonitorApp {
                 },
                 Cell {
                     label: "Memory",
-                    value: fmt_bytes(m.mem_used),
+                    value: format_bytes(m.mem_used),
                     vcolor: c.text_primary,
                     data: m.mem_hist.as_slice().to_vec(),
                     max: 1.0,
@@ -1610,7 +1612,11 @@ impl MonitorApp {
             None,
             TextWeight::Semibold,
         );
-        let ram_label = format!("{} / {}", fmt_bytes(m.mem_used), fmt_bytes(m.mem_total));
+        let ram_label = format!(
+            "{} / {}",
+            format_bytes(m.mem_used),
+            format_bytes(m.mem_total)
+        );
         charts::bar_gauge(
             scene,
             t,
@@ -1622,7 +1628,11 @@ impl MonitorApp {
             "RAM",
             &ram_label,
         );
-        let swap_label = format!("{} / {}", fmt_bytes(m.swap_used), fmt_bytes(m.swap_total));
+        let swap_label = format!(
+            "{} / {}",
+            format_bytes(m.swap_used),
+            format_bytes(m.swap_total)
+        );
         charts::bar_gauge(
             scene,
             t,
@@ -2078,7 +2088,7 @@ impl MonitorApp {
             ),
             (
                 SortKey::Mem,
-                fmt_bytes(p.mem_bytes),
+                format_bytes(p.mem_bytes),
                 txt,
                 TextWeight::Regular,
             ),
@@ -2943,8 +2953,8 @@ impl MonitorApp {
         let xs = theme.tokens.typography.scale.xs;
         let base = theme.tokens.typography.scale.base;
         let stats: [(&str, String, Color); DETAIL_STAT_COUNT] = [
-            ("MEMORY (RSS)", fmt_bytes(p.mem_bytes), c.text_primary),
-            ("VIRTUAL", fmt_bytes(p.virt_bytes), c.text_primary),
+            ("MEMORY (RSS)", format_bytes(p.mem_bytes), c.text_primary),
+            ("VIRTUAL", format_bytes(p.virt_bytes), c.text_primary),
             ("THREADS", p.threads.to_string(), c.text_primary),
             (
                 "OPEN FILES",
@@ -3062,8 +3072,8 @@ impl MonitorApp {
         };
         let chips = [
             ("CPU", format!("{:.1}%", p.cpu), cpu_col),
-            ("RSS", fmt_bytes(p.mem_bytes), c.text_primary),
-            ("VIRT", fmt_bytes(p.virt_bytes), c.text_primary),
+            ("RSS", format_bytes(p.mem_bytes), c.text_primary),
+            ("VIRT", format_bytes(p.virt_bytes), c.text_primary),
             ("THREADS", p.threads.to_string(), c.text_primary),
             (
                 "FILES",
@@ -3292,7 +3302,7 @@ impl MonitorApp {
             &[Series {
                 data: metrics.mem_hist.as_slice(),
                 color: c.semantic.success,
-                legend: fmt_bytes(metrics.mem_used),
+                legend: format_bytes(metrics.mem_used),
             }],
             1.0,
             "100%",
@@ -3495,36 +3505,15 @@ impl MonitorApp {
             return;
         }
         let Some(pid) = self.copied_pid else { return };
-        let c = &theme.tokens.colors;
         let label = format!("PID {pid} copied to clipboard");
-        let fs = theme.tokens.typography.scale.sm;
-        let (lw, lh) = tr.measure_weighted(&label, fs, None, TextWeight::Medium);
-        let pad = 16.0;
-        let icon_w = 22.0;
-        let w = f64::from(lw) + pad * 2.0 + icon_w;
-        let h = 34.0;
-        let cx = self.rect.center().x;
-        let x0 = cx - w / 2.0;
-        let y1 = self.rect.y1 - OUTER_PAD - 6.0;
-        let y0 = y1 - h;
-        let toast = Rect::new(x0, y0, x0 + w, y1);
-        charts::fill_rrect(scene, t, toast, h / 2.0, c.surfaces.raised);
-        charts::stroke_rrect(scene, t, toast, h / 2.0, c.border_standard, 1.0);
-        let icon_r = Rect::new(
-            toast.x0 + pad,
-            toast.center().y - 8.0,
-            toast.x0 + pad + 16.0,
-            toast.center().y + 8.0,
-        );
-        icons::draw_icon(scene, t, icon_r, Icon::Check, c.semantic.success, 1.8);
-        tr.draw_text_weighted(
+        paint_transient(
             scene,
-            &label,
-            fs,
-            c.text_primary,
-            t * Affine::translate((icon_r.x1 + 8.0, toast.center().y - f64::from(lh) / 2.0)),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(&label, ToastKind::Success),
         );
     }
 }

@@ -46,6 +46,7 @@
 
 mod base64;
 
+use qdoc::export::{BlockKind, ExportBlock, TablePlan, detect_image_media};
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 use std::fmt::Write as _;
@@ -191,11 +192,14 @@ fn render_blocks(
 ) {
     let mut i = 0;
     while let Some(block) = blocks.get(i) {
-        if block.kind == "list_item" {
+        if ExportBlock::new(block).kind() == BlockKind::ListItem {
             // Consume the maximal run of consecutive list items and render it
             // as one (possibly nested) list.
             let mut j = i;
-            while blocks.get(j).is_some_and(|b| b.kind == "list_item") {
+            while blocks
+                .get(j)
+                .is_some_and(|block| ExportBlock::new(block).kind() == BlockKind::ListItem)
+            {
                 j = j.saturating_add(1);
             }
             // `get(..)` degrades an inverted/out-of-range slice to empty
@@ -217,32 +221,18 @@ fn render_block(
     opts: &HtmlOptions,
     depth: usize,
 ) {
-    match block.kind.as_str() {
-        "heading" => render_heading(out, block, opts, depth),
-        "quote" | "blockquote" => render_quote(out, snap, block, opts, depth),
-        "image" => render_image(out, snap, block, opts, depth),
-        "table" => render_table(out, snap, block, opts, depth),
-        "code" | "code_block" => render_code(out, block, opts, depth),
-        // paragraph + any unknown text-bearing kind → a paragraph.
-        _ => render_paragraph(out, block, opts, depth),
-    }
-}
-
-/// Heading level (1..=6), defaulting to 1 if absent/out of range.
-fn heading_level(block: &BlockView) -> u8 {
-    match block.attrs.get("level") {
-        // Clamped to 1..=6 just above, so this always fits `u8`.
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "clamped to 1..=6 above, so the value is always positive and fits u8"
-        )]
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6) as u8,
-        _ => 1,
+    match ExportBlock::new(block).kind() {
+        BlockKind::Heading => render_heading(out, block, opts, depth),
+        BlockKind::Quote => render_quote(out, snap, block, opts, depth),
+        BlockKind::Image => render_image(out, snap, block, opts, depth),
+        BlockKind::Table => render_table(out, snap, block, opts, depth),
+        BlockKind::Code => render_code(out, block, opts, depth),
+        BlockKind::Paragraph | BlockKind::ListItem => render_paragraph(out, block, opts, depth),
     }
 }
 
 fn render_heading(out: &mut String, block: &BlockView, opts: &HtmlOptions, depth: usize) {
-    let level = heading_level(block);
+    let level = ExportBlock::new(block).heading_level();
     let pad = indent_for(opts, depth);
     let attrs = block_attrs(block);
     let _ = write!(out, "{pad}<h{level}{attrs}>");
@@ -423,39 +413,14 @@ fn render_table(
 ) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the flat shape (cells directly under the table with a `cols` attr).
-    let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block
-            .children
-            .iter()
-            .map(|row| row.children.iter().collect())
-            .collect()
-    } else if !block.children.is_empty() {
-        let cols = match block.attrs.get("cols") {
-            // `.max(1)` already rules out sign loss; an oversized `cols`
-            // just makes `chunks` below yield one chunk, not a hazard.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "cols only sizes a chunks() call; an oversized value degrades to one chunk, not a hazard"
-            )]
-            Some(AttrVal::Int(n)) => (*n).max(1) as usize,
-            _ => block.children.len().max(1),
-        };
-        block
-            .children
-            .chunks(cols)
-            .map(|c| c.iter().collect())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let plan = TablePlan::new(block);
 
     let pad = indent_for(opts, depth);
     let row_pad = indent_for(opts, depth.saturating_add(1));
     let cell_pad = indent_for(opts, depth.saturating_add(2));
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<table{attrs}>");
-    for row in &rows {
+    for row in plan.rows() {
         let _ = writeln!(out, "{row_pad}<tr>");
         for cell in row {
             let _ = write!(out, "{cell_pad}<td>");
@@ -500,7 +465,7 @@ fn render_image(
     };
     match hash.as_ref().and_then(|h| snap.blobs.get(h)) {
         Some(bytes) => {
-            let mime = sniff_mime(bytes);
+            let mime = detect_image_media(bytes).map_or("image/png", |media| media.mime);
             let data = base64::encode(bytes);
             // The data URI is self-contained; no escaping needed beyond the
             // base64 alphabet (no `"` in b64).
@@ -514,24 +479,6 @@ fn render_image(
             // structure stays preserved and well-formed.
             let _ = writeln!(out, "{pad}<img src=\"\"{alt_attr}>");
         }
-    }
-}
-
-/// Sniff a handful of image magic numbers to pick a `data:` MIME type.
-/// Defaults to `image/png` for unrecognized bytes.
-fn sniff_mime(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        "image/png"
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        "image/webp"
-    } else if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
-        "image/svg+xml"
-    } else {
-        "image/png"
     }
 }
 

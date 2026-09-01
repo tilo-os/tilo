@@ -5,7 +5,7 @@
 //! sliced and returned; otherwise it is fetched from a known peer over
 //! iroh-blobs (bao-verified against the hash), persisted, and returned.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -15,38 +15,54 @@ use futures_lite::StreamExt;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
+use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::content::Manifest;
 use crate::store::ContentStore;
 use crate::syncstate::SyncState;
+
+type FetchResult = std::result::Result<Bytes, String>;
+type FetchCell = Arc<OnceCell<FetchResult>>;
+type FetchMap = HashMap<Hash, FetchCell>;
 
 pub struct Hydrator {
     pub endpoint: Endpoint,
     pub store: Arc<ContentStore>,
     /// Peers we may hydrate missing blobs from (populated by the sync layer).
     peers: Arc<RwLock<Vec<EndpointAddr>>>,
-    /// Blob hashes with a hydration fetch in flight — inserted for the lifetime
-    /// of [`fetch_from`](Hydrator::fetch_from), removed via [`FetchGuard`], so [`sync_state`](Hydrator::sync_state) doesn't race the fetch.
-    in_flight: Arc<Mutex<HashSet<Hash>>>,
-    /// Proof of remote durability for blobs this process fetched and verified.
-    /// Locally-authored content is intentionally absent until the sync protocol
-    /// grows an explicit remote acknowledgement.
+    /// Number of hydration fetches currently in flight for each blob. This is
+    /// refcounted rather than a set: two overlapping guards for the same hash
+    /// must keep the file `downloading` until the final fetch ends.
+    in_flight: Arc<Mutex<HashMap<Hash, usize>>>,
+    /// Per-blob single-flight cells. Concurrent foreground reads and predictive
+    /// prefetches await the same peer request instead of downloading identical
+    /// bytes independently.
+    fetches: Arc<AsyncMutex<FetchMap>>,
+    /// Verified peer source for fetched blobs, used as remote-durability evidence.
     remote_sources: Arc<RwLock<HashMap<Hash, EndpointAddr>>>,
     pub runtime_handle: tokio::runtime::Handle,
 }
 
-/// Clears a hash from the in-flight set on drop; hold it for the duration of a hydration so `sync_state` reports `downloading`.
+/// Decrements a hash's in-flight count on drop; hold it for the duration of a
+/// hydration so `sync_state` reports `downloading` until every overlapping
+/// fetch has ended.
 pub struct FetchGuard {
-    set: Arc<Mutex<HashSet<Hash>>>,
+    counts: Arc<Mutex<HashMap<Hash, usize>>>,
     hash: Hash,
 }
 
 impl Drop for FetchGuard {
     fn drop(&mut self) {
-        self.set
+        let mut counts = self
+            .counts
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.hash);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&self.hash) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.hash);
+            }
+        }
     }
 }
 
@@ -56,7 +72,8 @@ impl Hydrator {
             endpoint,
             store,
             peers: Arc::new(RwLock::new(Vec::new())),
-            in_flight: Arc::new(Mutex::new(HashSet::new())),
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
+            fetches: Arc::new(AsyncMutex::new(HashMap::new())),
             remote_sources: Arc::new(RwLock::new(HashMap::new())),
             runtime_handle: tokio::runtime::Handle::current(),
         }
@@ -67,18 +84,22 @@ impl Hydrator {
         self.in_flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&hash)
+            .get(&hash)
+            .is_some_and(|count| *count > 0)
     }
 
-    /// Mark `hash` as being fetched; the returned guard clears it on drop.
-    /// Idempotent — a concurrent fetch of the same blob shares the mark.
+    /// Mark `hash` as being fetched; the returned guard releases one reference
+    /// on drop. Overlapping fetches therefore cannot clear each other's state.
     pub fn mark_fetching(&self, hash: Hash) -> FetchGuard {
-        self.in_flight
+        let mut counts = self
+            .in_flight
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(hash);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = counts.entry(hash).or_insert(0);
+        *count = count.saturating_add(1);
+        drop(counts);
         FetchGuard {
-            set: self.in_flight.clone(),
+            counts: self.in_flight.clone(),
             hash,
         }
     }
@@ -212,18 +233,47 @@ impl Hydrator {
         if let Some(bytes) = self.store.local(hash).await {
             return Ok(slice(&bytes, offset, size));
         }
-        let peers = self.known_peers();
-        if peers.is_empty() {
-            return Err(anyhow!("no peers available to hydrate {hash}"));
-        }
-        let mut last_err = anyhow!("hydration failed for {hash}");
-        for peer in peers {
-            match self.fetch_from(hash, peer).await {
-                Ok(bytes) => return Ok(slice(&bytes, offset, size)),
-                Err(e) => last_err = e,
+
+        let cell = {
+            let mut fetches = self.fetches.lock().await;
+            fetches
+                .entry(hash)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+        let fetched = cell
+            .get_or_init(|| async {
+                let peers = self.known_peers();
+                if peers.is_empty() {
+                    return Err(format!("no peers available to hydrate {hash}"));
+                }
+                let mut last_err = format!("hydration failed for {hash}");
+                for peer in peers {
+                    match self.fetch_from(hash, peer).await {
+                        Ok(bytes) => return Ok(bytes),
+                        Err(e) => last_err = e.to_string(),
+                    }
+                }
+                Err(last_err)
+            })
+            .await
+            .clone();
+
+        // Remove only our completed cell. A later caller may already have
+        // installed a new retry cell after a failed request.
+        {
+            let mut pending = self.fetches.lock().await;
+            if pending
+                .get(&hash)
+                .is_some_and(|current| Arc::ptr_eq(current, &cell))
+            {
+                pending.remove(&hash);
             }
         }
-        Err(last_err)
+
+        fetched
+            .map(|bytes| slice(&bytes, offset, size))
+            .map_err(|message| anyhow!(message))
     }
 
     /// Read a byte range of a file given its manifest hash: fetch the manifest, then only the chunks overlapping `[offset, offset+size)`.
@@ -272,6 +322,34 @@ impl Hydrator {
     /// Returns an error if the manifest can't be loaded.
     pub async fn content_len(&self, manifest_hash: Hash) -> Result<u64> {
         Ok(self.load_manifest(manifest_hash).await?.total_len())
+    }
+
+    /// Hydrate every blob referenced by `manifest_hash` without assembling the
+    /// file into one large buffer. Predictive prefetch and explicit offline
+    /// pinning use this path: the manifest is fetched first, its declared size
+    /// is checked before any content chunks are requested, then missing chunks
+    /// are fetched one at a time into the content store.
+    ///
+    /// Returns `Ok(false)` when the file exceeds `max_bytes`; that is a policy
+    /// refusal, not a transport failure. A later foreground read remains free
+    /// to hydrate the range the caller actually requested.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manifest or any required chunk cannot be
+    /// fetched, verified, decoded, or persisted.
+    pub async fn prefetch(&self, manifest_hash: Hash, max_bytes: u64) -> Result<bool> {
+        let manifest = self.load_manifest(manifest_hash).await?;
+        if manifest.total_len() > max_bytes {
+            return Ok(false);
+        }
+        for chunk in manifest.chunks {
+            let hash = Hash::from(chunk.hash);
+            if !self.store.has(hash).await {
+                let _ = self.read_blob(hash, 0, u64::from(chunk.len)).await?;
+            }
+        }
+        Ok(true)
     }
 
     async fn load_manifest(&self, manifest_hash: Hash) -> Result<Manifest> {
@@ -487,6 +565,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn overlapping_fetch_guards_keep_downloading_until_the_last_drop() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let mh = store
+            .write_content(b"already local")
+            .await
+            .unwrap()
+            .unwrap();
+        let hyd = Hydrator::new(endpoint, store);
+
+        let first = hyd.mark_fetching(mh);
+        let second = hyd.mark_fetching(mh);
+        assert!(hyd.is_fetching(mh));
+        assert_eq!(hyd.sync_state(mh).await, SyncState::Downloading);
+
+        drop(first);
+        assert!(
+            hyd.is_fetching(mh),
+            "dropping one of two guards must not clear the shared state"
+        );
+        assert_eq!(
+            hyd.sync_state(mh).await,
+            SyncState::Downloading,
+            "the remaining guard keeps the file downloading"
+        );
+
+        drop(second);
+        assert!(!hyd.is_fetching(mh));
+        assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
+    }
+
+    #[tokio::test]
+    async fn overlapping_guards_for_different_hashes_are_independent() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let a = Hash::from([0xA1; 32]);
+        let b = Hash::from([0xB2; 32]);
+        let hyd = Hydrator::new(endpoint, store);
+
+        let a1 = hyd.mark_fetching(a);
+        let a2 = hyd.mark_fetching(a);
+        let b1 = hyd.mark_fetching(b);
+        drop(a1);
+        drop(b1);
+
+        assert!(hyd.is_fetching(a), "a still has its second guard");
+        assert!(!hyd.is_fetching(b), "b's only guard was released");
+        drop(a2);
+        assert!(!hyd.is_fetching(a));
+    }
+
     // A blob ingested only on node A is read on node B by fetching it over a real iroh connection (bao-verified), then cached.
     #[tokio::test]
     async fn hydrates_real_bytes_from_a_peer() {
@@ -527,5 +657,57 @@ mod tests {
             client_store.has(hash).await,
             "fetched blob must be cached on B"
         );
+    }
+
+    #[tokio::test]
+    async fn prefetch_hydrates_every_chunk_without_returning_the_file() {
+        let server_ep = Endpoint::bind(presets::N0).await.unwrap();
+        let server_store = ContentStore::memory();
+        let payload: Vec<u8> = (0..400_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 11).to_le_bytes()[0])
+            .collect();
+        let manifest_hash = server_store.write_content(&payload).await.unwrap().unwrap();
+        let _router = Router::builder(server_ep.clone())
+            .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
+            .spawn();
+
+        let client_ep = Endpoint::bind(presets::N0).await.unwrap();
+        let client_store = Arc::new(ContentStore::memory());
+        let hydrator = Hydrator::new(client_ep, client_store);
+        hydrator.add_peer(server_ep.addr());
+
+        assert_eq!(
+            hydrator.sync_state(manifest_hash).await,
+            SyncState::Projected
+        );
+        assert!(
+            hydrator
+                .prefetch(manifest_hash, payload.len() as u64)
+                .await
+                .unwrap(),
+            "the bounded file is accepted for prefetch"
+        );
+        assert_eq!(
+            hydrator.sync_state(manifest_hash).await,
+            SyncState::Local,
+            "manifest and every content chunk are local afterwards"
+        );
+        assert_eq!(
+            hydrator
+                .read(manifest_hash, 0, payload.len() as u64)
+                .await
+                .unwrap(),
+            payload
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetch_refuses_a_file_over_the_policy_limit() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let payload = vec![7u8; 1024];
+        let manifest_hash = store.write_content(&payload).await.unwrap().unwrap();
+        let hydrator = Hydrator::new(endpoint, store);
+        assert!(!hydrator.prefetch(manifest_hash, 512).await.unwrap());
     }
 }

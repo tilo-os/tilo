@@ -2255,9 +2255,13 @@ pub fn run() -> ! {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                             }
-                            PeerSyncRequest::IssueInviteFor(name) => {
-                                bridge_net.issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name)
-                            }
+                            PeerSyncRequest::IssueInviteFor { name, role } => bridge_net
+                                .issue_invite_named_with_role(
+                                    active,
+                                    INVITE_EXPIRY_SECONDS,
+                                    &name,
+                                    role,
+                                ),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
                                 .map(|room| room.to_string()),
@@ -3520,6 +3524,10 @@ fn spawn_auto_brightness_worker() {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic control-path geometry fixtures use exactly representable values"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is

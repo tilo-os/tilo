@@ -24,7 +24,16 @@ webview-adblock = ["dep:adblock"]
 # prefix). Off by default so the workspace builds without the libraries.
 # Pulls `ash` for the DMA-BUF zero-copy import (raw-Vulkan interop with
 # wgpu-hal); its 0.38 matches the version wgpu-hal 29 resolves.
-webview-wpe = ["dep:ash"]
+webview-wpe = ["dep:ash", "dmabuf-import"]
+# Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
+# (`dmabuf_import`). Shared by the WebView's rendered pages and the video
+# decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
+# `ash` for the raw-Vulkan interop, so it stays opt-in for builds that need
+# neither.
+dmabuf-import = ["dep:ash"]
+# GPU video frames: the dmabuf import above plus the YUV->RGB conversion a
+# hardware decoder's NV12/P010 output needs before it can be painted.
+gpu-video = ["dmabuf-import"]
 # Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) for the
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
@@ -41,6 +50,7 @@ mpris = ["dep:zbus", "zbus/tokio"]
 portal = ["dep:ashpd"]
 
 [dependencies]
+qos-ui-graph = { path = "../crates/dev/ui-graph" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
 # Shared appearance path used for startup theme resolution and live reload.
@@ -106,6 +116,7 @@ winit.workspace = true
 # (Dokumente / Bilder) instead of hard-coded English ones.
 dirs.workspace = true
 fluent.workspace = true
+qos-headless-schema = { path = "../crates/dev/headless-schema" }
 unic-langid.workspace = true
 unicode-segmentation = "1.12"
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.

@@ -644,22 +644,6 @@ fn sample_cmdline(name: &str, user: &str) -> String {
     }
 }
 
-/// Human-readable byte size: 18 B / 4.2 KiB / 1.8 GiB.
-pub fn fmt_bytes(b: u64) -> String {
-    const U: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut v = b as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < U.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{} {}", b, U[0])
-    } else {
-        format!("{:.1} {}", v, U.get(i).copied().unwrap_or("TiB"))
-    }
-}
-
 /// Human-readable throughput: 0 / 84 KB/s / 2.4 MB/s (decimal, like most
 /// network tools).
 pub fn fmt_rate(bytes_per_sec: f32) -> String {
@@ -716,8 +700,6 @@ mod tests {
 
     #[test]
     fn fmt_helpers() {
-        assert_eq!(fmt_bytes(512), "512 B");
-        assert_eq!(fmt_bytes(2 * 1024 * 1024), "2.0 MiB");
         assert_eq!(fmt_rate(0.0), "0 B/s");
         assert_eq!(fmt_rate(2_400_000.0), "2.4 MB/s");
         assert_eq!(fmt_uptime(3 * 3600 + 5 * 60 + 9), "3h 5m 9s");

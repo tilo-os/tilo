@@ -873,6 +873,30 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish a transient range the local participant just inserted.
+    /// Unlike a selection, receivers render this as a fading event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn publish_typing(
+        &self,
+        key_bytes: &[u8],
+        start: u64,
+        end: u64,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_typing_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_start(start);
+            b.set_end(end);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish "the local user has arrived at the keyed object".
     ///
     /// # Errors
@@ -943,6 +967,10 @@ pub enum PresencePayload {
         start: u64,
         end: u64,
     },
+    Typing {
+        start: u64,
+        end: u64,
+    },
     Arrived,
     Left,
 }
@@ -1006,6 +1034,10 @@ fn decode_presence_payload(
         },
         W::Caret(r) => PresencePayload::Caret { pos: r.get_pos() },
         W::Selection(r) => PresencePayload::Selection {
+            start: r.get_start(),
+            end: r.get_end(),
+        },
+        W::Typing(r) => PresencePayload::Typing {
             start: r.get_start(),
             end: r.get_end(),
         },

@@ -285,22 +285,43 @@ pub fn invoke(
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
     invoke_with_context(
-        doc, resources, address, argument, actor, registry, transport, None,
+        doc,
+        resources,
+        address,
+        argument,
+        InvocationProvenance {
+            actor,
+            ambient: None,
+        },
+        registry,
+        transport,
     )
+}
+
+/// Caller identity and optional semantic context for an invoked action.
+#[derive(Clone, Copy, Debug)]
+pub struct InvocationProvenance<'a> {
+    /// Automerge actor bytes attributed to the resulting change.
+    pub actor: &'a [u8],
+    /// Task or session context used to enrich the resource's own context.
+    pub ambient: Option<&'a ActionContext>,
 }
 
 /// [`invoke`] with ambient task/session provenance. The resource's concrete
 /// action label and address remain authoritative; app, purpose, group, and
 /// facets fill only fields the resource did not supply.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke`].
 pub fn invoke_with_context(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
     address: &ActionAddress,
     argument: Option<&str>,
-    actor: &[u8],
+    provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-    ambient: Option<&ActionContext>,
 ) -> Result<Dispatched, DoorError> {
     let resource = find_resource(resources, &address.resource)
         .ok_or_else(|| DoorError::Unknown(address.clone()))?;
@@ -321,7 +342,7 @@ pub fn invoke_with_context(
         &resource.kind,
         &resource.label,
     );
-    if let Some(ambient) = ambient {
+    if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }
     let encoded = encode(resources, address, argument)?;
@@ -333,7 +354,7 @@ pub fn invoke_with_context(
         action.as_ref(),
         encoded,
         transport,
-        Some(actor),
+        Some(provenance.actor),
         context,
     )
     .map_err(|e| DoorError::Failed(e.to_string()))
@@ -682,10 +703,12 @@ mod tests {
             &open(),
             &star(),
             None,
-            b"agent:ada",
+            InvocationProvenance {
+                actor: b"agent:ada",
+                ambient: Some(&ambient),
+            },
             &registry(),
             &mut transport,
-            Some(&ambient),
         )
         .expect("door action");
 
