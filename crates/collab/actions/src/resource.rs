@@ -11,10 +11,49 @@
 //! prompted action) a closure. The [`EncodedAction`] an `ActionSpec`
 //! yields is the **action** — serializable, replayable. Presentation
 //! never crosses a boundary; only the action does.
+//!
+//! # The typed projection
+//!
+//! A spec also carries a **serializable projection of itself**: a typed
+//! [`params`](ActionSpec::params) list and a builder that turns bound
+//! [`ActionArgs`] into that same [`EncodedAction`]. That is what lets a caller
+//! with no window enumerate the surface (see [`crate::wire`]) and invoke it by
+//! name — the presentation stays local, but a faithful *description* of it can
+//! now cross.
+//!
+//! The projection is derived from the same closure the palette uses, never a
+//! second copy of it: [`immediate`](ActionSpec::immediate) projects to zero
+//! parameters returning its pre-encoded action, and
+//! [`prompted`](ActionSpec::prompted) projects to one required
+//! [`Text`](ParamType::Text) parameter named [`PROMPTED_PARAM`] that calls the
+//! app's closure. So an affordance, its palette row, and an external invocation
+//! all run through one function and produce the byte-identical action — the
+//! covenant holds structurally rather than by test discipline.
+//!
+//! [`typed`](ActionSpec::typed) is the constructor for an action whose argument
+//! deserves a real type (a number in `0..=1`, a fixed set of filter names)
+//! instead of prose a lenient parser guesses at.
 
 use std::sync::Arc;
 
-use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus};
+use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
+use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
+
+/// Builds an action's encoded form from arguments already bound against its
+/// declared [`params`](ActionSpec::params).
+///
+/// Infallible by design: every check a caller can fail — presence, type,
+/// choice — happens in [`ActionArgs::bind`] *before* this runs, so a builder
+/// that holds an `ActionArgs` is looking at values it declared and can use them
+/// directly.
+pub type ArgsBuilder = Arc<dyn Fn(&ActionArgs) -> EncodedAction + Send + Sync>;
+
+/// The parameter name a [`prompted`](ActionSpec::prompted) spec projects its
+/// single free-text argument under.
+///
+/// Fixed rather than derived from the human prompt: the prompt is localisable
+/// display text, and an external caller addresses parameters by a stable name.
+pub const PROMPTED_PARAM: &str = "value";
 
 /// Stable identity of a resource within the publishing app instance
 /// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
@@ -117,16 +156,30 @@ pub struct ActionSpec {
     /// [`Action::locus`]), so the palette can show/route it before the
     /// action is built.
     pub locus: ExecutionLocus,
+    /// Whether this mutates the shared document, performs an external effect,
+    /// or changes only the invoking application's local view.
+    pub kind: OperationKind,
     pub input: ActionInput,
+    /// The typed argument surface an external caller invokes against. Private
+    /// because it must stay in step with `build` — the two are always set
+    /// together by a constructor, never independently.
+    params: Vec<ActionParam>,
+    /// Builds the encoded action from arguments bound against `params`. Shares
+    /// the app's closure with `input` rather than duplicating it, which is what
+    /// makes the palette path and the external path provably one function.
+    build: ArgsBuilder,
 }
 
 impl ActionSpec {
     /// An action that fires immediately. `type_id` must match the app's
     /// registry registration for `A`.
     ///
+    /// Projects to zero parameters: invoking it externally with an empty
+    /// argument set yields exactly the pre-encoded action the palette fires.
+    ///
     /// # Errors
     ///
-    /// Returns [`ActionError::Encode`] if `action` fails to serialize.
+    /// Returns [`ActionError`] when `action` cannot be encoded.
     pub fn immediate<A>(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -137,17 +190,54 @@ impl ActionSpec {
         A: Action + serde::Serialize,
     {
         let locus = action.locus();
+        let encoded = EncodedAction::encode(type_id, action)?;
+        let for_build = encoded.clone();
         Ok(Self {
             id: id.into(),
             label: label.into(),
             description: None,
             locus,
-            input: ActionInput::Immediate(EncodedAction::encode(type_id, action)?),
+            kind: OperationKind::Document,
+            input: ActionInput::Immediate(encoded),
+            params: Vec::new(),
+            build: Arc::new(move |_| for_build.clone()),
         })
+    }
+
+    /// An action that fires immediately, from an [`EncodedAction`] the caller
+    /// already holds.
+    ///
+    /// [`immediate`](Self::immediate) is the usual door — it takes a typed
+    /// action and reads its [`locus`](Action::locus) — but a caller that has
+    /// only the encoded form (a stored action, a fixture, one that arrived over
+    /// a wire) has no typed value to hand it. Projects to zero parameters, the
+    /// same as `immediate`.
+    pub fn immediate_encoded(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        locus: ExecutionLocus,
+        encoded: EncodedAction,
+    ) -> Self {
+        let for_build = encoded.clone();
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus,
+            kind: OperationKind::Document,
+            input: ActionInput::Immediate(encoded),
+            params: Vec::new(),
+            build: Arc::new(move |_| for_build.clone()),
+        }
     }
 
     /// An action that first collects a free-text argument, then builds its
     /// encoded action from it.
+    ///
+    /// Projects to one required [`Text`](ParamType::Text) parameter named
+    /// [`PROMPTED_PARAM`], described by `prompt`. The projection and the
+    /// palette share the *same* `build` closure, so an external invocation and
+    /// the on-screen affordance produce the byte-identical [`EncodedAction`].
     pub fn prompted(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -156,17 +246,175 @@ impl ActionSpec {
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
+        let prompt = prompt.into();
+        // One `Arc`, shared by the palette's `ActionInput` and the typed
+        // projection. Not two closures that happen to agree.
+        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
+        let for_args = build.clone();
         Self {
             id: id.into(),
             label: label.into(),
             description: None,
             locus,
+            kind: OperationKind::Document,
+            params: vec![ActionParam::required_owned(
+                PROMPTED_PARAM,
+                ParamType::Text,
+                prompt.clone(),
+            )],
+            build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
             input: ActionInput::Prompted {
-                prompt: prompt.into(),
+                prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
-                build: Arc::new(build),
+                build,
             },
+        }
+    }
+
+    /// An immediate effect or view operation owned by the application.
+    pub fn operation<T>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: OperationKind,
+        type_id: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, ActionError>
+    where
+        T: serde::Serialize,
+    {
+        debug_assert!(kind != OperationKind::Document);
+        let encoded = EncodedAction::encode_operation(type_id, payload)?;
+        let for_build = encoded.clone();
+        Ok(Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind,
+            input: ActionInput::Immediate(encoded),
+            params: Vec::new(),
+            build: Arc::new(move |_| for_build.clone()),
+        })
+    }
+
+    /// A prompted effect or view operation owned by the application.
+    pub fn prompted_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        debug_assert!(kind != OperationKind::Document);
+        let prompt = prompt.into();
+        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
+        let for_args = build.clone();
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus: ExecutionLocus::ClientLocal,
+            kind,
+            params: vec![ActionParam::required_owned(
+                PROMPTED_PARAM,
+                ParamType::Text,
+                prompt.clone(),
+            )],
+            build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+            input: ActionInput::Prompted {
+                prompt,
+                placeholder: placeholder.into(),
+                collects: Collects::Words,
+                build,
+            },
+        }
+    }
+
+    /// An action with a real typed argument surface.
+    ///
+    /// This is the constructor for an argument that has a *type* — a number in
+    /// `0..=1`, a rate, one of a fixed set of filter names — rather than prose
+    /// a lenient parser guesses at. [`ActionArgs::bind`] enforces the
+    /// declaration, so a caller that sends `"hlaf"` for a choice parameter gets
+    /// a named refusal instead of a silent default.
+    ///
+    /// The palette can still offer it. `input` is derived from `params`:
+    ///
+    /// * no parameters → [`Immediate`](ActionInput::Immediate) of the action
+    ///   `build` returns for an empty argument set;
+    /// * otherwise → [`Prompted`](ActionInput::Prompted) collecting the
+    ///   *primary* parameter (the first required one, else the first), parsed
+    ///   into its declared type.
+    ///
+    /// A palette entry is one text field, so for a multi-parameter action it
+    /// can only carry the primary argument and the rest are left unbound —
+    /// which is why `build` sees `ActionArgs` and decides what an absent
+    /// optional means. Text the palette cannot parse into the primary
+    /// parameter's type is likewise left unbound rather than coerced; only the
+    /// keyboard path can be that lossy, and the external path stays strict.
+    pub fn typed(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        Self::typed_with_kind(
+            id,
+            label,
+            placeholder,
+            locus,
+            OperationKind::Document,
+            params,
+            build,
+        )
+    }
+
+    /// A typed effect or view operation. This is the non-document counterpart
+    /// to [`typed`](Self::typed), with the same strict multi-parameter binding.
+    pub fn typed_operation(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        debug_assert!(kind != OperationKind::Document);
+        Self::typed_with_kind(
+            id,
+            label,
+            placeholder,
+            ExecutionLocus::ClientLocal,
+            kind,
+            params,
+            build,
+        )
+    }
+
+    fn typed_with_kind(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        kind: OperationKind,
+        params: Vec<ActionParam>,
+        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        let build: ArgsBuilder = Arc::new(build);
+        let input = derive_input(&params, &build, placeholder.into());
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus,
+            kind,
+            input,
+            params,
+            build,
         }
     }
 
@@ -193,6 +441,91 @@ impl ActionSpec {
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
+    }
+
+    /// What an invocation of this action must carry. Empty for the nullary
+    /// majority.
+    ///
+    /// Part of the descriptor rather than something a caller discovers by
+    /// trying: enumeration is all a caller that cannot see the screen has to
+    /// work from, so an action whose parameters were not advertised would be
+    /// un-invokable except by guesswork.
+    pub fn params(&self) -> &[ActionParam] {
+        &self.params
+    }
+
+    /// Bind `supplied` against [`params`](Self::params) and build the action.
+    ///
+    /// Strict: a missing, unknown, wrong-typed or out-of-choice argument is
+    /// refused here, and the caller never receives an [`EncodedAction`] to
+    /// dispatch — so a bad call cannot become a partial mutation, because
+    /// nothing was ever handed to the executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArgError`] when the supplied arguments do not satisfy this
+    /// action's declared parameters.
+    pub fn build_args(
+        &self,
+        supplied: impl IntoIterator<Item = (String, ArgValue)>,
+    ) -> Result<EncodedAction, ArgError> {
+        let bound = ActionArgs::bind(&self.params, supplied)?;
+        Ok((self.build)(&bound))
+    }
+
+    /// [`build_args`](Self::build_args) for arguments that arrived as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArgError`] when a value is unrepresentable or the supplied
+    /// arguments do not satisfy this action's declared parameters.
+    pub fn build_json(
+        &self,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<EncodedAction, ArgError> {
+        let bound = ActionArgs::bind_json(&self.params, supplied)?;
+        Ok((self.build)(&bound))
+    }
+}
+
+/// Derive the palette-facing [`ActionInput`] for a [`typed`](ActionSpec::typed)
+/// spec from its declared parameters. See that constructor's docs.
+fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String) -> ActionInput {
+    let Some(primary) = params
+        .iter()
+        .find(|p| p.required)
+        .or_else(|| params.first())
+    else {
+        return ActionInput::Immediate(build(&ActionArgs::none()));
+    };
+    let name = primary.name.to_string();
+    let ty = primary.ty;
+    let params = params.to_vec();
+    let build = build.clone();
+    ActionInput::Prompted {
+        prompt: primary.description.to_string(),
+        placeholder,
+        collects: Collects::Words,
+        build: Arc::new(move |text: &str| {
+            // Parse the one line the palette can collect into the primary
+            // parameter's declared type. Unparseable text binds nothing rather
+            // than coercing to a wrong value; the builder decides what absence
+            // means, exactly as it does for an unsupplied optional.
+            let parsed = match ty {
+                ParamType::Text => Some(ArgValue::Text(text.to_string())),
+                ParamType::Integer => text.trim().parse::<i64>().ok().map(ArgValue::Integer),
+                ParamType::Number => text.trim().parse::<f64>().ok().map(ArgValue::Number),
+                ParamType::Boolean => match text.trim() {
+                    "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),
+                    "false" | "no" | "off" => Some(ArgValue::Boolean(false)),
+                    _ => None,
+                },
+            };
+            let supplied: Vec<(String, ArgValue)> =
+                parsed.map(|v| vec![(name.clone(), v)]).unwrap_or_default();
+            let bound = ActionArgs::bind(&params, supplied).unwrap_or_default();
+            build(&bound)
+        }),
     }
 }
 
@@ -241,5 +574,65 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
     }
     for child in &resource.children {
         flatten_into(child, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct OpenPath {
+        path: String,
+    }
+
+    #[test]
+    fn non_document_operation_needs_no_fake_action_implementation() {
+        let spec = ActionSpec::operation(
+            "open",
+            "Open",
+            OperationKind::Effect,
+            "files.open",
+            &OpenPath {
+                path: "/tmp/report".into(),
+            },
+        )
+        .expect("effect payload encodes");
+        assert_eq!(spec.kind, OperationKind::Effect);
+        assert!(spec.params().is_empty());
+    }
+
+    #[test]
+    fn typed_view_binds_the_same_schema_it_advertises() {
+        let spec = ActionSpec::typed_operation(
+            "zoom",
+            "Zoom",
+            "factor",
+            OperationKind::View,
+            vec![ActionParam::required_owned(
+                "factor",
+                ParamType::Number,
+                "Zoom factor",
+            )],
+            |args| {
+                EncodedAction::encode_operation("view.zoom", &args.number("factor"))
+                    .expect("bound number encodes")
+            },
+        );
+        let supplied = serde_json::json!({"factor": 1.25});
+        let encoded = spec
+            .build_json(supplied.as_object().expect("object"))
+            .expect("declared number binds");
+        assert_eq!(spec.kind, OperationKind::View);
+        assert_eq!(encoded.type_id, "view.zoom");
+        assert!(
+            spec.build_json(
+                serde_json::json!({"factor": "large"})
+                    .as_object()
+                    .expect("object")
+            )
+            .is_err()
+        );
     }
 }

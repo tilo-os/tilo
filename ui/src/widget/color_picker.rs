@@ -2,6 +2,10 @@
 //! to track the cursor even after it leaves the widget rect (see
 //! `wants_pointer_capture`). All visuals pull colours from theme tokens —
 //! no literal palette values live in this file.
+//!
+//! The selected colour can stay widget-local, bind to typed process-local
+//! state with [`ColorPicker::from_state`], or be observed with `on_change`
+//! for an app-owned durable mutation.
 
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
@@ -42,8 +46,11 @@ pub enum DragTarget {
 }
 
 pub struct ColorPicker {
+    /// Fluent message id spoken for the complete colour control.
+    accessible_name: Option<String>,
     color: Color,
     on_change: Option<Box<dyn FnMut(Color)>>,
+    local_state: Option<crate::local_state::LocalBinding<Color>>,
     rect: Rect,
     sv_rect: Rect,
     hue_strip_rect: Rect,
@@ -78,8 +85,10 @@ pub struct ColorPicker {
 impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
+            accessible_name: None,
             color: initial,
             on_change: None,
+            local_state: None,
             rect: Rect::ZERO,
             sv_rect: Rect::ZERO,
             hue_strip_rect: Rect::ZERO,
@@ -102,12 +111,30 @@ impl ColorPicker {
         s
     }
 
+    /// Create a colour picker bound to typed process-local state.
+    ///
+    /// Pointer, text, and semantic changes update `state`; mutations through
+    /// any clone update this picker on the next synchronization pass.
+    pub fn from_state(state: &crate::LocalState<Color>) -> Self {
+        let (color, binding) = crate::local_state::LocalBinding::new(state);
+        let mut picker = Self::new(color);
+        picker.local_state = Some(binding);
+        picker
+    }
+
     /// Poll for a user-driven colour change since the last call, draining
     /// the record — lets a retained-mode app read it each frame instead of
     /// wiring an `FnMut` that would have to borrow its own state. A
     /// *programmatic* [`set_color`] is not reported here.
     pub fn take_changed(&mut self) -> Option<Color> {
         self.changed.take()
+    }
+
+    /// Name the colour picker for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// Push a new "current colour" into the picker from the outside.
@@ -124,6 +151,7 @@ impl ColorPicker {
         }
         self.color = color;
         self.sync_input();
+        self.publish_local_state();
     }
 
     pub fn hex_input_rect(&self) -> Rect {
@@ -370,11 +398,25 @@ impl ColorPicker {
             return;
         }
         self.color = new_color;
+        self.publish_local_state();
         // Record for the poll-based `take_changed()` seam (retained-mode
         // apps) and fire the optional callback (imperative callers).
         self.changed = Some(self.color);
         if let Some(cb) = self.on_change.as_mut() {
             cb(self.color);
+        }
+    }
+
+    fn colors_equal(left: &Color, right: &Color) -> bool {
+        left.r() == right.r()
+            && left.g() == right.g()
+            && left.b() == right.b()
+            && left.a() == right.a()
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish_by(&self.color, Self::colors_equal);
         }
     }
 
@@ -681,9 +723,14 @@ impl ColorPicker {
 
 impl Widget for ColorPicker {
     fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {
-        // The picker's state lives on `self.color`; CRDT persistence is
-        // an opt-in extension a caller can wire through `on_change`
-        // (e.g. writing to an Automerge field on every change).
+        if let Some(color) = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll)
+        {
+            self.color = color;
+            self.sync_input();
+        }
     }
 
     fn build_layout(
@@ -908,6 +955,7 @@ impl Widget for ColorPicker {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.hex_string())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
@@ -915,6 +963,23 @@ impl Widget for ColorPicker {
                     ..Default::default()
                 }),
         )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+    ) -> bool {
+        let crate::a11y::Action::SetValue(value) = action else {
+            return false;
+        };
+        let Some(color) = parse_hex(value) else {
+            return false;
+        };
+        self.set_rgb(color.r(), color.g(), color.b());
+        self.sync_input();
+        true
     }
 }
 
@@ -1237,5 +1302,54 @@ mod tests {
         assert!(parse_hex("##abc12").is_none()); // not 6 hex digits
         assert!(parse_hex("#ABCDEF").is_some()); // sanity
         assert!(parse_hex("#abcdef").is_some()); // lowercase
+    }
+
+    #[test]
+    fn local_state_keeps_color_pickers_in_sync() {
+        let initial = Color::from_rgba8(0x12, 0x34, 0x56, 0xff);
+        let expected = Color::from_rgba8(0xab, 0xcd, 0xef, 0xff);
+        let state = crate::LocalState::new(initial);
+        let mut left = ColorPicker::from_state(&state);
+        let mut right = ColorPicker::from_state(&state);
+        let mut doc = AutoCommit::new();
+
+        left.set_color(expected);
+        assert!(state.with(|color| ColorPicker::colors_equal(color, &expected)));
+        assert!(left.take_changed().is_none());
+        Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+        assert_eq!(right.hex_string(), "#ABCDEF");
+        assert!(right.take_changed().is_none());
+    }
+
+    #[test]
+    fn semantic_color_change_updates_state_callback_and_changed_record() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let state = crate::LocalState::new(Color::BLACK);
+        let captured = Rc::new(RefCell::new(None));
+        let callback = Rc::clone(&captured);
+        let mut picker = ColorPicker::from_state(&state)
+            .on_change(move |color| *callback.borrow_mut() = Some(color));
+        let mut doc = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut picker,
+            &crate::a11y::Action::SetValue("#36A2EB".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(picker.hex_string(), "#36A2EB");
+        assert!(state.with(|color| color.r() == 0x36 && color.g() == 0xa2 && color.b() == 0xeb));
+        assert_eq!(captured.borrow().as_ref().map(Color::r), Some(0x36));
+        assert_eq!(picker.take_changed().map(|color| color.b()), Some(0xeb));
+
+        assert!(!Widget::perform_action(
+            &mut picker,
+            &crate::a11y::Action::SetValue("blue".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(picker.hex_string(), "#36A2EB");
     }
 }

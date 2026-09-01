@@ -533,7 +533,7 @@ impl TypstApp {
     /// Open the host Save dialog to choose where to write the current source,
     /// seeded with the document's name (unless a chooser is already in flight).
     /// The chosen path is handled in [`Self::drain_io`].
-    fn save(&mut self, _doc: &mut AutoCommit) {
+    fn save(&mut self, _doc: &AutoCommit) {
         if self.io.is_some() {
             return;
         }
@@ -570,7 +570,7 @@ impl TypstApp {
     /// Open the host Save dialog to choose where to export the compiled PDF,
     /// seeded with the document's name and a `.pdf` extension (unless a chooser
     /// is already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn export_pdf(&mut self, _doc: &mut AutoCommit) {
+    fn export_pdf(&mut self, _doc: &AutoCommit) {
         if self.io.is_some() {
             return;
         }
@@ -627,7 +627,7 @@ impl TypstApp {
 
     /// Open the host chooser to pick a `.typ` file to load (unless a chooser is
     /// already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn open(&mut self, _doc: &mut AutoCommit) {
+    fn open(&mut self, _doc: &AutoCommit) {
         if self.io.is_some() {
             return;
         }
@@ -750,26 +750,64 @@ impl TypstApp {
         match action {
             TbAction::PrevDoc => self.prev_doc(doc),
             TbAction::NextDoc => self.next_doc(doc),
-            TbAction::Compile => self.force_recompile(doc),
-            TbAction::Save => self.save(doc),
-            TbAction::Open => self.open(doc),
-            TbAction::ExportPdf => self.export_pdf(doc),
+            TbAction::Compile => {
+                self.perform_resource_operation(crate::actions::TypstOperation::Compile, doc)
+            }
+            TbAction::Save => {
+                self.perform_resource_operation(crate::actions::TypstOperation::Save, doc)
+            }
+            TbAction::Open => {
+                self.perform_resource_operation(crate::actions::TypstOperation::Open, doc)
+            }
+            TbAction::ExportPdf => {
+                self.perform_resource_operation(crate::actions::TypstOperation::ExportPdf, doc)
+            }
             TbAction::ZoomOut => {
-                self.preview.zoom_out();
+                self.perform_resource_operation(crate::actions::TypstOperation::ZoomOut, doc);
                 self.set_compact_view(CompactPane::Preview);
             }
             TbAction::ZoomIn => {
-                self.preview.zoom_in();
+                self.perform_resource_operation(crate::actions::TypstOperation::ZoomIn, doc);
                 self.set_compact_view(CompactPane::Preview);
             }
             TbAction::Fit => {
-                self.preview.fit_width();
+                self.perform_resource_operation(crate::actions::TypstOperation::FitWidth, doc);
                 self.set_compact_view(CompactPane::Preview);
             }
-            TbAction::ToggleProblems => self.show_diagnostics = !self.show_diagnostics,
-            TbAction::ShowEditor => self.set_compact_view(CompactPane::Editor),
-            TbAction::ShowPreview => self.set_compact_view(CompactPane::Preview),
+            TbAction::ToggleProblems => {
+                self.perform_resource_operation(crate::actions::TypstOperation::ToggleProblems, doc)
+            }
+            TbAction::ShowEditor => {
+                self.perform_resource_operation(crate::actions::TypstOperation::ShowEditor, doc)
+            }
+            TbAction::ShowPreview => {
+                self.perform_resource_operation(crate::actions::TypstOperation::ShowPreview, doc)
+            }
             TbAction::ToggleMenu => self.menu_open = !self.menu_open,
+        }
+    }
+
+    /// Execute the semantic operation shared by exported resources and direct
+    /// toolbar/shortcut affordances.
+    fn perform_resource_operation(
+        &mut self,
+        operation: crate::actions::TypstOperation,
+        doc: &AutoCommit,
+    ) {
+        use crate::actions::TypstOperation;
+        match operation {
+            TypstOperation::Compile => self.force_recompile(doc),
+            TypstOperation::Save => self.save(doc),
+            TypstOperation::Open => self.open(doc),
+            TypstOperation::ExportPdf => self.export_pdf(doc),
+            TypstOperation::ZoomOut => self.preview.zoom_out(),
+            TypstOperation::ZoomIn => self.preview.zoom_in(),
+            TypstOperation::FitWidth => self.preview.fit_width(),
+            TypstOperation::ToggleProblems => {
+                self.show_diagnostics = !self.show_diagnostics;
+            }
+            TypstOperation::ShowEditor => self.set_compact_view(CompactPane::Editor),
+            TypstOperation::ShowPreview => self.set_compact_view(CompactPane::Preview),
         }
     }
 
@@ -1652,6 +1690,28 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
 }
 
 impl Widget for TypstApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        crate::actions::resources(doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation, doc);
+        Ok(true)
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         let src_id = self.ensure_source_obj(doc);
         self.source_id = Some(src_id.clone());
@@ -2182,6 +2242,7 @@ impl TypstApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
@@ -2278,7 +2339,7 @@ mod tests {
         assert!(app.needs_commit());
 
         let context = app.take_commit_context().expect("native edit provenance");
-        assert_eq!(context.label, "Edit source");
+        assert_eq!(context.action_label, "Edit source");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
             Some("org.qos.Typst")

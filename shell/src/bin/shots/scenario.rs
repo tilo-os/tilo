@@ -123,8 +123,28 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Narrow the open activity surface to Ada's real authored changes so a
+    /// collaboration proof cannot accidentally show only the local author.
+    FilterRoomActivityToAda,
+    /// Add two present collaborators and representative shares to the active
+    /// workspace through the production capability path.
+    SeedSharedWorkspace,
+    /// Seed the durable half of an invitation: the invited person has room
+    /// access, but has not joined the workspace yet. This is intentionally
+    /// distinct from presence so the product proof never calls an invite a
+    /// live collaborator.
+    SeedInvitePending,
+    /// Resolve the pending invite into a live collaborator editing Notes.
+    /// The driver retains the same identity and capability record rather
+    /// than replacing the row with a screenshot-only fake.
+    AdmitInvitedCollaborator,
     /// Select a real timeline row so provenance and comparison are exercised.
     SelectRoomActivityEntry(usize),
+    /// Apply a real forward revert to an earlier room-history entry.
+    RevertRoomActivity,
+    /// Move the named live collaborator to Files and focus that native app,
+    /// proving presence follows the work rather than a shell-only avatar.
+    ShowCollaboratorInFiles,
     /// Open a window, the way opening one actually happens: adopt a
     /// toplevel for `app_id` into the chrome's tree through the
     /// production `tab_binding::adopt_toplevel`, so the placement rule
@@ -456,9 +476,27 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
+        Action::FilterRoomActivityToAda => assert!(
+            driver.filter_room_activity_to_ada_for_shots(),
+            "scenario: attributed history requires a real change authored by Ada"
+        ),
+        Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedInvitePending => driver.seed_invite_pending_for_shots(),
+        Action::AdmitInvitedCollaborator => assert!(
+            driver.admit_invited_collaborator_for_shots(),
+            "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
+        ),
         Action::SelectRoomActivityEntry(index) => {
             driver.select_room_activity_entry(*index);
         }
+        Action::RevertRoomActivity => assert!(
+            driver.revert_room_activity_for_shots(),
+            "scenario: collaboration journey cannot label a frame 'reverted' without a forward revert"
+        ),
+        Action::ShowCollaboratorInFiles => assert!(
+            driver.show_collaborator_in_files_for_shots(),
+            "scenario: collaboration journey cannot label a frame 'Ada in Files' unless Files was focused"
+        ),
         _ => {}
     }
 }
@@ -1048,6 +1086,35 @@ fn app_kind_for(app: &str) -> shell::shell::state::AppKind {
 // JSON state dumping for headless mode
 // =====================================================================
 
+fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::ShellOverlayHost) {
+    // Groups-per-strip snapshot (drag-out tests):
+    // `[[[group_id, [tab_id, ...]], ...], ...]`.
+    out.push_str("\"groups_per_strip\":[");
+    for (strip_index, (_strip_id, groups)) in host.groups_per_strip().iter().enumerate() {
+        if strip_index > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (group_index, (group_id, tabs)) in groups.iter().enumerate() {
+            if group_index > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            out.push_str(&group_id.to_string());
+            out.push_str(",[");
+            for (tab_index, tab_id) in tabs.iter().enumerate() {
+                if tab_index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&tab_id.to_string());
+            }
+            out.push_str("]]");
+        }
+        out.push(']');
+    }
+    out.push(']');
+}
+
 /// Serialise the chrome's externally-observable state into a compact
 /// JSON object. Hand-rolled instead of pulling `serde_derive` because
 /// `ChromeState` lives in another crate we don't want to annotate.
@@ -1143,43 +1210,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_u64(&mut out, "revision", st.revision);
     out.push(',');
-    // Groups-per-strip snapshot (drag-out tests): "[[[g_id,[t1,t2,...]],...],...]"
-    // Outer array indexed by strip; each element is the strip's group list,
-    // each group is `[group_id, [tab_ids...]]`. Order of strips matches
-    // `host.groups_per_strip()` (HashMap iter order — not guaranteed
-    // stable across runs, but each scenario's assertions look up the
-    // count not a specific strip slot).
-    let gps = host.groups_per_strip();
-    out.push('"');
-    out.push_str("groups_per_strip");
-    out.push('"');
-    out.push(':');
-    out.push('[');
-    for (si, (_strip_id, groups)) in gps.iter().enumerate() {
-        if si > 0 {
-            out.push(',');
-        }
-        out.push('[');
-        for (gi, (gid, tabs)) in groups.iter().enumerate() {
-            if gi > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            out.push_str(&gid.to_string());
-            out.push(',');
-            out.push('[');
-            for (ti, tid) in tabs.iter().enumerate() {
-                if ti > 0 {
-                    out.push(',');
-                }
-                out.push_str(&tid.to_string());
-            }
-            out.push(']');
-            out.push(']');
-        }
-        out.push(']');
-    }
-    out.push(']');
+    push_groups_per_strip(&mut out, host);
     out.push('}');
     out
 }
@@ -1303,6 +1334,8 @@ pub fn catalogue() -> Vec<Scenario> {
         wheel_overscroll_at_the_end(),
         wheel_summon_at_pointer(),
         overview_transition(),
+        solo_and_shared_shell_states(),
+        collaboration_product_proof(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
         two_notes_tabs_keep_their_own_text(),
@@ -1327,6 +1360,64 @@ pub fn catalogue() -> Vec<Scenario> {
         wifi_password_prompt(),
         file_chooser_dialog(),
     ]
+}
+
+/// The canonical collaboration journey. Each frame is a state a person can
+/// actually reach: an invitation is not shown as presence, a remote edit is
+/// attributed in room history, and recovery creates a new forward change.
+/// The last frame switches to a second native app so the collaborator's
+/// location is proven to be workspace data rather than chrome decoration.
+fn collaboration_product_proof() -> Scenario {
+    Scenario {
+        name: "collaboration_product_proof",
+        description: "Prove solo work, a pending invite, live editing, attributed history, forward revert, and cross-app presence.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-solo-workspace"),
+            Action::SeedInvitePending,
+            Action::Wait(2),
+            Action::Snapshot("02-invite-pending"),
+            Action::AdmitInvitedCollaborator,
+            Action::Wait(2),
+            Action::Snapshot("03-ada-editing-notes"),
+            Action::SeedRoomActivity { explore: true },
+            Action::FilterRoomActivityToAda,
+            Action::Wait(2),
+            Action::Snapshot("04-attributed-history"),
+            Action::SelectRoomActivityEntry(0),
+            Action::Snapshot("05-history-comparison"),
+            Action::RevertRoomActivity,
+            Action::Wait(18),
+            Action::Snapshot("06-reverted-forward"),
+            Action::ShowCollaboratorInFiles,
+            Action::Wait(2),
+            Action::Snapshot("07-ada-in-files"),
+        ],
+    }
+}
+
+/// The two resting states that define qOS's chrome contract. The first frame
+/// must read as an ordinary personal desktop; the second adds collaboration
+/// without changing the underlying navigation model. The final frame proves
+/// the persistent presence entry opens the roster it represents.
+fn solo_and_shared_shell_states() -> Scenario {
+    Scenario {
+        name: "solo_and_shared_shell_states",
+        description: "Compare the quiet solo desktop with the same workspace after collaborators arrive, then open its roster.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-solo-resting"),
+            Action::SeedSharedWorkspace,
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("02-shared-resting"),
+            Action::ClickNamed("topbar_avatar_stack"),
+            Action::Wait(4),
+            Action::Snapshot("03-shared-roster"),
+        ],
+    }
 }
 
 /// Resolve a [`Action::SeedStatus`] preset name into the reading the
@@ -1905,12 +1996,12 @@ const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 fn room_activity_from_palette() -> Scenario {
     Scenario {
         name: "room_activity_from_palette",
-        description: "Search 'room activity' in the palette and open the sheet from the result.",
+        description: "Search 'workspace activity' in the palette and open the sheet from the result.",
         actions: vec![
             Action::Snapshot("01-desktop"),
             Action::OpenPalette,
             Action::Wait(2),
-            Action::Type("room activity".into()),
+            Action::Type("workspace activity".into()),
             Action::Wait(2),
             Action::Snapshot("02-palette-result"),
             Action::Key(Key::Named(NamedKey::Enter)),
@@ -2723,6 +2814,148 @@ mod tests {
             assert_eq!(found.name, s.name);
         }
         assert!(lookup("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn collaboration_product_proof_keeps_invitation_presence_and_recovery_distinct() {
+        let scenario = collaboration_product_proof();
+        let snapshots: Vec<_> = scenario
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::Snapshot(name) => Some(*name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            snapshots,
+            vec![
+                "01-solo-workspace",
+                "02-invite-pending",
+                "03-ada-editing-notes",
+                "04-attributed-history",
+                "05-history-comparison",
+                "06-reverted-forward",
+                "07-ada-in-files",
+            ],
+            "the proof must retain every product state rather than skipping from invite to history"
+        );
+        assert!(
+            scenario
+                .actions
+                .windows(2)
+                .any(|pair| matches!(pair, [Action::SeedInvitePending, Action::Wait(_)]))
+        );
+        assert!(
+            scenario
+                .actions
+                .iter()
+                .any(|action| matches!(action, Action::RevertRoomActivity))
+        );
+    }
+
+    /// Snapshot names are a contract with the visual review suite. Check the
+    /// actual state at each consequential frame as well, so a future fixture
+    /// regression cannot quietly emit a plausible but false PNG.
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "each flag records an independent collaboration-proof invariant"
+    )]
+    struct CollaborationProofSink {
+        pending_invite_is_durable: bool,
+        ada_activity_is_visible: bool,
+        forward_revert_is_announced: bool,
+        ada_is_active_in_files: bool,
+    }
+
+    impl SnapshotSink for CollaborationProofSink {
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the borrowed workspace must stay alive while each named snapshot invariant is inspected"
+        )]
+        fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
+            let state = driver.chrome();
+            let tree = state.tree();
+            let Some(workspace) = tree.active_workspace() else {
+                return;
+            };
+            match name {
+                "02-invite-pending" => {
+                    let ada = workspace
+                        .collaborators
+                        .iter()
+                        .find(|person| person.id == "ada");
+                    self.pending_invite_is_durable = ada.is_some_and(|person| {
+                        person.invited
+                            && person.active_tab.is_none()
+                            && workspace.role_of(&"ada".to_string()).is_some()
+                    });
+                }
+                "04-attributed-history" => {
+                    let activity = driver.host().room_activity();
+                    self.ada_activity_is_visible = activity
+                        .author_filter()
+                        .is_some_and(|author| author.eq_ignore_ascii_case("ada"))
+                        && activity.visible_len() > 0
+                        && (0..activity.visible_len()).all(|index| {
+                            activity
+                                .visible_entry(index)
+                                .is_some_and(|entry| entry.author.name.eq_ignore_ascii_case("ada"))
+                        });
+                }
+                "06-reverted-forward" => {
+                    self.forward_revert_is_announced = state.notifications().iter().any(|notice| {
+                        notice.title == "Reverted a workspace change"
+                            && notice.body.contains("Written forward")
+                    });
+                }
+                "07-ada-in-files" => {
+                    let files_tab = workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .find(|tab| tab.title == "Files")
+                        .map(|tab| tab.id);
+                    self.ada_is_active_in_files = files_tab.is_some_and(|files_tab| {
+                        workspace.collaborators.iter().any(|person| {
+                            person.id == "ada"
+                                && !person.invited
+                                && person.active_tab == Some(files_tab)
+                        })
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn collaboration_product_proof_frames_are_backed_by_the_claimed_state() {
+        let mut driver = ShellDriver::new((1600, 900));
+        let mut sink = CollaborationProofSink {
+            pending_invite_is_durable: false,
+            ada_activity_is_visible: false,
+            forward_revert_is_announced: false,
+            ada_is_active_in_files: false,
+        };
+        run(&mut driver, &collaboration_product_proof(), &mut sink);
+        assert!(
+            sink.pending_invite_is_durable,
+            "the pending-invite frame must show both durable access and non-live presence"
+        );
+        assert!(
+            sink.ada_activity_is_visible,
+            "the attributed-history frame must visibly filter to Ada's authored changes"
+        );
+        assert!(
+            sink.forward_revert_is_announced,
+            "the reverted frame must be backed by a new forward recovery"
+        );
+        assert!(
+            sink.ada_is_active_in_files,
+            "the last frame must place the admitted collaborator in real Files content"
+        );
     }
 
     #[test]

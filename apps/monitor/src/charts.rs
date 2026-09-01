@@ -348,15 +348,12 @@ pub fn sparkline(scene: &mut Scene, t: Affine, rect: Rect, data: &[f32], max: f3
     scene.stroke(&Stroke::new(1.5), t, color, None, &line);
 }
 
-/// Pick a gauge colour from the theme by load: success → warning →
-/// danger as the value climbs. Keeps the palette OS-controlled.
-pub fn load_color(theme: &Theme, frac: f32) -> Color {
-    let s = &theme.tokens.colors.semantic;
-    if frac >= 0.85 {
-        s.danger
-    } else if frac >= 0.6 {
-        s.warning
-    } else {
-        s.success
-    }
+/// Stable informational colour for utilisation gauges and values.
+///
+/// A high reading is not inherently an error, and aggregate process CPU can
+/// legitimately exceed 100% on multicore systems. Reserve semantic
+/// success/warning/danger colours for a real threshold or action outcome;
+/// magnitude is already communicated by the number and gauge geometry.
+pub fn load_color(theme: &Theme, _frac: f32) -> Color {
+    theme.tokens.colors.accent[5]
 }

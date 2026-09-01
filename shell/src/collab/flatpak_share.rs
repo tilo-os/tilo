@@ -129,6 +129,8 @@ fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
 pub struct EncodedFrame {
     /// Surface the encoder is capturing.
     pub surface: SurfaceId,
+    /// Authenticated session handle of the stream owner.
+    pub source_peer: PeerId,
     /// H.264 Annex-B NALU payload.
     pub nalus: Vec<u8>,
     /// Owner-side capture timestamp (monotonic ns). Receivers subtract their
@@ -141,6 +143,7 @@ impl EncodedFrame {
     pub fn into_neighbour_msg(self) -> NeighbourMsg {
         NeighbourMsg::SurfaceFrame {
             surface: self.surface,
+            source_peer: self.source_peer,
             encoded_h264: self.nalus,
             ts: self.capture_ts_ns,
         }
@@ -623,6 +626,7 @@ impl SharedFlatpakSession {
                 self.stream_sender.publish(keyframe, nalus.clone());
                 Some(EncodedFrame {
                     surface: self.surface_id,
+                    source_peer: self.host_user_id,
                     nalus,
                     capture_ts_ns: carried_ts,
                 })
@@ -930,10 +934,12 @@ mod tests {
         match msg {
             NeighbourMsg::SurfaceFrame {
                 surface,
+                source_peer,
                 encoded_h264,
                 ts,
             } => {
                 assert_eq!(surface, 7);
+                assert_eq!(source_peer, 1);
                 assert_eq!(encoded_h264, frame.nalus);
                 assert_eq!(ts, frame.capture_ts_ns);
             }

@@ -70,7 +70,7 @@ impl ActivityDigest {
             .filter(|entry| entry.timestamp > since)
             .cloned()
             .collect();
-        Self::from_recent(recent, limit)
+        Self::from_recent(&recent, limit)
     }
 
     /// Causal-id based catch-up. Prefer this for persisted "since you
@@ -81,11 +81,11 @@ impl ActivityDigest {
         frontier: &HistorySeenFrontier,
         limit: usize,
     ) -> Self {
-        let recent = frontier.unseen(entries).into_iter().cloned().collect();
-        Self::from_recent(recent, limit)
+        let recent: Vec<HistoryEntry> = frontier.unseen(entries).into_iter().cloned().collect();
+        Self::from_recent(&recent, limit)
     }
 
-    fn from_recent(recent: Vec<HistoryEntry>, limit: usize) -> Self {
+    fn from_recent(recent: &[HistoryEntry], limit: usize) -> Self {
         let people = recent
             .iter()
             .map(|entry| {
@@ -96,7 +96,7 @@ impl ActivityDigest {
             })
             .collect::<HashSet<_>>()
             .len();
-        let groups = group_entries(&recent, &[], &GroupingConfig::default());
+        let groups = group_entries(recent, &[], &GroupingConfig::default());
         let mut briefs: Vec<ActivityBrief> = groups
             .iter()
             .map(|group| {
@@ -127,8 +127,8 @@ impl ActivityDigest {
                     .and_then(|context| context.group.as_ref())
                     .map(|group| group.id.clone());
                 ActivityBrief {
-                    title: group.title(&recent),
-                    detail: group.subtitle(&recent),
+                    title: group.title(recent),
+                    detail: group.subtitle(recent),
                     authors: group.authors.clone(),
                     apps,
                     resources,
@@ -140,7 +140,7 @@ impl ActivityDigest {
                 }
             })
             .collect();
-        briefs.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+        briefs.sort_by_key(|brief| std::cmp::Reverse(brief.last_at));
         briefs.truncate(limit);
         Self {
             briefs,
@@ -172,7 +172,9 @@ mod tests {
             author: HistoryAuthor::new(author, 120.0, format!("id{id}")),
             op_class: OpClass::Splice,
             artifact_kind: ArtifactKind::File,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(at),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(at))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
             summary: "+1 -0 chars".into(),
             text_delta: Some((1, 0)),
             diff_payload: None,

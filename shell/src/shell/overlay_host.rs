@@ -45,21 +45,24 @@ use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, PeerSyncOverlay};
-pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
+pub use crate::shell::peer_sync_overlay::{
+    PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot, PendingInvitationSummary,
+};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
 use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
 use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
-    WorkspaceTree,
 };
-use crate::shell::workspace_settings::{
-    CapEdit, DefaultAppsCtx, EXPIRY_CHOICES, default_app_rows, draw_default_apps_pane,
-    draw_members_pane, draw_permissions_pane, members_pane_rows, permissions_pane_layout,
+use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
+pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
+use crate::shell::workspace_settings_overlay::{
+    EventOutcome as WorkspaceSettingsOutcome, WorkspaceSettingsOverlay,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,22 +86,6 @@ fn history_target_address(target: &ui::HistoryResourceTarget) -> HistoryTargetAd
     HistoryTargetAddress::App
 }
 
-/// The Permissions tab's grant-composer controls, as painted. Cached on
-/// the host each frame the composer is on screen so the click router
-/// hit-tests exactly the rects the renderer drew, and so a headless
-/// harness can address them by name.
-#[derive(Clone, Copy, Debug)]
-pub struct GrantComposerRects {
-    /// Cycles the subject the grant is for.
-    pub subject: Rect,
-    /// Cycles what the grant allows.
-    pub capability: Rect,
-    /// The three expiry segments, in [`EXPIRY_CHOICES`] order.
-    pub expiry: [Rect; 3],
-    /// Commits the draft through `Workspace::grant_as`.
-    pub submit: Rect,
-}
-
 /// Which grant-composer control a click landed on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComposerHit {
@@ -109,9 +96,20 @@ enum ComposerHit {
     Submit,
 }
 
+fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option<ComposerHit> {
+    match outcome {
+        WorkspaceSettingsOutcome::ComposerSubject => Some(ComposerHit::Subject),
+        WorkspaceSettingsOutcome::ComposerCapability => Some(ComposerHit::Capability),
+        WorkspaceSettingsOutcome::ComposerExpiry(index) => Some(ComposerHit::Expiry(*index)),
+        WorkspaceSettingsOutcome::ComposerSubmit => Some(ComposerHit::Submit),
+        _ => None,
+    }
+}
+
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
-type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>;
+type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
+type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -202,15 +200,9 @@ pub struct ShellOverlayHost {
     qs_transition: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
-    /// Quick-settings slider being dragged (0 = brightness, 1 = volume).
-    /// The `os_action` shell-out fires only on Released so a drag doesn't
-    /// spawn a subprocess per pixel of motion.
-    qs_slider_drag: Option<usize>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
-    /// When the workspace invite link was last copied, to confirm it.
-    ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
@@ -218,11 +210,9 @@ pub struct ShellOverlayHost {
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::qs_refresh::QsRefresh,
-    ws_settings_was_open: bool,
-    /// Interruptible open/close driver for the workspace-settings modal
-    /// — like `qs_transition` but for the modal, so it fades + scales
-    /// OUT on close instead of vanishing.
-    ws_settings_transition: ui::Transition,
+    /// Workspace-settings transition, geometry, painting chrome, and typed
+    /// hit targets. Policy outcomes are applied by this host.
+    workspace_settings_overlay: WorkspaceSettingsOverlay,
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
@@ -251,26 +241,6 @@ pub struct ShellOverlayHost {
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
-    /// Hit rects for the WS-settings tab pills, in [`WsTab::all`] order.
-    /// `Rect::ZERO` when not painted, so a stale click during a
-    /// crossfade can't flip tabs after the modal is gone.
-    ws_settings_tab_pill_rects: [Rect; 4],
-    /// Apps & Files rows: resource, workspace-policy control, personal
-    /// workspace-choice control. Geometry is painted and hit-tested from the
-    /// same cache.
-    default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
-    /// Cached Revoke-button rects for the Permissions pane, keyed by
-    /// the capability's stable id — the key
-    /// [`crate::shell::state::Workspace::revoke_as`] takes, so a click
-    /// can never revoke a different capability than the row it was
-    /// painted for.
-    permissions_revoke_rects: Vec<(String, Rect)>,
-    /// Cached grant-composer control rects, populated while the
-    /// Permissions tab is drawn and cleared otherwise.
-    grant_composer_rects: Option<GrantComposerRects>,
-    /// Cached per-member control rects for the Members pane:
-    /// `(member, role chip, Remove button)`.
-    member_control_rects: Vec<(crate::shell::state::UserId, Rect, Rect)>,
     /// Vertical inset at which the floating sidebar wheel starts.
     /// Defaults to [`SIDEBAR_TOP_OFFSET_PX`]; `with_sidebar_top`
     /// overrides it so the real shell's padded topbar doesn't overlap.
@@ -298,6 +268,9 @@ pub struct ShellOverlayHost {
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<PeerSyncBridge>,
+    /// Session-local control path into the typed app broker. Follow never
+    /// enters the replicated workspace document or crosses the network.
+    follow_bridge: Option<FollowBridge>,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
     peer_sync_overlay: PeerSyncOverlay,
     /// Top-right notification stack, above content but below the
@@ -314,6 +287,8 @@ pub struct ShellOverlayHost {
     /// tab whose content changed without its id changing still gets
     /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// Quick-settings root-page presentation, geometry and input state.
+    qs_root: QuickSettingsRoot,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
@@ -844,6 +819,19 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
+    /// Attach the session's live application action directory after the
+    /// collaboration broker has bound. Kept explicit so bare/headless hosts
+    /// do not fabricate a broker.
+    pub fn attach_app_action_broker(
+        &mut self,
+        broker: crate::shell::collab_broker::AppActionBroker,
+    ) {
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
+        ));
+        self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -925,25 +913,17 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
-            qs_slider_drag: None,
             power_menu: PowerMenu::default(),
-            ws_invite_copied_at: None,
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
-            ws_settings_was_open: false,
-            ws_settings_transition: ui::Transition::closed(),
+            workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
             content_built_for_ws: None,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
-            ws_settings_tab_pill_rects: [Rect::ZERO; 4],
-            default_app_rects: Vec::new(),
-            permissions_revoke_rects: Vec::new(),
-            grant_composer_rects: None,
-            member_control_rects: Vec::new(),
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             portal_prompts: None,
@@ -951,10 +931,12 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
+            follow_bridge: None,
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
+            qs_root: QuickSettingsRoot::default(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
@@ -1218,8 +1200,14 @@ impl ShellOverlayHost {
         self.peer_sync_bridge = Some(bridge);
     }
 
+    /// Install the session-local bridge that binds application viewports to
+    /// the participant selected in the People popover.
+    pub fn set_follow_bridge(&mut self, bridge: FollowBridge) {
+        self.follow_bridge = Some(bridge);
+    }
+
     /// Run one peer-sync request through the installed bridge.
-    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<String, String> {
+    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<PeerSyncResponse, String> {
         match self.peer_sync_bridge.as_ref() {
             Some(bridge) => bridge(req),
             None => Err("peer-sync is not running in this session".to_string()),
@@ -1244,9 +1232,10 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(&PeerSyncRequest::IssueInviteFor(name), copy);
+                    let _ = copy;
+                    self.peer_sync_overlay.prompt_invite_for(name);
                 }
-                PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
+                PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
             }
         }
@@ -1255,7 +1244,27 @@ impl ShellOverlayHost {
     fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
         let outcome = self.peer_sync_call(request.clone());
         self.peer_sync_overlay
-            .finish_request(request, outcome, copy_result);
+            .finish_typed_request(request, outcome, copy_result);
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInvite
+                | PeerSyncRequest::IssueInviteFor { .. }
+                | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.refresh_pending_invitations();
+        }
+    }
+
+    fn open_invite_manager(&mut self) {
+        self.peer_sync_overlay.prompt_invite();
+        self.refresh_pending_invitations();
+    }
+
+    fn refresh_pending_invitations(&mut self) {
+        let request = PeerSyncRequest::ListPendingInvitations;
+        let outcome = self.peer_sync_call(request.clone());
+        self.peer_sync_overlay
+            .finish_typed_request(&request, outcome, false);
     }
 
     /// Route one event to the peer-sync card, returning whether it was
@@ -2799,7 +2808,7 @@ impl ShellOverlayHost {
                 .iter()
                 .find(|participant| participant.id == peer_id && !participant.invited)
                 .and_then(|participant| participant.active_tab);
-            tab.and_then(|tab| {
+            let target = tab.and_then(|tab| {
                 tree.active_workspace()?.strips.iter().find_map(|strip| {
                     strip.window_groups.iter().find_map(|group| {
                         group
@@ -2809,12 +2818,55 @@ impl ShellOverlayHost {
                             .then_some((strip.id, group.id, tab))
                     })
                 })
-            })
+            });
+            drop(tree);
+            target
         };
         let Some((strip, group, tab)) = target else {
             return false;
         };
         self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Change Follow once, then notify every local app in the room using the
+    /// participant id its presence stream actually carries (`peer@<handle>`).
+    /// Shell focus keeps using the durable roster id, so names and capability
+    /// rows remain stable while sessions reconnect.
+    fn set_followed_peer(&mut self, peer_id: Option<String>) {
+        if self.followed_peer == peer_id {
+            return;
+        }
+        self.followed_peer = peer_id;
+        let command = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let Some(workspace) = tree.active_workspace() else {
+                drop(tree);
+                drop(state);
+                return None;
+            };
+            let target = self.followed_peer.as_deref().map(|id| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|participant| participant.id == id)
+                    .and_then(|participant| participant.session)
+                    .map_or_else(|| id.to_string(), |session| format!("peer@{session}"))
+            });
+            let command = (workspace.room, target);
+            drop(tree);
+            drop(state);
+            Some(command)
+        });
+        if let (Some(bridge), Some((room, target))) = (self.follow_bridge.as_ref(), command) {
+            bridge(room, target);
+        }
+        if self.followed_peer.is_some() {
+            self.reconcile_followed_peer();
+        } else {
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+        }
     }
 
     fn followed_roster_row(&self) -> Option<RosterRow> {
@@ -2889,16 +2941,7 @@ impl ShellOverlayHost {
     /// modal is visible. Every [`WsTab`] has a real pill, so every tab has
     /// a rect.
     pub fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
-        let idx = match tab {
-            WsTab::General => 0,
-            WsTab::Members => 1,
-            WsTab::Permissions => 2,
-            WsTab::Apps => 3,
-        };
-        self.ws_settings_tab_pill_rects
-            .get(idx)
-            .copied()
-            .unwrap_or(Rect::ZERO)
+        self.workspace_settings_overlay.tab_pill_rect(tab)
     }
 
     /// The workspace-settings name field's rect, for harnesses that
@@ -2961,19 +3004,19 @@ impl ShellOverlayHost {
     /// revokes. Empty whenever the modal is closed or another tab is
     /// active.
     pub fn permissions_revoke_rects(&self) -> &[(String, Rect)] {
-        &self.permissions_revoke_rects
+        self.workspace_settings_overlay.revoke_rects()
     }
 
     /// Grant-composer control rects painted while the Permissions tab is
     /// active. `None` when the composer isn't on screen.
     pub fn grant_composer_rects(&self) -> Option<&GrantComposerRects> {
-        self.grant_composer_rects.as_ref()
+        self.workspace_settings_overlay.grant_composer_rects()
     }
 
     /// Per-member control rects painted while the Members tab is active:
     /// `(member, role chip, Remove button)`.
     pub fn member_control_rects(&self) -> &[(crate::shell::state::UserId, Rect, Rect)] {
-        &self.member_control_rects
+        self.workspace_settings_overlay.member_control_rects()
     }
 
     /// Open the palette in `scope`, or close it if the same scope fires
@@ -3627,8 +3670,7 @@ impl ShellOverlayHost {
         if !self.overlay_flags().ws_settings {
             return;
         }
-        self.ws_settings_was_open = true;
-        self.ws_settings_transition = ui::Transition::open();
+        self.workspace_settings_overlay.force_settled();
     }
 
     /// Font size the overview sets the current room's name at — the
@@ -3866,24 +3908,17 @@ impl ShellOverlayHost {
         Some((sid, group))
     }
 
-    /// The workspace-settings "Copy" button next to the invite link.
+    /// The workspace-settings button that opens the signed invite composer.
     ///
     /// Shared by the draw pass and the click router, so the rect that
     /// paints the button is the rect that can be clicked.
-    fn ws_settings_copy_rect(&self) -> Rect {
-        let body = self.ws_settings_body_rect(self.ws_settings_rect());
-        let link_y = body.y0 + 202.0;
-        Rect::new(body.x1 - 16.0 - 72.0, link_y, body.x1 - 16.0, link_y + 34.0)
+    fn ws_settings_invite_rect(&self) -> Rect {
+        WorkspaceSettingsOverlay::invite_rect_for(self.ws_settings_rect())
     }
 
-    /// Copy-button geometry for integration tests.
-    pub fn ws_settings_copy_rect_for_tests(&self) -> Rect {
-        self.ws_settings_copy_rect()
-    }
-
-    /// When the invite link was last copied, for integration tests.
-    pub fn ws_invite_copied_at_for_tests(&self) -> Option<Instant> {
-        self.ws_invite_copied_at
+    /// Signed-invite button geometry for integration tests.
+    pub fn ws_settings_invite_rect_for_tests(&self) -> Rect {
+        self.ws_settings_invite_rect()
     }
 
     /// Public alias for [`Self::quick_settings_rect`] so integration
@@ -4001,90 +4036,24 @@ impl ShellOverlayHost {
         self.refresh_room_activity();
     }
 
-    /// The body region a non-General tab's pane is painted into: below
-    /// the tab strip, inset from the card's edges. One definition so the
-    /// pane's layout (which feeds click routing) and its paint can never
-    /// disagree about where the pane is.
-    #[allow(
-        clippy::unused_self,
-        reason = "kept as a method for the self.ws_settings_body_rect(...) call-site sugar \
-                  used consistently across every ws-settings tab body's layout and draw pass; \
-                  an associated fn would need Self:: at each of those sites for no real gain"
-    )]
-    fn ws_settings_body_rect(&self, card: Rect) -> Rect {
-        Rect::new(
-            card.x0 + 16.0,
-            card.y0 + 160.0,
-            card.x1 - 16.0,
-            card.y1 - 16.0,
-        )
-    }
-
-    /// The "Press Esc to close" hint, bottom-right of the modal card.
-    /// Each tab that owns its whole body draws it, so the General body
-    /// never has to run just to produce the hint.
-    #[allow(
-        clippy::unused_self,
-        reason = "kept as a method for the self.draw_ws_settings_close_hint(...) call-site \
-                  sugar used consistently across every ws-settings tab's draw pass; an \
-                  associated fn would need Self:: at each of those sites for no real gain"
-    )]
-    fn draw_ws_settings_close_hint(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        card: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let hint = "Press Esc to close";
-        let size = theme.tokens.typography.scale.xs;
-        let (w, _) = text_renderer.measure(hint, size, None);
-        text_renderer.draw_text(
-            scene,
-            hint,
-            size,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((card.x1 - f64::from(w) - 24.0, card.y1 - 24.0).into()),
-            None,
-        );
+    /// Settle the room-activity sheet in its closed state after a shot driver
+    /// action closes it, preventing the following capture from containing the
+    /// tail of the dismissal animation.
+    pub fn force_room_activity_closed_for_shots(&mut self) {
+        self.room_activity_transition = ui::Transition::closed();
+        self.room_activity_was_open = false;
     }
 
     /// Name-input rect inside the ws-settings modal. Matches the drawn
     /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
     fn ws_settings_name_rect(&self) -> Rect {
-        let body = self.ws_settings_body_rect(self.ws_settings_rect());
-        Rect::new(
-            body.x0 + 16.0,
-            body.y0 + 62.0,
-            body.x1 - 16.0,
-            body.y0 + 96.0,
-        )
-    }
-
-    /// Visible pointer-accessible close control in the identity card.
-    fn ws_settings_close_rect(&self) -> Rect {
-        let rect = self.ws_settings_rect();
-        Rect::new(
-            rect.x1 - 58.0,
-            rect.y0 + 25.0,
-            rect.x1 - 28.0,
-            rect.y0 + 55.0,
-        )
+        WorkspaceSettingsOverlay::name_rect_for(self.ws_settings_rect())
     }
 
     /// A contextual lens docked beside the live workspace. Narrow displays
     /// promote the same surface to a nearly full-width sheet.
     fn ws_settings_rect(&self) -> Rect {
-        let margin = 12.0_f64;
-        let top = self.rect.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
-        let bottom = (self.rect.y1 - margin).max(top + 320.0);
-        if self.rect.width() < 820.0 {
-            return Rect::new(self.rect.x0 + margin, top, self.rect.x1 - margin, bottom);
-        }
-        let lens_w = (self.rect.width() * 0.46).clamp(620.0, 780.0);
-        let right = self.rect.x1 - margin;
-        Rect::new(right - lens_w, top, right, bottom)
+        WorkspaceSettingsOverlay::rect_for(self.rect)
     }
 
     /// The band the scope + kind controls paint into — the palette's own
@@ -4536,26 +4505,22 @@ impl ShellOverlayHost {
         false
     }
 
-    /// A brightness/volume slider drag in progress owns pointer input
-    /// ahead of the modal absorb gate, so it keeps updating even once
-    /// the drag leaves the slider bar or the popover — like a native
-    /// slider.
+    /// Routes an in-progress root-page slider drag before modal absorption.
     fn route_qs_slider_drag(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
-        let Some(drag_i) = self.qs_slider_drag else {
+        if !self.qs_root.drag_active() {
             return false;
-        };
+        }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                if let (Some(p), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
-                    let (bar, _) = self.quick_settings_slider_geometry(drag_i);
-                    let t = f64_to_f32_lossy(((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0));
+                if let (Some(point), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
+                    let panel = self.quick_settings_rect();
                     let mut st = chrome.borrow_mut();
-                    if drag_i == 0 {
-                        st.quick_settings.brightness = t;
-                    } else {
-                        st.quick_settings.volume = t;
+                    if self
+                        .qs_root
+                        .update_drag(point, panel, &mut st.quick_settings)
+                    {
+                        st.bump();
                     }
-                    st.bump();
                 }
                 *handled = true;
                 true
@@ -4565,25 +4530,24 @@ impl ShellOverlayHost {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let value_pct: f32 = self.chrome.as_ref().map_or(0.0, |c| {
-                    let st = c.borrow();
-                    if drag_i == 0 {
-                        st.quick_settings.brightness
-                    } else {
-                        st.quick_settings.volume
+                let commit = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
+                match commit {
+                    Some(SliderCommit::Brightness(value_pct)) => {
+                        crate::shell::qs_actions::log_qs_result(
+                            "set_brightness",
+                            self.qs_actions.set_brightness(value_pct),
+                        );
                     }
-                }) * 100.0;
-                self.qs_slider_drag = None;
-                if drag_i == 0 {
-                    crate::shell::qs_actions::log_qs_result(
-                        "set_brightness",
-                        self.qs_actions.set_brightness(value_pct),
-                    );
-                } else {
-                    crate::shell::qs_actions::log_qs_result(
-                        "set_volume",
-                        self.qs_actions.set_volume(value_pct),
-                    );
+                    Some(SliderCommit::Volume(value_pct)) => {
+                        crate::shell::qs_actions::log_qs_result(
+                            "set_volume",
+                            self.qs_actions.set_volume(value_pct),
+                        );
+                    }
+                    None => {}
                 }
                 *handled = true;
                 true
@@ -4649,73 +4613,84 @@ impl ShellOverlayHost {
                     Some(&records),
                 )
             };
-            if outcome.reverted {
-                let mut st = chrome.borrow_mut();
-                st.bump();
-                if outcome.undo_partial {
-                    st.push_notification(
-                        "Partially undid the selected work",
-                        "Later collaborator edits were preserved. History shows which parts were left intact.",
-                    );
-                } else {
-                    st.push_notification(
-                        "Reverted a room change",
-                        "Written forward: the version you reverted from is still in the history.",
-                    );
-                }
-            }
-            if let Some(target) = outcome.open_target {
-                let app_id = target.app_id.as_deref();
-                let workspace = chrome.borrow().tree().active_workspace().cloned();
-                if let (Some(app_id), Some(workspace)) = (app_id, workspace) {
-                    let result = match history_target_address(&target) {
-                        HistoryTargetAddress::File(path) => {
-                            crate::shell::launcher::launch_document_in_workspace(
-                                app_id,
-                                &workspace,
-                                Some(&path),
-                            )
-                        }
-                        HistoryTargetAddress::Uri(uri) => {
-                            crate::shell::launcher::launch_uri_in_workspace(
-                                app_id, &workspace, &uri,
-                            )
-                        }
-                        HistoryTargetAddress::App => {
-                            crate::shell::launcher::launch_in_workspace(app_id, &workspace)
-                        }
-                    };
-                    if let Err(error) = result {
-                        chrome.borrow_mut().push_notification(
-                            format!("Couldn't open {}", target.label),
-                            error.to_string(),
-                        );
-                    }
-                }
-            }
-            if outcome.compared {
-                chrome.borrow_mut().push_notification(
-                    "Comparison ready",
-                    "The exact causal before/after state is shown in History.",
-                );
-            }
-            if outcome.named {
-                let mut st = chrome.borrow_mut();
-                st.bump();
-                st.push_notification(
-                    "Named a version",
-                    "Saved in this room's history, so everyone here sees it.",
-                );
-            }
+            let consumed = outcome.handled || (pointer_inside && !is_key);
+            Self::apply_room_activity_outcome(&chrome, outcome);
             // Pointer events over the sheet absorb regardless; keys
             // only when consumed, or an arrow key with the cursor
             // resting over the sheet would vanish.
-            if outcome.handled || (pointer_inside && !is_key) {
+            if consumed {
                 *handled = true;
                 return true;
             }
         }
         false
+    }
+
+    fn apply_room_activity_outcome(
+        chrome: &Chrome,
+        outcome: crate::shell::room_activity::RoomActivityOutcome,
+    ) {
+        if outcome.reverted {
+            let mut state = chrome.borrow_mut();
+            state.bump();
+            if outcome.undo_partial {
+                state.push_notification(
+                    "Partially undid the selected work",
+                    "Later collaborator edits were preserved. History shows which parts were left intact.",
+                );
+            } else {
+                state.push_notification(
+                    "Reverted a room change",
+                    "Written forward: the version you reverted from is still in the history.",
+                );
+            }
+        }
+        if let Some(target) = outcome.open_target {
+            Self::open_room_activity_target(chrome, &target);
+        }
+        if outcome.compared {
+            chrome.borrow_mut().push_notification(
+                "Comparison ready",
+                "The exact causal before/after state is shown in History.",
+            );
+        }
+        if outcome.named {
+            let mut state = chrome.borrow_mut();
+            state.bump();
+            state.push_notification(
+                "Named a version",
+                "Saved in this workspace's history, so everyone here sees it.",
+            );
+        }
+    }
+
+    fn open_room_activity_target(chrome: &Chrome, target: &ui::HistoryResourceTarget) {
+        let Some(app_id) = target.app_id.as_deref() else {
+            return;
+        };
+        let Some(workspace) = chrome.borrow().tree().active_workspace().cloned() else {
+            return;
+        };
+        let result = match history_target_address(target) {
+            HistoryTargetAddress::File(path) => {
+                crate::shell::launcher::launch_document_in_workspace(
+                    app_id,
+                    &workspace,
+                    Some(&path),
+                )
+            }
+            HistoryTargetAddress::Uri(uri) => {
+                crate::shell::launcher::launch_uri_in_workspace(app_id, &workspace, &uri)
+            }
+            HistoryTargetAddress::App => {
+                crate::shell::launcher::launch_in_workspace(app_id, &workspace)
+            }
+        };
+        if let Err(error) = result {
+            chrome
+                .borrow_mut()
+                .push_notification(format!("Couldn't open {}", target.label), error.to_string());
+        }
     }
 
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
@@ -4871,6 +4846,9 @@ impl ShellOverlayHost {
         // character, and a `k` in one must not open search instead.
         if self.handle_wifi_password_key(logical_key, modifiers) {
             *handled = true;
+            return true;
+        }
+        if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
             return true;
         }
         // Captured ahead of the modifier-only branch so Character('K')
@@ -5526,86 +5504,19 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return false;
         };
-        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+        if self.handle_workspace_navigation_click(p) {
             *handled = true;
             return true;
         }
-        // Following is a viewing mode, not a lock. The first deliberate
-        // click back into the workspace hands control to the local user and
-        // continues routing that very click to its intended target.
-        if self.followed_peer.is_some()
-            && !self.cursor_over_open_overlay(p)
-            && !self.follow_chip_rect.contains(p)
-        {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
-        }
-        // Gated on no overlay owning the pointer, so a click
-        // under an open panel goes to the panel.
-        if !self.overlay_flags().overview
-            && !self.cursor_over_open_overlay(p)
-            && let Some(i) = self.strip_ribbon().hit(p)
-            && let Some(chrome) = self.chrome.clone()
-        {
-            chrome.borrow_mut().focus_strip_index(i);
+        if self.palette_visible && self.handle_palette_pointer_click(p) {
             *handled = true;
             return true;
         }
-        // The rail addresses windows off screen, so this is the
-        // one pointer path that also pans the strip.
-        if !self.overlay_flags().overview
-            && !self.cursor_over_open_overlay(p)
-            && let Some(i) = self.strip_rail().hit(p)
-            && let Some((strip, group)) = self.strip_rail_target(i)
-        {
-            self.focus_group_on_strip(strip, group);
+        if self.handle_power_menu_click(p) {
             *handled = true;
             return true;
-        }
-        if self.palette_visible {
-            // Before outside-click so scope can be swapped
-            // without dismissing the palette.
-            let scopes = self.search_scope_list();
-            for (idx, scope) in scopes.iter().enumerate() {
-                if self.search_scope_pill_rect(idx).contains(p) {
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        st.search_scope = *scope;
-                        st.bump();
-                    }
-                    *handled = true;
-                    return true;
-                }
-            }
-            let palette_rect = self.palette.get_rect();
-            if !palette_rect.contains(p) {
-                self.palette_visible = false;
-                *handled = true;
-                return true;
-            }
         }
         let flags = self.overlay_flags();
-        match self.power_menu.click(self.rect, p) {
-            PowerMenuClick::Ignored => {}
-            PowerMenuClick::Consumed => {
-                *handled = true;
-                return true;
-            }
-            PowerMenuClick::Execute(action) => {
-                std::thread::spawn(move || {
-                    os_actions::log_result(
-                        "session_action",
-                        os_actions::perform_session_action(action),
-                    );
-                });
-                *handled = true;
-                return true;
-            }
-        }
         if flags.room_activity && !self.room_activity.rect().contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
@@ -5637,6 +5548,78 @@ impl ShellOverlayHost {
         false
     }
 
+    fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
+        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
+            self.set_followed_peer(None);
+            return true;
+        }
+        // Following is a viewing mode, not a lock. The first deliberate
+        // click back into the workspace hands control to the local user and
+        // continues routing that very click to its intended target.
+        if self.followed_peer.is_some()
+            && !self.cursor_over_open_overlay(p)
+            && !self.follow_chip_rect.contains(p)
+        {
+            self.set_followed_peer(None);
+        }
+        // Gated on no overlay owning the pointer, so a click
+        // under an open panel goes to the panel.
+        if !self.overlay_flags().overview
+            && !self.cursor_over_open_overlay(p)
+            && let Some(i) = self.strip_ribbon().hit(p)
+            && let Some(chrome) = self.chrome.clone()
+        {
+            chrome.borrow_mut().focus_strip_index(i);
+            return true;
+        }
+        // The rail addresses windows off screen, so this is the
+        // one pointer path that also pans the strip.
+        if !self.overlay_flags().overview
+            && !self.cursor_over_open_overlay(p)
+            && let Some(i) = self.strip_rail().hit(p)
+            && let Some((strip, group)) = self.strip_rail_target(i)
+        {
+            self.focus_group_on_strip(strip, group);
+            return true;
+        }
+        false
+    }
+
+    fn handle_palette_pointer_click(&mut self, p: Point) -> bool {
+        // Scope can be swapped without dismissing the palette.
+        for (idx, scope) in self.search_scope_list().iter().enumerate() {
+            if self.search_scope_pill_rect(idx).contains(p) {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    state.search_scope = *scope;
+                    state.bump();
+                }
+                return true;
+            }
+        }
+        if !self.palette.get_rect().contains(p) {
+            self.palette_visible = false;
+            return true;
+        }
+        false
+    }
+
+    fn handle_power_menu_click(&mut self, p: Point) -> bool {
+        match self.power_menu.click(self.rect, p) {
+            PowerMenuClick::Ignored => false,
+            PowerMenuClick::Consumed => true,
+            PowerMenuClick::Execute(action) => {
+                std::thread::spawn(move || {
+                    os_actions::log_result(
+                        "session_action",
+                        os_actions::perform_session_action(action),
+                    );
+                });
+                true
+            }
+        }
+    }
+
     /// Clicks inside the open collaborators dropdown: invite, join,
     /// jump to room activity, or (falling through the specific rows)
     /// swallow the click so content beneath doesn't grab it. Reached
@@ -5654,10 +5637,9 @@ impl ShellOverlayHost {
             });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.followed_peer = None;
+                    self.set_followed_peer(None);
                 } else {
-                    self.followed_peer = Some(target.id);
-                    self.reconcile_followed_peer();
+                    self.set_followed_peer(Some(target.id));
                 }
             }
             *handled = true;
@@ -5685,8 +5667,7 @@ impl ShellOverlayHost {
                     state.overlays.collaborators = false;
                     state.bump();
                 }
-                CollaboratorsHit::ToggleFollow(_) => {}
-                CollaboratorsHit::Absorb => {}
+                CollaboratorsHit::ToggleFollow(_) | CollaboratorsHit::Absorb => {}
             }
         }
         *handled = true;
@@ -5827,229 +5808,190 @@ impl ShellOverlayHost {
             chrome.borrow_mut().clear_notification_history();
         }
     }
-
-    /// Clicks on the quick-settings root page: a chevron drills into a
-    /// sub-page, an action tile fires and closes the popover, otherwise
-    /// falls to sliders/toggles/the power-profile chip. Split out of
-    /// `handle_shell_quick_settings_click`, which always treats the
-    /// click as absorbed regardless of what this does.
+    /// Routes a click through the root-page component, then applies the
+    /// resulting shell-wide navigation or side effect after hit-testing.
     fn handle_shell_quick_settings_root_click(&mut self, p: Point) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Tested before the toggle hit so the chevron
-        // region wins over the toggle's full-card rect.
-        let mut pushed_level = None;
-        for i in [0, 1, 5] {
-            let chev = self.quick_settings_toggle_chevron_rect(i);
-            if chev.contains(p) {
-                pushed_level = Some(match i {
-                    0 => crate::shell::quick_settings::QsLevel::Wifi,
-                    1 => crate::shell::quick_settings::QsLevel::Bluetooth,
-                    _ => crate::shell::quick_settings::QsLevel::Vpn,
-                });
-                break;
-            }
-        }
-        if let Some(level) = pushed_level {
-            // Fetched here, not on panel-open: a Wi-Fi
-            // scan is the slowest read in the set.
-            match level {
-                crate::shell::quick_settings::QsLevel::Wifi => {
-                    self.qs_refresh.kick_wifi_networks();
-                }
-                crate::shell::quick_settings::QsLevel::Bluetooth => {
-                    self.qs_refresh.kick_bt_devices();
-                }
-                _ => {}
-            }
+        let action = {
             let mut st = chrome.borrow_mut();
-            st.quick_settings.push_level(level);
-            st.bump();
-            return;
+            self.qs_root
+                .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
+        };
+        self.apply_quick_settings_root_action(action, &chrome);
+    }
+
+    /// Keyboard parity for the immediate-mode quick-settings root. Tab uses
+    /// paint order, Enter/Space route through the same action dispatcher as a
+    /// pointer click, and arrows adjust the two range controls in small steps.
+    fn handle_quick_settings_keyboard(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+        handled: &mut bool,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let at_root = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+        };
+        if !at_root {
+            return false;
         }
-        // Each tile closes the popover; the action fires
-        // after the chrome borrow drops.
-        let mut action_hit: Option<usize> = None;
-        for i in 0..4 {
-            let tile = self.quick_settings_action_geometry(i);
-            if tile.contains(p) {
-                action_hit = Some(i);
-                break;
+
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let mut state = chrome.borrow_mut();
+            self.qs_root.focus_next(&state.quick_settings, backwards);
+            state.bump();
+            *handled = true;
+            return true;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            let action = {
+                let mut state = chrome.borrow_mut();
+                self.qs_root
+                    .activate_focused(self.quick_settings_rect(), &mut state.quick_settings)
+            };
+            self.apply_quick_settings_root_action(action, &chrome);
+            *handled = true;
+            return true;
+        }
+
+        let direction = if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown)
+        ) {
+            -1.0
+        } else if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp)
+        ) {
+            1.0
+        } else {
+            return false;
+        };
+        let commit = {
+            let mut state = chrome.borrow_mut();
+            let commit = self
+                .qs_root
+                .adjust_focused_slider(&mut state.quick_settings, direction);
+            if commit.is_some() {
+                state.bump();
             }
+            commit
+        };
+        match commit {
+            Some(SliderCommit::Brightness(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_brightness",
+                self.qs_actions.set_brightness(value_pct),
+            ),
+            Some(SliderCommit::Volume(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_volume",
+                self.qs_actions.set_volume(value_pct),
+            ),
+            None => return false,
         }
-        if let Some(i) = action_hit {
-            let mut st = chrome.borrow_mut();
-            match i {
-                0 => {
-                    st.overlays.ws_settings = true;
+        *handled = true;
+        true
+    }
+
+    fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
+        match action {
+            RootAction::None => {}
+            RootAction::Enter(level) => {
+                match level {
+                    crate::shell::quick_settings::QsLevel::Wifi => {
+                        self.qs_refresh.kick_wifi_networks();
+                    }
+                    crate::shell::quick_settings::QsLevel::Bluetooth => {
+                        self.qs_refresh.kick_bt_devices();
+                    }
+                    _ => {}
                 }
-                1 => {
-                    let active = st.quick_settings.privacy.active_media.clone();
-                    if active.is_empty() {
-                        let privacy = &st.quick_settings.privacy;
-                        let camera = format!("camera: {:?}", privacy.camera_kill);
-                        let microphone = format!("microphone: {:?}", privacy.microphone_kill);
-                        st.push_notification("Privacy", format!("{camera} · {microphone}"));
-                    } else {
-                        let mut failed = Vec::new();
-                        let mut seen = std::collections::BTreeSet::new();
-                        for use_ in &active {
-                            if seen.insert(use_.client_id)
-                                && os_actions::revoke_media_client(use_.client_id).is_err()
-                            {
-                                failed.push(use_.label.clone());
+                let mut st = chrome.borrow_mut();
+                st.quick_settings.push_level(level);
+                st.bump();
+            }
+            RootAction::OpenNotifications => {
+                let mut st = chrome.borrow_mut();
+                st.quick_settings
+                    .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+                st.bump();
+            }
+            RootAction::DisplayNotice => {
+                let mut st = chrome.borrow_mut();
+                st.push_notification(
+                    "Displays",
+                    "Display switching is available in Settings → Displays.",
+                );
+                st.bump();
+            }
+            RootAction::Changed(pending) => {
+                chrome.borrow_mut().bump();
+                self.dispatch_quick_settings_toggle_actions(
+                    pending.wifi,
+                    pending.bluetooth,
+                    pending.wired,
+                    pending.airplane,
+                    pending.hotspot,
+                    pending.mobile,
+                    pending.night_light,
+                    pending.power,
+                );
+            }
+            RootAction::OpenSettings | RootAction::Privacy | RootAction::OpenPowerMenu => {
+                let mut st = chrome.borrow_mut();
+                match action {
+                    RootAction::OpenSettings => st.overlays.ws_settings = true,
+                    RootAction::Privacy => {
+                        let active = st.quick_settings.privacy.active_media.clone();
+                        if active.is_empty() {
+                            let privacy = &st.quick_settings.privacy;
+                            let camera = format!("camera: {:?}", privacy.camera_kill);
+                            let microphone = format!("microphone: {:?}", privacy.microphone_kill);
+                            st.push_notification("Privacy", format!("{camera} · {microphone}"));
+                        } else {
+                            let mut failed = Vec::new();
+                            let mut seen = std::collections::BTreeSet::new();
+                            for use_ in &active {
+                                if seen.insert(use_.client_id)
+                                    && os_actions::revoke_media_client(use_.client_id).is_err()
+                                {
+                                    failed.push(use_.label.clone());
+                                }
+                            }
+                            if failed.is_empty() {
+                                st.quick_settings.privacy.active_media.clear();
+                                st.push_notification(
+                                    "Camera and microphone access stopped",
+                                    "The active PipeWire clients were disconnected.",
+                                );
+                            } else {
+                                st.push_notification(
+                                    "Could not stop all access",
+                                    format!("Still active: {}", failed.join(", ")),
+                                );
                             }
                         }
-                        if failed.is_empty() {
-                            st.quick_settings.privacy.active_media.clear();
-                            st.push_notification(
-                                "Camera and microphone access stopped",
-                                "The active PipeWire clients were disconnected.",
-                            );
-                        } else {
-                            st.push_notification(
-                                "Could not stop all access",
-                                format!("Still active: {}", failed.join(", ")),
-                            );
-                        }
                     }
+                    RootAction::OpenPowerMenu => self.power_menu.open(),
+                    _ => return,
                 }
-                2 => {
-                    st.quick_settings
-                        .push_level(crate::shell::quick_settings::QsLevel::Notifications);
-                    st.bump();
-                    return;
-                }
-                _ => {
-                    self.power_menu.open();
-                }
+                st.overlays.quick_settings = false;
+                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                st.bump();
             }
-            st.overlays.quick_settings = false;
-            st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
-            st.bump();
-            return;
         }
-        self.handle_shell_quick_settings_toggle_click(&chrome, p);
     }
-
-    /// Sliders, radio/feature toggles and the power-profile chip on the
-    /// quick-settings root page. Split out of
-    /// `handle_shell_quick_settings_root_click` — actions dispatch
-    /// after dropping the chrome borrow to avoid a re-entrant
-    /// `borrow_mut`; sliders don't participate, since `Released` owns
-    /// their shell-out.
-    fn handle_shell_quick_settings_toggle_click(&mut self, chrome: &Chrome, p: Point) {
-        let mut pending_wifi: Option<bool> = None;
-        let mut pending_bt: Option<bool> = None;
-        let mut pending_wired: Option<bool> = None;
-        let mut pending_airplane: Option<bool> = None;
-        let mut pending_hotspot: Option<bool> = None;
-        let mut pending_mobile: Option<bool> = None;
-        let mut pending_night_light: Option<bool> = None;
-        let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> = None;
-        let mut st = chrome.borrow_mut();
-        let mut changed = false;
-        for i in 0..2 {
-            let (bar, _) = self.quick_settings_slider_geometry(i);
-            // Extends the hit vertically to the whole row.
-            let hit = Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
-            if hit.contains(p) {
-                let t = f64_to_f32_lossy(((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0));
-                if i == 0 {
-                    st.quick_settings.brightness = t;
-                } else {
-                    st.quick_settings.volume = t;
-                }
-                // Committed to the OS on Released; only the
-                // visual updates during drag, like a
-                // physical mixer knob.
-                self.qs_slider_drag = Some(i);
-                changed = true;
-            }
-        }
-        for i in 0..9 {
-            let prect = self.quick_settings_toggle_geometry(i);
-            let hit = Rect::new(
-                prect.x0 - 4.0,
-                prect.y0 - 4.0,
-                prect.x1 + 4.0,
-                prect.y1 + 4.0,
-            );
-            if hit.contains(p) {
-                if i == 0 {
-                    st.quick_settings.wifi = !st.quick_settings.wifi;
-                    pending_wifi = Some(st.quick_settings.wifi);
-                } else if i == 1 {
-                    st.quick_settings.bluetooth = !st.quick_settings.bluetooth;
-                    pending_bt = Some(st.quick_settings.bluetooth);
-                } else if i == 2 {
-                    if let Some(wired) = st.quick_settings.wired.as_mut() {
-                        wired.connected = !wired.connected;
-                        pending_wired = Some(wired.connected);
-                    }
-                } else if i == 3 {
-                    st.quick_settings.radios.airplane_mode =
-                        !st.quick_settings.radios.airplane_mode;
-                    pending_airplane = Some(st.quick_settings.radios.airplane_mode);
-                } else if i == 4 {
-                    st.quick_settings.radios.hotspot_active =
-                        !st.quick_settings.radios.hotspot_active;
-                    pending_hotspot = Some(st.quick_settings.radios.hotspot_active);
-                } else if i == 5 {
-                    st.quick_settings
-                        .push_level(crate::shell::quick_settings::QsLevel::Vpn);
-                } else if i == 6 {
-                    st.quick_settings.night_light = !st.quick_settings.night_light;
-                    pending_night_light = Some(st.quick_settings.night_light);
-                } else if i == 7 {
-                    st.push_notification(
-                        "Displays",
-                        "Display switching is available in Settings → Displays.",
-                    );
-                } else if st.quick_settings.radios.wwan_available {
-                    st.quick_settings.radios.wwan_enabled = !st.quick_settings.radios.wwan_enabled;
-                    pending_mobile = Some(st.quick_settings.radios.wwan_enabled);
-                }
-                changed = true;
-            }
-        }
-        // Power profile chip — cycle Balanced → Performance →
-        // Saver and push the new value through to
-        // `powerprofilesctl`.
-        let pp_rect = self.quick_settings_power_profile_geometry();
-        if pp_rect.contains(p) {
-            use crate::shell::quick_settings::PowerProfile;
-            let next = match st.quick_settings.power_profile {
-                PowerProfile::Saver => PowerProfile::Balanced,
-                PowerProfile::Balanced => PowerProfile::Performance,
-                PowerProfile::Performance => PowerProfile::Saver,
-            };
-            st.quick_settings.power_profile = next;
-            pending_power = Some(next);
-            changed = true;
-        }
-        if !changed {
-            return;
-        }
-        st.bump();
-        drop(st);
-        self.dispatch_quick_settings_toggle_actions(
-            pending_wifi,
-            pending_bt,
-            pending_wired,
-            pending_airplane,
-            pending_hotspot,
-            pending_mobile,
-            pending_night_light,
-            pending_power,
-        );
-    }
-
-    /// Shells out to the OS for whichever quick-settings toggles changed.
-    /// Split out of `handle_shell_quick_settings_toggle_click` — runs
-    /// after that function drops its chrome borrow, to avoid a
-    /// re-entrant `borrow_mut`.
+    /// Shells out to the OS for changes returned by the root component.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_quick_settings_toggle_actions(
         &self,
@@ -6111,240 +6053,160 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Clicks inside the open workspace-settings lens: the pointer close
-    /// control comes first, then default-app rects, the capability
-    /// grant composer, member role/remove controls and revoke rects
-    /// each take priority over the tab pills and name field. Reached
-    /// only once `flags.ws_settings` is true, at which point every path
-    /// absorbs the click (the trailing tab/name handling sets
-    /// `*handled` for the paths that fall all the way through).
+    /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy
+    /// mutations stay on their original authenticated paths here; the
+    /// component owns only presentation and hit resolution.
     fn handle_shell_ws_settings_click(&mut self, p: Point, handled: &mut bool) {
-        if self.ws_settings_close_rect().contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.commit_workspace_name();
-                st.overlays.ws_settings = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        // Before the tab pills so a Revoke/composer click can't
-        // route to a pill above it. Every branch consumes the
-        // click even for non-owners, since the control paints
-        // disabled but shouldn't commit a half-typed name.
+        self.workspace_settings_overlay.layout(self.rect);
+        let active_tab = self
+            .chrome
+            .as_ref()
+            .map_or(WsTab::General, |chrome| chrome.borrow().ws_settings_tab);
+        let outcome = self.workspace_settings_overlay.hit_test(p, active_tab);
         let is_owner = self
             .chrome
             .as_ref()
             .is_some_and(|c| is_active_workspace_owner(&c.borrow()));
-
-        if self.handle_shell_ws_settings_default_app_click(p, is_owner, handled) {
-            return;
-        }
-        if self.handle_shell_ws_settings_grant_click(p, is_owner, handled) {
-            return;
-        }
-        self.handle_shell_ws_settings_tab_and_name_click(p, handled);
+        self.apply_workspace_settings_outcome(outcome, is_owner);
+        *handled = true;
     }
 
-    /// A click on a default-app row (workspace policy or per-user
-    /// choice) in the workspace-settings modal. Split out of
-    /// `handle_shell_ws_settings_click`.
-    fn handle_shell_ws_settings_default_app_click(
-        &self,
-        p: Point,
+    fn apply_workspace_settings_outcome(
+        &mut self,
+        outcome: WorkspaceSettingsOutcome,
         is_owner: bool,
-        handled: &mut bool,
-    ) -> bool {
-        let default_rects = self.default_app_rects.clone();
-        for (resource, workspace_rect, user_rect) in default_rects {
-            let workspace_hit = workspace_rect.area() > 0.0 && workspace_rect.contains(p);
-            let user_hit = user_rect.area() > 0.0 && user_rect.contains(p);
-            if !workspace_hit && !user_hit {
-                continue;
-            }
-            if let Some(chrome) = self.chrome.clone() {
-                let mut state = chrome.borrow_mut();
-                let actor = state.local_user_id.clone();
-                let candidates = crate::shell::launcher::default_app_candidates();
-                let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
-                let mut tree = state.tree_mut();
-                if let Some(ws) = tree.active_workspace_mut() {
-                    if workspace_hit && is_owner {
-                        let next = crate::shell::workspace_settings::next_workspace_default(
-                            ws.default_apps.policy.get(&resource),
-                            &resource,
-                            &candidates,
-                        );
-                        let _ = ws.set_default_app_policy_as(&actor, resource, next, &resolver);
-                    } else if user_hit {
-                        let next = crate::shell::workspace_settings::next_user_default(
-                            ws.default_apps
-                                .user_choices
-                                .get(&actor)
-                                .and_then(|m| m.get(&resource)),
-                            &resource,
-                            &candidates,
-                        );
-                        let _ =
-                            ws.set_default_app_choice_as(&actor, &actor, resource, next, &resolver);
-                    }
-                }
-                drop(tree);
-                state.bump();
-            }
-            *handled = true;
-            return true;
-        }
-        false
-    }
-
-    /// A click on the capability grant composer, a member's role/remove
-    /// control, or a revoke button, in the workspace-settings modal.
-    /// Split out of `handle_shell_ws_settings_click`.
-    fn handle_shell_ws_settings_grant_click(
-        &self,
-        p: Point,
-        is_owner: bool,
-        handled: &mut bool,
-    ) -> bool {
-        if let Some(composer) = self.grant_composer_rects {
-            let mut hit = None;
-            if composer.subject.area() > 0.0 && composer.subject.contains(p) {
-                hit = Some(ComposerHit::Subject);
-            } else if composer.capability.contains(p) {
-                hit = Some(ComposerHit::Capability);
-            } else if composer.submit.area() > 0.0 && composer.submit.contains(p) {
-                hit = Some(ComposerHit::Submit);
-            } else {
-                for (i, seg) in composer.expiry.iter().enumerate() {
-                    if seg.contains(p) {
-                        hit = Some(ComposerHit::Expiry(i));
-                        break;
-                    }
-                }
-            }
-            if let Some(hit) = hit {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    apply_composer_hit(&chrome, hit);
-                }
-                *handled = true;
-                return true;
-            }
-        }
-
-        let member_rects = self.member_control_rects.clone();
-        for (user, role_rect, remove_rect) in &member_rects {
-            let on_role = role_rect.area() > 0.0 && role_rect.contains(p);
-            let on_remove = remove_rect.area() > 0.0 && remove_rect.contains(p);
-            if !on_role && !on_remove {
-                continue;
-            }
+    ) {
+        if let Some(hit) = workspace_settings_composer_hit(&outcome) {
             if is_owner && let Some(chrome) = self.chrome.clone() {
-                let user = user.clone();
-                edit_active_workspace_caps(&chrome, move |ws, actor| {
-                    if on_role {
+                apply_composer_hit(&chrome, hit);
+            }
+            return;
+        }
+        match outcome {
+            WorkspaceSettingsOutcome::Close => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    state.commit_workspace_name();
+                    state.overlays.ws_settings = false;
+                    state.bump();
+                }
+            }
+            WorkspaceSettingsOutcome::WorkspaceDefault(resource) => {
+                self.apply_workspace_settings_default(resource, true, is_owner);
+            }
+            WorkspaceSettingsOutcome::UserDefault(resource) => {
+                self.apply_workspace_settings_default(resource, false, is_owner);
+            }
+            WorkspaceSettingsOutcome::ComposerSubject
+            | WorkspaceSettingsOutcome::ComposerCapability
+            | WorkspaceSettingsOutcome::ComposerExpiry(_)
+            | WorkspaceSettingsOutcome::ComposerSubmit => {}
+            WorkspaceSettingsOutcome::MemberRole(user) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    edit_active_workspace_caps(&chrome, move |ws, actor| {
                         let current = ws
                             .role_of(&user)
                             .unwrap_or(crate::shell::state::CapRole::Viewer);
                         let next = crate::shell::workspace_settings::next_role(current);
                         crate::shell::workspace_settings::set_member_role(ws, actor, &user, next)
-                    } else {
-                        crate::shell::workspace_settings::remove_member(ws, actor, &user)
-                    }
-                });
+                    });
+                }
             }
-            *handled = true;
-            return true;
-        }
-
-        let revoke_rects = self.permissions_revoke_rects.clone();
-        for (cap_id, rrect) in &revoke_rects {
-            if rrect.area() > 0.0 && rrect.contains(p) {
+            WorkspaceSettingsOutcome::RemoveMember(user) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let cap_id = cap_id.clone();
+                    edit_active_workspace_caps(&chrome, move |ws, actor| {
+                        crate::shell::workspace_settings::remove_member(ws, actor, &user)
+                    });
+                }
+            }
+            WorkspaceSettingsOutcome::Revoke(cap_id) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {
                         crate::shell::workspace_settings::apply_revoke(ws, actor, &cap_id)
                     });
                 }
-                *handled = true;
-                return true;
             }
-        }
-        false
-    }
-
-    /// Tab pill clicks, the invite-link copy button and the workspace
-    /// name field, on the workspace-settings modal. Split out of
-    /// `handle_shell_ws_settings_click`, which always treats the click
-    /// as absorbed.
-    fn handle_shell_ws_settings_tab_and_name_click(&mut self, p: Point, handled: &mut bool) {
-        // Before the name-input branch so a pill click never
-        // falls through to "commit pending edit".
-        let pill_rects = self.ws_settings_tab_pill_rects;
-        for (idx, prect) in pill_rects.iter().enumerate() {
-            if prect.area() > 0.0 && prect.contains(p) {
+            WorkspaceSettingsOutcome::SelectTab(tab) => {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     st.commit_workspace_name();
-                    if let Some(tab) = WsTab::all().get(idx) {
-                        st.ws_settings_tab = *tab;
+                    st.ws_settings_tab = tab;
+                    st.bump();
+                }
+            }
+            WorkspaceSettingsOutcome::CreateInvite => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.ws_settings = false;
+                        state.bump();
+                    }
+                    self.open_invite_manager();
+                }
+            }
+            WorkspaceSettingsOutcome::EditName => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    if st.editing_workspace_name.is_none() {
+                        let new_name = st
+                            .tree()
+                            .active_workspace()
+                            .map(|w| w.name.clone())
+                            .or_else(|| Some(String::new()));
+                        let caret = new_name.as_ref().map_or(0, std::string::String::len);
+                        st.editing_workspace_name = new_name;
+                        st.editing_workspace_name_selection =
+                            ui::text_selection::Selection::collapsed(caret);
                         st.bump();
                     }
                 }
-                *handled = true;
-                return;
             }
-        }
-        // Copy the workspace invite link.
-        let on_general = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| matches!(c.borrow().ws_settings_tab, WsTab::General));
-        if on_general && self.ws_settings_copy_rect().contains(p) {
-            let link = self
-                .chrome
-                .as_ref()
-                .and_then(|c| {
-                    c.borrow()
-                        .tree()
-                        .active_workspace()
-                        .map(crate::shell::workspace_settings::invite_link)
-                })
-                .unwrap_or_default();
-            if !link.is_empty() {
-                ui::text_selection::clipboard_copy(&link);
-                self.ws_invite_copied_at = Some(Instant::now());
+            WorkspaceSettingsOutcome::CommitName => {
                 if let Some(chrome) = self.chrome.clone() {
-                    chrome.borrow_mut().bump();
+                    chrome.borrow_mut().commit_workspace_name();
                 }
             }
-            *handled = true;
+        }
+    }
+
+    fn apply_workspace_settings_default(
+        &self,
+        resource: desktop_policy::ResourceKind,
+        workspace_choice: bool,
+        is_owner: bool,
+    ) {
+        let Some(chrome) = self.chrome.clone() else {
             return;
-        }
-        // Name rect begins an edit; any other click inside
-        // commits the pending one.
-        if let Some(chrome) = self.chrome.clone() {
-            let name_rect = self.ws_settings_name_rect();
-            let mut st = chrome.borrow_mut();
-            if name_rect.contains(p) {
-                if st.editing_workspace_name.is_none() {
-                    let new_name = st
-                        .tree()
-                        .active_workspace()
-                        .map(|w| w.name.clone())
-                        .or_else(|| Some(String::new()));
-                    let caret = new_name.as_ref().map_or(0, std::string::String::len);
-                    st.editing_workspace_name = new_name;
-                    st.editing_workspace_name_selection =
-                        ui::text_selection::Selection::collapsed(caret);
-                    st.bump();
-                }
-            } else {
-                st.commit_workspace_name();
+        };
+        let mut state = chrome.borrow_mut();
+        let actor = state.local_user_id.clone();
+        let candidates = crate::shell::launcher::default_app_candidates();
+        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+        let mut tree = state.tree_mut();
+        if let Some(workspace) = tree.active_workspace_mut() {
+            if workspace_choice && is_owner {
+                let next = crate::shell::workspace_settings::next_workspace_default(
+                    workspace.default_apps.policy.get(&resource),
+                    &resource,
+                    &candidates,
+                );
+                let _ = workspace.set_default_app_policy_as(&actor, resource, next, &resolver);
+            } else if !workspace_choice {
+                let next = crate::shell::workspace_settings::next_user_default(
+                    workspace
+                        .default_apps
+                        .user_choices
+                        .get(&actor)
+                        .and_then(|choices| choices.get(&resource)),
+                    &resource,
+                    &candidates,
+                );
+                let _ =
+                    workspace.set_default_app_choice_as(&actor, &actor, resource, next, &resolver);
             }
         }
-        *handled = true;
+        drop(tree);
+        state.bump();
     }
 
     /// Overview-only pointer input: wheel pans the row list (the column
@@ -6917,6 +6779,7 @@ impl Widget for ShellOverlayHost {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        self.workspace_settings_overlay.layout(self.rect);
         if let Some(onboarding) = self.onboarding.as_mut() {
             if let Ok(children) = taffy.children(node)
                 && let Some(&child) = children.first()
@@ -7116,6 +6979,20 @@ impl Widget for ShellOverlayHost {
         if self.route_dropped_file_event(event, handled) {
             return;
         }
+        if self.followed_peer.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            self.set_followed_peer(None);
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -7154,6 +7031,12 @@ impl Widget for ShellOverlayHost {
         ) {
             return;
         }
+        if self.followed_peer.is_some() && matches!(event, WindowEvent::MouseWheel { .. }) {
+            // Release before forwarding so this input changes the local view
+            // immediately rather than being overwritten by the next peer
+            // view-presence frame.
+            self.set_followed_peer(None);
+        }
         self.dispatch_pointer_and_content_event(
             event,
             scale_factor,
@@ -7179,18 +7062,66 @@ impl Widget for ShellOverlayHost {
             root.children
                 .push(self.room_activity.accessibility_snapshot());
         }
+        if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            if state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+            {
+                root.children
+                    .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+            }
+        }
         Some(root)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        self.overlay_flags()
-            .room_activity
-            .then(|| self.room_activity.accessibility_rect_for_path(path))
-            .flatten()
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.accessibility_rect_for_path(path);
+        }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return None;
+        }
+        let child_path = path.get(1..)?;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        (state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ))
+        .then(|| self.qs_root.accessibility_rect_for_path(child_path))
+        .flatten()
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        self.overlay_flags().room_activity && self.room_activity.focus_accessibility_path(path)
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.focus_accessibility_path(path);
+        }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return false;
+        }
+        let Some(child_path) = path.get(1..) else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            )
+            && self
+                .qs_root
+                .focus_accessibility_path(child_path, &state.quick_settings)
     }
 
     /// Expose content + palette + sidebar as direct children so trait
@@ -7262,15 +7193,29 @@ impl Widget for ShellOverlayHost {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        self.needs_animation_frame_at(Instant::now())
+    }
+}
+
+impl ShellOverlayHost {
+    /// [`Widget::needs_animation_frame`] against a caller-supplied clock, so a
+    /// test can pin the same instant it started a transition at and assert
+    /// about the animation rather than about how busy the machine was between
+    /// two statements.
+    fn needs_animation_frame_at(&self, now: Instant) -> bool {
+        // Onboarding owns the screen while it is up, so its own animation is
+        // the only one that matters. Inside the pinned-clock method rather
+        // than the trait wrapper, so a test can reach this branch too.
         if let Some(onboarding) = self.onboarding.as_ref() {
             return onboarding.needs_animation_frame();
         }
-        // Continuous redraws while overview crossfade, quick-settings
-        // open/close, or any inner widget's animation is in flight;
-        // `tick_*` clear their own flags once elapsed, so this idles.
-        let now = Instant::now();
+        // Continuous redraws while any of the overview crossfade, the
+        // workspace slide-swap, quick-settings open/close, or any inner
+        // widget's animation is in flight. `tick_*` clear their own flags once
+        // the duration has elapsed, so at rest this returns false and the
+        // event loop can go idle.
         let qs_in_flight = self.qs_transition.is_animating(now);
-        let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
+        let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let power_menu_in_flight = self.power_menu.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
@@ -7370,10 +7315,9 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         return forced;
     }
     let user = state.active_local_user();
-    state
-        .tree()
-        .active_workspace()
-        .is_some_and(|ws| ws.may_administer(&user))
+    let tree = state.tree();
+    tree.active_workspace()
+        .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
 /// Records an app's capability grant on the active workspace: written
@@ -7389,6 +7333,12 @@ fn record_app_grant(
     let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
         return;
     };
+    let Some(room) = tree.active_workspace().map(|w| w.room) else {
+        return;
+    };
+    if !tree.governs_room(room) {
+        return;
+    }
     let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
         return;
     };
@@ -7426,6 +7376,12 @@ where
         let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
             return false;
         };
+        let Some(room) = tree.active_workspace().map(|w| w.room) else {
+            return false;
+        };
+        if !tree.governs_room(room) {
+            return false;
+        }
         let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
             return false;
         };
@@ -7633,12 +7589,6 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
 /// panels stay the same material as the bar they hang off (HIG §9.2).
 fn panel_surface(theme: &Theme, alpha: f32) -> Color {
     ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
-}
-
-/// Workspace settings is app-grade content hosted by the shell, so it uses
-/// the same base surface as applications rather than the brighter popover tier.
-fn workspace_settings_surface(theme: &Theme) -> Color {
-    theme.tokens.colors.surfaces.base
 }
 
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
@@ -7860,86 +7810,30 @@ impl ShellOverlayHost {
         theme: &Theme,
         ws_settings_open: bool,
     ) {
-        // `ws_settings_transition` plays the entrance in reverse on close
-        // too, so the modal + scrim fade out instead of popping.
-        if !ws_settings_open {
-            // Clear cached rects so a click during the close fade can't
-            // flip tabs, same as `add_workspace_rect` above.
-            self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
-            self.default_app_rects.clear();
-            self.permissions_revoke_rects.clear();
-            self.grant_composer_rects = None;
-            self.member_control_rects.clear();
-        }
-        self.ws_settings_was_open = ws_settings_open;
-        self.ws_settings_transition.set_open(
+        self.workspace_settings_overlay.layout(self.rect);
+        let anchor = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow().workspace_settings_anchor);
+        let Some(plan) = self.workspace_settings_overlay.begin_draw(
+            scene,
+            transform,
+            theme,
             ws_settings_open,
-            if theme.reduce_motion {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(MODAL_OPEN_ANIM_MS)
-            },
-            ui::Curve::EaseOut,
-        );
-        let now = Instant::now();
-        if self.ws_settings_transition.is_visible(now) {
-            let alpha = self.ws_settings_transition.value(now);
-            let in_flight = alpha < 1.0;
-            let panel_rect = self.ws_settings_rect();
-
-            if !theme.reduce_motion
-                && in_flight
-                && let Some(anchor) = self
-                    .chrome
-                    .as_ref()
-                    .map(|chrome| chrome.borrow().workspace_settings_anchor)
-                    .filter(|anchor| anchor.area() > 0.0)
-            {
-                let start = anchor.center();
-                let end = Point::new(panel_rect.x0 + 28.0, panel_rect.y0 + 24.0);
-                let t = f64::from(alpha);
-                let x = start.x + (end.x - start.x) * t;
-                let y = start.y + (end.y - start.y) * t;
-                let pulse_alpha = (std::f32::consts::PI * alpha).sin().max(0.0);
-                let mark =
-                    RoundedRect::from_rect(Rect::new(x - 14.0, y - 2.0, x + 14.0, y + 2.0), 2.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[5].with_alpha_factor(pulse_alpha),
-                    None,
-                    &mark,
-                );
-            }
-            if in_flight {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    transform,
-                    &self.rect,
-                );
-            }
-            let travel = if theme.reduce_motion {
-                0.0
-            } else {
-                48.0 * (1.0 - f64::from(alpha))
-            };
-            let panel_xform = transform.pre_translate((travel, 0.0).into());
-            ui::surface::soft_shadow(
+            anchor,
+        ) else {
+            return;
+        };
+        if let Some(chrome) = self.chrome.as_ref() {
+            self.workspace_settings_overlay.draw_contents(
                 scene,
-                panel_xform,
-                panel_rect,
-                theme.tokens.colors.neutral[0],
-                40.0,
-                16.0,
-                0.62 * alpha,
+                plan.transform,
+                text_renderer,
+                theme,
+                chrome,
             );
-            self.draw_ws_settings(scene, panel_xform, text_renderer, theme);
-            if in_flight {
-                scene.pop_layer();
-            }
         }
+        WorkspaceSettingsOverlay::finish_draw(scene, plan);
     }
 
     /// The strip ribbon/rail and every anchored dropdown or edge sheet:
@@ -7968,6 +7862,19 @@ impl ShellOverlayHost {
         self.power_menu
             .draw(self.rect, scene, transform, text_renderer, theme);
 
+        self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, flags);
+        self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
+        self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+    }
+
+    fn draw_collaborators_dropdown(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        flags: crate::shell::chrome_state::OverlayFlags,
+    ) {
         if flags.collaborators {
             let (rows, unavailable) = self.chrome.as_ref().map_or_else(
                 || (Vec::new(), None),
@@ -7997,7 +7904,17 @@ impl ShellOverlayHost {
         } else {
             self.collaborators_overlay.clear();
         }
+    }
 
+    fn draw_room_activity_sheet(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        flags: crate::shell::chrome_state::OverlayFlags,
+    ) {
         // Above the dropdowns, below the palette (which must stay reachable).
         self.refresh_room_activity_awareness();
         if flags.room_activity && !self.room_activity_was_open {
@@ -8072,8 +7989,6 @@ impl ShellOverlayHost {
                 scene.pop_layer();
             }
         }
-
-        self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
     }
 
     /// The quick-settings dropdown: no scrim, so it reads as a dropdown
@@ -8093,6 +8008,7 @@ impl ShellOverlayHost {
             // see `qs_refresh`.
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
+            self.qs_root.reset_focus();
         }
         self.qs_was_open = flags.quick_settings;
         self.apply_quick_settings_readings();
@@ -8769,6 +8685,7 @@ impl ShellOverlayHost {
             is_current: false,
             people: Vec::new(),
             shares: Vec::new(),
+            strips: Vec::new(),
         };
         let here_card = here_idx.and_then(|i| cards.get(i)).unwrap_or(&empty_card);
         if here_card.shares.is_empty() {
@@ -8827,7 +8744,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Nothing in this room is shared out of it",
+            "Nothing in this workspace is shared out of it",
             body_size,
             colors.text_dim,
             transform.pre_translate(
@@ -9056,10 +8973,10 @@ impl ShellOverlayHost {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let add_size = tokens.typography.scale.base;
-        let (_, add_h) = text_renderer.measure("New room", add_size, None);
+        let (_, add_h) = text_renderer.measure("New workspace", add_size, None);
         text_renderer.draw_text(
             scene,
-            "New room",
+            "New workspace",
             add_size,
             add_color,
             transform.pre_translate((gx + glyph + 10.0, gcy - f64::from(add_h) / 2.0).into()),
@@ -9108,969 +9025,6 @@ impl ShellOverlayHost {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "tree/state feed the per-tab pane bodies and the General tab's tail; \
-                  cloning Workspace to narrow the guard further isn't worth the paint-path allocation"
-    )]
-    fn draw_ws_settings(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-
-        // `ws_settings_rect()` is the single source of truth for the
-        // centered-modal geometry; hit-tests reach for the same helper
-        // so a width bump can't desync the card vs. the clickable bounds.
-        let rect = self.ws_settings_rect();
-        Self::draw_ws_settings_card_background(scene, transform, theme, rect);
-
-        // Borrowed only once the header's geometry (which needs no chrome
-        // state at all) is already painted, and read again below for the
-        // per-tab pane bodies and — on the General tab — the invite URL
-        // and collaborator tile near the end of the function; those need
-        // a live `&Workspace`, so cloning it to shrink the guard further
-        // would add an allocation to a hot paint path for no real gain.
-        let state = chrome.borrow();
-        let tree = state.tree();
-
-        let active_name = self.draw_ws_settings_header_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            &state,
-            &tree,
-        );
-
-        // Reads the typed `ws_settings_tab` field on chrome state, kept
-        // orthogonal to the name-edit buffer.
-        let active_tab = state.ws_settings_tab;
-        self.draw_ws_settings_tab_strip(scene, transform, text_renderer, theme, rect, active_tab);
-
-        // Members, Permissions and Apps each own their whole body and
-        // paint it here; General is the fall-through into the rest of
-        // this function.
-        let fully_painted = self.draw_ws_settings_dispatch_tab(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            active_tab,
-            &state,
-            &tree,
-        );
-        if fully_painted {
-            return;
-        }
-
-        // Unreachable today (every non-General arm returns `true` above),
-        // but guards against a new `WsTab` variant falling through to
-        // paint the General body over its pane.
-        if !matches!(active_tab, WsTab::General) {
-            return;
-        }
-
-        let body_y = rect.y0 + 168.0;
-        let editing = self.draw_ws_settings_name_input(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            &state,
-            active_name.as_str(),
-            body_y,
-        );
-        let invite_y = self.draw_ws_settings_invite_link(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            &tree,
-            body_y,
-        );
-        let collab_y = invite_y + 72.0;
-        Self::draw_ws_settings_collaborators(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            &tree,
-            collab_y,
-        );
-
-        let hint = if editing {
-            "Enter to save · Esc to cancel"
-        } else {
-            "Press Esc to close"
-        };
-        let hsize = tokens.typography.scale.xs;
-        let (hw, _hh) = text_renderer.measure(hint, hsize, None);
-        text_renderer.draw_text(
-            scene,
-            hint,
-            hsize,
-            colors.text_dim,
-            transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
-            None,
-        );
-    }
-
-    /// The modal's flat translucent card. No blur primitive on the
-    /// pinned Vello, so it sits over its scrim rather than glass.
-    fn draw_ws_settings_card_background(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        let tokens = &theme.tokens;
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            workspace_settings_surface(theme),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card,
-        );
-    }
-
-    /// Title plus the "Active workspace: …" line; returns the active
-    /// workspace's name so the General tab's name input can fall back
-    /// to it while nothing is being edited.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the \
-                  name and role are read from; matching every other draw_ws_settings_* \
-                  helper in this impl"
-    )]
-    fn draw_ws_settings_header_text(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
-    ) -> String {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let (identity, close) =
-            self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
-        text_renderer.draw_text(
-            scene,
-            "CURRENT WORKSPACE",
-            tokens.typography.scale.xs,
-            colors.accent[4],
-            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
-            None,
-        );
-        let active_name = tree
-            .active_workspace()
-            .map_or_else(|| "Workspace".into(), |w| w.name.clone());
-        let tsize = tokens.typography.scale.xl;
-        let shown_name = text_renderer.elide_to_width(
-            &active_name,
-            tsize,
-            f64_to_f32_lossy(close.x0 - (identity.x0 + 76.0) - 12.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            &shown_name,
-            tsize,
-            colors.text_primary,
-            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 34.0).into()),
-            None,
-        );
-        let active_role = tree
-            .active_workspace()
-            .and_then(|workspace| workspace.role_of(&state.local_user_id))
-            .map_or("Guest", crate::shell::workspace_settings::role_label);
-        let label = format!("{active_role} · Settings and policy stay with this workspace");
-        text_renderer.draw_text(
-            scene,
-            &label,
-            tokens.typography.scale.sm,
-            colors.text_dim,
-            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 58.0).into()),
-            None,
-        );
-        active_name
-    }
-
-    /// The identity card's background, room-icon mark and close button —
-    /// the purely-geometric chrome of [`Self::draw_ws_settings_header_text`],
-    /// split out to keep that under `too_many_lines`. Returns the
-    /// identity card rect and the close-button rect, since the caller's
-    /// text placement is relative to both.
-    fn draw_ws_settings_identity_card_chrome(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-    ) -> (Rect, Rect) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let identity = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 14.0,
-            rect.x1 - 16.0,
-            rect.y0 + 94.0,
-        );
-        let identity_rr = RoundedRect::from_rect(identity, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &identity_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &identity_rr,
-        );
-        let mark = Rect::new(
-            identity.x0 + 14.0,
-            identity.y0 + 14.0,
-            identity.x0 + 62.0,
-            identity.y1 - 14.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5].with_alpha_factor(0.18),
-            None,
-            &RoundedRect::from_rect(mark, f64::from(tokens.radii.lg)),
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            mark.inset(14.0),
-            ui::icons::Icon::LayoutGrid,
-            colors.accent[4],
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let close = self.ws_settings_close_rect();
-        let close_rr = RoundedRect::from_rect(close, f64::from(tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &close_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &close_rr,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            close.inset(8.0),
-            ui::icons::Icon::X,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        (identity, close)
-    }
-
-    /// Tab strip. Every pill is a real destination: a host who has
-    /// granted nothing yet still needs to reach the tab that grants.
-    fn draw_ws_settings_tab_strip(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        active_tab: WsTab,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let lsize = tokens.typography.scale.base;
-        let tabs = WsTab::all();
-        let nav = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 104.0,
-            rect.x1 - 16.0,
-            rect.y0 + 146.0,
-        );
-        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
-        scene.fill(Fill::NonZero, transform, colors.neutral[0], None, &nav_rr);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard.with_alpha_factor(0.72),
-            None,
-            &nav_rr,
-        );
-        let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
-        // Written into `self.ws_settings_tab_pill_rects` after the loop
-        // so one source of geometry feeds draw and click-routing.
-        let mut pill_rects = [Rect::ZERO; 4];
-        for (i, tab) in tabs.iter().enumerate() {
-            let active = *tab == active_tab;
-            let label = if rect.width() < 680.0 {
-                tab.compact_label()
-            } else {
-                tab.label()
-            };
-            let (w, h) = text_renderer.measure(label, lsize, None);
-            let ix = usize_to_f64_lossy(i);
-            let pill_rect = Rect::new(
-                nav.x0 + segment_w * ix + 3.0,
-                nav.y0 + 3.0,
-                nav.x0 + segment_w * (ix + 1.0) - 3.0,
-                nav.y1 - 3.0,
-            );
-            if let Some(slot) = pill_rects.get_mut(i) {
-                *slot = pill_rect;
-            }
-            let pill = RoundedRect::from_rect(pill_rect, f64::from(tokens.radii.md));
-            if active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.raised,
-                    None,
-                    &pill,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    colors.border_standard,
-                    None,
-                    &pill,
-                );
-            }
-            let color = if active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            let icon = match tab {
-                WsTab::General => ui::icons::Icon::Settings2,
-                WsTab::Members => ui::icons::Icon::Home,
-                WsTab::Permissions => ui::icons::Icon::Shield,
-                WsTab::Apps => ui::icons::Icon::LayoutGrid,
-            };
-            let icon_size = 15.0;
-            let content_w = icon_size + 7.0 + f64::from(w);
-            let content_x = pill_rect.center().x - content_w / 2.0;
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    content_x,
-                    pill_rect.center().y - icon_size / 2.0,
-                    content_x + icon_size,
-                    pill_rect.center().y + icon_size / 2.0,
-                ),
-                icon,
-                if active { colors.accent[4] } else { color },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_text(
-                scene,
-                label,
-                lsize,
-                color,
-                transform.pre_translate(
-                    (
-                        content_x + icon_size + 7.0,
-                        pill_rect.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-            );
-        }
-        self.ws_settings_tab_pill_rects = pill_rects;
-    }
-
-    /// Dispatches to the Members/Permissions/Apps tab body when one of
-    /// those is active and fully paints it; returns `true` when it did,
-    /// so the caller knows to stop. Returns `false` on `General`, whose
-    /// clearing happens here too, but whose body the caller continues
-    /// painting below.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  bodies read from; matching every other draw_ws_settings_* helper in this impl"
-    )]
-    fn draw_ws_settings_dispatch_tab(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        active_tab: WsTab,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
-    ) -> bool {
-        match active_tab {
-            WsTab::Members => {
-                self.draw_ws_settings_members_tab(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    rect,
-                    state,
-                    tree,
-                );
-                true
-            }
-            WsTab::Permissions => {
-                self.draw_ws_settings_permissions_tab(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    rect,
-                    state,
-                    tree,
-                );
-                true
-            }
-            WsTab::Apps => {
-                self.draw_ws_settings_apps_tab(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    rect,
-                    state,
-                    tree,
-                );
-                true
-            }
-            WsTab::General => {
-                // Fall through to the General body below.
-                self.permissions_revoke_rects.clear();
-                self.grant_composer_rects = None;
-                self.member_control_rects.clear();
-                self.default_app_rects.clear();
-                false
-            }
-        }
-    }
-
-    /// The Members tab body: roster rows, then the shared close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  body reads from; matching every other draw_ws_settings_* helper in this impl"
-    )]
-    fn draw_ws_settings_members_tab(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
-    ) {
-        self.permissions_revoke_rects.clear();
-        self.grant_composer_rects = None;
-        self.member_control_rects.clear();
-        let body_rect = self.ws_settings_body_rect(rect);
-        let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.active_workspace() {
-            for row in members_pane_rows(ws, body_rect) {
-                self.member_control_rects
-                    .push((row.user.clone(), row.role_rect, row.remove_rect));
-            }
-            draw_members_pane(
-                scene,
-                transform,
-                body_rect,
-                ws,
-                &state.local_user_id,
-                is_owner,
-                text_renderer,
-                theme,
-            );
-        }
-        self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
-    }
-
-    /// The Permissions tab body: the grant/revoke pane, then the shared
-    /// close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  body reads from; matching every other draw_ws_settings_* helper in this impl"
-    )]
-    fn draw_ws_settings_permissions_tab(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
-    ) {
-        let body_rect = self.ws_settings_body_rect(rect);
-        let is_owner = is_active_workspace_owner(state);
-        let draft = state.ws_grant_draft;
-        self.permissions_revoke_rects.clear();
-        self.grant_composer_rects = None;
-        self.member_control_rects.clear();
-        if let Some(ws) = tree.active_workspace() {
-            let layout = permissions_pane_layout(ws, body_rect);
-            for row in &layout.rows {
-                self.permissions_revoke_rects
-                    .push((row.cap_id.clone(), row.revoke_rect));
-            }
-            self.grant_composer_rects = Some(GrantComposerRects {
-                subject: layout.subject_rect,
-                capability: layout.choice_rect,
-                expiry: layout.expiry_rects,
-                submit: layout.submit_rect,
-            });
-            draw_permissions_pane(
-                scene,
-                transform,
-                body_rect,
-                ws,
-                &draft,
-                is_owner,
-                text_renderer,
-                theme,
-            );
-        }
-        self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
-    }
-
-    /// The Apps tab body: default-app rows, then the shared close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  body reads from; matching every other draw_ws_settings_* helper in this impl"
-    )]
-    fn draw_ws_settings_apps_tab(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
-    ) {
-        self.permissions_revoke_rects.clear();
-        self.grant_composer_rects = None;
-        self.member_control_rects.clear();
-        self.default_app_rects.clear();
-        let body_rect = self.ws_settings_body_rect(rect);
-        let candidates = crate::shell::launcher::default_app_candidates();
-        if let Some(ws) = tree.active_workspace() {
-            self.default_app_rects.extend(
-                default_app_rows(body_rect, &candidates)
-                    .into_iter()
-                    .map(|row| (row.resource, row.workspace_rect, row.user_rect)),
-            );
-            draw_default_apps_pane(
-                scene,
-                transform,
-                body_rect,
-                &DefaultAppsCtx {
-                    ws,
-                    local_user: &state.local_user_id,
-                    candidates: &candidates,
-                },
-                text_renderer,
-                theme,
-            );
-        }
-        self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
-    }
-
-    /// Name input — edits fall through to `editing_workspace_name`.
-    /// Returns whether the name is currently being edited, so the
-    /// caller's footer hint can match.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state it's read \
-                  from; matching every other draw_ws_settings_* helper in this impl"
-    )]
-    fn draw_ws_settings_name_input(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        active_name: &str,
-        _body_y: f64,
-    ) -> bool {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = self.ws_settings_body_rect(rect);
-        let identity_card = Rect::new(body.x0, body.y0 + 8.0, body.x1, body.y0 + 112.0);
-        let identity_rr = RoundedRect::from_rect(identity_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &identity_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &identity_rr,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Workspace identity",
-            tokens.typography.scale.base,
-            colors.text_primary,
-            transform.pre_translate((identity_card.x0 + 16.0, identity_card.y0 + 13.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "This name appears in the top bar, invites, and shared activity.",
-            tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((identity_card.x0 + 16.0, identity_card.y0 + 36.0).into()),
-            None,
-        );
-        let input_rect = self.ws_settings_name_rect();
-        let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.sm));
-        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &input);
-        let editing = state.editing_workspace_name.is_some();
-        let border_color = if editing {
-            colors.accent[5]
-        } else {
-            colors.border_standard
-        };
-        scene.stroke(
-            &vello::kurbo::Stroke::new(if editing { 2.0 } else { 1.0 }),
-            transform,
-            border_color,
-            None,
-            &input,
-        );
-        let shown = state
-            .editing_workspace_name
-            .as_deref()
-            .unwrap_or(active_name);
-        let input_size = tokens.typography.scale.base;
-        text_renderer.draw_text(
-            scene,
-            shown,
-            input_size,
-            colors.text_primary,
-            transform.pre_translate((input_rect.x0 + 12.0, input_rect.y0 + 6.0).into()),
-            None,
-        );
-        if editing {
-            let (tw, _th) = text_renderer.measure(shown, input_size, None);
-            let caret_x = input_rect.x0 + 12.0 + f64::from(tw) + 1.0;
-            let caret = Rect::new(
-                caret_x,
-                input_rect.y0 + 6.0,
-                caret_x + 2.0,
-                input_rect.y0 + 6.0 + f64::from(input_size),
-            );
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
-        }
-        editing
-    }
-
-    /// Sharing card with the workspace's stable invitation URI.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the tree the invite \
-                  URL is derived from; matching every other draw_ws_settings_* helper \
-                  in this impl"
-    )]
-    fn draw_ws_settings_invite_link(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        tree: &WorkspaceTree,
-        _body_y: f64,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = self.ws_settings_body_rect(rect);
-        let sharing_card =
-            Self::draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
-        let invite_y = body.y0 + 202.0;
-        let url_pill = Rect::new(
-            sharing_card.x0 + 16.0,
-            invite_y,
-            sharing_card.x1 - 16.0 - 80.0,
-            invite_y + 34.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            workspace_settings_surface(theme),
-            None,
-            &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
-        );
-        // Mirrors WorkspaceSettings::invite_link's format so the URL is
-        // stable per workspace id.
-        let invite_url = tree.active_workspace().map_or_else(
-            || "quickdesktop://invite/0".to_string(),
-            |w| format!("quickdesktop://invite/{}", u64::from(w.id)),
-        );
-        text_renderer.draw_text(
-            scene,
-            &invite_url,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
-            None,
-        );
-        let copy_btn = self.ws_settings_copy_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5],
-            None,
-            &RoundedRect::from_rect(
-                copy_btn,
-                ui::chrome::ChromeRole::Control.radius(theme, copy_btn.height()),
-            ),
-        );
-        // "Copied" replaces the label briefly, or the button looks
-        // indistinguishable from one that did nothing.
-        let copy_label = if self
-            .ws_invite_copied_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
-        {
-            "Copied"
-        } else {
-            "Copy"
-        };
-        let (cw, _ch) = text_renderer.measure(copy_label, tokens.typography.scale.sm, None);
-        text_renderer.draw_text(
-            scene,
-            copy_label,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    copy_btn.x0 + (copy_btn.width() - f64::from(cw)) / 2.0,
-                    copy_btn.y0 + 9.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
-        invite_y
-    }
-
-    /// The sharing card's background, icon and title/subtitle — split out
-    /// of [`Self::draw_ws_settings_invite_link`] to keep that under
-    /// `too_many_lines`. Returns the card's rect, since the caller's URL
-    /// pill and copy button are placed relative to it.
-    fn draw_ws_settings_invite_link_card(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        body: Rect,
-    ) -> Rect {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
-        let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &sharing_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &sharing_rr,
-        );
-        let share_icon = Rect::new(
-            sharing_card.x0 + 16.0,
-            sharing_card.y0 + 14.0,
-            sharing_card.x0 + 48.0,
-            sharing_card.y0 + 46.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5].with_alpha_factor(0.16),
-            None,
-            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.md)),
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            share_icon.inset(8.0),
-            ui::icons::Icon::Copy,
-            colors.accent[4],
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Invite people",
-            tokens.typography.scale.base,
-            colors.text_primary,
-            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 13.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Anyone with this link must still pass the workspace's secure join flow.",
-            tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
-            None,
-        );
-        sharing_card
-    }
-
-    /// Live workspace summary. Detailed member management belongs to the
-    /// Members tab; General stays an honest overview rather than inventing
-    /// a placeholder collaborator.
-    fn draw_ws_settings_collaborators(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        tree: &WorkspaceTree,
-        _collab_y: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 160.0,
-            rect.x1 - 16.0,
-            rect.y1 - 16.0,
-        );
-        let summary_card = Rect::new(body.x0, body.y0 + 268.0, body.x1, body.y0 + 374.0);
-        let summary_rr = RoundedRect::from_rect(summary_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &summary_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &summary_rr,
-        );
-        text_renderer.draw_text(
-            scene,
-            "At a glance",
-            tokens.typography.scale.base,
-            colors.text_primary,
-            transform.pre_translate((summary_card.x0 + 16.0, summary_card.y0 + 13.0).into()),
-            None,
-        );
-        let (members, grants, app_rules) = tree.active_workspace().map_or((0, 0, 0), |ws| {
-            let members = ws.roster().len();
-            let grants = ws
-                .capabilities
-                .iter()
-                .filter(|cap| {
-                    cap.effect == crate::shell::state::Effect::Grant && !cap.is_room_membership()
-                })
-                .count();
-            (members, grants, ws.default_apps.policy.len())
-        });
-        let stats = [
-            (members.to_string(), "members"),
-            (grants.to_string(), "specific grants"),
-            (app_rules.to_string(), "app rules"),
-        ];
-        let stat_gap = 8.0;
-        let stat_y0 = summary_card.y0 + 44.0;
-        let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
-        for (i, (value, label)) in stats.iter().enumerate() {
-            let x0 = summary_card.x0 + 16.0 + usize_to_f64_lossy(i) * (stat_w + stat_gap);
-            let stat = Rect::new(x0, stat_y0, x0 + stat_w, summary_card.y1 - 14.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.base,
-                None,
-                &RoundedRect::from_rect(stat, f64::from(tokens.radii.md)),
-            );
-            text_renderer.draw_text(
-                scene,
-                value,
-                tokens.typography.scale.lg,
-                colors.text_primary,
-                transform.pre_translate((stat.x0 + 12.0, stat.y0 + 8.0).into()),
-                None,
-            );
-            text_renderer.draw_text(
-                scene,
-                label,
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((stat.x0 + 12.0, stat.y0 + 33.0).into()),
-                None,
-            );
-        }
-    }
-
     /// Persistent local follow-mode banner. It says both what is happening
     /// and how control returns to the local user; an explicit Stop button
     /// avoids making an unlabeled slab destructive.
@@ -10082,13 +9036,11 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let Some(row) = self.followed_roster_row() else {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return;
         };
         let label = format!("Following {}", row.label);
-        let detail = "Your view moves with theirs";
+        let detail = "Interact or press Stop to take control";
         let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
         let center_x = self.rect.center().x;
         let y0 = self.rect.y0 + 54.0;
@@ -10453,9 +9405,6 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // Sub-line falls back to "Not connected" when unpaired or off
-        // (used by section 3, the toggle card grid, below).
-        const NOT_CONNECTED: &str = "Not connected";
         let qs = self
             .chrome
             .as_ref()
@@ -10471,17 +9420,15 @@ impl ShellOverlayHost {
             return;
         }
 
-        self.draw_quick_settings_action_row(scene, transform, text_renderer, theme, &qs);
-        self.draw_quick_settings_slider_card(scene, transform, theme, rect, &qs);
-        self.draw_quick_settings_toggle_grid(
+        self.qs_root.draw(
             scene,
             transform,
             text_renderer,
             theme,
+            rect,
+            self.last_cursor,
             &qs,
-            NOT_CONNECTED,
         );
-        self.draw_quick_settings_power_profile(scene, transform, text_renderer, theme, &qs);
     }
 
     /// The quick-settings popover's elevated card: shadow, fill and
@@ -10590,430 +9537,6 @@ impl ShellOverlayHost {
             }
             crate::shell::quick_settings::QsLevel::Root => false,
         }
-    }
-
-    /// Section 1: Action row (Settings / Privacy / Notifications / Power).
-    fn draw_quick_settings_action_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let white_10 = colors.text_primary.with_alpha_factor(0.10);
-        for i in 0..4 {
-            let tile = self.quick_settings_action_geometry(i);
-            // Control role: 12px — the radius scale deliberately omits
-            // 16, so a literal 16 here would match nothing else on screen.
-            let tile_rr = RoundedRect::from_rect(
-                tile,
-                ui::chrome::ChromeRole::Control.radius(theme, tile.height()),
-            );
-            // Power tile's red wash must expose its r/g/b signature so
-            // the concept-parity spec test detects it.
-            let bg = if i == 3 {
-                colors.semantic.danger.with_alpha_factor(0.20)
-            } else {
-                white_10
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
-
-            let glyph_color = if i == 3 {
-                colors.semantic.danger
-            } else {
-                colors.text_primary
-            };
-            let glyph_rect = Rect::new(
-                tile.x0 + (tile.width() - 20.0) / 2.0,
-                tile.y0 + 7.0,
-                tile.x0 + f64::midpoint(tile.width(), 20.0),
-                tile.y0 + 27.0,
-            );
-            let glyph = match i {
-                0 => ui::icons::Icon::Settings2,
-                1 => ui::icons::Icon::Camera,
-                2 => ui::icons::Icon::Bell,
-                _ => ui::icons::Icon::Power,
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                glyph_rect,
-                glyph,
-                glyph_color,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            if i == 1 {
-                Self::draw_quick_settings_privacy_indicator(scene, transform, tile, colors, qs);
-            }
-            let action_label = match i {
-                0 => "Settings",
-                1 if !qs.privacy.active_media.is_empty() => "Stop access",
-                1 => "Privacy",
-                2 => "History",
-                _ => "Power",
-            };
-            let (label_w, _) = text_renderer.measure_weighted(
-                action_label,
-                tokens.typography.scale.xs,
-                None,
-                TextWeight::Medium,
-            );
-            // `Affine`'s `Mul` composes transform matrices with plain
-            // float multiply-adds — it cannot overflow or panic — but
-            // `arithmetic_side_effects` can't see that for a
-            // non-primitive `Mul` impl.
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix multiplication; it cannot overflow or panic"
-            )]
-            let label_xform = transform
-                * Affine::translate((tile.center().x - f64::from(label_w) / 2.0, tile.y0 + 34.0));
-            text_renderer.draw_text_weighted(
-                scene,
-                action_label,
-                tokens.typography.scale.xs,
-                glyph_color,
-                label_xform,
-                None,
-                TextWeight::Medium,
-            );
-        }
-    }
-
-    /// The camera/mic privacy overlay on the Privacy action tile (index
-    /// 1): a status dot, plus a mic-off glyph when muted or killed.
-    fn draw_quick_settings_privacy_indicator(
-        scene: &mut Scene,
-        transform: Affine,
-        tile: Rect,
-        colors: &ui::tokens::colors::Colors,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let blocked = !matches!(
-            qs.privacy.camera_kill,
-            os_actions::KillState::Allowed | os_actions::KillState::Unavailable
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if blocked {
-                colors.semantic.danger
-            } else if !qs.privacy.active_media.is_empty() {
-                colors.semantic.success
-            } else {
-                colors.text_dim.with_alpha_factor(0.45)
-            },
-            None,
-            &vello::kurbo::Circle::new(Point::new(tile.x1 - 12.0, tile.y0 + 12.0), 4.0),
-        );
-        if qs.privacy.microphone_muted.unwrap_or(false)
-            || !matches!(
-                qs.privacy.microphone_kill,
-                os_actions::KillState::Allowed | os_actions::KillState::Unavailable
-            )
-        {
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(tile.x0 + 7.0, tile.y0 + 7.0, tile.x0 + 21.0, tile.y0 + 21.0),
-                ui::icons::Icon::MicOff,
-                colors.semantic.danger,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-    }
-
-    /// Section 2: Slider card (Brightness / Volume).
-    fn draw_quick_settings_slider_card(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let slider_card = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 88.0,
-            rect.x1 - 16.0,
-            rect.y0 + 88.0 + 72.0,
-        );
-        let white_05 = colors.text_primary.with_alpha_factor(0.05);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            white_05,
-            None,
-            &RoundedRect::from_rect(slider_card, 16.0),
-        );
-        let slider_values = [qs.brightness, qs.volume];
-        for i in 0..2 {
-            let (bar, row_y) = self.quick_settings_slider_geometry(i);
-            let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
-            let icon_cy = row_y + 12.0;
-            let icon_rect = Rect::new(icon_x - 7.0, icon_cy - 7.0, icon_x + 7.0, icon_cy + 7.0);
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                icon_rect,
-                if i == 0 {
-                    ui::icons::Icon::Sun
-                } else {
-                    ui::icons::Icon::Volume2
-                },
-                colors.text_dim,
-                1.5,
-            );
-
-            // Solid white via `text_primary`, not indigo — the
-            // concept-parity spec pins that delta to zero.
-            let track_rr = RoundedRect::from_rect(bar, 3.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_primary.with_alpha_factor(0.10),
-                None,
-                &track_rr,
-            );
-            let fill_w = bar.width()
-                * f64::from(slider_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0));
-            if fill_w > 0.0 {
-                let filled = Rect::new(bar.x0, bar.y0, bar.x0 + fill_w, bar.y1);
-                let filled_rr = RoundedRect::from_rect(filled, 3.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.text_primary,
-                    None,
-                    &filled_rr,
-                );
-            }
-        }
-    }
-
-    /// The 9 toggle-card rows (on/off, label, sub-line) section 3 draws
-    /// one card per. Split out of the drawing loop so each is a plain
-    /// data computation.
-    fn quick_settings_toggle_rows<'a>(
-        qs: &'a crate::shell::chrome_state::QuickSettingsState,
-        not_connected: &'a str,
-    ) -> [(bool, &'a str, &'a str); 9] {
-        let wifi_sub = if qs.wifi {
-            qs.wifi_networks
-                .iter()
-                .find(|n| n.connected)
-                .map_or(not_connected, |n| n.ssid.as_str())
-        } else {
-            not_connected
-        };
-        let bt_sub = if qs.bluetooth {
-            qs.bt_devices
-                .iter()
-                .find(|d| d.connected)
-                .map_or(not_connected, |d| d.name.as_str())
-        } else {
-            not_connected
-        };
-        let wired_on = qs.wired.as_ref().is_some_and(|wired| wired.connected);
-        let wired_sub = qs
-            .wired
-            .as_ref()
-            .and_then(|wired| wired.device.as_deref())
-            .unwrap_or(if wired_on {
-                "Connected"
-            } else {
-                "Not connected"
-            });
-        let vpn_active = qs.vpns.iter().any(|vpn| vpn.active);
-        let vpn_sub = qs
-            .vpns
-            .iter()
-            .find(|vpn| vpn.active)
-            .or_else(|| qs.vpns.first())
-            .map_or("No profiles", |vpn| vpn.name.as_str());
-        let mobile_sub = if qs.radios.wwan_available {
-            if qs.radios.wwan_enabled {
-                "Enabled"
-            } else {
-                "Disabled"
-            }
-        } else {
-            "Unavailable"
-        };
-        [
-            (qs.wifi, "WLAN", wifi_sub),
-            (qs.bluetooth, "Bluetooth", bt_sub),
-            (wired_on, "LAN", wired_sub),
-            (qs.radios.airplane_mode, "Airplane mode", "All radios"),
-            (qs.radios.hotspot_active, "Hotspot", "qOS Hotspot"),
-            (vpn_active, "VPN", vpn_sub),
-            (qs.night_light, "Night Light", "Display comfort"),
-            (false, "Displays", "Switch output"),
-            (qs.radios.wwan_enabled, "Mobile data", mobile_sub),
-        ]
-    }
-
-    /// Section 3: Toggle card grid. ON cards use an alpha wash rather
-    /// than solid indigo-500 — the concept-parity spec pins the
-    /// closed→open delta to zero.
-    fn draw_quick_settings_toggle_grid(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-        not_connected: &str,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let toggle_rows = Self::quick_settings_toggle_rows(qs, not_connected);
-        for (i, (on, label, sub_line)) in toggle_rows.iter().enumerate() {
-            let card = self.quick_settings_toggle_geometry(i);
-            let card_rr = RoundedRect::from_rect(card, 16.0);
-            // ON → indigo wash; OFF → slate-800 — the wash keeps the
-            // spec test's solid-indigo signature clear.
-            let bg = if *on {
-                colors.accent[5].with_alpha_factor(0.20)
-            } else {
-                colors.neutral[2]
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &card_rr);
-
-            // Wifi for slot 0, Bluetooth for slot 1.
-            let glyph_box = Rect::new(
-                card.x0 + 12.0,
-                card.y0 + 12.0,
-                card.x0 + 12.0 + 20.0,
-                card.y0 + 12.0 + 20.0,
-            );
-            // Slot 0 (Wifi) and slot 4 (Hotspot) both fall to the
-            // catch-all Wifi glyph below, same as anything past slot 7
-            // (e.g. Mobile data).
-            let icon = match i {
-                1 => ui::icons::Icon::Bluetooth,
-                2 => ui::icons::Icon::EthernetPort,
-                3 => ui::icons::Icon::WifiOff,
-                5 => ui::icons::Icon::Shield,
-                6 => ui::icons::Icon::Sun,
-                7 => ui::icons::Icon::Monitor,
-                _ => ui::icons::Icon::Wifi,
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                glyph_box,
-                icon,
-                colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-
-            // Trailing chevron — placeholder caret for now.
-            let chev_cx = card.x1 - 16.0;
-            let chev_y = card.y0 + 22.0;
-            let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_y), 3.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_primary.with_alpha_factor(0.60),
-                None,
-                &chev,
-            );
-
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((card.x0 + 12.0, card.y1 - 36.0).into()),
-                None,
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text(
-                scene,
-                sub_line,
-                tokens.typography.scale.xs,
-                colors.text_primary.with_alpha_factor(0.70),
-                transform.pre_translate((card.x0 + 12.0, card.y1 - 18.0).into()),
-                None,
-            );
-        }
-    }
-
-    /// Section 4: Power Profile row.
-    fn draw_quick_settings_power_profile(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let white_05 = colors.text_primary.with_alpha_factor(0.05);
-        let pp = self.quick_settings_power_profile_geometry();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            white_05,
-            None,
-            &RoundedRect::from_rect(pp, 16.0),
-        );
-        let battery_rect = Rect::new(
-            pp.x0 + 12.0,
-            pp.y0 + 14.0,
-            pp.x0 + 12.0 + 20.0,
-            pp.y0 + 34.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            battery_rect,
-            ui::icons::Icon::Battery,
-            colors.semantic.success,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let profile_label = qs.power_profile.label();
-        text_renderer.draw_text_weighted(
-            scene,
-            profile_label,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((pp.x0 + 44.0, pp.y0 + 8.0).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        let battery_summary = if qs.battery.present {
-            match qs.battery.health_percent() {
-                Some(health) => format!("{}% battery · {health}% health", qs.battery.capacity),
-                None => format!("{}% battery", qs.battery.capacity),
-            }
-        } else {
-            "AC power".to_string()
-        };
-        let power_detail = match qs.firmware_updates {
-            Some(count) if count > 0 => format!("{battery_summary} · {count} firmware update(s)"),
-            _ => battery_summary,
-        };
-        text_renderer.draw_text(
-            scene,
-            &power_detail,
-            tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((pp.x0 + 44.0, pp.y0 + 26.0).into()),
-            None,
-        );
-        let chev_cx = pp.x1 - 16.0;
-        let chev_y = f64::midpoint(pp.y0, pp.y1);
-        let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_y), 3.0);
-        scene.fill(Fill::NonZero, transform, colors.text_dim, None, &chev);
     }
 
     /// Draw the `QuickSettings` drill-in header — back-chevron on the left
@@ -11173,17 +9696,6 @@ impl ShellOverlayHost {
     fn qs_back_chevron_rect(&self) -> Rect {
         let r = self.quick_settings_rect();
         Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x0 + 40.0, r.y0 + 40.0)
-    }
-
-    /// Toggle-card chevron hit rect — clicking here pushes
-    /// `QsLevel::Wifi` (i==0) / `QsLevel::Bluetooth` (i==1) onto the nav
-    /// stack instead of flipping the toggle bool.
-    fn quick_settings_toggle_chevron_rect(&self, i: usize) -> Rect {
-        let card = self.quick_settings_toggle_geometry(i);
-        // Generous 32×32 hit rect around the painted 3px chevron.
-        let cx = card.x1 - 16.0;
-        let cy = card.y0 + 22.0;
-        Rect::new(cx - 16.0, cy - 16.0, cx + 16.0, cy + 16.0)
     }
 
     /// Raise the passphrase prompt for `ssid`.
@@ -11553,59 +10065,27 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Collaborators dropdown: a peer-roster popover anchored under the
-    /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
-    /// 1 = Volume), with the label baseline `y`, so draw and hit-test
-    /// share one source of truth.
+    /// Root slider geometry exposed for integration click routing tests.
     pub fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
-        let r = self.quick_settings_rect();
-        let card_y = r.y0 + 88.0;
-        let row_y = card_y + 12.0 + usize_to_f64_lossy(i) * 36.0;
-        let bar_y_mid = row_y + 12.0;
-        let bar_x0 = r.x0 + 16.0 + 16.0 + 12.0;
-        let bar_x1 = r.x1 - 16.0;
-        let bar = Rect::new(bar_x0, bar_y_mid - 3.0, bar_x1, bar_y_mid + 3.0);
-        (bar, row_y)
+        QuickSettingsRoot::slider_geometry(self.quick_settings_rect(), i)
     }
 
-    /// Toggle card rect for the i-th quick-settings toggle card
-    /// The nine system tiles sit in a 3-column grid below
-    /// the slider card.
+    /// Root toggle geometry exposed for integration click routing tests.
     pub fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
-        let r = self.quick_settings_rect();
-        let grid_y = r.y0 + 176.0;
-        let grid_h = 88.0;
-        let inner_w = r.width() - 32.0; // 16 px outer padding each side.
-        let card_w = (inner_w - 16.0) / 3.0; // 8 px gaps between cards.
-        let row = i / 3;
-        let col = i % 3;
-        let x0 = r.x0 + 16.0 + usize_to_f64_lossy(col) * (card_w + 8.0);
-        let y0 = grid_y + usize_to_f64_lossy(row) * (grid_h + 8.0);
-        Rect::new(x0, y0, x0 + card_w, y0 + grid_h)
+        QuickSettingsRoot::toggle_geometry(self.quick_settings_rect(), i)
     }
 
-    /// Action-row tile rect for the i-th tile (Settings, Privacy,
-    /// Notifications, Power). The row sits at the top of the popover.
-    pub(crate) fn quick_settings_action_geometry(&self, i: usize) -> Rect {
-        let r = self.quick_settings_rect();
-        let row_y = r.y0 + 16.0;
-        let row_h = 56.0;
-        let inner_w = r.width() - 32.0;
-        let tile_w = (inner_w - 24.0) / 4.0; // 8 px gap × 3.
-        let x0 = r.x0 + 16.0 + usize_to_f64_lossy(i) * (tile_w + 8.0);
-        Rect::new(x0, row_y, x0 + tile_w, row_y + row_h)
-    }
-
-    /// Power Profile row rect — sits at the bottom of the popover.
+    /// Root power-profile geometry exposed for integration click routing tests.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        let row_y = r.y0 + 472.0;
-        let row_h = 48.0;
-        Rect::new(r.x0 + 16.0, row_y, r.x1 - 16.0, row_y + row_h)
+        QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact overview layout geometry is the behavior under test"
+)]
 mod overview_panel_tests {
     //! The overview is a switcher for rooms: which one you're in, who's in
     //! it, what leaves it, how to get to another. These pin geometry/data,
@@ -11886,6 +10366,10 @@ mod overview_panel_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact transition endpoints are the behavior under test"
+)]
 mod overview_transition_tests {
     use super::*;
     use ui::widget::Container;
@@ -12511,9 +10995,23 @@ mod palette_dispatch_tests {
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
         let (mut h, chrome) = host_with_chrome();
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
-            PeerSyncRequest::IssueInviteFor(name) => Ok(format!("token-for-{name}")),
-            PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
+            PeerSyncRequest::IssueInviteFor { name, .. } => {
+                Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
+            }
+            PeerSyncRequest::IssueInvite => {
+                Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
+            }
+            PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
+                "qos-identity:{}",
+                "42".repeat(32)
+            ))),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::ListPendingInvitations => {
+                Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
+            }
+            PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
+                Err("not pending".into())
+            }
         }));
         chrome
             .borrow_mut()
@@ -12534,6 +11032,9 @@ mod palette_dispatch_tests {
             Some("Xaver"),
             "the field takes the name — the same keys that type a token"
         );
+        let mut snapshot = h.peer_sync_snapshot();
+        snapshot.invite_recipient_key = Some([0x42; 32]);
+        h.set_peer_sync_snapshot_for_tests(snapshot);
 
         assert!(
             h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
@@ -12565,7 +11066,9 @@ mod palette_dispatch_tests {
     #[test]
     fn the_composer_refuses_to_mint_for_nobody() {
         let (mut h, chrome) = host_with_chrome();
-        h.set_peer_sync_bridge(std::rc::Rc::new(|_| Ok("a-token".to_string())));
+        h.set_peer_sync_bridge(std::rc::Rc::new(|_| {
+            Ok(PeerSyncResponse::Message("a-token".to_string()))
+        }));
         chrome
             .borrow_mut()
             .push_peer_sync_request(PeerSyncAction::PromptInvite);
@@ -12700,6 +11203,10 @@ mod palette_dispatch_tests {
         assert!(
             names.contains(&"paste"),
             "the receiving side must offer Paste, got {names:?}"
+        );
+        assert!(
+            names.contains(&"copy-identity"),
+            "the recipient must be able to send a bindable identity card, got {names:?}"
         );
         assert!(names.contains(&"join"), "and still Join, got {names:?}");
 
@@ -13060,6 +11567,10 @@ mod two_workspace_host_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact modal curve endpoints are the behavior under test"
+)]
 mod modal_curve_tests {
     //! Guards the shared ease-out-cubic curve used by the workspace-settings
     //! modal and the command palette (`modal_transition_curve`, which both
@@ -13146,39 +11657,34 @@ mod modal_curve_tests {
     fn palette_open_transition_pumps_frames_and_is_visible() {
         use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
-        assert!(!h.palette_transition.is_visible(Instant::now()));
+        // One instant for the whole test. Reading the clock afresh per
+        // assertion made this a statement about machine load: the open
+        // runs for MODAL_OPEN_ANIM_MS, so a scheduler stall longer than
+        // that between starting it and asking whether it was running
+        // let it finish first, and the last assertion flipped. That is
+        // an ordinary stall in a loaded parallel run, and it is what
+        // made this test flaky.
+        let now = Instant::now();
+        assert!(!h.palette_transition.is_visible(now));
         // Drive the open transition the way `draw` does.
-        h.palette_transition.set_open(
+        h.palette_transition.set_open_at(
             true,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
             ui::Curve::EaseOut,
+            now,
         );
-        assert!(h.palette_transition.is_visible(Instant::now()));
+        assert!(h.palette_transition.is_visible(now));
         assert!(
-            h.needs_animation_frame(),
+            h.needs_animation_frame_at(now),
             "an in-flight palette open must pump redraws"
         );
-    }
-
-    #[test]
-    fn ws_settings_close_still_draws_through_exit_then_settles() {
-        use ui::widget::Container;
-        let mut h = ShellOverlayHost::new(Box::new(Container::new()));
-        // Open + settle, then request close.
-        h.ws_settings_transition = ui::Transition::open();
-        h.ws_settings_transition.set_open(
-            false,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
-        );
-        let now = Instant::now();
+        // The pinned clock has teeth: asked past the animation window
+        // the same host reports settled, so the assertion above is
+        // reading the curve rather than returning true unconditionally.
         assert!(
-            h.ws_settings_transition.is_visible(now),
-            "a closing modal must stay drawn so its exit animates (no pop)"
+            !h.needs_animation_frame_at(now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50)),
+            "a settled palette must let the event loop go idle"
         );
-        // Long after the exit window it has settled invisible.
-        let later = now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 500);
-        assert!(!h.ws_settings_transition.is_visible(later));
     }
 
     /// The draw path consults `self.last_cursor` against each row rect, so
@@ -13212,6 +11718,10 @@ mod modal_curve_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact overlay hit-test geometry is the behavior under test"
+)]
 mod overlay_event_absorb_tests {
     //! Pins the modal event-absorb gate: every pointer event over an open
     //! overlay must short-circuit rather than leak to the content widget
@@ -13863,6 +12373,10 @@ mod overlay_event_absorb_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic host geometry fixtures use exactly representable values"
+)]
 mod tests {
     //! Drives `host.handle_event` with real winit events, through the
     //! same path the live binary takes.
@@ -14984,7 +13498,7 @@ mod tests {
     fn ws_settings_close_button_is_pointer_accessible() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.ws_settings = true;
-        let close = h.host.ws_settings_close_rect();
+        let close = WorkspaceSettingsOverlay::close_rect_for(h.host.ws_settings_rect());
         assert!(close.area() > 0.0);
 
         let mods = Modifiers::default();
@@ -15023,7 +13537,7 @@ mod tests {
     fn ws_settings_uses_application_base_surface() {
         let theme = Theme::dark();
         assert_eq!(
-            workspace_settings_surface(&theme),
+            theme.tokens.colors.surfaces.base,
             theme.tokens.colors.surfaces.base
         );
     }
@@ -15690,6 +14204,34 @@ mod peer_cursor_tests {
             chrome.borrow().tree().active_group_for(strip),
             Some(target_group),
             "follow must move local focus to the participant's live group",
+        );
+    }
+
+    #[test]
+    fn follow_binds_app_views_to_the_live_session_and_stop_releases_them() {
+        let mut tree = one_group_seed();
+        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.workspaces[0]
+            .collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
+        let expected_room = tree.workspaces[0].room;
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&calls);
+        host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+            captured.borrow_mut().push((room, target));
+        }));
+
+        host.set_followed_peer(Some("ada".into()));
+        host.set_followed_peer(None);
+
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[
+                (expected_room, Some("peer@77".to_string())),
+                (expected_room, None),
+            ],
+            "the shell and every local app enter and leave Follow together"
         );
     }
 }

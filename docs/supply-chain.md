@@ -5,10 +5,10 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
 
 ## What's in place
 
-- **Image signing.** CI signs every pushed image by digest with cosign
-  (`--tlog-upload=false`, own key). Keys: `keys/cosign.{key,pub}` +
-  `keys/cosign.password` (private = git-excluded; CI uses the `COSIGN_PRIVATE_KEY`
-  / `COSIGN_PASSWORD` fgj secrets). See `keys/README.md`.
+- **Image signing.** CI signs every promoted image by digest with cosign
+  (`--tlog-upload=false`, own key). The tracked `keys/cosign.pub` is the
+  verifier; signing requires `COSIGN_KEY_REF` to name a non-exportable
+  KMS/HSM key. Exportable private-key material is rejected by the workflow.
 - **Verify-before-update.** The image ships `/usr/share/qos/cosign.pub` + an
   `/etc/containers/policy.json` that **requires** a valid signature for
   `code.podesta.ai/qos/qos` (+ `registries.d` sigstore-attachment lookup). So
@@ -16,8 +16,9 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
 - **SBOM.** CI generates an SPDX SBOM (syft) and attaches it as a **signed**
   in-toto attestation to the image (`cosign attest`). Audit with
   `cosign verify-attestation --key keys/cosign.pub --type spdxjson <image>`.
-- **Reproducible builds (verified).** Two independent builds of the same commit
-  produce a **byte-identical image** (confirmed: built twice, same image ID).
+- **Reproducible builds (release-blocking).** Every release is built twice. The
+  second build bypasses the first build's layer cache, and the workflow refuses
+  publication unless both OCI manifests are byte-identical.
   Achieved by: base pinned by **digest** against our mirror (below), Rust resolve pinned
   (the tracked `Cargo.lock`), a deterministic compile (`CARGO_INCREMENTAL=0`,
   `--remap-path-prefix=/build=.`, `LC_ALL=C.UTF-8`, `TZ=UTC`), and a
@@ -57,6 +58,15 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   report a reference that is not a multi-arch index or whose `ostree.linux`
   does not match the Fedora release `BASE_SOURCE` claims, so a silent major
   bump fails the job instead of shipping.
+- **Staged, verified promotion.** A boot-tested build is first uploaded under a
+  non-channel candidate tag. CI signs its digest, attaches signed SPDX and SLSA
+  provenance attestations, and verifies all three against the public key. Only
+  then does it move `latest`, the version tag, and the dense `gen<N>` tag to
+  that digest. Release jobs share one global concurrency lock, preventing two
+  jobs from allocating the same generation.
+- **Pinned release machinery.** Every external action executed by the OS
+  release workflow is referenced by its full commit hash. Moving an upstream
+  `v3`/`v5` tag cannot alter the signing job.
 
 ## ⚠️ Operational caveat — first signed image
 
@@ -72,10 +82,10 @@ image, and only *future* upgrades are gated.
 
 The signing key is the root of update trust — rotate on exposure or schedule.
 
-1. Generate a new pair (`cosign generate-key-pair`), keep the password separate
-   (mirror `keys/README.md`).
-2. Update the fgj secrets (`COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`) — piped from
-   files, never echoed.
+1. Create a new non-exportable signing key in the release KMS/HSM and give the
+   Forgejo workload identity sign-only access.
+2. Update the `COSIGN_KEY_REF` secret with the key URI. No private key or key
+   password enters Forgejo.
 3. Replace `keys/cosign.pub` (tracked) → the **new** image carries the new
    verifier key. Installed systems pick it up when they upgrade to an image
    signed by the *old* key that already contains the *new* pub (sign one
@@ -92,6 +102,7 @@ The signing key is the root of update trust — rotate on exposure or schedule.
   and a measured-boot PCR policy that *requires* the running image to appear in
   it (plan §4/§9) — is not yet stood up. This is what makes "trust qOS"
   publicly verifiable rather than "trust our key."
-- **Key custody.** Private keys are file-based + in the CI secret store. Move to
-  a **KMS/HSM** (`cosign --key <kms-ref>`) or sigstore keyless so no copyable
-  file can sign as qOS (plan §3 "no single root of trust").
+- **Independent transparency witness.** The registry stores signatures and
+  attestations, but a registry operator can still hide a release from a new
+  client. A separately administered append-only witness/checkpoint service is
+  still required for public split-view and freeze detection.

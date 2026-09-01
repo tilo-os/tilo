@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Prove that a native install can preserve the verified-boot boundary required
+# for a short TPM-backed PIN.
+#
+#   --capability             verify the running installer and owner trust
+#   --prepare-target ROOT    sign and verify the freshly installed target
+#
+# This deliberately supports an already owner-enrolled/OEM-provisioned machine.
+# It does not claim that software can enroll firmware trust without a physical
+# ceremony, and it never enables a short PIN on stock untrusted firmware.
+set -euo pipefail
+
+KEYDIR=/var/lib/qos/secureboot
+SECUREBOOT_GUID=8be4df61-93ca-11d2-aa0d-00e098032b8c
+log() { printf 'qos verified-boot preflight: %s\n' "$*" >&2; }
+die() { log "$*"; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+secure_boot_enabled() {
+  local f value
+  f="$(find /sys/firmware/efi/efivars -maxdepth 1 -name "SecureBoot-$SECUREBOOT_GUID" -print -quit 2>/dev/null)"
+  [ -n "$f" ] || return 1
+  value="$(od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n')"
+  [ "$value" = 1 ]
+}
+
+lockdown_active() {
+  case "$(cat /sys/kernel/security/lockdown 2>/dev/null || true)" in
+    *'[integrity]'*|*'[confidentiality]'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+owner_db_is_enrolled() (
+  need efi-readvar
+  need sig-list-to-certs
+  need openssl
+  [ -s "$KEYDIR/db.crt" ] && [ -s "$KEYDIR/db.key" ] \
+    || die "owner Secure Boot signing material is not provisioned"
+  local tmp wanted cert
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  efi-readvar -v db -o "$tmp/db.esl" >/dev/null 2>&1 \
+    || die "cannot read the firmware Secure Boot db"
+  sig-list-to-certs "$tmp/db.esl" "$tmp/db" >/dev/null 2>&1 \
+    || die "cannot decode the firmware Secure Boot db"
+  wanted="$(openssl x509 -in "$KEYDIR/db.crt" -outform DER | sha256sum | awk '{print $1}')"
+  for cert in "$tmp"/db*.der; do
+    [ -f "$cert" ] || continue
+    [ "$(sha256sum "$cert" | awk '{print $1}')" = "$wanted" ] && return 0
+  done
+  return 1
+)
+
+verify_uki() {
+  local uki="$1"
+  python3 - "$uki" <<'PY'
+import re, struct, sys
+
+path = sys.argv[1]
+data = open(path, "rb").read()
+if len(data) < 0x40 or data[:2] != b"MZ":
+    raise SystemExit(f"{path}: not a PE image")
+pe = struct.unpack_from("<I", data, 0x3C)[0]
+if pe + 24 > len(data) or data[pe:pe+4] != b"PE\0\0":
+    raise SystemExit(f"{path}: invalid PE header")
+nsec = struct.unpack_from("<H", data, pe + 6)[0]
+opt = struct.unpack_from("<H", data, pe + 20)[0]
+base = pe + 24 + opt
+sections = {}
+for index in range(nsec):
+    off = base + index * 40
+    if off + 40 > len(data):
+        raise SystemExit(f"{path}: truncated PE section table")
+    name = data[off:off+8].rstrip(b"\0").decode("ascii", "strict")
+    size = struct.unpack_from("<I", data, off + 16)[0]
+    raw = struct.unpack_from("<I", data, off + 20)[0]
+    if raw + size > len(data):
+        raise SystemExit(f"{path}: section {name} exceeds the image")
+    sections[name] = data[raw:raw+size]
+for required in (".linux", ".initrd", ".cmdline", ".osrel"):
+    if not sections.get(required):
+        raise SystemExit(f"{path}: missing sealed {required} section")
+cmdline = sections[".cmdline"].rstrip(b"\0").decode("utf-8", "strict")
+required_words = ("lockdown=integrity", "init_on_alloc=1", "init_on_free=1", "vsyscall=none")
+for word in required_words:
+    if word not in cmdline.split():
+        raise SystemExit(f"{path}: sealed command line lacks {word}")
+if not re.search(r"(?:^| )qos\.generation=[1-9][0-9]*(?: |$)", cmdline):
+    raise SystemExit(f"{path}: sealed command line lacks a nonzero generation")
+if not re.search(r"(?:^| )composefs=sha(256|512):[0-9a-f]+(?: |$)", cmdline):
+    raise SystemExit(f"{path}: sealed command line lacks a composefs root digest")
+PY
+}
+
+verify_boot_tree() {
+  local root="$1" uki count=0
+  while IFS= read -r -d '' uki; do
+    verify_uki "$uki"
+    count=$((count + 1))
+  done < <(find "$root/boot/EFI/Linux" -type f -name '*.efi' -print0 2>/dev/null)
+  [ "$count" -gt 0 ] || die "target contains no Unified Kernel Image"
+}
+
+verify_running_trust() {
+  [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ] || die "no TPM2 device"
+  secure_boot_enabled || die "firmware Secure Boot is not enabled"
+  lockdown_active || die "the running kernel is not locked down"
+  owner_db_is_enrolled || die "the owner's qOS db certificate is not enrolled in firmware"
+  QOS_SB_BOOT=/boot /usr/libexec/qos-secureboot verify >/dev/null \
+    || die "the running boot artifacts do not verify with the enrolled owner key"
+  verify_boot_tree /
+}
+
+case "${1:---capability}" in
+  --capability)
+    [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --capability ]; } \
+      || die "--capability takes no arguments"
+    verify_running_trust
+    log "running owner trust can be carried into a target"
+    ;;
+  --prepare-target)
+    [ "$#" -eq 2 ] || die "usage: $0 --prepare-target ROOT"
+    target="$(readlink -f "$2")"
+    [ -d "$target" ] && [ "$target" != / ] || die "target root is not a mounted install tree"
+    verify_running_trust
+    [ -d "$target/boot/EFI/Linux" ] || die "target ESP has no UKI directory"
+    QOS_SB_BOOT="$target/boot" QOS_SB_ESP="$target/boot" \
+      /usr/libexec/qos-secureboot sign >/dev/null
+    QOS_SB_BOOT="$target/boot" QOS_SB_ESP="$target/boot" \
+      /usr/libexec/qos-secureboot verify >/dev/null
+    verify_boot_tree "$target"
+    sync "$target/boot"
+    log "target UKIs are sealed and signed by the enrolled owner key"
+    ;;
+  -h|--help)
+    sed -n '2,8p' "$0"
+    ;;
+  *) die "unknown operation: $1" ;;
+esac

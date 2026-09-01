@@ -175,10 +175,18 @@ pub fn per_core_card_h(grid: CoreGrid) -> f64 {
 // ---- process table columns ----------------------------------------------
 
 /// Minimum width each process-table column needs so its header and cells
-/// don't visually collide with the neighbour. The NAME column is elastic
-/// (it absorbs slack) and so isn't pinned here.
+/// don't visually collide with the neighbour. The regular NAME column is
+/// elastic (it absorbs slack) and so isn't pinned here.
 pub const COL_PID_W: f64 = 60.0;
 pub const COL_NAME_MIN_W: f64 = 120.0;
+/// In the compact table, process identity matters more than a generous name
+/// column. The label can truncate, but it must leave enough of a name for a
+/// user to recognize a row before opening its detail pane.
+pub const COL_NAME_COMPACT_MIN_W: f64 = 96.0;
+/// At the last useful width the table preserves just process identity and
+/// current CPU use. This smaller name floor avoids turning that primary view
+/// into a horizontally-scrolled table.
+pub const COL_NAME_MICRO_MIN_W: f64 = 88.0;
 pub const COL_USER_W: f64 = 116.0;
 pub const COL_CPU_W: f64 = 72.0;
 pub const COL_MEM_W: f64 = 96.0;
@@ -196,9 +204,15 @@ pub const ALL_COLUMNS_MIN_W: f64 =
 
 /// The table's content width at or above which the five **essential** columns
 /// (PID / NAME / CPU% / MEM / THR — USER dropped) fit without a horizontal
-/// scroll. Below this even the essentials overflow and the table scrolls.
+/// scroll. Below this the renderer changes to a compact primary-data view.
 pub const ESSENTIAL_COLUMNS_MIN_W: f64 =
     COL_PID_W + COL_NAME_MIN_W + COL_CPU_W + COL_MEM_W + COL_THR_W;
+/// Compact primary scan: process name, CPU and resident memory. Used below
+/// the width where PID and thread count would force horizontal scrolling.
+pub const COMPACT_COLUMNS_MIN_W: f64 = COL_NAME_COMPACT_MIN_W + COL_CPU_W + COL_MEM_W;
+/// Smallest useful table: process name and CPU. This is deliberately a
+/// vertical-detail flow rather than a horizontally-scrollable spreadsheet.
+pub const MICRO_COLUMNS_MIN_W: f64 = COL_NAME_MICRO_MIN_W + COL_CPU_W;
 
 /// One resolved process-table column.
 #[derive(Clone, Copy, Debug)]
@@ -224,37 +238,73 @@ impl Column {
 /// (already padding-inset). The NAME column flexes to fill slack, but every
 /// column keeps its minimum width.
 ///
-/// **Column priority.** PID / NAME / CPU% / MEM / THR are the essential
-/// process signals and are always shown; USER is the one droppable text
-/// column. When the table is too narrow to seat all six minimums we hide USER
-/// rather than push THR — a core numeric column — off the right edge into
-/// scrollable space. So THR stays fully readable *without* a horizontal
-/// scroll all the way down to [`ESSENTIAL_COLUMNS_MIN_W`]; only below that do
-/// the five essentials themselves overflow and the table scrolls.
+/// **Column priority.** A wide table shows every field. As width falls, it
+/// first drops USER, then moves to the three signals needed to scan a process
+/// list (NAME / CPU / MEM), then NAME / CPU, and finally NAME alone.
+/// Selecting a row reveals the complete detail pane, so compact widths never
+/// require horizontal scrolling merely to learn which process is busy.
 pub fn process_columns(avail_w: f64) -> Vec<Column> {
-    let show_user = avail_w >= ALL_COLUMNS_MIN_W;
-    let fixed =
-        COL_PID_W + COL_CPU_W + COL_MEM_W + COL_THR_W + if show_user { COL_USER_W } else { 0.0 };
-    // NAME takes the slack but never drops below its minimum; when there is
-    // no slack the columns sum past `avail_w` and the table scrolls.
-    let name_w = (avail_w - fixed).max(COL_NAME_MIN_W);
-
-    // (key, header, width, right-aligned). USER is included only when there is
-    // room for every column.
-    let mut specs: Vec<(SortKey, &'static str, f64, bool)> = Vec::with_capacity(6);
-    specs.push((SortKey::Pid, "PID", COL_PID_W, true));
-    specs.push((SortKey::Name, "NAME", name_w, false));
-    if show_user {
-        specs.push((SortKey::User, "USER", COL_USER_W, false));
-    }
-    specs.push((SortKey::Cpu, "CPU%", COL_CPU_W, true));
-    specs.push((SortKey::Mem, "MEM", COL_MEM_W, true));
-    specs.push((SortKey::Threads, "THR", COL_THR_W, true));
+    type ColumnSpec = (SortKey, &'static str, f64, bool);
+    // (key, header, width, right-aligned). NAME absorbs any available slack.
+    let (fixed, name_min, specs): (f64, f64, Vec<ColumnSpec>) = if avail_w >= ALL_COLUMNS_MIN_W {
+        (
+            COL_PID_W + COL_USER_W + COL_CPU_W + COL_MEM_W + COL_THR_W,
+            COL_NAME_MIN_W,
+            vec![
+                (SortKey::Pid, "PID", COL_PID_W, true),
+                (SortKey::Name, "NAME", 0.0, false),
+                (SortKey::User, "USER", COL_USER_W, false),
+                (SortKey::Cpu, "CPU%", COL_CPU_W, true),
+                (SortKey::Mem, "MEM", COL_MEM_W, true),
+                (SortKey::Threads, "THR", COL_THR_W, true),
+            ],
+        )
+    } else if avail_w >= ESSENTIAL_COLUMNS_MIN_W {
+        (
+            COL_PID_W + COL_CPU_W + COL_MEM_W + COL_THR_W,
+            COL_NAME_MIN_W,
+            vec![
+                (SortKey::Pid, "PID", COL_PID_W, true),
+                (SortKey::Name, "NAME", 0.0, false),
+                (SortKey::Cpu, "CPU%", COL_CPU_W, true),
+                (SortKey::Mem, "MEM", COL_MEM_W, true),
+                (SortKey::Threads, "THR", COL_THR_W, true),
+            ],
+        )
+    } else if avail_w >= COMPACT_COLUMNS_MIN_W {
+        (
+            COL_CPU_W + COL_MEM_W,
+            COL_NAME_COMPACT_MIN_W,
+            vec![
+                (SortKey::Name, "PROCESS", 0.0, false),
+                (SortKey::Cpu, "CPU%", COL_CPU_W, true),
+                (SortKey::Mem, "MEM", COL_MEM_W, true),
+            ],
+        )
+    } else if avail_w >= MICRO_COLUMNS_MIN_W {
+        (
+            COL_CPU_W,
+            COL_NAME_MICRO_MIN_W,
+            vec![
+                (SortKey::Name, "PROCESS", 0.0, false),
+                (SortKey::Cpu, "CPU%", COL_CPU_W, true),
+            ],
+        )
+    } else {
+        // The window is too narrow even for a readable numeric column.
+        // Keep the row selectable and identify the process rather than
+        // introducing a horizontal-scroll-only layout.
+        (0.0, 1.0, vec![(SortKey::Name, "PROCESS", 0.0, false)])
+    };
+    let name_w = (avail_w - fixed).max(name_min);
 
     let mut x = 0.0;
     specs
         .into_iter()
-        .map(|(key, header, w, right)| {
+        .map(|(key, header, mut w, right)| {
+            if key == SortKey::Name {
+                w = name_w;
+            }
             let c = Column {
                 key,
                 header,
@@ -439,33 +489,27 @@ mod tests {
     }
 
     #[test]
-    fn very_narrow_table_overflows_so_it_must_scroll_not_overlap() {
-        // Too narrow for even the five essential minimums: NAME pins to its
-        // minimum and the total exceeds the width — the renderer must scroll,
-        // not squeeze THR over the border. (USER is already dropped here.)
-        let avail = 300.0;
-        assert!(
-            avail < ESSENTIAL_COLUMNS_MIN_W,
-            "chosen width is below the essentials"
-        );
-        let cols = process_columns(avail);
-        let total = process_columns_total_w(&cols);
-        assert!(
-            total > avail,
-            "very-narrow columns must overflow the width ({total} vs {avail}) so a \
-             horizontal scrollbar appears instead of THR overlapping the border"
-        );
-        // Even overflowing, columns stay in order and don't overlap each
-        // other — they just extend past the right edge into scrollable space.
-        for w in cols.windows(2) {
-            assert!(w[0].x1() <= w[1].x0 + 0.001, "columns stay non-overlapping");
+    fn compact_table_keeps_primary_signals_without_horizontal_scroll() {
+        // Below the full five-column table, the renderer becomes a compact
+        // process list instead of requiring a sideways gesture before the
+        // user can see which process is consuming CPU or memory.
+        for &(avail, expected) in &[
+            (
+                COMPACT_COLUMNS_MIN_W,
+                &[SortKey::Name, SortKey::Cpu, SortKey::Mem][..],
+            ),
+            (300.0, &[SortKey::Name, SortKey::Cpu, SortKey::Mem][..]),
+            (MICRO_COLUMNS_MIN_W, &[SortKey::Name, SortKey::Cpu][..]),
+            (220.0, &[SortKey::Name, SortKey::Cpu][..]),
+            (100.0, &[SortKey::Name][..]),
+        ] {
+            let cols = process_columns(avail);
+            let keys: Vec<_> = cols.iter().map(|col| col.key).collect();
+            assert_eq!(keys, expected, "compact column order at avail={avail}");
+            assert!(
+                process_columns_total_w(&cols) <= avail + 0.001,
+                "primary compact table fits at avail={avail}"
+            );
         }
-        // THR keeps its full minimum width (it isn't the column that gets
-        // squeezed — NAME absorbs/pins the slack).
-        let thr = cols
-            .iter()
-            .find(|c| c.key == SortKey::Threads)
-            .expect("THR is always shown");
-        assert_eq!(thr.w, COL_THR_W, "THR keeps its width under overflow");
     }
 }

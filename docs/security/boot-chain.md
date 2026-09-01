@@ -350,15 +350,33 @@ Everything else is a slot layered on top of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
-| TPM, PIN given | recovery key, TPM2+PIN | type the PIN |
-| TPM, no PIN | recovery key, TPM2 | unlocks silently |
-| No TPM, PIN given | recovery key, passphrase | type the passphrase |
-| No TPM, no PIN | recovery key | type the recovery key |
+| TPM + continuous target verified-boot preflight | recovery key, TPM2+PIN | type the PIN |
+| TPM without verified boot | recovery key, passphrase | type the passphrase |
+| No TPM | recovery key, passphrase | type the passphrase |
 
-The installer now refuses to start an encrypted install on a machine with no TPM
-until a passphrase is given, so the last row is reachable only by driving the
-backend directly. It works, but it means typing a 48-character recovery key at
-every boot, which is not a choice anyone makes on purpose.
+The installer and privileged backend both require a startup secret. A short PIN
+is accepted only when TPM2 and Secure Boot are active, the running kernel
+reports integrity or confidentiality lockdown, **and the target preflight
+proves the installed target retains that verified-boot boundary**. That
+preflight requires the owner's qOS db certificate to already be enrolled in
+firmware, verifies the running artifacts against it, signs the newly installed
+target artifacts with the same key, verifies every signature, and parses every
+target UKI to require sealed kernel, initrd, command line, OS identity,
+composefs digest, generation and hardening arguments. Enrollment happens only
+after this target-side proof succeeds. Checking the EFI variable without
+checking either its runtime consequence or the target handoff would make a
+live-medium firmware flag sufficient evidence for a security boundary.
+
+This means a stock machine that has not completed owner/OEM Secure Boot
+enrollment uses the strong-passphrase path even when it has a TPM. Software
+cannot truthfully manufacture firmware trust without the owner's physical
+ceremony. Reinstalls and OEM-provisioned machines can use one short PIN because
+the trust key is already in firmware and is carried continuously into the new
+target.
+TPM presence with unverified early boot instead
+uses a normal passphrase slot: sealing against a PCR 7 value that merely says
+"Secure Boot is off" would not prevent replacement boot code from capturing the
+PIN and must not be presented as hardware-backed protection.
 
 The TPM slot binds to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal breaks if the boot policy changes.

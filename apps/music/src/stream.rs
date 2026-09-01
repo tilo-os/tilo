@@ -17,7 +17,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use crate::backend::{
     AlbumPage, ArtistPage, HomeContent, MusicBackend, PlaylistPage, ResolvedStream, SearchBundle,
-    SearchKind, preferred_backend,
+    SearchKind, default_backend, preferred_backend,
 };
 
 /// A unit of work for the background thread.
@@ -85,11 +85,90 @@ pub enum StreamUpdate {
     Note(String),
 }
 
-/// Run one request against `backend` and send its result(s) on `up_tx`. Split
-/// out of [`StreamWorker::spawn`]'s worker loop, which otherwise has to
-/// service every request kind inline.
-fn handle_request(backend: &dyn MusicBackend, req: StreamRequest, up_tx: &Sender<StreamUpdate>) {
-    match req {
+/// Handle to the background worker: a request sender + an update receiver.
+pub struct StreamWorker {
+    tx: Sender<StreamRequest>,
+    rx: Receiver<StreamUpdate>,
+}
+
+impl StreamWorker {
+    /// Spawn the worker thread. Constructing the backend (live network init)
+    /// happens *inside* the thread, so this call never blocks the caller.
+    pub fn spawn() -> Self {
+        Self::spawn_inner(false)
+    }
+
+    /// Spawn a worker pinned to the **bundled offline backend**, whatever this
+    /// build compiled in.
+    ///
+    /// [`spawn`](Self::spawn) asks [`preferred_backend`] for the best source
+    /// available, and since `live` is a *default* feature that is the real
+    /// YouTube-Music client on any ordinary build. A test about how the app
+    /// behaves when a page cannot be served therefore depends on the host's
+    /// network being down — it passes on a disconnected machine and fails on a
+    /// connected one, having proved nothing either way. This pins the source so
+    /// the outcome is the app's, not the network's.
+    pub fn spawn_offline() -> Self {
+        Self::spawn_inner(true)
+    }
+
+    fn spawn_inner(force_offline: bool) -> Self {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
+        let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
+
+        if let Err(error) = std::thread::Builder::new()
+            .name("music-stream".into())
+            .spawn(move || run_worker(&req_rx, &up_tx, force_offline))
+        {
+            tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
+        }
+
+        Self {
+            tx: req_tx,
+            rx: up_rx,
+        }
+    }
+
+    /// Queue a request. Fire-and-forget; a dead worker is silently ignored.
+    pub fn request(&self, req: StreamRequest) {
+        let _ = self.tx.send(req);
+    }
+
+    /// Non-blocking drain of any updates ready this frame.
+    pub fn poll(&self) -> Vec<StreamUpdate> {
+        self.rx.try_iter().collect()
+    }
+}
+
+fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, force_offline: bool) {
+    // Build the data source once. `preferred_backend` picks live rustypipe if
+    // compiled + reachable, else the offline sample.
+    let backend = if force_offline {
+        let _ = up_tx.send(StreamUpdate::Note(
+            "offline backend pinned; using bundled library".to_string(),
+        ));
+        default_backend()
+    } else {
+        preferred_backend(|note| {
+            let _ = up_tx.send(StreamUpdate::Note(note));
+        })
+    };
+    let _ = up_tx.send(StreamUpdate::Backend {
+        name: backend.name().to_string(),
+        live: backend.is_live(),
+    });
+
+    while let Ok(request) = req_rx.recv() {
+        handle_request(backend.as_ref(), up_tx, request);
+    }
+}
+
+fn handle_request(
+    backend: &dyn MusicBackend,
+    up_tx: &Sender<StreamUpdate>,
+    request: StreamRequest,
+) {
+    match request {
         StreamRequest::Search(query) => match backend.search_all(&query) {
             Ok(bundle) => {
                 let _ = up_tx.send(StreamUpdate::SearchResults {
@@ -171,57 +250,6 @@ fn handle_request(backend: &dyn MusicBackend, req: StreamRequest, up_tx: &Sender
                 let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
             }
         },
-    }
-}
-
-/// Handle to the background worker: a request sender + an update receiver.
-pub struct StreamWorker {
-    tx: Sender<StreamRequest>,
-    rx: Receiver<StreamUpdate>,
-}
-
-impl StreamWorker {
-    /// Spawn the worker thread. Constructing the backend (live network init)
-    /// happens *inside* the thread, so this call never blocks the caller. If
-    /// the OS fails to spawn the thread, the worker silently behaves like a
-    /// dead one — [`Self::request`] already documents that as fire-and-forget.
-    pub fn spawn() -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
-        let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
-
-        let _ = std::thread::Builder::new()
-            .name("music-stream".into())
-            .spawn(move || {
-                // Build the data source once. `preferred_backend` picks live
-                // rustypipe if compiled + reachable, else the offline sample —
-                // never panicking, so the worker always has a backend.
-                let backend = preferred_backend(|note| {
-                    let _ = up_tx.send(StreamUpdate::Note(note));
-                });
-                let _ = up_tx.send(StreamUpdate::Backend {
-                    name: backend.name().to_string(),
-                    live: backend.is_live(),
-                });
-
-                while let Ok(req) = req_rx.recv() {
-                    handle_request(backend.as_ref(), req, &up_tx);
-                }
-            });
-
-        Self {
-            tx: req_tx,
-            rx: up_rx,
-        }
-    }
-
-    /// Queue a request. Fire-and-forget; a dead worker is silently ignored.
-    pub fn request(&self, req: StreamRequest) {
-        let _ = self.tx.send(req);
-    }
-
-    /// Non-blocking drain of any updates ready this frame.
-    pub fn poll(&self) -> Vec<StreamUpdate> {
-        self.rx.try_iter().collect()
     }
 }
 
