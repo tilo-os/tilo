@@ -34,6 +34,7 @@ mod config;
 mod guest;
 mod https_guest;
 mod libvirt;
+mod lifecycle;
 mod presentation;
 mod publication;
 mod remote_app;
@@ -56,7 +57,13 @@ pub use https_guest::{
     InstallerPackage, MAX_INSTALLER_BYTES, PreparedInstallation, PreparedUninstallation,
     PublicationResult, StagedInstaller, UninstallationOperationId, UninstallationStatus,
 };
-pub use libvirt::{DomainState, LibvirtBackend, VmBackend, VmBackendError, render_domain_xml};
+pub use libvirt::{
+    DomainState, EgressLease, EgressPurpose, LibvirtBackend, VmBackend, VmBackendError,
+    render_domain_xml,
+};
+pub use lifecycle::{
+    LifecycleAction, LifecycleError, ManagedSessionState, VmStatus, WindowsVmService,
+};
 pub use presentation::{ApplicationPresentation, RecoveryPresentation};
 pub use publication::{Association, AssociationKind, Catalog, CatalogError, PublishedApplication};
 pub use remote_app::{
