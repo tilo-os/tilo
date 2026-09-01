@@ -1,6 +1,7 @@
 # qOS Windows compatibility broker
 
-This crate implements the security-sensitive broker core. It currently provides:
+This crate implements the security-sensitive broker core and its testable
+boundary contracts. It currently provides:
 
 - deterministic catalogue resolution;
 - persistent isolated Wine/UMU capsule state and registered-program lookup;
@@ -10,7 +11,8 @@ This crate implements the security-sensitive broker core. It currently provides:
 - explainable status DTOs for the Windows Apps UI; and
 - a versioned JSON protocol *contract*.
 
-It does **not** currently bind a daemon socket. `apps/windows` therefore keeps
+It does **not** currently bind a daemon socket or provide an end-to-end live
+provider. `apps/windows` therefore keeps
 its live `EmptyProvider` and does not claim that example applications are
 installed. Wiring requires a session daemon that authenticates peer
 credentials, obtains `CapOverride` records from the compositor (never from the
