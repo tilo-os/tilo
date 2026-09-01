@@ -13,12 +13,6 @@
         in {
           qos-session = pkgs.callPackage ./dist/nix/package.nix { };
           default = self.packages.${system}.qos-session;
-        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # Build the ARM closure on a native amd64 runner. This is a real
-          # Nixpkgs cross package (ARM host platform), not an amd64 binary with
-          # a renamed artifact.
-          qos-session-aarch64 =
-            pkgs.pkgsCross.aarch64-multiplatform.callPackage ./dist/nix/package.nix { };
         });
 
       checks = forAllSystems (system: {
