@@ -28,6 +28,7 @@ const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
 const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
+const RESOURCE_ACTIONS_TEMPLATE: &str = include_str!("../templates/resource_actions.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
@@ -3199,6 +3200,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         "LaunchSpec::new",
         &mut checks,
     );
+    check_resource_action_surface(&app_dir, &mut checks);
     check_ui_graph_artifacts(&app_dir, &mut checks);
     check_locale_artifacts(&app_dir, &mut checks);
     check_headless_scenarios(&app_dir, &mut checks);
@@ -3212,6 +3214,57 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     }
 
     DoctorReport { app_dir, checks }
+}
+
+fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let manifest = std::fs::read_to_string(app_dir.join("Cargo.toml"));
+    let source = std::fs::read_to_string(app_dir.join("src/lib.rs"));
+    let (Ok(manifest), Ok(source)) = (manifest, source) else {
+        return;
+    };
+    let dependency = manifest.lines().any(|line| {
+        line.trim_start().starts_with("qos-actions")
+            && line
+                .split_once('=')
+                .is_some_and(|(_, value)| !value.trim().is_empty())
+    });
+    let publishes = source.contains("fn resources(")
+        || source.contains("resource_actions::resource(")
+        || source.contains("ResourceActionApp");
+    let invokes = source.contains("invoke_resource_operation")
+        || source.contains("start_resource_operation")
+        || source.contains("resource_actions::immediate(")
+        || source.contains("resource_actions::background(");
+    let (status, detail) = if dependency && publishes && invokes {
+        (
+            DoctorStatus::Pass,
+            "qos-actions dependency, resource catalogue, and invocation route are present"
+                .to_owned(),
+        )
+    } else {
+        let mut missing = Vec::new();
+        if !dependency {
+            missing.push("direct qos-actions dependency");
+        }
+        if !publishes {
+            missing.push("Widget::resources catalogue");
+        }
+        if !invokes {
+            missing.push("operation invocation handler");
+        }
+        (
+            DoctorStatus::Fail,
+            format!(
+                "missing {}; qOS apps must expose meaningful controls through resources/actions",
+                missing.join(", ")
+            ),
+        )
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "resource/action surface",
+        detail,
+    });
 }
 
 fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
@@ -5747,11 +5800,17 @@ fn cargo_toml(spec: &AppSpec) -> String {
         )
     };
     let extras = format!("{lints}{patches}");
+    let repo = spec.ui_path.parent().unwrap_or_else(|| Path::new(".."));
+    let actions = format!(
+        "qos-actions = {{ path = {:?} }}",
+        repo.join("crates/collab/actions").to_string_lossy()
+    );
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{actions}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         ui_path = spec.ui_path.to_string_lossy(),
+        actions = actions,
         lints = extras,
     )
 }
@@ -5768,7 +5827,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Qr => QR_APP_TEMPLATE.to_owned(),
     };
     format!(
-        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
+        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\npub mod resource_actions {{\n{RESOURCE_ACTIONS_TEMPLATE}\n}}\n\n{application}",
         spec.title,
     )
 }
@@ -5815,10 +5874,19 @@ qr-output-alt = QR code for { $payload }\n",
 }
 
 fn app_main(spec: &AppSpec) -> String {
+    let register = if spec.template == Template::Document {
+        format!(
+            "\n            {}::register_actions(app.action_registry_mut());",
+            spec.crate_name
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
+        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{{register}\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
         app_id = spec.app_id,
         crate_name = spec.crate_name,
+        register = register,
     )
 }
 
@@ -6321,6 +6389,10 @@ fn app_readme(spec: &AppSpec) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}", spec.title);
     let _ = writeln!(out, "\nGenerated by `qos-dev new`.\n");
+    let _ = writeln!(
+        out,
+        "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Keep the UI callback and external operation handler routed through the same domain function; `qos-dev doctor` rejects apps that remove this surface.\n"
+    );
     let _ = writeln!(out, "```bash");
     let _ = writeln!(out, "qos-dev check");
     let _ = writeln!(out, "qos-dev test");
@@ -8167,7 +8239,7 @@ mod tests {
         assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
         assert!(library.contains("Slider::from_state(&volume)"));
         assert!(library.contains("Dropdown::from_state("));
-        assert!(library.contains("labeled_check(\"starter-updates-label\", updates)"));
+        assert!(library.contains("labeled_check(\"starter-updates-label\", updates_widget)"));
         assert!(!library.contains("on_change(name.text_sink())"));
         assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));
@@ -8623,6 +8695,37 @@ mod tests {
         assert_eq!(parse_template("8").unwrap(), Template::Qr);
         assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
         assert!(parse_template("dashboard").is_err());
+    }
+
+    #[test]
+    fn every_template_generates_a_direct_resource_action_surface() {
+        for template in [
+            Template::Starter,
+            Template::Data,
+            Template::List,
+            Template::Tree,
+            Template::Graph,
+            Template::Async,
+            Template::Document,
+            Template::Qr,
+        ] {
+            let spec = AppSpec {
+                package_name: "generated-app".into(),
+                crate_name: "generated_app".into(),
+                title: "Generated App".into(),
+                app_id: "dev.qos.generated.app".into(),
+                ui_path: PathBuf::from("../../ui"),
+                workspace_member: true,
+                template,
+            };
+            let manifest = cargo_toml(&spec);
+            assert!(manifest.contains("qos-actions = { path ="), "{template:?}");
+            let source = app_lib(&spec);
+            assert!(source.contains("ResourceActionApp"), "{template:?}");
+            assert!(source.contains("resource_actions::"), "{template:?}");
+            assert!(source.contains("fn resources("), "{template:?}");
+            assert!(source.contains("start_resource_operation"), "{template:?}");
+        }
     }
 
     #[test]
