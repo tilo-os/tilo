@@ -136,6 +136,12 @@ pub mod screens {
             "text": { "source": "document", "path": "name" }
           },
           {
+            "type": "component",
+            "id": "activity-summary",
+            "name": "activity-card",
+            "props": { "title": "Recent activity", "detail": "Nothing pending" }
+          },
+          {
             "type": "button",
             "id": "create",
             "label": "graph-create",
@@ -253,6 +259,13 @@ pub mod screens {
 
 pub mod graph {
     include!("../../qos-dev/templates/graph.rs");
+}
+
+pub mod components {
+    #[must_use]
+    pub fn ui_graph_context() -> ui::UiBuildContext {
+        crate::generated_display_component::register_ui_graph(ui::UiBuildContext::default())
+    }
 }
 
 #[cfg(test)]
@@ -590,6 +603,12 @@ mod tests {
                 .name("Atlas"),
         )
         .expect("generated graph preview semantics match");
+        app.expect(
+            &SemanticExpectation::named("activity-summary-title")
+                .role(Role::Heading { level: 2 })
+                .name("Recent activity"),
+        )
+        .expect("generated component registry reaches the screen router");
         assert!(app.dump_json().contains("create-requested"));
     }
 
