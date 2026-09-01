@@ -76,6 +76,13 @@ pub const POWER_BIN: &str = "/usr/libexec/qos-power";
 /// User-selected install options threaded through to the backend.
 #[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
+    /// Empty for a whole-disk erase. Otherwise the pre-created, empty Linux
+    /// partition that becomes the qOS root while every sibling partition is
+    /// preserved.
+    pub alongside_root: String,
+    /// Existing EFI System Partition reused by an alongside install. It is
+    /// mounted but never formatted.
+    pub alongside_efi: String,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
     /// Hostname seeded into the installed system.
@@ -110,6 +117,8 @@ pub struct InstallOptions {
 impl Default for InstallOptions {
     fn default() -> Self {
         Self {
+            alongside_root: String::new(),
+            alongside_efi: String::new(),
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             timezone: String::new(),
@@ -150,6 +159,13 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         .arg(&opts.filesystem)
         .arg("--hostname")
         .arg(&opts.hostname);
+    if !opts.alongside_root.is_empty() {
+        cmd.arg("--alongside")
+            .arg("--root-partition")
+            .arg(&opts.alongside_root)
+            .arg("--efi-partition")
+            .arg(&opts.alongside_efi);
+    }
     if !opts.timezone.trim().is_empty() {
         cmd.arg("--timezone").arg(opts.timezone.trim());
     }
@@ -322,6 +338,7 @@ mod tests {
             encrypt: false,
             pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/sda", "quinten", &opts);
         assert_eq!(cmd.get_program(), INSTALL_BIN);
@@ -358,6 +375,7 @@ mod tests {
             encrypt: false,
             pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -382,6 +400,26 @@ mod tests {
     }
 
     #[test]
+    fn install_command_names_both_alongside_partitions() {
+        let opts = InstallOptions {
+            alongside_root: "/dev/nvme0n1p4".into(),
+            alongside_efi: "/dev/nvme0n1p1".into(),
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/nvme0n1", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--root-partition", "/dev/nvme0n1p4"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
+        );
+        assert!(args.contains(&"--alongside"));
+    }
+
+    #[test]
     fn install_command_omits_empty_timezone_and_keymap() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
@@ -392,6 +430,7 @@ mod tests {
             encrypt: false,
             pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -426,6 +465,7 @@ mod tests {
             encrypt: false,
             pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -446,6 +486,7 @@ mod tests {
             encrypt: true,
             pin: String::new().into(),
             fido2: false,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -490,6 +531,7 @@ mod tests {
             encrypt: true,
             pin: "1234".to_string().into(),
             fido2: true,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -533,6 +575,7 @@ mod tests {
             encrypt: false,
             pin: "1234".to_string().into(),
             fido2: true,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -553,6 +596,7 @@ mod tests {
             encrypt: true,
             pin: String::new().into(),
             fido2: true,
+            ..InstallOptions::default()
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
