@@ -123,6 +123,8 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Select a real timeline row so provenance and comparison are exercised.
+    SelectRoomActivityEntry(usize),
     /// Open a window, the way opening one actually happens: adopt a
     /// toplevel for `app_id` into the chrome's tree through the
     /// production `tab_binding::adopt_toplevel`, so the placement rule
@@ -453,6 +455,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         }
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
+        }
+        Action::SelectRoomActivityEntry(index) => {
+            driver.select_room_activity_entry(*index);
         }
         _ => {}
     }
@@ -1113,6 +1118,12 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         },
     );
     out.push(',');
+    push_kv_bool(
+        &mut out,
+        "room_activity_compared",
+        host.room_activity().has_comparison(),
+    );
+    out.push(',');
     push_kv_str(
         &mut out,
         "room_activity_focus",
@@ -1300,6 +1311,7 @@ pub fn catalogue() -> Vec<Scenario> {
         room_activity_from_palette(),
         room_activity_catch_up_keyboard(),
         room_activity_explore_keyboard(),
+        room_activity_explore_detail_compare(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
@@ -1918,9 +1930,13 @@ fn room_activity_catch_up_keyboard() -> Scenario {
             Action::SeedRoomActivity { explore: false },
             Action::Relayout,
             Action::Snapshot("01-catch-up"),
-            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("02-last-outcome-expanded-focus-visible"),
+            Action::Snapshot("02-first-outcome-expanded-focus-visible"),
         ],
     }
 }
@@ -1930,14 +1946,44 @@ fn room_activity_catch_up_keyboard() -> Scenario {
 fn room_activity_explore_keyboard() -> Scenario {
     Scenario {
         name: "room_activity_explore_keyboard",
-        description: "Open the three-panel Explorer and choose a lens without a pointer.",
+        description: "Open responsive Explorer and traverse lenses; capture at wide and narrow sweep viewports.",
         actions: vec![
             Action::SeedRoomActivity { explore: true },
             Action::Relayout,
             Action::Snapshot("01-explorer-three-panel"),
-            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("02-explorer-lens-focus-visible"),
+            Action::Snapshot("02-explorer-browse-focus-visible"),
+        ],
+    }
+}
+
+fn room_activity_explore_detail_compare() -> Scenario {
+    Scenario {
+        name: "room_activity_explore_detail_compare",
+        description: "Select a real history action, show provenance, and materialize its exact comparison.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: true },
+            Action::SelectRoomActivityEntry(0),
+            Action::Relayout,
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("01-selected-detail"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::ArrowLeft)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-exact-comparison"),
         ],
     }
 }
