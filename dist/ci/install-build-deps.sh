@@ -29,10 +29,14 @@ fedora)
     dnf clean all
     ;;
 arch)
-    # A freshly redirected DBPath has no readable sync databases when pacman
-    # first resolves explicit targets under PRoot. Complete the full-system
-    # refresh first, then resolve build dependencies in a second transaction.
-    pacman -Syyu --noconfirm
+    # ARM's redirected DBPath is seeded immediately before PRoot starts. Avoid
+    # pacman's sync-db replacement there—the downloaded files disappear under
+    # this qemu/PRoot combination—while still applying a complete upgrade.
+    if [[ $(uname -m) == aarch64 ]]; then
+        pacman -Su --noconfirm
+    else
+        pacman -Syu --noconfirm
+    fi
     pacman -S --needed --noconfirm \
         curl git base-devel rustup clang cmake pkgconf capnproto file namcap \
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa \
