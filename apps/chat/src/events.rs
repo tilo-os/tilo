@@ -177,6 +177,7 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        self.keyboard_target = None;
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
                 // Begin dragging the overlay (only meaningful docked).
@@ -280,6 +281,22 @@ impl ChatApp {
             } else {
                 self.route_edit_input(event, scale, modifiers, doc);
             }
+            *handled = true;
+            return;
+        }
+
+        // Tab walks Chat's real primary-control inventory. Enter/Space then
+        // activates the same `Hit` path as a pointer, including the composers.
+        // This check deliberately precedes composer routing: a multiline input
+        // must not swallow the application's navigation key.
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            self.move_keyboard_target(modifiers.state().shift_key());
+            *handled = true;
+            return;
+        }
+        let activates = matches!(logical_key, Key::Named(NamedKey::Enter))
+            || matches!(logical_key, Key::Character(value) if value.as_str() == " ");
+        if self.keyboard_target.is_some() && activates && self.activate_keyboard_target(doc) {
             *handled = true;
             return;
         }
@@ -483,13 +500,25 @@ impl ChatApp {
             .map(|(_, h)| h.clone())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
+    )]
     fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
         // Any click dismisses an open context menu unless it's a menu action.
         if !matches!(hit, Hit::MenuAction { .. }) {
             self.menu = None;
         }
         match hit {
-            Hit::Workspace(id) => self.on_hit_workspace(id),
+            Hit::Inbox => {
+                self.inbox_open = true;
+                self.thread_open = None;
+                self.focus = Focus::Main;
+            }
+            Hit::CurrentContext => {
+                self.inbox_open = false;
+                self.on_hit_workspace(self.context_ws.clone());
+            }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) if self.can_participate() => {
@@ -506,10 +535,6 @@ impl ChatApp {
                 category,
             } if self.can_participate() => self.on_hit_add_channel(&workspace, &category, doc),
             Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_category(&ws, doc),
-            // Create a real, usable workspace (a general text channel + a
-            // voice channel) and switch to it — the rail "+" is a live
-            // create action, not decoration.
-            Hit::AddWorkspace if self.can_participate() => self.on_hit_add_workspace(doc),
             Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => {
@@ -603,6 +628,9 @@ impl ChatApp {
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
         } else {
+            if let Some(workspace) = self.channel(&id).map(|channel| channel.workspace.clone()) {
+                self.active_ws = workspace;
+            }
             self.active_channel = id;
             self.thread_open = None;
             self.scroll = 0.0;
@@ -632,15 +660,6 @@ impl ChatApp {
     fn on_hit_add_category(&mut self, ws: &str, doc: &mut AutoCommit) {
         let id = ChatDoc::create_category(doc, ws, "New Category");
         self.begin_rename(MenuTarget::Category(id));
-    }
-
-    fn on_hit_add_workspace(&mut self, doc: &mut AutoCommit) {
-        let id = ChatDoc::create_workspace(doc, "New Workspace");
-        self.active_ws = id;
-        self.thread_open = None;
-        self.scroll = 0.0;
-        self.focus = Focus::Main;
-        self.active_channel.clear(); // reload picks the new ws's first text channel
     }
 
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut AutoCommit) {
@@ -1077,6 +1096,58 @@ impl ChatApp {
             }
             _ => false,
         }
+    }
+
+    /// Move synthetic focus over the controls that were actually painted in
+    /// the previous frame. The compositor has its own retained-widget focus;
+    /// Chat's immediate-mode children need this small local equivalent.
+    fn move_keyboard_target(&mut self, backwards: bool) {
+        let targets = self.semantic_hits();
+        if targets.is_empty() {
+            self.keyboard_target = None;
+            return;
+        }
+        let next = match self.keyboard_target {
+            Some(current) if backwards => current.checked_sub(1).unwrap_or(targets.len() - 1),
+            Some(current) => (current + 1) % targets.len(),
+            None if backwards => targets.len() - 1,
+            None => 0,
+        };
+        self.keyboard_target = Some(next);
+        let Some((_, hit, ..)) = targets.get(next) else {
+            self.keyboard_target = None;
+            return;
+        };
+        match hit {
+            Hit::FocusMain => {
+                self.focus = Focus::Main;
+                ui::Widget::set_focus(&mut self.composer_main, true);
+                ui::Widget::set_focus(&mut self.composer_thread, false);
+            }
+            Hit::FocusThread => {
+                self.focus = Focus::Thread;
+                ui::Widget::set_focus(&mut self.composer_main, false);
+                ui::Widget::set_focus(&mut self.composer_thread, true);
+            }
+            _ => {
+                ui::Widget::set_focus(&mut self.composer_main, false);
+                ui::Widget::set_focus(&mut self.composer_thread, false);
+            }
+        }
+    }
+
+    fn activate_keyboard_target(&mut self, doc: &mut AutoCommit) -> bool {
+        let targets = self.semantic_hits();
+        let Some((_, hit, ..)) = self
+            .keyboard_target
+            .and_then(|index| targets.get(index))
+            .cloned()
+        else {
+            self.keyboard_target = None;
+            return false;
+        };
+        self.on_hit(hit, doc);
+        true
     }
 
     fn draft_key(&self) -> String {
@@ -2238,26 +2309,81 @@ mod tests {
         );
     }
 
-    // --- add-workspace "+" (was a dead button) --------------------------
+    // --- contextual channels + cross-workspace Inbox -------------------
 
     #[test]
-    fn add_workspace_button_creates_and_switches_to_it() {
+    fn inbox_opens_cross_workspace_conversation_without_losing_context() {
         let (mut app, mut doc) = app_with_doc();
-        let before = app.workspaces.len();
-        app.on_hit(Hit::AddWorkspace, &mut doc);
-        assert_eq!(
-            app.workspaces.len(),
-            before + 1,
-            "the rail '+' created a workspace"
+        let context = app.context_ws.clone();
+        let cross_workspace = app
+            .channels
+            .iter()
+            .find(|channel| channel.workspace != context && channel.kind == ChannelKind::Text)
+            .expect("demo data has a cross-workspace conversation")
+            .clone();
+
+        app.on_hit(Hit::Inbox, &mut doc);
+        app.on_hit(Hit::Channel(cross_workspace.id), &mut doc);
+        assert!(app.inbox_open);
+        assert_eq!(app.active_ws, cross_workspace.workspace);
+        assert_eq!(app.context_ws, context, "Inbox never rewrites OS context");
+
+        app.on_hit(Hit::CurrentContext, &mut doc);
+        assert!(!app.inbox_open);
+        assert_eq!(app.active_ws, context);
+    }
+
+    #[test]
+    fn tab_and_enter_activate_the_visible_inbox_control() {
+        let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+
+        let inbox_index = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
+            .expect("Inbox is in the visible keyboard inventory");
+        for _ in 0..=inbox_index {
+            feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        }
+        assert_eq!(app.keyboard_target, Some(inbox_index));
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+
+        assert!(app.inbox_open, "Enter follows the first visible Tab target");
+    }
+
+    #[test]
+    fn accessibility_names_contextual_navigation_and_conversation_content() {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        assert_eq!(root.role, ui::a11y::Role::Group);
+        assert_eq!(root.name.as_deref(), Some("Chat"));
+        assert!(root.children.iter().any(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Inbox"))
+        }));
+        assert!(
+            root.children.iter().any(|node| {
+                node.name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("current workspace"))
+            }),
+            "the OS context is explicitly named"
         );
-        // Switched to the new workspace and landed on a real text channel in it.
-        assert_ne!(app.active_ws, "ws_acme");
-        assert!(app.workspaces.iter().any(|w| w.id == app.active_ws));
-        let ch = app
-            .channel(&app.active_channel)
-            .expect("landed on a real channel");
-        assert_eq!(ch.workspace, app.active_ws);
-        assert_eq!(ch.kind, ChannelKind::Text);
+        assert!(
+            root.children
+                .iter()
+                .all(|node| node.name.as_deref() != Some("New Workspace")),
+            "Chat never exposes a second workspace creation concept"
+        );
+        let messages = root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Messages"))
+            .expect("conversation content is exposed as a list");
+        assert!(!messages.children.is_empty());
     }
 
     // --- members roster (right flap "members" half was unimplemented) ---
@@ -2707,7 +2833,8 @@ mod tests {
     #[test]
     fn start_call_creates_a_voice_channel_when_the_workspace_has_none() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Workspace("ws_jam".into()), &mut doc);
+        app.on_hit_workspace("ws_jam".into());
+        app.reload(&doc);
         assert_eq!(app.active_ws, "ws_jam");
         assert!(
             !app.channels
@@ -2939,11 +3066,12 @@ mod tests {
 
     #[test]
     fn workspace_switch_resets_view_state() {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, doc) = app_with_doc();
         app.thread_open = Some("m_concept".into());
         app.scroll = -250.0;
         app.focus = Focus::Thread;
-        app.on_hit(Hit::Workspace("ws_qos".into()), &mut doc);
+        app.on_hit_workspace("ws_qos".into());
+        app.reload(&doc);
         assert_eq!(app.active_ws, "ws_qos");
         assert!(
             app.thread_open.is_none(),

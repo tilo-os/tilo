@@ -13,7 +13,6 @@ use vello::peniko::{BlendMode, Fill};
 use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, SegmentedFace, SegmentedStyle, ToggleGroup};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::state::{UserId, WorkspaceTree};
@@ -49,7 +48,7 @@ pub enum EventOutcome {
     RemoveMember(UserId),
     Revoke(String),
     SelectTab(WsTab),
-    CopyInvite,
+    CreateInvite,
     EditName,
     CommitName,
 }
@@ -72,7 +71,6 @@ pub struct WorkspaceSettingsOverlay {
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
-    invite_copied_at: Option<Instant>,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -85,7 +83,6 @@ impl Default for WorkspaceSettingsOverlay {
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
-            invite_copied_at: None,
         }
     }
 }
@@ -112,10 +109,9 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn body_rect_for(card: Rect) -> Rect {
-        let header_h = if card.width() < 500.0 { 144.0 } else { 160.0 };
         Rect::new(
             card.x0 + 16.0,
-            card.y0 + header_h,
+            card.y0 + 160.0,
             card.x1 - 16.0,
             card.y1 - 16.0,
         )
@@ -164,20 +160,19 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn close_rect_for(rect: Rect) -> Rect {
-        let compact = rect.width() < 500.0;
-        let top = if compact {
-            rect.y0 + 30.0
-        } else {
-            rect.y0 + 25.0
-        };
-        Rect::new(rect.x1 - 58.0, top, rect.x1 - 28.0, top + 30.0)
+        Rect::new(
+            rect.x1 - 58.0,
+            rect.y0 + 25.0,
+            rect.x1 - 28.0,
+            rect.y0 + 55.0,
+        )
     }
 
-    pub fn copy_rect(&self) -> Rect {
-        Self::copy_rect_for(self.rect())
+    pub fn invite_rect(&self) -> Rect {
+        Self::invite_rect_for(self.rect())
     }
 
-    pub fn copy_rect_for(card: Rect) -> Rect {
+    pub fn invite_rect_for(card: Rect) -> Rect {
         let body = Self::body_rect_for(card);
         let link_y = body.y0 + 202.0;
         Rect::new(body.x1 - 88.0, link_y, body.x1 - 16.0, link_y + 34.0)
@@ -189,14 +184,6 @@ impl WorkspaceSettingsOverlay {
 
     pub fn is_animating(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
-    }
-
-    pub fn invite_copied_at(&self) -> Option<Instant> {
-        self.invite_copied_at
-    }
-
-    pub fn mark_invite_copied(&mut self, now: Instant) {
-        self.invite_copied_at = Some(now);
     }
 
     pub fn tab_pill_rect(&self, tab: WsTab) -> Rect {
@@ -217,10 +204,6 @@ impl WorkspaceSettingsOverlay {
 
     pub fn grant_composer_rects(&self) -> Option<&GrantComposerRects> {
         self.grant_composer_rects.as_ref()
-    }
-
-    pub fn default_app_rects(&self) -> &[(desktop_policy::ResourceKind, Rect, Rect)] {
-        &self.default_app_rects
     }
 
     pub fn member_control_rects(&self) -> &[(UserId, Rect, Rect)] {
@@ -389,8 +372,8 @@ impl WorkspaceSettingsOverlay {
                 return EventOutcome::SelectTab(*tab);
             }
         }
-        if matches!(active_tab, WsTab::General) && self.copy_rect().contains(point) {
-            return EventOutcome::CopyInvite;
+        if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
+            return EventOutcome::CreateInvite;
         }
         if self.name_rect().contains(point) {
             EventOutcome::EditName
@@ -478,13 +461,16 @@ impl WorkspaceSettingsOverlay {
             active_name.as_str(),
             body_y,
         );
+        let can_invite = tree.active_workspace().is_some_and(|workspace| {
+            tree.governs_room(workspace.room) && workspace.may_administer(&state.local_user_id)
+        });
         let invite_y = self.draw_ws_settings_invite_link(
             scene,
             transform,
             text_renderer,
             theme,
             rect,
-            &tree,
+            can_invite,
             body_y,
         );
         let collab_y = invite_y + 72.0;
@@ -536,70 +522,44 @@ impl WorkspaceSettingsOverlay {
     ) -> String {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let (identity, close) = self.draw_ws_settings_identity_card_chrome(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-        );
-        let compact = rect.width() < 500.0;
-        let text_x = if compact {
-            identity.x0 + 56.0
-        } else {
-            identity.x0 + 76.0
-        };
+        let (identity, close) =
+            self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
         text_renderer.draw_text(
             scene,
             "CURRENT WORKSPACE",
             tokens.typography.scale.xs,
             colors.accent[4],
-            transform.pre_translate((text_x, identity.y0 + 10.0).into()),
+            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
         );
         let active_name = tree
             .active_workspace()
             .map_or_else(|| "Workspace".into(), |w| w.name.clone());
-        let tsize = if compact {
-            tokens.typography.scale.lg
-        } else {
-            tokens.typography.scale.xl
-        };
+        let tsize = tokens.typography.scale.xl;
         let shown_name = text_renderer.elide_to_width(
             &active_name,
             tsize,
-            f64_to_f32_lossy(close.x0 - text_x - 12.0),
+            f64_to_f32_lossy(close.x0 - (identity.x0 + 76.0) - 12.0),
         );
         text_renderer.draw_text(
             scene,
             &shown_name,
             tsize,
             colors.text_primary,
-            transform
-                .pre_translate((text_x, identity.y0 + if compact { 28.0 } else { 34.0 }).into()),
+            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 34.0).into()),
             None,
         );
         let active_role = tree
             .active_workspace()
             .and_then(|workspace| workspace.role_of(&state.local_user_id))
             .map_or("Guest", crate::shell::workspace_settings::role_label);
-        let label = if compact {
-            active_role.to_string()
-        } else {
-            format!("{active_role} · Settings and policy stay with this workspace")
-        };
-        let label = text_renderer.elide_to_width(
-            &label,
-            tokens.typography.scale.sm,
-            f64_to_f32_lossy(close.x0 - text_x - 12.0),
-        );
+        let label = format!("{active_role} · Settings and policy stay with this workspace");
         text_renderer.draw_text(
             scene,
             &label,
             tokens.typography.scale.sm,
             colors.text_dim,
-            transform
-                .pre_translate((text_x, identity.y0 + if compact { 47.0 } else { 58.0 }).into()),
+            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 58.0).into()),
             None,
         );
         active_name
@@ -614,19 +574,16 @@ impl WorkspaceSettingsOverlay {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
     ) -> (Rect, Rect) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let compact = rect.width() < 500.0;
-        let identity_h = if compact { 66.0 } else { 80.0 };
         let identity = Rect::new(
             rect.x0 + 16.0,
-            rect.y0 + 12.0,
+            rect.y0 + 14.0,
             rect.x1 - 16.0,
-            rect.y0 + 12.0 + identity_h,
+            rect.y0 + 94.0,
         );
         let identity_rr = RoundedRect::from_rect(identity, f64::from(tokens.radii.lg));
         scene.fill(
@@ -645,9 +602,9 @@ impl WorkspaceSettingsOverlay {
         );
         let mark = Rect::new(
             identity.x0 + 14.0,
-            identity.y0 + if compact { 13.0 } else { 14.0 },
-            identity.x0 + if compact { 54.0 } else { 62.0 },
-            identity.y1 - if compact { 13.0 } else { 14.0 },
+            identity.y0 + 14.0,
+            identity.x0 + 62.0,
+            identity.y1 - 14.0,
         );
         scene.fill(
             Fill::NonZero,
@@ -659,21 +616,34 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            mark.inset(if compact { 11.0 } else { 14.0 }),
+            mark.inset(14.0),
             ui::icons::Icon::LayoutGrid,
             colors.accent[4],
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let close = self.close_rect();
-        Button::paint(
+        let close_rr = RoundedRect::from_rect(close, f64::from(tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &close_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &close_rr,
+        );
+        ui::icons::draw_icon(
             scene,
             transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(close, "")
-                .ghost()
-                .icon(ui::icons::Icon::X)
-                .accessible_name("Close workspace settings"),
+            close.inset(8.0),
+            ui::icons::Icon::X,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         (identity, close)
     }
@@ -689,57 +659,106 @@ impl WorkspaceSettingsOverlay {
         rect: Rect,
         active_tab: WsTab,
     ) {
-        let compact = rect.width() < 500.0;
-        let lsize = if compact {
-            theme.tokens.typography.scale.sm
-        } else {
-            theme.tokens.typography.scale.base
-        };
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let lsize = tokens.typography.scale.base;
         let tabs = WsTab::all();
-        let nav_y0 = rect.y0 + if compact { 90.0 } else { 104.0 };
         let nav = Rect::new(
             rect.x0 + 16.0,
-            nav_y0,
+            rect.y0 + 104.0,
             rect.x1 - 16.0,
-            nav_y0 + if compact { 38.0 } else { 42.0 },
+            rect.y0 + 146.0,
+        );
+        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
+        scene.fill(Fill::NonZero, transform, colors.neutral[0], None, &nav_rr);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard.with_alpha_factor(0.72),
+            None,
+            &nav_rr,
         );
         let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
         // Written into the component's cache after the loop
         // so one source of geometry feeds draw and click-routing.
         let mut pill_rects = [Rect::ZERO; 4];
-        let labels: Vec<&str> = tabs
-            .iter()
-            .map(|tab| {
-                if rect.width() < 680.0 {
-                    tab.compact_label()
-                } else {
-                    tab.label()
-                }
-            })
-            .collect();
-        for (i, _) in tabs.iter().enumerate() {
+        for (i, tab) in tabs.iter().enumerate() {
+            let active = *tab == active_tab;
+            let label = if rect.width() < 680.0 {
+                tab.compact_label()
+            } else {
+                tab.label()
+            };
+            let (w, h) = text_renderer.measure(label, lsize, None);
             let ix = usize_to_f64_lossy(i);
             let pill_rect = Rect::new(
-                nav.x0 + segment_w * ix,
-                nav.y0,
-                nav.x0 + segment_w * (ix + 1.0),
-                nav.y1,
+                nav.x0 + segment_w * ix + 3.0,
+                nav.y0 + 3.0,
+                nav.x0 + segment_w * (ix + 1.0) - 3.0,
+                nav.y1 - 3.0,
             );
             if let Some(slot) = pill_rects.get_mut(i) {
                 *slot = pill_rect;
             }
+            let pill = RoundedRect::from_rect(pill_rect, f64::from(tokens.radii.md));
+            if active {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surfaces.raised,
+                    None,
+                    &pill,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    colors.border_standard,
+                    None,
+                    &pill,
+                );
+            }
+            let color = if active {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
+            let icon = match tab {
+                WsTab::General => ui::icons::Icon::Settings2,
+                WsTab::Members => ui::icons::Icon::Home,
+                WsTab::Permissions => ui::icons::Icon::Shield,
+                WsTab::Apps => ui::icons::Icon::LayoutGrid,
+            };
+            let icon_size = 15.0;
+            let content_w = icon_size + 7.0 + f64::from(w);
+            let content_x = pill_rect.center().x - content_w / 2.0;
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    content_x,
+                    pill_rect.center().y - icon_size / 2.0,
+                    content_x + icon_size,
+                    pill_rect.center().y + icon_size / 2.0,
+                ),
+                icon,
+                if active { colors.accent[4] } else { color },
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            text_renderer.draw_text(
+                scene,
+                label,
+                lsize,
+                color,
+                transform.pre_translate(
+                    (
+                        content_x + icon_size + 7.0,
+                        pill_rect.center().y - f64::from(h) / 2.0,
+                    )
+                        .into(),
+                ),
+                None,
+            );
         }
-        let selected = tabs.iter().position(|tab| *tab == active_tab).unwrap_or(0);
-        ToggleGroup::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &SegmentedFace::new(&pill_rects, &labels, selected)
-                .style(SegmentedStyle::Pill)
-                .radius(f64::from(theme.tokens.radii.md))
-                .text_size(lsize),
-        );
         self.tab_pill_rects = pill_rects;
     }
 
@@ -1042,11 +1061,11 @@ impl WorkspaceSettingsOverlay {
         editing
     }
 
-    /// Sharing card with the workspace's stable invitation URI.
+    /// Sharing card that opens the signed invite composer.
     #[allow(
         clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the tree the invite \
-                  URL is derived from; matching every other draw_ws_settings_* helper \
+        reason = "one positional argument per painted value, plus the invite permission \
+                  state; matching every other draw_ws_settings_* helper \
                   in this impl"
     )]
     fn draw_ws_settings_invite_link(
@@ -1056,7 +1075,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        tree: &WorkspaceTree,
+        can_invite: bool,
         _body_y: f64,
     ) -> f64 {
         let tokens = &theme.tokens;
@@ -1085,40 +1104,53 @@ impl WorkspaceSettingsOverlay {
             None,
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
-        // Mirrors WorkspaceSettings::invite_link's format so the URL is
-        // stable per workspace id.
-        let invite_url = tree.active_workspace().map_or_else(
-            || "quickdesktop://invite/0".to_string(),
-            |w| format!("quickdesktop://invite/{}", u64::from(w.id)),
-        );
+        let invite_url = if can_invite {
+            "Choose a person and role; qOS signs a one-hour invite."
+        } else {
+            "Only a governing administrator can create workspace invites."
+        };
         text_renderer.draw_text(
             scene,
-            &invite_url,
+            invite_url,
             tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
             None,
         );
-        let copy_btn = self.copy_rect();
-        // "Copied" replaces the label briefly, or the button looks
-        // indistinguishable from one that did nothing.
-        let copy_label = if self
-            .invite_copied_at()
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
-        {
-            "Copied"
-        } else {
-            "Copy"
-        };
-        Button::paint(
-            scene,
+        let invite_btn = self.invite_rect();
+        scene.fill(
+            Fill::NonZero,
             transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(copy_btn, copy_label)
-                .primary()
-                .icon(ui::icons::Icon::Copy)
-                .text_size(tokens.typography.scale.sm),
+            if can_invite {
+                colors.accent[5]
+            } else {
+                colors.surfaces.base
+            },
+            None,
+            &RoundedRect::from_rect(
+                invite_btn,
+                ui::chrome::ChromeRole::Control.radius(theme, invite_btn.height()),
+            ),
+        );
+        let invite_label = "Create";
+        let (cw, _ch) = text_renderer.measure(invite_label, tokens.typography.scale.sm, None);
+        text_renderer.draw_text(
+            scene,
+            invite_label,
+            tokens.typography.scale.sm,
+            if can_invite {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+            transform.pre_translate(
+                (
+                    invite_btn.x0 + (invite_btn.width() - f64::from(cw)) / 2.0,
+                    invite_btn.y0 + 9.0,
+                )
+                    .into(),
+            ),
+            None,
         );
         invite_y
     }
@@ -1136,7 +1168,6 @@ impl WorkspaceSettingsOverlay {
     ) -> Rect {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let compact = body.width() < 460.0;
         let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
         let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
         scene.fill(
@@ -1174,32 +1205,17 @@ impl WorkspaceSettingsOverlay {
             colors.accent[4],
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let title = text_renderer.elide_to_width(
-            "Invite people",
-            tokens.typography.scale.base,
-            f64_to_f32_lossy(sharing_card.x1 - (sharing_card.x0 + 60.0) - 16.0),
-        );
         text_renderer.draw_text(
             scene,
-            &title,
+            "Invite people",
             tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 13.0).into()),
             None,
         );
-        let helper = if compact {
-            "Secure join flow required."
-        } else {
-            "Anyone with this link must still pass the workspace's secure join flow."
-        };
-        let helper = text_renderer.elide_to_width(
-            helper,
-            tokens.typography.scale.xs,
-            f64_to_f32_lossy(sharing_card.x1 - (sharing_card.x0 + 60.0) - 16.0),
-        );
         text_renderer.draw_text(
             scene,
-            &helper,
+            "Invites bind the workspace, recipient role, expiry and this device's identity.",
             tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
@@ -1222,7 +1238,12 @@ impl WorkspaceSettingsOverlay {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body = Self::body_rect_for(rect);
+        let body = Rect::new(
+            rect.x0 + 16.0,
+            rect.y0 + 160.0,
+            rect.x1 - 16.0,
+            rect.y1 - 16.0,
+        );
         let summary_card = Rect::new(body.x0, body.y0 + 268.0, body.x1, body.y0 + 374.0);
         let summary_rr = RoundedRect::from_rect(summary_card, f64::from(tokens.radii.lg));
         scene.fill(
@@ -1259,7 +1280,7 @@ impl WorkspaceSettingsOverlay {
             (members, grants, ws.default_apps.policy.len())
         });
         let stats = [
-            (members.to_string(), "people"),
+            (members.to_string(), "members"),
             (grants.to_string(), "specific grants"),
             (app_rules.to_string(), "app rules"),
         ];
@@ -1317,10 +1338,10 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         return forced;
     }
     let user = state.active_local_user();
-    state
-        .tree()
-        .active_workspace()
-        .is_some_and(|workspace| workspace.may_administer(&user))
+    let tree = state.tree();
+    tree.active_workspace().is_some_and(|workspace| {
+        tree.governs_room(workspace.room) && workspace.may_administer(&user)
+    })
 }
 
 #[cfg(test)]

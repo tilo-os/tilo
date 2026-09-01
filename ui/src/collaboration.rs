@@ -134,6 +134,12 @@ pub enum CollabEvent {
         collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
     },
+    /// Session chrome asked this app to bind its viewport/view mode to a
+    /// participant, or release that binding. This is local session control:
+    /// it is never published to collaboration peers.
+    FollowChanged {
+        peer_id: Option<String>,
+    },
     RemoteCursorMoved {
         user_id: String,
         x: f32,
@@ -1362,6 +1368,12 @@ async fn spawn_context_stream(
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(context) = stream.read().await {
+                if let Some(peer_id) = context.follow_changed {
+                    if tx.send(CollabEvent::FollowChanged { peer_id }).is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 let collaborators = context
                     .collaborators
                     .into_iter()

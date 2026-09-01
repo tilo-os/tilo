@@ -21,7 +21,7 @@ use taffy::{
 };
 use vello::Scene;
 use vello::kurbo::RoundedRect;
-use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -45,7 +45,9 @@ use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, PeerSyncOverlay};
-pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
+pub use crate::shell::peer_sync_overlay::{
+    PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot, PendingInvitationSummary,
+};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
@@ -106,7 +108,8 @@ fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option
 
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
-type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>;
+type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
+type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -265,6 +268,9 @@ pub struct ShellOverlayHost {
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<PeerSyncBridge>,
+    /// Session-local control path into the typed app broker. Follow never
+    /// enters the replicated workspace document or crosses the network.
+    follow_bridge: Option<FollowBridge>,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
     peer_sync_overlay: PeerSyncOverlay,
     /// Top-right notification stack, above content but below the
@@ -912,6 +918,7 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
+            follow_bridge: None,
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
@@ -1128,21 +1135,6 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
-    /// Resolve Overview's transition for the active motion preference. Reduced
-    /// motion snaps only when the target changes; subsequent frames preserve
-    /// keyboard preview selection instead of reseeding it every draw.
-    fn overview_transition_value(&mut self, target: f32, reduce_motion: bool) -> f32 {
-        if reduce_motion {
-            if (target - self.overview_t).abs() > f32::EPSILON || self.transition_started.is_some()
-            {
-                self.force_overview_settled(target > 0.5);
-            }
-            target
-        } else {
-            self.tick_overview_transition(target)
-        }
-    }
-
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         // Mount the notification stack once we have a chrome handle to
@@ -1195,11 +1187,17 @@ impl ShellOverlayHost {
         self.peer_sync_bridge = Some(bridge);
     }
 
+    /// Install the session-local bridge that binds application viewports to
+    /// the participant selected in the People popover.
+    pub fn set_follow_bridge(&mut self, bridge: FollowBridge) {
+        self.follow_bridge = Some(bridge);
+    }
+
     /// Run one peer-sync request through the installed bridge.
-    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<String, String> {
+    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<PeerSyncResponse, String> {
         match self.peer_sync_bridge.as_ref() {
             Some(bridge) => bridge(req),
-            None => Err("Collaboration is not available in this session".to_string()),
+            None => Err("peer-sync is not running in this session".to_string()),
         }
     }
 
@@ -1221,9 +1219,15 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(&PeerSyncRequest::IssueInviteFor(name), copy);
+                    self.run_peer_sync_request(
+                        &PeerSyncRequest::IssueInviteFor {
+                            name,
+                            role: crate::network::invite::InviteRole::Editor,
+                        },
+                        copy,
+                    );
                 }
-                PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
+                PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
             }
         }
@@ -1232,7 +1236,27 @@ impl ShellOverlayHost {
     fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
         let outcome = self.peer_sync_call(request.clone());
         self.peer_sync_overlay
-            .finish_request(request, outcome, copy_result);
+            .finish_typed_request(request, outcome, copy_result);
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInvite
+                | PeerSyncRequest::IssueInviteFor { .. }
+                | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.refresh_pending_invitations();
+        }
+    }
+
+    fn open_invite_manager(&mut self) {
+        self.peer_sync_overlay.prompt_invite();
+        self.refresh_pending_invitations();
+    }
+
+    fn refresh_pending_invitations(&mut self) {
+        let request = PeerSyncRequest::ListPendingInvitations;
+        let outcome = self.peer_sync_call(request.clone());
+        self.peer_sync_overlay
+            .finish_typed_request(&request, outcome, false);
     }
 
     /// Route one event to the peer-sync card, returning whether it was
@@ -2796,6 +2820,47 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
+    /// Change Follow once, then notify every local app in the room using the
+    /// participant id its presence stream actually carries (`peer@<handle>`).
+    /// Shell focus keeps using the durable roster id, so names and capability
+    /// rows remain stable while sessions reconnect.
+    fn set_followed_peer(&mut self, peer_id: Option<String>) {
+        if self.followed_peer == peer_id {
+            return;
+        }
+        self.followed_peer = peer_id;
+        let command = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let Some(workspace) = tree.active_workspace() else {
+                drop(tree);
+                drop(state);
+                return None;
+            };
+            let target = self.followed_peer.as_deref().map(|id| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|participant| participant.id == id)
+                    .and_then(|participant| participant.session)
+                    .map_or_else(|| id.to_string(), |session| format!("peer@{session}"))
+            });
+            let command = (workspace.room, target);
+            drop(tree);
+            drop(state);
+            Some(command)
+        });
+        if let (Some(bridge), Some((room, target))) = (self.follow_bridge.as_ref(), command) {
+            bridge(room, target);
+        }
+        if self.followed_peer.is_some() {
+            self.reconcile_followed_peer();
+        } else {
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+        }
+    }
+
     fn followed_roster_row(&self) -> Option<RosterRow> {
         let peer_id = self.followed_peer.as_deref()?;
         let chrome = self.chrome.as_ref()?;
@@ -2938,11 +3003,6 @@ impl ShellOverlayHost {
     /// active. `None` when the composer isn't on screen.
     pub fn grant_composer_rects(&self) -> Option<&GrantComposerRects> {
         self.workspace_settings_overlay.grant_composer_rects()
-    }
-
-    /// Default-app controls painted while the Apps tab is active.
-    pub fn default_app_rects(&self) -> &[(desktop_policy::ResourceKind, Rect, Rect)] {
-        self.workspace_settings_overlay.default_app_rects()
     }
 
     /// Per-member control rects painted while the Members tab is active:
@@ -3690,17 +3750,13 @@ impl ShellOverlayHost {
 
     /// Mirror of the geometry in `draw_quick_settings` — the popover rect
     /// anchored under the top-right tray pill. Width matches the concept's
-    /// `w-80` (320px) when there is room, but never overflows the desktop on
-    /// a narrow display; height sums the section bands in
+    /// `w-80` (320px); height sums the section bands in
     /// [`Self::draw_quick_settings`], including three rows of system tiles.
     fn quick_settings_rect(&self) -> Rect {
-        // Preserve a 12px edge gutter on narrow screens. This is intentionally
-        // a width adaptation rather than an off-screen fixed popover: every
-        // system control stays reachable at 320px and below.
-        let popover_w = (self.rect.width() - 24.0).clamp(1.0, 320.0);
-        let x1 = (self.rect.x1 - 12.0).max(self.rect.x0 + popover_w);
+        let popover_w = 320.0_f64;
+        let popover_h = 552.0_f64;
+        let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
-        let popover_h = (self.rect.y1 - y0 - 12.0).clamp(1.0, 552.0);
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
@@ -3844,22 +3900,17 @@ impl ShellOverlayHost {
         Some((sid, group))
     }
 
-    /// The workspace-settings "Copy" button next to the invite link.
+    /// The workspace-settings button that opens the signed invite composer.
     ///
     /// Shared by the draw pass and the click router, so the rect that
     /// paints the button is the rect that can be clicked.
-    fn ws_settings_copy_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::copy_rect_for(self.ws_settings_rect())
+    fn ws_settings_invite_rect(&self) -> Rect {
+        WorkspaceSettingsOverlay::invite_rect_for(self.ws_settings_rect())
     }
 
-    /// Copy-button geometry for integration tests.
-    pub fn ws_settings_copy_rect_for_tests(&self) -> Rect {
-        self.ws_settings_copy_rect()
-    }
-
-    /// When the invite link was last copied, for integration tests.
-    pub fn ws_invite_copied_at_for_tests(&self) -> Option<Instant> {
-        self.workspace_settings_overlay.invite_copied_at()
+    /// Signed-invite button geometry for integration tests.
+    pub fn ws_settings_invite_rect_for_tests(&self) -> Rect {
+        self.ws_settings_invite_rect()
     }
 
     /// Public alias for [`Self::quick_settings_rect`] so integration
@@ -3977,9 +4028,9 @@ impl ShellOverlayHost {
         self.refresh_room_activity();
     }
 
-    /// Put the room-activity surface fully away for deterministic recovery
-    /// captures. Production still follows the animated `set_open` path; this
-    /// is the closed counterpart to [`Self::force_room_activity_settled`].
+    /// Settle the room-activity sheet in its closed state after a shot driver
+    /// action closes it, preventing the following capture from containing the
+    /// tail of the dismissal animation.
     pub fn force_room_activity_closed_for_shots(&mut self) {
         self.room_activity_transition = ui::Transition::closed();
         self.room_activity_was_open = false;
@@ -3989,10 +4040,6 @@ impl ShellOverlayHost {
     /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
     fn ws_settings_name_rect(&self) -> Rect {
         WorkspaceSettingsOverlay::name_rect_for(self.ws_settings_rect())
-    }
-
-    fn ws_settings_close_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::close_rect_for(self.ws_settings_rect())
     }
 
     /// A contextual lens docked beside the live workspace. Narrow displays
@@ -4130,30 +4177,33 @@ impl ShellOverlayHost {
         self.overview_cards().iter().position(|c| c.is_current)
     }
 
-    /// Height of the spatial workspace header and its visible strips.
+    /// How many share rows the "shared out of here" list draws — at least
+    /// one, so a room sharing nothing says so on its own line rather than
+    /// collapsing the section away.
+    fn overview_share_rows(card: &crate::shell::overview::RoomCard) -> usize {
+        let shown = card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
+        let overflow = usize::from(card.shares.len() > shown);
+        shown.saturating_add(overflow).max(1)
+    }
+
+    /// Height of the "you are here" block, including its share list.
     fn overview_here_block_height(&self) -> f64 {
         let cards = self.overview_cards();
-        let rows = self
-            .overview_preview_index()
-            .and_then(|i| cards.get(i))
-            .map_or(1, |card| card.strips.len().clamp(1, OVERVIEW_STRIPS_MAX));
-        OVERVIEW_SPATIAL_HEADER_HEIGHT_PX
-            + usize_to_f64_lossy(rows) * OVERVIEW_STRIP_ROW_HEIGHT_PX
-            + usize_to_f64_lossy(rows.saturating_sub(1)) * OVERVIEW_STRIP_ROW_GAP_PX
+        let rows = match self.overview_here_index().and_then(|i| cards.get(i)) {
+            Some(card) => Self::overview_share_rows(card),
+            None => 1,
+        };
+        OVERVIEW_HERE_HEIGHT_PX
+            + OVERVIEW_CAPTION_HEIGHT_PX
+            + usize_to_f64_lossy(rows) * OVERVIEW_SHARE_ROW_HEIGHT_PX
     }
 
-    /// Workspace whose arrangement is previewed. Arrowing through the rail
-    /// previews before Enter commits the switch.
-    fn overview_preview_index(&self) -> Option<usize> {
-        let count = self.overview_cards().len();
-        self.overview_selection
-            .filter(|idx| *idx < count)
-            .or_else(|| self.overview_here_index())
-    }
-
-    /// Every workspace is a peer row in the left rail, followed by create.
+    /// How many rows the "go to" list holds: every room but the one you
+    /// are in, plus the trailing "New room" row.
     fn overview_list_slots(&self) -> usize {
-        self.overview_cards().len().saturating_add(1)
+        let n = self.overview_cards().len();
+        n.saturating_sub(usize::from(self.overview_here_index().is_some()))
+            .saturating_add(1)
     }
 
     /// Height the list would take if nothing clipped it.
@@ -4163,19 +4213,18 @@ impl ShellOverlayHost {
             .max(0.0)
     }
 
-    /// A desktop-sized floating canvas: rail for workspace switching, main
-    /// field for the selected workspace's actual strip arrangement.
+    /// The panel: a floating surface centred in the viewport, sized to what
+    /// it has to say and capped so it never runs off screen. Same width and
+    /// centring as the workspace-settings modal — the same kind of object.
     fn overview_panel_rect(&self) -> Rect {
         let w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - OVERVIEW_PANEL_MARGIN_PX * 2.0);
         let natural = OVERVIEW_PANEL_PAD_PX * 2.0
-            + self
-                .overview_here_block_height()
-                .max(OVERVIEW_CAPTION_HEIGHT_PX + self.overview_content_height());
+            + self.overview_here_block_height()
+            + OVERVIEW_SECTION_GAP_PX
+            + OVERVIEW_CAPTION_HEIGHT_PX
+            + self.overview_content_height();
         let max_h = self.rect.height() - OVERVIEW_PANEL_MARGIN_PX * 2.0;
-        let h = natural
-            .max(OVERVIEW_PANEL_MIN_HEIGHT_PX.min(max_h))
-            .min(max_h)
-            .max(0.0);
+        let h = natural.min(max_h).max(0.0);
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
@@ -4186,20 +4235,23 @@ impl ShellOverlayHost {
         self.overview_panel_rect().inset(-OVERVIEW_PANEL_PAD_PX)
     }
 
-    /// Main spatial field to the right of the workspace rail.
+    /// The "you are here" block — the current room's identity, access
+    /// and people, with what it shares beneath.
     fn overview_here_rect(&self) -> Rect {
         let c = self.overview_content_rect();
-        Rect::new(
-            c.x0 + OVERVIEW_WORKSPACE_RAIL_WIDTH_PX + OVERVIEW_COLUMN_GAP_PX,
-            c.y0,
-            c.x1,
-            c.y1,
-        )
+        Rect::new(c.x0, c.y0, c.x1, c.y0 + OVERVIEW_HERE_HEIGHT_PX)
+    }
+
+    /// Y of the "Shared out of here" caption.
+    fn overview_shares_top(&self) -> f64 {
+        self.overview_here_rect().y1
     }
 
     /// Y of the "Go to" caption above the room list.
     fn overview_list_caption_top(&self) -> f64 {
         self.overview_content_rect().y0
+            + self.overview_here_block_height()
+            + OVERVIEW_SECTION_GAP_PX
     }
 
     /// Y the first room row starts at, before scrolling.
@@ -4223,17 +4275,17 @@ impl ShellOverlayHost {
         let c = self.overview_content_rect();
         let y0 = self.overview_list_top() - self.overview_scroll_y
             + usize_to_f64_lossy(slot) * (OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX);
-        Rect::new(
-            c.x0,
-            y0,
-            (c.x0 + OVERVIEW_WORKSPACE_RAIL_WIDTH_PX).min(c.x1),
-            y0 + OVERVIEW_ROOM_ROW_HEIGHT_PX,
-        )
+        Rect::new(c.x0, y0, c.x1, y0 + OVERVIEW_ROOM_ROW_HEIGHT_PX)
     }
 
-    /// Workspace rows retain authoritative tree order, including current.
+    /// The list slot a room occupies: the room you are in has none — it
+    /// is the block at the top — and every other room keeps tree order.
     fn overview_slot_of(&self, idx: usize) -> Option<usize> {
-        (idx < self.overview_cards().len()).then_some(idx)
+        match self.overview_here_index() {
+            Some(here) if here == idx => None,
+            Some(here) if idx > here => Some(idx.saturating_sub(1)),
+            _ => Some(idx),
+        }
     }
 
     /// Rect of workspace `idx` — the "you are here" block for the room
@@ -4241,12 +4293,16 @@ impl ShellOverlayHost {
     /// the contract the test-control socket's `overview_card[i]` names
     /// are built on.
     fn overview_row_rect(&self, idx: usize) -> Rect {
-        self.overview_list_slot_rect(idx)
+        match self.overview_slot_of(idx) {
+            None => self.overview_here_rect(),
+            Some(slot) => self.overview_list_slot_rect(slot),
+        }
     }
 
     /// Rect of the "New room" row — the slot after the last room.
     fn overview_add_workspace_rect_for(&self, ws_count: usize) -> Rect {
-        self.overview_list_slot_rect(ws_count)
+        let slot = ws_count.saturating_sub(usize::from(self.overview_here_index().is_some()));
+        self.overview_list_slot_rect(slot)
     }
 
     /// Pan the room list so the keyboard's selection is on screen —
@@ -4257,6 +4313,7 @@ impl ShellOverlayHost {
             return;
         };
         let Some(slot) = self.overview_slot_of(idx) else {
+            // The room you are in is the pinned block, never in the list.
             return;
         };
         let step = OVERVIEW_ROOM_ROW_HEIGHT_PX + OVERVIEW_ROOM_ROW_GAP_PX;
@@ -4287,13 +4344,13 @@ impl ShellOverlayHost {
         let band = Rect::new(
             self.overview_content_rect().x0,
             self.overview_list_top(),
-            (self.overview_content_rect().x0 + OVERVIEW_WORKSPACE_RAIL_WIDTH_PX)
-                .min(self.overview_content_rect().x1),
+            self.overview_content_rect().x1,
             self.overview_content_rect().y1,
         );
         for i in 0..count {
             let r = self.overview_row_rect(i);
-            let visible = r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5;
+            let visible = self.overview_slot_of(i).is_none()
+                || (r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5);
             if visible && r.contains(p) {
                 return Some(i);
             }
@@ -4575,7 +4632,7 @@ impl ShellOverlayHost {
                 );
             } else {
                 state.push_notification(
-                    "Reverted a workspace change",
+                    "Reverted a room change",
                     "Written forward: the version you reverted from is still in the history.",
                 );
             }
@@ -4783,6 +4840,9 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
+            return true;
+        }
         // Captured ahead of the modifier-only branch so Character('K')
         // further down can't also fire.
         let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
@@ -4793,12 +4853,6 @@ impl ShellOverlayHost {
             return true;
         }
         if self.handle_overview_keyboard_nav(logical_key, handled) {
-            return true;
-        }
-        if self.handle_quick_settings_keyboard(logical_key, modifiers, handled) {
-            return true;
-        }
-        if self.handle_workspace_settings_keyboard(logical_key, modifiers, handled) {
             return true;
         }
         if is_mod
@@ -4819,137 +4873,6 @@ impl ShellOverlayHost {
             return true;
         }
         self.handle_workspace_rename_key(logical_key, modifiers, handled)
-    }
-
-    /// The contextual lens owns directional and Tab navigation between its
-    /// four real destinations. This is deliberately handled before shell
-    /// shortcuts so a keyboard user cannot accidentally navigate the desktop
-    /// underneath a modal-looking policy surface.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the four-element tab array bounds current to 0..=3, so this wraparound navigation cannot overflow or underflow"
-    )]
-    fn handle_workspace_settings_keyboard(
-        &self,
-        logical_key: &Key,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        if !self.overlay_flags().ws_settings
-            || self
-                .chrome
-                .as_ref()
-                .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some())
-        {
-            return false;
-        }
-        let forward = match logical_key {
-            Key::Named(NamedKey::ArrowRight) => Some(true),
-            Key::Named(NamedKey::ArrowLeft) => Some(false),
-            Key::Named(NamedKey::Tab) => Some(!modifiers.state().shift_key()),
-            _ => None,
-        };
-        let Some(forward) = forward else {
-            return false;
-        };
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let mut state = chrome.borrow_mut();
-        let tabs = WsTab::all();
-        let current = tabs
-            .iter()
-            .position(|tab| *tab == state.ws_settings_tab)
-            .unwrap_or(0);
-        let next = if forward {
-            (current + 1) % tabs.len()
-        } else {
-            (current + tabs.len() - 1) % tabs.len()
-        };
-        let Some(&tab) = tabs.get(next) else {
-            return false;
-        };
-        state.ws_settings_tab = tab;
-        state.bump();
-        *handled = true;
-        true
-    }
-
-    /// Root quick-settings controls are immediate-mode because they dispatch
-    /// typed OS actions, but they still participate in ordinary keyboard
-    /// traversal. This runs before global chords so an open system panel never
-    /// redirects arrows or Space into the workspace below it.
-    fn handle_quick_settings_keyboard(
-        &mut self,
-        logical_key: &Key,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        if !(self.overlay_flags().quick_settings
-            && self.chrome.as_ref().is_some_and(|chrome| {
-                matches!(
-                    chrome.borrow().quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Root
-                )
-            }))
-        {
-            return false;
-        }
-
-        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            if let Some(chrome) = self.chrome.as_ref() {
-                let mut state = chrome.borrow_mut();
-                self.qs_root
-                    .focus_next(&state.quick_settings, modifiers.state().shift_key());
-                state.bump();
-            }
-            *handled = true;
-            return true;
-        }
-
-        let direction = match logical_key {
-            Key::Named(NamedKey::ArrowLeft) => Some(-1.0),
-            Key::Named(NamedKey::ArrowRight) => Some(1.0),
-            _ => None,
-        };
-        if let Some(direction) = direction {
-            let commit = self.chrome.as_ref().and_then(|chrome| {
-                self.qs_root
-                    .adjust_focused_slider(&mut chrome.borrow_mut().quick_settings, direction)
-            });
-            if let Some(commit) = commit {
-                match commit {
-                    SliderCommit::Brightness(value_pct) => crate::shell::qs_actions::log_qs_result(
-                        "set_brightness",
-                        self.qs_actions.set_brightness(value_pct),
-                    ),
-                    SliderCommit::Volume(value_pct) => crate::shell::qs_actions::log_qs_result(
-                        "set_volume",
-                        self.qs_actions.set_volume(value_pct),
-                    ),
-                }
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
-            }
-            *handled = true;
-            return true;
-        }
-
-        if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
-            let panel = self.quick_settings_rect();
-            let chrome = self.chrome.clone();
-            let action = chrome.as_ref().map(|chrome| {
-                self.qs_root
-                    .activate_focused(panel, &mut chrome.borrow_mut().quick_settings)
-            });
-            if let Some(action) = action {
-                self.apply_quick_settings_root_action(action);
-            }
-            *handled = true;
-            return true;
-        }
-        false
     }
 
     /// Arrow/Enter navigation of the room overview list, unmodified so
@@ -5390,44 +5313,6 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Accept a committed IME run through the same selected-range replacement
-    /// as keyboard text. Preedit remains compositor-owned: this hand-painted
-    /// lens has no dedicated retained focus node to advertise its IME caret.
-    ///
-    /// `TextInput::local` cannot safely be used only as a painter here. Its
-    /// platform-IME and selection contract is tied to a dedicated `Widget`
-    /// node/focus target, while this draft and selection must remain in
-    /// `ChromeState` for atomic save/cancel through `commit_workspace_name`.
-    /// Mount an ephemeral child widget before replacing this adapter; doing a
-    /// partial migration would split visible selection from saved authority.
-    fn handle_workspace_rename_ime(&self, event: &WindowEvent, handled: &mut bool) -> bool {
-        let WindowEvent::Ime(winit::event::Ime::Commit(committed)) = event else {
-            return false;
-        };
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let mut state = chrome.borrow_mut();
-        let selection = state.editing_workspace_name_selection;
-        let Some(buffer) = state.editing_workspace_name.as_mut() else {
-            return false;
-        };
-        let inserted: String = committed
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect();
-        if inserted.is_empty() {
-            return true;
-        }
-        let range = selection.range();
-        buffer.replace_range(range.clone(), &inserted);
-        state.editing_workspace_name_selection =
-            ui::text_selection::Selection::collapsed(range.start.saturating_add(inserted.len()));
-        state.bump();
-        *handled = true;
-        true
-    }
-
     /// Every workspace-rename chord but `Enter`, applied to `buf`/`sel` in
     /// place and returned as `(consumed, needs_bump, selection)`. `Enter`
     /// is special-cased by the caller, which needs to drop the borrow this
@@ -5657,9 +5542,7 @@ impl ShellOverlayHost {
 
     fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
         if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return true;
         }
         // Following is a viewing mode, not a lock. The first deliberate
@@ -5669,9 +5552,7 @@ impl ShellOverlayHost {
             && !self.cursor_over_open_overlay(p)
             && !self.follow_chip_rect.contains(p)
         {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
         }
         // Gated on no overlay owning the pointer, so a click
         // under an open panel goes to the panel.
@@ -5748,10 +5629,9 @@ impl ShellOverlayHost {
             });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.followed_peer = None;
+                    self.set_followed_peer(None);
                 } else {
-                    self.followed_peer = Some(target.id);
-                    self.reconcile_followed_peer();
+                    self.set_followed_peer(Some(target.id));
                 }
             }
             *handled = true;
@@ -5931,17 +5811,91 @@ impl ShellOverlayHost {
             self.qs_root
                 .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
         };
-        self.apply_quick_settings_root_action(action);
+        self.apply_quick_settings_root_action(action, &chrome);
     }
 
-    /// The root control component translates input into a typed intent; this
-    /// host-only half applies navigation and OS effects. Keeping it shared by
-    /// pointer and keyboard avoids a second, drifting set of quick-settings
-    /// side effects.
-    fn apply_quick_settings_root_action(&mut self, action: RootAction) {
+    /// Keyboard parity for the immediate-mode quick-settings root. Tab uses
+    /// paint order, Enter/Space route through the same action dispatcher as a
+    /// pointer click, and arrows adjust the two range controls in small steps.
+    fn handle_quick_settings_keyboard(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+        handled: &mut bool,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
-            return;
+            return false;
         };
+        let at_root = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+        };
+        if !at_root {
+            return false;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let mut state = chrome.borrow_mut();
+            self.qs_root.focus_next(&state.quick_settings, backwards);
+            state.bump();
+            *handled = true;
+            return true;
+        }
+
+        if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            let action = {
+                let mut state = chrome.borrow_mut();
+                self.qs_root
+                    .activate_focused(self.quick_settings_rect(), &mut state.quick_settings)
+            };
+            self.apply_quick_settings_root_action(action, &chrome);
+            *handled = true;
+            return true;
+        }
+
+        let direction = if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown)
+        ) {
+            -1.0
+        } else if matches!(
+            logical_key,
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp)
+        ) {
+            1.0
+        } else {
+            return false;
+        };
+        let commit = {
+            let mut state = chrome.borrow_mut();
+            let commit = self
+                .qs_root
+                .adjust_focused_slider(&mut state.quick_settings, direction);
+            if commit.is_some() {
+                state.bump();
+            }
+            commit
+        };
+        match commit {
+            Some(SliderCommit::Brightness(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_brightness",
+                self.qs_actions.set_brightness(value_pct),
+            ),
+            Some(SliderCommit::Volume(value_pct)) => crate::shell::qs_actions::log_qs_result(
+                "set_volume",
+                self.qs_actions.set_volume(value_pct),
+            ),
+            None => return false,
+        }
+        *handled = true;
+        true
+    }
+
+    fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
             RootAction::Enter(level) => {
@@ -6172,8 +6126,15 @@ impl ShellOverlayHost {
                     st.bump();
                 }
             }
-            WorkspaceSettingsOutcome::CopyInvite => {
-                self.copy_workspace_invite();
+            WorkspaceSettingsOutcome::CreateInvite => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.ws_settings = false;
+                        state.bump();
+                    }
+                    self.open_invite_manager();
+                }
             }
             WorkspaceSettingsOutcome::EditName => {
                 if let Some(chrome) = self.chrome.clone() {
@@ -6197,29 +6158,6 @@ impl ShellOverlayHost {
                     chrome.borrow_mut().commit_workspace_name();
                 }
             }
-        }
-    }
-
-    fn copy_workspace_invite(&mut self) {
-        let link = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| {
-                chrome
-                    .borrow()
-                    .tree()
-                    .active_workspace()
-                    .map(crate::shell::workspace_settings::invite_link)
-            })
-            .unwrap_or_default();
-        if link.is_empty() {
-            return;
-        }
-        ui::text_selection::clipboard_copy(&link);
-        self.workspace_settings_overlay
-            .mark_invite_copied(Instant::now());
-        if let Some(chrome) = self.chrome.clone() {
-            chrome.borrow_mut().bump();
         }
     }
 
@@ -6532,38 +6470,31 @@ impl ShellOverlayHost {
 // Overview layout constants. Module-level so the draw path,
 // `hit_test_overview` and the unit tests share one geometry oracle.
 
-/// Widest the spatial canvas gets. It remains a floating shell surface,
-/// but is intentionally wider than settings because layout is its content.
-const OVERVIEW_PANEL_WIDTH_PX: f64 = 1120.0;
+/// Widest the rooms panel ever gets, matching the workspace-settings
+/// modal so the shell's floating surfaces are one family.
+const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
 /// Inset from the viewport edge, and the smallest gap the panel keeps
 /// from the top and bottom of the screen.
 const OVERVIEW_PANEL_MARGIN_PX: f64 = 48.0;
 /// Inner padding on the panel.
 const OVERVIEW_PANEL_PAD_PX: f64 = 20.0;
-/// Enough height to make at least three strip rows visually comparable.
-const OVERVIEW_PANEL_MIN_HEIGHT_PX: f64 = 520.0;
-/// Compact workspace navigator beside the arrangement.
-const OVERVIEW_WORKSPACE_RAIL_WIDTH_PX: f64 = 248.0;
-const OVERVIEW_COLUMN_GAP_PX: f64 = 28.0;
-/// Header above the strip stack in the main spatial field.
-const OVERVIEW_SPATIAL_HEADER_HEIGHT_PX: f64 = 70.0;
-const OVERVIEW_STRIP_ROW_HEIGHT_PX: f64 = 118.0;
-const OVERVIEW_STRIP_ROW_MIN_HEIGHT_PX: f64 = 82.0;
-const OVERVIEW_STRIP_ROW_GAP_PX: f64 = 12.0;
-const OVERVIEW_STRIP_LABEL_WIDTH_PX: f64 = 36.0;
-const OVERVIEW_STRIPS_MAX: usize = 5;
-const OVERVIEW_GROUPS_MAX: usize = 5;
-const OVERVIEW_GROUP_GAP_PX: f64 = 8.0;
-const OVERVIEW_GROUP_MORE_WIDTH_PX: f64 = 44.0;
-const OVERVIEW_GROUP_RADIUS_PX: f64 = 8.0;
-const OVERVIEW_TAB_BAR_HEIGHT_PX: f64 = 26.0;
-const OVERVIEW_TABS_MAX: usize = 3;
+/// Height of the "you are here" block: the current room's name, who can
+/// reach it, and the faces of the people in it.
+const OVERVIEW_HERE_HEIGHT_PX: f64 = 84.0;
 /// Height of the caption above a section ("Shared out of here", "Go to").
 const OVERVIEW_CAPTION_HEIGHT_PX: f64 = 26.0;
+/// Height of one share row.
+const OVERVIEW_SHARE_ROW_HEIGHT_PX: f64 = 28.0;
+/// Most share rows drawn before the rest collapse into "+N more" — the
+/// panel says whether things leave this room, the permissions pane has
+/// the full list.
+const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
 /// Height of one room row in the "go to" list.
 const OVERVIEW_ROOM_ROW_HEIGHT_PX: f64 = 60.0;
 /// Gutter between room rows.
 const OVERVIEW_ROOM_ROW_GAP_PX: f64 = 6.0;
+/// Gap between the "you are here" block and the room list.
+const OVERVIEW_SECTION_GAP_PX: f64 = 18.0;
 /// Corner radius of one room row.
 const OVERVIEW_ROW_RADIUS_PX: f64 = 10.0;
 /// Radius of an avatar in a face stack.
@@ -6584,117 +6515,6 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// Height of the fade over the bottom of an overflowing room list, so a
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
-
-fn count_label(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
-}
-
-impl ShellOverlayHost {
-    /// Semantic mirror of the contextual workspace lens. These nodes use the
-    /// same cached rectangles as the pointer router, so assistive technology
-    /// never reaches a label whose visible control is elsewhere.
-    fn ws_settings_accessibility_snapshot(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        let (active_tab, name, name_selection) = self.chrome.as_ref().map_or_else(
-            || {
-                (
-                    WsTab::General,
-                    String::new(),
-                    ui::text_selection::Selection::default(),
-                )
-            },
-            |chrome| {
-                let state = chrome.borrow();
-                let name = state
-                    .editing_workspace_name
-                    .clone()
-                    .or_else(|| state.tree().active_workspace().map(|ws| ws.name.clone()))
-                    .unwrap_or_default();
-                (
-                    state.ws_settings_tab,
-                    name,
-                    state.editing_workspace_name_selection,
-                )
-            },
-        );
-        let mut root = AccessNode::new(Role::Dialog)
-            .with_name("Workspace settings")
-            .with_description("Contextual settings for the active workspace")
-            .with_state(AccessState::new().modal(true));
-        let mut tabs = AccessNode::new(Role::TabBar).with_name("Workspace settings sections");
-        for (index, tab) in WsTab::all().into_iter().enumerate() {
-            tabs.children.push(
-                AccessNode::new(Role::Tab)
-                    .with_name(tab.label())
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(tab == active_tab),
-                    )
-                    .with_position(index.saturating_add(1), 4),
-            );
-        }
-        root.children.push(tabs);
-        if active_tab == WsTab::General {
-            root.children.push(
-                AccessNode::new(Role::TextInput)
-                    .with_name("Workspace name")
-                    .with_description("Shown in the top bar, invites, and shared activity")
-                    .with_value(name)
-                    .with_text_selection(name_selection.anchor, name_selection.cursor)
-                    .with_state(AccessState::new().focusable(true)),
-            );
-            root.children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Copy invite link")
-                    .with_state(AccessState::new().focusable(true)),
-            );
-        }
-        root.children.push(
-            AccessNode::new(Role::Button)
-                .with_name("Close workspace settings")
-                .with_state(AccessState::new().focusable(true)),
-        );
-        root
-    }
-
-    fn ws_settings_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let active_tab = self
-            .chrome
-            .as_ref()
-            .map(|chrome| chrome.borrow().ws_settings_tab)
-            .unwrap_or_default();
-        match path {
-            [0, index] if *index < 4 => WsTab::all()
-                .get(*index)
-                .copied()
-                .map(|tab| self.ws_settings_tab_pill_rect(tab)),
-            [1] if active_tab == WsTab::General => Some(self.ws_settings_name_rect()),
-            [2] if active_tab == WsTab::General => Some(self.ws_settings_copy_rect()),
-            [2] => Some(self.ws_settings_close_rect()),
-            [3] if active_tab == WsTab::General => Some(self.ws_settings_close_rect()),
-            _ => None,
-        }
-    }
-
-    fn focus_ws_settings_accessibility_path(&self, path: &[usize]) -> bool {
-        let [0, index] = path else {
-            return false;
-        };
-        let Some(tab) = WsTab::all().get(*index).copied() else {
-            return false;
-        };
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let mut state = chrome.borrow_mut();
-        state.commit_workspace_name();
-        state.ws_settings_tab = tab;
-        state.bump();
-        true
-    }
-}
 
 impl Widget for ShellOverlayHost {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
@@ -7151,8 +6971,19 @@ impl Widget for ShellOverlayHost {
         if self.route_dropped_file_event(event, handled) {
             return;
         }
-        if self.handle_workspace_rename_ime(event, handled) {
-            return;
+        if self.followed_peer.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            self.set_followed_peer(None);
         }
         if let WindowEvent::KeyboardInput {
             event:
@@ -7192,6 +7023,12 @@ impl Widget for ShellOverlayHost {
         ) {
             return;
         }
+        if self.followed_peer.is_some() && matches!(event, WindowEvent::MouseWheel { .. }) {
+            // Release before forwarding so this input changes the local view
+            // immediately rather than being overwritten by the next peer
+            // view-presence frame.
+            self.set_followed_peer(None);
+        }
         self.dispatch_pointer_and_content_event(
             event,
             scale_factor,
@@ -7217,68 +7054,66 @@ impl Widget for ShellOverlayHost {
             root.children
                 .push(self.room_activity.accessibility_snapshot());
         }
-        if self.overlay_flags().quick_settings {
-            let quick_settings = self
-                .chrome
-                .as_ref()
-                .map(|chrome| chrome.borrow().quick_settings.clone())
-                .unwrap_or_default();
-            root.children
-                .push(self.qs_root.accessibility_snapshot(&quick_settings));
-        }
-        if self.overlay_flags().ws_settings {
-            root.children
-                .push(self.ws_settings_accessibility_snapshot());
+        if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            if state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+            {
+                root.children
+                    .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+            }
         }
         Some(root)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let flags = self.overlay_flags();
-        if flags.room_activity
-            && path.first() == Some(&0)
-            && let Some(rect) = self.room_activity.accessibility_rect_for_path(path)
-        {
-            return Some(rect);
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.accessibility_rect_for_path(path);
         }
-        let quick_settings_index = usize::from(flags.room_activity);
-        let rest = path.get(1..).unwrap_or_default();
-        if flags.quick_settings && path.first() == Some(&quick_settings_index) {
-            return self.qs_root.accessibility_rect_for_path(rest);
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return None;
         }
-        let ws_settings_index =
-            quick_settings_index.saturating_add(usize::from(flags.quick_settings));
-        if flags.ws_settings && path.first() == Some(&ws_settings_index) {
-            return self.ws_settings_accessibility_rect(rest);
-        }
-        None
+        let child_path = path.get(1..)?;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        (state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ))
+        .then(|| self.qs_root.accessibility_rect_for_path(child_path))
+        .flatten()
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        let flags = self.overlay_flags();
-        if flags.room_activity
-            && path.first() == Some(&0)
-            && self.room_activity.focus_accessibility_path(path)
-        {
-            return true;
+        let room_activity_open = self.overlay_flags().room_activity;
+        if room_activity_open && path.first() == Some(&0) {
+            return self.room_activity.focus_accessibility_path(path);
         }
-        let quick_settings_index = usize::from(flags.room_activity);
-        let quick_settings = self
-            .chrome
-            .as_ref()
-            .map(|chrome| chrome.borrow().quick_settings.clone())
-            .unwrap_or_default();
-        let rest = path.get(1..).unwrap_or_default();
-        flags.quick_settings
-            && path.first() == Some(&quick_settings_index)
-            && self.qs_root.focus_accessibility_path(rest, &quick_settings)
-            || {
-                let ws_settings_index =
-                    quick_settings_index.saturating_add(usize::from(flags.quick_settings));
-                flags.ws_settings
-                    && path.first() == Some(&ws_settings_index)
-                    && self.focus_ws_settings_accessibility_path(rest)
-            }
+        let quick_settings_index = usize::from(room_activity_open);
+        if path.first() != Some(&quick_settings_index) {
+            return false;
+        }
+        let Some(child_path) = path.get(1..) else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        state.overlays.quick_settings
+            && matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            )
+            && self
+                .qs_root
+                .focus_accessibility_path(child_path, &state.quick_settings)
     }
 
     /// Expose content + palette + sidebar as direct children so trait
@@ -7472,10 +7307,9 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         return forced;
     }
     let user = state.active_local_user();
-    state
-        .tree()
-        .active_workspace()
-        .is_some_and(|ws| ws.may_administer(&user))
+    let tree = state.tree();
+    tree.active_workspace()
+        .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
 /// Records an app's capability grant on the active workspace: written
@@ -7491,6 +7325,12 @@ fn record_app_grant(
     let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
         return;
     };
+    let Some(room) = tree.active_workspace().map(|w| w.room) else {
+        return;
+    };
+    if !tree.governs_room(room) {
+        return;
+    }
     let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
         return;
     };
@@ -7528,6 +7368,12 @@ where
         let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
             return false;
         };
+        let Some(room) = tree.active_workspace().map(|w| w.room) else {
+            return false;
+        };
+        if !tree.governs_room(room) {
+            return false;
+        }
         let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
             return false;
         };
@@ -7885,7 +7731,7 @@ impl ShellOverlayHost {
         overview_open: bool,
     ) {
         let target = if overview_open { 1.0 } else { 0.0 };
-        let t = self.overview_transition_value(target, theme.reduce_motion);
+        let t = self.tick_overview_transition(target);
         // The overview is a panel over the desk, not a place you travel
         // to: the desktop stays drawn and the scrim dims it as the panel
         // rises, the same enter/exit the ws-settings modal plays.
@@ -8422,9 +8268,7 @@ impl ShellOverlayHost {
         }
     }
 
-    /// One compact workspace row in the navigation rail. Layout detail
-    /// stays in the spatial field, so this row does not become duplicate
-    /// navigation.
+    /// One room row in the "go to" list.
     #[allow(clippy::too_many_arguments)]
     fn draw_overview_room_row(
         &self,
@@ -8433,13 +8277,14 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        _idx: usize,
+        idx: usize,
         card: &crate::shell::overview::RoomCard,
         selected: bool,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         let hover = self.last_cursor.is_some_and(|c| rect.contains(c));
 
         let rr = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
@@ -8466,8 +8311,21 @@ impl ShellOverlayHost {
         let x0 = rect.x0 + pad;
         let x1 = rect.x1 - pad;
 
-        let current_dot_space = if card.is_current { 18.0 } else { 0.0 };
-        let text_w = (x1 - x0 - current_dot_space).max(40.0);
+        // Faces first: the name elides against what's left rather than
+        // running underneath them.
+        let colors_for = self.overview_face_colors(idx);
+        let faces_left = Self::draw_face_stack(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            x1,
+            rect.center().y,
+            &card.people,
+            &colors_for,
+            ground,
+        );
+        let text_w = (faces_left - 12.0 - x0).max(40.0);
 
         let name_size = tokens.typography.scale.lg;
         let name = text_renderer.elide_to_width_weighted(
@@ -8479,13 +8337,13 @@ impl ShellOverlayHost {
         let (_, name_h) =
             text_renderer.measure_weighted(&name, name_size, None, TextWeight::Semibold);
         let sub_size = tokens.typography.scale.sm;
-        let sub = crate::shell::overview::overview_people_label(card).unwrap_or_else(|| {
-            format!(
-                "{} · {}",
-                count_label(card.strips.len(), "strip", "strips"),
-                count_label(card.group_count(), "window", "windows")
-            )
-        });
+        // Who's in the room now outranks who could be; access is what
+        // the line says when it's empty.
+        let mut sub = crate::shell::overview::room_presence_label(card)
+            .unwrap_or_else(|| crate::shell::overview::room_access_label(card));
+        if let Some(shares) = crate::shell::overview::room_shares_label(card) {
+            sub = format!("{sub} · {shares}");
+        }
         let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
         let (_, sub_h) = text_renderer.measure(&sub, sub_size, None);
         let stack_h = f64::from(name_h) + 2.0 + f64::from(sub_h);
@@ -8507,21 +8365,12 @@ impl ShellOverlayHost {
             transform.pre_translate((x0, top + f64::from(name_h) + 2.0).into()),
             None,
         );
-        if card.is_current {
-            let r = 4.0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &Circle::new((x1 - r, rect.center().y), r),
-            );
-        }
     }
 
-    /// The workspace overview: a compact workspace rail beside the actual
-    /// strip -> group -> tab arrangement. The hierarchy is visible without
-    /// turning every nested object into another navigation list.
+    /// The workspace overview: a switcher for rooms, so it's a floating
+    /// panel like the palette and workspace-settings modal, not a
+    /// full-screen grid. Reading order follows the questions asked: where
+    /// you are, what's shared, where else to go.
     fn draw_overview(
         &mut self,
         scene: &mut Scene,
@@ -8552,11 +8401,34 @@ impl ShellOverlayHost {
         );
 
         let content = self.overview_content_rect();
+        let here_idx = self.overview_here_index();
+        let here_rect = self.overview_here_rect();
         let caption_size = tokens.typography.scale.sm;
 
+        self.draw_overview_here_section(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            content,
+            here_rect,
+            here_idx,
+            &cards,
+        );
+        self.draw_overview_shares_section(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            content,
+            here_idx,
+            &cards,
+        );
+
+        // -- Where else you can go ----------------------------------------
         text_renderer.draw_text(
             scene,
-            "Workspaces",
+            "Go to",
             caption_size,
             colors.text_tertiary,
             transform.pre_translate((content.x0, self.overview_list_caption_top() + 6.0).into()),
@@ -8566,7 +8438,7 @@ impl ShellOverlayHost {
         let band = Rect::new(
             content.x0 - 2.0,
             self.overview_list_top(),
-            (content.x0 + OVERVIEW_WORKSPACE_RAIL_WIDTH_PX + 2.0).min(content.x1),
+            content.x1 + 2.0,
             content.y1,
         );
         scene.push_layer(
@@ -8582,376 +8454,443 @@ impl ShellOverlayHost {
         self.draw_overview_scroll_fade(scene, transform, theme, band);
 
         scene.pop_layer();
-
-        let preview = self.overview_preview_index().and_then(|idx| cards.get(idx));
-        self.draw_overview_spatial_workspace(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.overview_here_rect(),
-            preview,
-        );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// "Where you are": the current room's face stack, name, "You are
+    /// here" chip and access label — or an honest empty state when
+    /// nothing is marked current.
     #[allow(
-        clippy::too_many_lines,
-        reason = "the spatial overview paint keeps its rail, hierarchy, empty and overflow states in one geometry pass"
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching every other \
+                  draw_overview_* pane helper in this impl"
     )]
-    fn draw_overview_spatial_workspace(
+    fn draw_overview_here_section(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        card: Option<&crate::shell::overview::RoomCard>,
+        content: Rect,
+        here_rect: Rect,
+        here_idx: Option<usize>,
+        cards: &[crate::shell::overview::RoomCard],
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let Some(card) = card else {
+        let name_size = Self::overview_header_font_size_for(tokens);
+
+        if let Some((hi, card)) = here_idx.and_then(|hi| cards.get(hi).map(|card| (hi, card))) {
+            self.draw_overview_here_room(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                content,
+                here_rect,
+                hi,
+                card,
+                name_size,
+            );
+        } else {
+            // No room is marked current. Saying which one you are in
+            // would be an invention, so the panel says what is true.
             text_renderer.draw_text_weighted(
                 scene,
-                "No workspace selected",
-                Self::overview_header_font_size_for(tokens),
+                "No room selected",
+                name_size,
                 colors.text_dim,
-                transform.pre_translate((rect.x0, rect.y0).into()),
+                transform.pre_translate((content.x0, here_rect.y0).into()),
                 None,
                 TextWeight::Bold,
             );
-            return;
-        };
+        }
+    }
 
-        let title_size = Self::overview_header_font_size_for(tokens);
-        let (_, title_h) =
-            text_renderer.measure_weighted(&card.name, title_size, None, TextWeight::Bold);
+    /// The current room's selection highlight, face stack, name, "You
+    /// are here" chip and access label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching every other \
+                  draw_overview_* pane helper in this impl"
+    )]
+    fn draw_overview_here_room(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        here_rect: Rect,
+        hi: usize,
+        card: &crate::shell::overview::RoomCard,
+        name_size: f32,
+    ) {
+        use ui::widget::{Chip, ChipLead, ChipStyle};
+
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+
+        self.draw_overview_here_selection(scene, transform, content, here_rect, hi, accent);
+
+        // Faces claim the right edge; the name is elided against the
+        // room they leave rather than sliding under them.
+        let colors_for = self.overview_face_colors(hi);
+        let faces_left = Self::draw_face_stack(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            content.x1,
+            here_rect.y0 + 22.0,
+            &card.people,
+            &colors_for,
+            ground,
+        );
+
+        // "You are here" states which of these rooms you are in, in
+        // the same tinted-chip language every other current-state
+        // marker in the shell uses.
+        let chip_h = 22.0_f64;
+        let chip_w =
+            Chip::natural_width_at("You are here", chip_h, ChipLead::None, theme, text_renderer);
+        let name_avail = (faces_left - 16.0 - content.x0 - chip_w - 10.0).max(60.0);
+        let name = text_renderer.elide_to_width_weighted(
+            &card.name,
+            name_size,
+            f64_to_f32_lossy(name_avail),
+            TextWeight::Bold,
+        );
+        let (name_w, name_h) =
+            text_renderer.measure_weighted(&name, name_size, None, TextWeight::Bold);
         text_renderer.draw_text_weighted(
             scene,
-            &card.name,
-            title_size,
+            &name,
+            name_size,
             colors.text_primary,
-            transform.pre_translate((rect.x0, rect.y0).into()),
+            transform.pre_translate((content.x0, here_rect.y0).into()),
             None,
             TextWeight::Bold,
         );
-        let layout = format!(
-            "{} · {}",
-            count_label(card.strips.len(), "strip", "strips"),
-            count_label(card.group_count(), "window", "windows")
+        let chip_x0 = content.x0 + f64::from(name_w) + 10.0;
+        Chip::draw_at(
+            scene,
+            transform,
+            Rect::new(
+                chip_x0,
+                here_rect.y0 + f64::from(name_h) / 2.0 - chip_h / 2.0,
+                chip_x0 + chip_w,
+                here_rect.y0 + f64::from(name_h) / 2.0 + chip_h / 2.0,
+            ),
+            "You are here",
+            ChipLead::None,
+            ChipStyle::tinted(accent),
+            theme,
+            text_renderer,
         );
+
+        let access = crate::shell::overview::room_access_label(card);
         text_renderer.draw_text(
             scene,
-            &layout,
-            tokens.typography.scale.sm,
-            colors.text_tertiary,
-            transform.pre_translate((rect.x0, rect.y0 + f64::from(title_h) + 4.0).into()),
+            &access,
+            tokens.typography.scale.base,
+            colors.text_dim,
+            transform.pre_translate((content.x0, here_rect.y0 + f64::from(name_h) + 6.0).into()),
             None,
         );
-
-        let collaborators: Vec<_> = card.others().cloned().collect();
-        if !collaborators.is_empty() {
-            let colors_for = self
-                .overview_preview_index()
-                .map_or_else(std::collections::HashMap::new, |idx| {
-                    self.overview_face_colors(idx)
-                });
-            Self::draw_face_stack(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect.x1,
-                rect.y0 + 18.0,
-                &collaborators,
-                &colors_for,
-                panel_surface(theme, MODAL_SURFACE_ALPHA),
-            );
-            if let Some(summary) = crate::shell::overview::overview_people_label(card) {
-                let summary = text_renderer.elide_to_width(
-                    &summary,
-                    tokens.typography.scale.sm,
-                    f64_to_f32_lossy((rect.width() * 0.4).max(80.0)),
-                );
-                let (summary_w, _) =
-                    text_renderer.measure(&summary, tokens.typography.scale.sm, None);
-                text_renderer.draw_text(
-                    scene,
-                    &summary,
-                    tokens.typography.scale.sm,
-                    colors.text_dim,
-                    transform
-                        .pre_translate((rect.x1 - f64::from(summary_w), rect.y0 + 38.0).into()),
-                    None,
-                );
-            }
-        }
-
-        let strips_rect = Rect::new(
-            rect.x0,
-            rect.y0 + OVERVIEW_SPATIAL_HEADER_HEIGHT_PX,
-            rect.x1,
-            rect.y1,
-        );
-        if card.strips.is_empty() {
-            let empty = RoundedRect::from_rect(strips_rect, OVERVIEW_ROW_RADIUS_PX);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &empty,
-            );
-            text_renderer.draw_text(
-                scene,
-                "No windows open",
-                tokens.typography.scale.base,
-                colors.text_dim,
-                transform.pre_translate((strips_rect.x0 + 18.0, strips_rect.y0 + 18.0).into()),
-                None,
-            );
-            return;
-        }
-
-        let shown = card.strips.len().min(OVERVIEW_STRIPS_MAX);
-        let available = strips_rect.height()
-            - usize_to_f64_lossy(shown.saturating_sub(1)) * OVERVIEW_STRIP_ROW_GAP_PX;
-        let row_h = (available / usize_to_f64_lossy(shown)).clamp(
-            OVERVIEW_STRIP_ROW_MIN_HEIGHT_PX,
-            OVERVIEW_STRIP_ROW_HEIGHT_PX,
-        );
-        for (idx, strip) in card.strips.iter().take(shown).enumerate() {
-            let y0 = strips_rect.y0 + usize_to_f64_lossy(idx) * (row_h + OVERVIEW_STRIP_ROW_GAP_PX);
-            Self::draw_overview_strip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(strips_rect.x0, y0, strips_rect.x1, y0 + row_h),
-                idx,
-                strip,
-            );
-        }
-        let hidden = card.strips.len().saturating_sub(shown);
-        if hidden > 0 {
-            let more = format!("+{hidden} more strips");
-            text_renderer.draw_text(
-                scene,
-                &more,
-                tokens.typography.scale.sm,
-                colors.text_dim,
-                transform.pre_translate((strips_rect.x1 - 110.0, strips_rect.y1 - 20.0).into()),
-                None,
-            );
-        }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_overview_strip(
+    /// The keyboard target lands here on open, so the current room
+    /// carries the same accent selection a list row does — without it
+    /// the first arrow press would seem to come from nowhere.
+    fn draw_overview_here_selection(
+        &self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        index: usize,
-        strip: &crate::shell::overview::OverviewStrip,
+        content: Rect,
+        here_rect: Rect,
+        hi: usize,
+        accent: Color,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let strip_rr = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
+        if self.overview_selection != Some(hi) {
+            return;
+        }
+        let sel = Rect::new(
+            content.x0 - 10.0,
+            here_rect.y0 - 10.0,
+            content.x1 + 10.0,
+            here_rect.y1 - 2.0,
+        );
+        let sel_rr = RoundedRect::from_rect(sel, OVERVIEW_ROW_RADIUS_PX);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            accent.with_alpha_factor(0.10),
             None,
-            &strip_rr,
+            &sel_rr,
         );
-        if strip.is_current {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                accent.with_alpha_factor(0.7),
-                None,
-                &strip_rr,
-            );
-        }
-        let label = index.saturating_add(1).to_string();
-        text_renderer.draw_text_weighted(
-            scene,
-            &label,
-            tokens.typography.scale.sm,
-            if strip.is_current {
-                accent
-            } else {
-                colors.text_tertiary
-            },
-            transform.pre_translate((rect.x0 + 14.0, rect.y0 + 12.0).into()),
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            accent.with_alpha_factor(0.55),
             None,
-            TextWeight::Semibold,
+            &sel_rr,
         );
-        let groups_rect = Rect::new(
-            rect.x0 + OVERVIEW_STRIP_LABEL_WIDTH_PX,
-            rect.y0 + 8.0,
-            rect.x1 - 8.0,
-            rect.y1 - 8.0,
-        );
-        if strip.groups.is_empty() {
-            text_renderer.draw_text(
-                scene,
-                "Empty strip",
-                tokens.typography.scale.sm,
-                colors.text_tertiary,
-                transform
-                    .pre_translate((groups_rect.x0 + 8.0, groups_rect.center().y - 8.0).into()),
-                None,
-            );
-            return;
-        }
+    }
 
-        let shown = strip.groups.len().min(OVERVIEW_GROUPS_MAX);
-        let hidden = strip.groups.len().saturating_sub(shown);
-        let gap_total = usize_to_f64_lossy(shown.saturating_sub(1)) * OVERVIEW_GROUP_GAP_PX;
-        let hidden_w = if hidden > 0 {
-            OVERVIEW_GROUP_MORE_WIDTH_PX + OVERVIEW_GROUP_GAP_PX
-        } else {
-            0.0
+    /// "What leaves this room": the share list, or an honest zero-state
+    /// when nothing in the current room is shared out of it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching every other \
+                  draw_overview_* pane helper in this impl"
+    )]
+    fn draw_overview_shares_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        here_idx: Option<usize>,
+        cards: &[crate::shell::overview::RoomCard],
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let caption_size = tokens.typography.scale.sm;
+
+        let shares_top = self.overview_shares_top();
+        text_renderer.draw_text(
+            scene,
+            "Shared out of here",
+            caption_size,
+            colors.text_tertiary,
+            transform.pre_translate((content.x0, shares_top + 6.0).into()),
+            None,
+        );
+        let row_h = OVERVIEW_SHARE_ROW_HEIGHT_PX;
+        let sy = shares_top + OVERVIEW_CAPTION_HEIGHT_PX;
+        let empty_card = crate::shell::overview::RoomCard {
+            id: crate::shell::state::WorkspaceId::default(),
+            name: String::new(),
+            is_current: false,
+            people: Vec::new(),
+            shares: Vec::new(),
+            strips: Vec::new(),
         };
-        let usable = (groups_rect.width() - gap_total - hidden_w).max(1.0);
-        let total_weight: u32 = strip
-            .groups
-            .iter()
-            .take(shown)
-            .map(|group| u32::from(group.width_permille.max(1)))
-            .sum();
-        let mut x = groups_rect.x0;
-        for group in strip.groups.iter().take(shown) {
-            let share = f64::from(group.width_permille.max(1)) / f64::from(total_weight.max(1));
-            let width = usable * share;
-            let item_rect = Rect::new(x, groups_rect.y0, x + width, groups_rect.y1);
-            Self::draw_overview_group(scene, transform, text_renderer, theme, item_rect, group);
-            x = item_rect.x1 + OVERVIEW_GROUP_GAP_PX;
-        }
-        if hidden > 0 {
-            let more = format!("+{hidden}");
-            let rr = RoundedRect::from_rect(
-                Rect::new(x, groups_rect.y0, groups_rect.x1, groups_rect.y1),
-                OVERVIEW_GROUP_RADIUS_PX,
+        let here_card = here_idx.and_then(|i| cards.get(i)).unwrap_or(&empty_card);
+        if here_card.shares.is_empty() {
+            Self::draw_overview_shares_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                content,
+                sy,
+                row_h,
             );
-            scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &rr);
+        } else {
+            Self::draw_overview_share_rows(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                content,
+                here_card,
+                sy,
+                row_h,
+            );
+        }
+    }
+
+    /// An honest zero-state: "nothing" is itself the answer.
+    fn draw_overview_shares_empty(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        sy: f64,
+        row_h: f64,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let body_size = tokens.typography.scale.base;
+        let glyph = 14.0_f64;
+        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let cy = sy + row_h / 2.0;
+        let glyph_rect = Rect::new(
+            content.x0,
+            cy - glyph / 2.0,
+            content.x0 + glyph,
+            cy + glyph / 2.0,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            glyph_rect,
+            ui::icons::Icon::Shield,
+            colors.text_tertiary,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Nothing in this workspace is shared out of it",
+            body_size,
+            colors.text_dim,
+            transform.pre_translate(
+                (
+                    content.x0 + glyph + 8.0,
+                    sy + (row_h - f64::from(body_h)) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+    }
+
+    /// One row per share (up to `OVERVIEW_SHARES_MAX_ROWS`), plus an
+    /// "and N more" trailer when there are more than that.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching every other \
+                  draw_overview_* pane helper in this impl"
+    )]
+    fn draw_overview_share_rows(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        here_card: &crate::shell::overview::RoomCard,
+        mut sy: f64,
+        row_h: f64,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        // One vertical rule for the section: glyph and text centre on
+        // the row's middle line.
+        let glyph = 14.0_f64;
+        let shown = here_card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
+        for share in here_card.shares.iter().take(shown) {
+            Self::draw_overview_share_row(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                content,
+                share,
+                sy,
+                row_h,
+                glyph,
+            );
+            sy += row_h;
+        }
+        let hidden = here_card.shares.len().saturating_sub(shown);
+        if hidden > 0 {
+            let more = format!("and {hidden} more");
+            let (_, more_h) = text_renderer.measure(&more, tokens.typography.scale.sm, None);
             text_renderer.draw_text(
                 scene,
                 &more,
                 tokens.typography.scale.sm,
-                colors.text_dim,
-                transform.pre_translate((x + 10.0, groups_rect.center().y - 8.0).into()),
+                colors.text_tertiary,
+                transform.pre_translate(
+                    (
+                        content.x0 + glyph + 8.0,
+                        sy + (row_h - f64::from(more_h)) / 2.0,
+                    )
+                        .into(),
+                ),
                 None,
             );
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_overview_group(
+    /// One "shared out of here" row: an icon, who holds it, and what.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching every other \
+                  draw_overview_* pane helper in this impl"
+    )]
+    fn draw_overview_share_row(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        group: &crate::shell::overview::OverviewGroup,
+        content: Rect,
+        share: &crate::shell::overview::RoomShare,
+        sy: f64,
+        row_h: f64,
+        glyph: f64,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let rr = RoundedRect::from_rect(rect, OVERVIEW_GROUP_RADIUS_PX);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &rr);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(if group.is_current { 1.5 } else { 1.0 }),
-            transform,
-            if group.is_current {
-                accent
-            } else {
-                colors.border_standard
-            },
-            None,
-            &rr,
+        let body_size = tokens.typography.scale.base;
+        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let body_top = sy + (row_h - f64::from(body_h)) / 2.0;
+        let cy = sy + row_h / 2.0;
+        let glyph_rect = Rect::new(
+            content.x0,
+            cy - glyph / 2.0,
+            content.x0 + glyph,
+            cy + glyph / 2.0,
         );
-
-        let tab_count = group.tabs.len().max(1);
-        let shown_tabs = tab_count.min(OVERVIEW_TABS_MAX);
-        let tab_w = rect.width() / usize_to_f64_lossy(shown_tabs);
-        for (idx, tab) in group.tabs.iter().take(shown_tabs).enumerate() {
-            let tab_rect = Rect::new(
-                rect.x0 + usize_to_f64_lossy(idx) * tab_w,
-                rect.y0,
-                rect.x0 + usize_to_f64_lossy(idx.saturating_add(1)) * tab_w,
-                (rect.y0 + OVERVIEW_TAB_BAR_HEIGHT_PX).min(rect.y1),
-            );
-            if tab.is_active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.13),
-                    None,
-                    &tab_rect,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    accent,
-                    None,
-                    &Rect::new(tab_rect.x0, tab_rect.y1 - 2.0, tab_rect.x1, tab_rect.y1),
-                );
-            }
-            let title = text_renderer.elide_to_width(
-                &tab.title,
-                tokens.typography.scale.xs,
-                f64_to_f32_lossy((tab_rect.width() - 14.0).max(12.0)),
-            );
-            text_renderer.draw_text(
-                scene,
-                &title,
-                tokens.typography.scale.xs,
-                if tab.is_active {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                },
-                transform.pre_translate((tab_rect.x0 + 6.0, tab_rect.y0 + 5.0).into()),
-                None,
-            );
-            for (person_idx, person) in tab.people.iter().take(2).enumerate() {
-                let (r, g, b) = ui::presence::user_color(&person.id);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    Color::from_rgb8(r, g, b),
-                    None,
-                    &Circle::new(
-                        (
-                            tab_rect.x1 - 5.0 - usize_to_f64_lossy(person_idx) * 7.0,
-                            tab_rect.y0 + 6.0,
-                        ),
-                        2.5,
-                    ),
-                );
-            }
-        }
-        let title = text_renderer.elide_to_width_weighted(
-            group.active_title(),
-            tokens.typography.scale.base,
-            f64_to_f32_lossy((rect.width() - 20.0).max(20.0)),
-            TextWeight::Semibold,
-        );
-        text_renderer.draw_text_weighted(
+        ui::icons::draw_icon(
             scene,
-            &title,
-            tokens.typography.scale.base,
-            colors.text_primary,
+            transform,
+            glyph_rect,
+            ui::icons::Icon::ExternalLink,
+            colors.text_tertiary,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        // Who holds it sits right; what's shared elides against it.
+        let with = match (share.with.first(), share.with.len()) {
+            (Some(first), 1) => first.clone(),
+            (Some(first), 2) => {
+                format!(
+                    "{first} and {}",
+                    share.with.get(1).map_or("", String::as_str)
+                )
+            }
+            (Some(first), n) => {
+                format!("{first} and {} others", n.saturating_sub(1))
+            }
+            (None, _) => String::new(),
+        };
+        let with = if share.writable {
+            format!("{with} · can edit")
+        } else {
+            with
+        };
+        let with_size = tokens.typography.scale.sm;
+        let (with_w, with_h) = text_renderer.measure(&with, with_size, None);
+        text_renderer.draw_text(
+            scene,
+            &with,
+            with_size,
+            colors.text_dim,
             transform.pre_translate(
-                (rect.x0 + 10.0, rect.y0 + OVERVIEW_TAB_BAR_HEIGHT_PX + 10.0).into(),
+                (
+                    content.x1 - f64::from(with_w),
+                    sy + (row_h - f64::from(with_h)) / 2.0,
+                )
+                    .into(),
             ),
             None,
-            TextWeight::Semibold,
+        );
+        let what_x = content.x0 + glyph + 8.0;
+        let what_avail = (content.x1 - f64::from(with_w) - 12.0 - what_x).max(40.0);
+        let what =
+            text_renderer.elide_to_width(&share.what, body_size, f64_to_f32_lossy(what_avail));
+        text_renderer.draw_text(
+            scene,
+            &what,
+            body_size,
+            colors.text_primary,
+            transform.pre_translate((what_x, body_top).into()),
+            None,
         );
     }
 
@@ -9089,13 +9028,11 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let Some(row) = self.followed_roster_row() else {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return;
         };
         let label = format!("Following {}", row.label);
-        let detail = "Your view moves with theirs";
+        let detail = "Interact or press Stop to take control";
         let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
         let center_x = self.rect.center().x;
         let y0 = self.rect.y0 + 54.0;
@@ -10142,9 +10079,10 @@ impl ShellOverlayHost {
     reason = "exact overview layout geometry is the behavior under test"
 )]
 mod overview_panel_tests {
-    //! The overview is a spatial workspace map with a subordinate switcher.
-    //! These pin geometry/data, not pixels, against the helpers the draw path
-    //! itself uses.
+    //! The overview is a switcher for rooms: which one you're in, who's in
+    //! it, what leaves it, how to get to another. These pin geometry/data,
+    //! not pixels — every assertion runs against the same helpers
+    //! `draw_overview` itself calls (`overview_row_rect`, `room_cards`).
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -10178,21 +10116,28 @@ mod overview_panel_tests {
             .map_or(0, |c| c.borrow().tree().workspaces.len())
     }
 
-    /// Workspace switching and layout inspection occupy separate columns;
-    /// the current workspace remains a row so arrow navigation is regular.
+    /// The room you are in is the block at the top, not a row in the
+    /// list you could scroll away from. That is the difference between
+    /// "here is where you are" and "here is an index of rooms".
     #[test]
-    fn workspace_rail_and_spatial_field_are_separate() {
+    fn the_room_you_are_in_is_the_pinned_block_not_a_list_row() {
         let h = host();
         let here = h
             .overview_here_index()
-            .expect("demo tree has an active workspace");
-        assert_eq!(h.overview_slot_of(here), Some(here));
-        let spatial = h.overview_here_rect();
+            .expect("demo tree has an active room");
+        assert_eq!(
+            h.overview_slot_of(here),
+            None,
+            "the current room occupies no list slot"
+        );
+        assert_eq!(h.overview_row_rect(here), h.overview_here_rect());
         for i in 0..ws_count(&h) {
-            let row = h.overview_row_rect(i);
+            if i == here {
+                continue;
+            }
             assert!(
-                row.x1 < spatial.x0,
-                "workspace rail must not overlap the spatial map"
+                h.overview_slot_of(i).is_some(),
+                "every other room is a row you can go to"
             );
         }
     }
@@ -10202,8 +10147,12 @@ mod overview_panel_tests {
     #[test]
     fn room_rows_advance_downward_without_overlapping() {
         let h = host();
+        let here = h.overview_here_index();
         let mut prev: Option<Rect> = None;
         for i in 0..ws_count(&h) {
+            if Some(i) == here {
+                continue;
+            }
             let r = h.overview_row_rect(i);
             if let Some(p) = prev {
                 assert!(
@@ -10216,7 +10165,7 @@ mod overview_panel_tests {
             prev = Some(r);
         }
         let add = h.overview_add_workspace_rect_for(ws_count(&h));
-        let last = prev.expect("demo tree has workspaces");
+        let last = prev.expect("demo tree has rooms other than the current one");
         assert!(
             add.y0 >= last.y1,
             "\"New room\" is the slot after the last room, not on top of it"
@@ -10260,21 +10209,21 @@ mod overview_panel_tests {
         );
     }
 
-    /// The overview keeps enough room for a legible spatial map and stays on screen.
+    /// The panel is sized to what it says and stays on screen.
     #[test]
-    fn the_panel_is_spatially_sized_and_stays_inside_the_viewport() {
+    fn the_panel_is_content_sized_and_stays_inside_the_viewport() {
         let small = host_with(WorkspaceTree::bootstrap_default());
         let many = host();
+        assert!(
+            many.overview_panel_rect().height() > small.overview_panel_rect().height(),
+            "more rooms means a taller panel — it is not a fixed page"
+        );
         for h in [&small, &many] {
             let p = h.overview_panel_rect();
             assert!(
                 p.x0 >= h.rect.x0 && p.x1 <= h.rect.x1 && p.y0 >= h.rect.y0 && p.y1 <= h.rect.y1,
                 "panel {p:?} escapes the viewport {:?}",
                 h.rect
-            );
-            assert!(
-                p.height() >= OVERVIEW_PANEL_MIN_HEIGHT_PX,
-                "desktop viewport should preserve the minimum spatial canvas"
             );
         }
     }
@@ -10377,20 +10326,34 @@ mod overview_panel_tests {
         assert_eq!(card.people[0].name, "Ada", "the roster supplies the name");
     }
 
-    /// Preview follows keyboard selection before Enter commits, so inspecting
-    /// a workspace never silently changes the active workspace.
+    /// The panel never grows without bound as sharing does: past a few
+    /// rows the rest collapse into a count, so the block stays a summary.
     #[test]
-    fn keyboard_selection_previews_without_switching() {
-        let mut h = host();
-        let here = h.overview_here_index().expect("active workspace");
-        let next = (here + 1) % ws_count(&h);
-        h.overview_selection = Some(next);
-        assert_eq!(h.overview_preview_index(), Some(next));
-        assert_eq!(
-            h.overview_here_index(),
-            Some(here),
-            "preview must not mutate the workspace tree"
+    fn the_share_list_collapses_rather_than_growing_without_bound() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        for i in 0..12 {
+            tree.workspaces[0].capabilities.push(CapOverride::grant(
+                Subject::person("ada"),
+                Scope::FsPath(format!("/var/workspace/doc{i}")),
+                Verb::Read,
+            ));
+        }
+        let card = &room_cards(&tree)[0];
+        assert_eq!(card.shares.len(), 12, "the model keeps every share");
+        assert!(
+            ShellOverlayHost::overview_share_rows(card) <= OVERVIEW_SHARES_MAX_ROWS + 1,
+            "the panel draws at most the cap plus one overflow line"
         );
+    }
+
+    /// A room that shares nothing still gets a line, because "nothing
+    /// leaves this room" is an answer the screen exists to give.
+    #[test]
+    fn a_room_that_shares_nothing_still_gets_a_row() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let card = &room_cards(&tree)[0];
+        assert!(card.shares.is_empty());
+        assert_eq!(ShellOverlayHost::overview_share_rows(card), 1);
     }
 }
 
@@ -10503,25 +10466,6 @@ mod overview_transition_tests {
     }
 
     #[test]
-    fn reduced_motion_snaps_without_reseeding_keyboard_preview() {
-        let mut h = host();
-        assert_eq!(h.overview_transition_value(1.0, true), 1.0);
-        assert_eq!(h.overview_t, 1.0);
-        assert!(h.transition_started.is_none());
-
-        h.overview_selection = Some(2);
-        assert_eq!(h.overview_transition_value(1.0, true), 1.0);
-        assert_eq!(
-            h.overview_selection,
-            Some(2),
-            "a settled reduced-motion frame must preserve the user's preview"
-        );
-
-        assert_eq!(h.overview_transition_value(0.0, true), 0.0);
-        assert_eq!(h.overview_selection, None);
-    }
-
-    #[test]
     fn target_change_latches_transition_and_completes() {
         let mut h = host();
         h.tick_overview_transition(1.0);
@@ -10556,89 +10500,6 @@ mod overview_transition_tests {
             t_mid
         );
         assert_eq!(h.overview_target, 0.0);
-    }
-}
-
-#[cfg(test)]
-mod quick_settings_keyboard_tests {
-    use super::*;
-    use crate::shell::chrome_state::ChromeState;
-    use crate::shell::quick_settings::QsLevel;
-    use crate::shell::state::WorkspaceTree;
-    use ui::widget::Container;
-
-    fn host_on_quick_settings_root() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        {
-            let mut state = chrome.borrow_mut();
-            state.overlays.quick_settings = true;
-            state.quick_settings.nav_stack = vec![QsLevel::Root];
-        }
-        let mut host =
-            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
-        host.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        (host, chrome)
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the test helper mirrors winit's owned logical-key event payload"
-    )]
-    fn key(host: &mut ShellOverlayHost, key: Key) {
-        let mut handled = false;
-        assert!(host.handle_quick_settings_keyboard(
-            &key,
-            winit::event::Modifiers::default(),
-            &mut handled
-        ));
-        assert!(handled);
-    }
-
-    #[test]
-    fn keyboard_can_toggle_wifi_then_open_wifi_and_bluetooth_details() {
-        let (mut host, chrome) = host_on_quick_settings_root();
-        host.qs_root.reset_focus();
-        for _ in 0..6 {
-            key(&mut host, Key::Named(NamedKey::Tab));
-        }
-        assert_eq!(host.qs_root.focused_index(), Some(6));
-        let wifi_before = chrome.borrow().quick_settings.wifi;
-        key(&mut host, Key::Named(NamedKey::Space));
-        assert_ne!(chrome.borrow().quick_settings.wifi, wifi_before);
-
-        for _ in 0..9 {
-            key(&mut host, Key::Named(NamedKey::Tab));
-        }
-        key(&mut host, Key::Named(NamedKey::Enter));
-        assert!(matches!(
-            chrome.borrow().quick_settings.current_level(),
-            QsLevel::Wifi
-        ));
-
-        chrome.borrow_mut().quick_settings.nav_stack = vec![QsLevel::Root];
-        host.qs_root.reset_focus();
-        for _ in 0..16 {
-            key(&mut host, Key::Named(NamedKey::Tab));
-        }
-        key(&mut host, Key::Named(NamedKey::Enter));
-        assert!(matches!(
-            chrome.borrow().quick_settings.current_level(),
-            QsLevel::Bluetooth
-        ));
-    }
-
-    #[test]
-    fn compact_viewport_keeps_the_popover_and_power_target_visible() {
-        let (mut host, _) = host_on_quick_settings_root();
-        host.rect = Rect::new(0.0, 0.0, 320.0, 568.0);
-        let panel = host.quick_settings_rect();
-        let power = host.quick_settings_power_profile_geometry();
-        assert!(panel.x0 >= host.rect.x0 && panel.x1 <= host.rect.x1);
-        assert!(panel.y0 >= host.rect.y0 && panel.y1 <= host.rect.y1);
-        assert!(
-            power.y1 <= panel.y1,
-            "power must not sit below the viewport"
-        );
     }
 }
 
@@ -11126,9 +10987,19 @@ mod palette_dispatch_tests {
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
         let (mut h, chrome) = host_with_chrome();
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
-            PeerSyncRequest::IssueInviteFor(name) => Ok(format!("token-for-{name}")),
-            PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
+            PeerSyncRequest::IssueInviteFor { name, .. } => {
+                Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
+            }
+            PeerSyncRequest::IssueInvite => {
+                Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
+            }
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::ListPendingInvitations => {
+                Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
+            }
+            PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_) => {
+                Err("not pending".into())
+            }
         }));
         chrome
             .borrow_mut()
@@ -11180,7 +11051,9 @@ mod palette_dispatch_tests {
     #[test]
     fn the_composer_refuses_to_mint_for_nobody() {
         let (mut h, chrome) = host_with_chrome();
-        h.set_peer_sync_bridge(std::rc::Rc::new(|_| Ok("a-token".to_string())));
+        h.set_peer_sync_bridge(std::rc::Rc::new(|_| {
+            Ok(PeerSyncResponse::Message("a-token".to_string()))
+        }));
         chrome
             .borrow_mut()
             .push_peer_sync_request(PeerSyncAction::PromptInvite);
@@ -12523,7 +12396,7 @@ mod tests {
     use vello::kurbo::Affine;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+    use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
     /// Recording mock content for the host's `content` slot. The palette
     /// test never reaches `content.handle_event`, but the WS-settings click
@@ -13603,121 +13476,6 @@ mod tests {
     }
 
     #[test]
-    fn ws_settings_tabs_are_keyboard_reachable_without_leaking_to_the_shell() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().overlays.ws_settings = true;
-        let none = Modifiers::default();
-
-        assert!(pump(
-            &mut h,
-            &key_press(Key::Named(NamedKey::ArrowRight)),
-            none
-        ));
-        assert_eq!(h.chrome.borrow().ws_settings_tab, WsTab::Members);
-
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Tab)), none));
-        assert_eq!(h.chrome.borrow().ws_settings_tab, WsTab::Permissions);
-
-        let shifted = Modifiers::from(ModifiersState::SHIFT);
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Tab)), shifted));
-        assert_eq!(h.chrome.borrow().ws_settings_tab, WsTab::Members);
-    }
-
-    #[test]
-    fn ws_settings_narrow_sheet_keeps_every_painted_action_inside_the_card() {
-        let mut h = build_harness();
-        h.host.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        h.chrome.borrow_mut().overlays.ws_settings = true;
-        let card = h.host.ws_settings_rect();
-        assert!(card.width() <= 366.0);
-
-        for tab in WsTab::all() {
-            h.chrome.borrow_mut().ws_settings_tab = tab;
-            paint(&mut h);
-            for destination in WsTab::all() {
-                let pill = h.host.ws_settings_tab_pill_rect(destination);
-                assert!(pill.area() > 0.0);
-                assert!(
-                    card.contains(pill.center()),
-                    "{destination:?} tab must stay reachable at 390px"
-                );
-            }
-            for (_, workspace, personal) in h.host.default_app_rects() {
-                assert!(card.contains(workspace.center()));
-                assert!(card.contains(personal.center()));
-            }
-            if let Some(composer) = h.host.grant_composer_rects() {
-                for control in std::iter::once(composer.subject)
-                    .chain(std::iter::once(composer.capability))
-                    .chain(composer.expiry)
-                    .chain(std::iter::once(composer.submit))
-                {
-                    if control.area() > 0.0 {
-                        assert!(card.contains(control.center()));
-                    }
-                }
-            }
-        }
-        assert!(card.contains(h.host.ws_settings_name_rect().center()));
-        assert!(card.contains(h.host.ws_settings_copy_rect().center()));
-    }
-
-    #[test]
-    fn ws_settings_name_ime_commit_replaces_the_selected_utf8_range() {
-        let h = build_harness();
-        {
-            let mut state = h.chrome.borrow_mut();
-            state.overlays.ws_settings = true;
-            state.editing_workspace_name = Some("A💡B".into());
-            state.editing_workspace_name_selection = ui::text_selection::Selection {
-                anchor: 1,
-                cursor: "A💡".len(),
-            };
-        }
-        let mut handled = false;
-        assert!(h.host.handle_workspace_rename_ime(
-            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-            &mut handled,
-        ));
-        assert!(handled);
-        let state = h.chrome.borrow();
-        assert_eq!(state.editing_workspace_name.as_deref(), Some("A東京B"));
-        assert_eq!(
-            state.editing_workspace_name_selection,
-            ui::text_selection::Selection::collapsed("A東京".len())
-        );
-    }
-
-    #[test]
-    fn ws_settings_a11y_snapshot_matches_the_lens_controls_and_tab_focus() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().overlays.ws_settings = true;
-        paint(&mut h);
-
-        let snapshot = Widget::accessibility(&h.host).expect("the shell is semantic");
-        let lens = snapshot.children.last().expect("workspace settings dialog");
-        assert_eq!(lens.role, ui::a11y::Role::Dialog);
-        assert_eq!(lens.name.as_deref(), Some("Workspace settings"));
-        assert!(lens.state.modal);
-        assert_eq!(lens.children[0].role, ui::a11y::Role::TabBar);
-        assert_eq!(lens.children[0].children.len(), 4);
-        assert!(lens.children[0].children[0].state.selected);
-        assert_eq!(lens.children[1].role, ui::a11y::Role::TextInput);
-        assert_eq!(lens.children[2].name.as_deref(), Some("Copy invite link"));
-        assert_eq!(
-            lens.children[3].name.as_deref(),
-            Some("Close workspace settings")
-        );
-
-        assert_eq!(
-            h.host.synthetic_accessibility_rect(&[0, 0, 1]),
-            Some(h.host.ws_settings_tab_pill_rect(WsTab::Members))
-        );
-        assert!(h.host.focus_synthetic_accessibility(&[0, 0, 1]));
-        assert_eq!(h.chrome.borrow().ws_settings_tab, WsTab::Members);
-    }
-
-    #[test]
     fn ws_settings_close_button_is_pointer_accessible() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.ws_settings = true;
@@ -14427,6 +14185,34 @@ mod peer_cursor_tests {
             chrome.borrow().tree().active_group_for(strip),
             Some(target_group),
             "follow must move local focus to the participant's live group",
+        );
+    }
+
+    #[test]
+    fn follow_binds_app_views_to_the_live_session_and_stop_releases_them() {
+        let mut tree = one_group_seed();
+        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.workspaces[0]
+            .collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
+        let expected_room = tree.workspaces[0].room;
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&calls);
+        host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
+            captured.borrow_mut().push((room, target));
+        }));
+
+        host.set_followed_peer(Some("ada".into()));
+        host.set_followed_peer(None);
+
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[
+                (expected_room, Some("peer@77".to_string())),
+                (expected_room, None),
+            ],
+            "the shell and every local app enter and leave Follow together"
         );
     }
 }

@@ -15,11 +15,9 @@ pub fn app_root() -> Box<dyn Widget> {
                 .with_alt(alt),
         )
     });
-    let input = TextInput::local()
-        .with_initial_value(&payload.get())
+    let input = TextInput::from_state(&payload)
         .with_id("qr-input")
-        .with_placeholder("qr-input-placeholder")
-        .on_change(payload.text_sink());
+        .with_placeholder("qr-input-placeholder");
 
     Box::new(ui::column![
         Text::new("qr-title").with_role(TextRole::Title),
