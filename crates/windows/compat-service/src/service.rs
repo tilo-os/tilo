@@ -127,10 +127,45 @@ pub struct VmRouteRequest<'a> {
     pub resolved_capabilities: &'a CapabilityPlan,
 }
 
+/// Current readiness of the one Windows fallback appliance.  This is a
+/// status value, not a permission: a successful launch still needs the
+/// explicit VM fallback action and an authenticated guest catalogue match.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmAvailability {
+    pub available: bool,
+    pub detail: String,
+}
+
+impl VmAvailability {
+    #[must_use]
+    pub fn ready(detail: impl Into<String>) -> Self {
+        Self {
+            available: true,
+            detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable(detail: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            detail: detail.into(),
+        }
+    }
+}
+
 /// Adapter boundary implemented by the single managed `windows-vm`
 /// appliance. Raw canonical grants accompany the resolved launcher view so
 /// the adapter need not reconstruct or invent permission semantics.
 pub trait VmDelegate: Send + Sync {
+    /// Read-only readiness check used by the manager.  It must not launch a
+    /// desktop or implicitly select the VM route.
+    fn availability(&self) -> VmAvailability {
+        VmAvailability::unavailable(
+            "The privileged authenticated Windows guest adapter is not installed in this session.",
+        )
+    }
+
     fn launch(
         &self,
         request: VmRouteRequest<'_>,
@@ -144,6 +179,12 @@ pub trait VmDelegate: Send + Sync {
 pub struct UnavailableVmDelegate;
 
 impl VmDelegate for UnavailableVmDelegate {
+    fn availability(&self) -> VmAvailability {
+        VmAvailability::unavailable(
+            "The privileged authenticated Windows guest adapter is not installed in this session.",
+        )
+    }
+
     fn launch(
         &self,
         _request: VmRouteRequest<'_>,
@@ -212,6 +253,14 @@ where
         let route = self.resolve_route(query, vm_fallback, app_id)?;
         let resolved = CapabilityPlan::for_app(app_id, capabilities, now_unix);
         Ok(explanation(&route, vm_fallback, &resolved, false))
+    }
+
+    /// Read-only VM readiness for the manager.  This asks the installed
+    /// delegate only for its state; it never starts a guest or relaxes the
+    /// explicit-fallback requirement used by [`Self::launch`].
+    #[must_use]
+    pub fn vm_availability(&self) -> VmAvailability {
+        self.vm.availability()
     }
 
     pub fn register_program(
