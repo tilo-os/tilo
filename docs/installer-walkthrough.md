@@ -22,8 +22,11 @@ That prompt is a security feature, not data loss.
 
 ## Download and launch qOS Imager
 
-Download the signed qOS Imager for the host operating system from the qOS
-release page. Verify the published SHA-256 digest before launching it. Never use
+Download the signed qOS Imager from the landing page or qOS release page. The
+release matrix is Linux x86-64/ARM64 (AppImage, Flatpak bundle, portable tar,
+Homebrew), Windows x86-64 (setup EXE, standalone EXE, WinGet), and macOS
+x86-64/Apple silicon (DMG, app zip, Homebrew cask). Verify the published
+SHA-256 digest before launching it. Never use
 an imager or OS image obtained from a mirror whose digest is not listed by qOS.
 The cross-platform build workflow also emits digests, but its unsigned CI
 artifacts are for validation only: they must not be presented as production
@@ -51,6 +54,17 @@ status changed. Writing is followed by a byte-for-byte readback; “Complete”
 means that verification succeeded, not merely that the write call returned.
 
 Everything currently on the selected installation medium is erased.
+
+For a qOS image, Customize collects the non-destructive install profile before
+the medium is written: account name, host name, locale, keyboard, time zone and
+storage preferences. Exported unattended configuration references secrets
+through `QOS_USER_PASSWORD` and `QOS_LUKS_PASSPHRASE`; it never embeds them.
+Disk selection, destructive confirmation, a fresh startup secret and recovery-
+key acknowledgement remain local to the target computer. The profile transport
+from the host imager into the live installer is still a release blocker: today
+the profile can be exported and audited, but it is not silently embedded into
+the installation medium. That limitation prevents the UI from claiming a
+nearly unattended run before the receiving path exists.
 
 The current host bundles elevate the imager process for raw-device access; the
 application still has its typed target gate, system-disk acknowledgement, and
@@ -99,10 +113,14 @@ only a salted password hash into a private, atomic first-boot seed. It also
 restores the normal greeter, removes installer-only sudo/SSH state, and safely
 copies eligible NetworkManager profiles.
 
-When installation completes, remove the USB drive and reboot. Select qOS from
+When installation completes, remove the USB drive and reboot. The signed UKI
+shows the qOS splash directly—routine boot chatter stays on the serial journal,
+and fatal errors still replace the splash. Select qOS from
 the firmware menu if it is not already first. Unlock the disk, sign in with the
 new account, and finish the desktop's onboarding. Confirm keyboard, time zone,
-network, display scaling, accessibility, and recovery-key storage. Signed qOS
+network, display scaling, accessibility, and recovery-key storage. The first
+login then offers a short, skippable tour of search and overview, the
+Workspace → Strip → Window group model, and deliberate collaboration. Signed qOS
 updates are checked after first boot when online; the installer never silently
 swaps the offline image for a network download.
 

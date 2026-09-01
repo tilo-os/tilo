@@ -3,6 +3,6 @@ Type=Application
 Name=qOS Imager
 Comment=Create and verify qOS installation media
 Exec=qos-imager
+Icon=qos-imager
 Terminal=false
 Categories=System;Utility;
-

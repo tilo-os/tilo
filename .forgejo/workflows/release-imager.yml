@@ -33,7 +33,14 @@ concurrency:
 
 jobs:
   linux:
-    runs-on: runner
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
     container:
       image: code.sandbox.example/qos/qos-builder:latest
       credentials:
@@ -54,6 +61,7 @@ jobs:
               gpg --batch --import /tmp/imager-signing-key.asc
               rm -f /tmp/imager-signing-key.asc
               echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
+              echo "QOS_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
               echo "QOS_LINUX_SIGNING_KEY=$SIGNING_KEY_ID" >> "$GITHUB_ENV"
               ;;
           esac
@@ -62,11 +70,15 @@ jobs:
       # Forgejo does not implement the Artifact API v2 used by v4.
       - uses: actions/upload-artifact@v3
         with:
-          name: qos-imager-linux
+          name: qos-imager-linux-${{ matrix.arch }}
           path: |
-            dist/qos-imager/qos-imager-linux.tar.gz
-            dist/qos-imager/qos-imager-linux.tar.gz.sha256
-            dist/qos-imager/qos-imager-linux.tar.gz.asc
+            dist/qos-imager/qos-imager-linux-*.tar.gz
+            dist/qos-imager/qos-imager-linux-*.tar.gz.sha256
+            dist/qos-imager/qos-imager-linux-*.tar.gz.asc
+            dist/qos-imager/qos-imager-linux-*.AppImage
+            dist/qos-imager/qos-imager-linux-*.AppImage.sha256
+            dist/qos-imager/qos-imager-linux-*.flatpak
+            dist/qos-imager/qos-imager-linux-*.flatpak.sha256
           if-no-files-found: ignore
 
   windows:
@@ -86,8 +98,11 @@ jobs:
             $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
             [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
             "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_RELEASE_BASE_URL=https://code.sandbox.example/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked
@@ -97,11 +112,23 @@ jobs:
         with:
           name: qos-imager-windows
           path: |
-            dist/qos-imager/qos-imager-windows.zip
-            dist/qos-imager/qos-imager-windows.zip.sha256
+            dist/qos-imager/qos-imager-windows-x86_64.exe
+            dist/qos-imager/qos-imager-windows-x86_64.exe.sha256
+            dist/qos-imager/qos-imager-windows-x86_64.zip
+            dist/qos-imager/qos-imager-windows-x86_64.zip.sha256
+            dist/qos-imager/qos-imager-setup-windows-x86_64.exe
+            dist/qos-imager/qos-imager-setup-windows-x86_64.exe.sha256
+            dist/qos-imager/winget/*.yaml
 
   macos:
-    runs-on: macos
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-x64
+          - arch: aarch64
+            runner: macos-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Configure release signing
@@ -129,6 +156,7 @@ jobs:
               security set-key-partition-list -S apple-tool:,apple: -s -k qos-ci "$keychain"
               security list-keychains -d user -s "$keychain"
               echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
+              echo "QOS_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
               echo "QOS_MAC_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
               echo "QOS_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
               echo "QOS_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
@@ -139,7 +167,25 @@ jobs:
       - run: apps/imager/packaging/package-host.sh
       - uses: actions/upload-artifact@v3
         with:
-          name: qos-imager-macos
+          name: qos-imager-macos-${{ matrix.arch }}
           path: |
-            dist/qos-imager/qos-imager-macos.zip
-            dist/qos-imager/qos-imager-macos.zip.sha256
+            dist/qos-imager/qos-imager-macos-*.zip
+            dist/qos-imager/qos-imager-macos-*.zip.sha256
+            dist/qos-imager/qos-imager-macos-*.dmg
+            dist/qos-imager/qos-imager-macos-*.dmg.sha256
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: [linux, windows, macos]
+    runs-on: runner
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v3
+        with:
+          path: release-assets
+      - name: Publish signed downloads to the tag release
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+        run: apps/imager/packaging/publish-forgejo-release.sh release-assets
