@@ -217,6 +217,13 @@ struct ExportedAction {
   # fact here, so there is no separate flag.
   description   @5 :Text;
   input         @6 :ActionInput;
+  # `document`, `effect`, or `view`. Empty from an older client means
+  # `document` for backwards compatibility.
+  operationKind @7 :Text;
+  # JSON encoding of `qos_actions::ActionParam[]`. Kept as an opaque JSON
+  # projection so Cap'n Proto clients can forward newer parameter vocabulary
+  # without a schema bump; empty means the legacy `input` projection.
+  paramsJson @8 :Text;
 }
 
 # What one exported action's invocation must supply.

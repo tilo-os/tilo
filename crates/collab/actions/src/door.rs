@@ -16,7 +16,8 @@
 //! operation the caller may not perform is *absent* from the survey,
 //! never a flag to ignore.
 
-use crate::action::{EncodedAction, ExecutionLocus};
+use crate::ActionParam;
+use crate::action::{EncodedAction, ExecutionLocus, OperationKind};
 use crate::context::ActionContext;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
@@ -127,7 +128,11 @@ pub struct ActionDescriptor {
     pub action_label: String,
     pub description: Option<String>,
     pub locus: ExecutionLocus,
+    pub kind: OperationKind,
     pub input: InputSpec,
+    /// Canonical typed invocation surface. `input` remains the palette-facing
+    /// projection for compatibility; headless callers use these parameters.
+    pub params: Vec<ActionParam>,
 }
 
 /// Why an address could not be performed. `Unknown` deliberately covers
@@ -143,6 +148,8 @@ pub enum DoorError {
     /// dropped — a silently ignored argument leaves the caller believing it
     /// asked for something it didn't get.
     UnexpectedArgument(ActionAddress),
+    /// Typed arguments failed the action's declared schema.
+    InvalidArguments(String),
     /// The app never registered a decoder for the action's type, so the door
     /// can't prove what it would run. Fail-closed: a refusal, not a
     /// best-effort apply.
@@ -157,7 +164,9 @@ impl DoorError {
     pub fn code(&self) -> &'static str {
         match self {
             DoorError::Unknown(_) | DoorError::UnregisteredType(_) => "unknown_action",
-            DoorError::MissingArgument(_) | DoorError::UnexpectedArgument(_) => "invalid_arguments",
+            DoorError::MissingArgument(_)
+            | DoorError::UnexpectedArgument(_)
+            | DoorError::InvalidArguments(_) => "invalid_arguments",
             DoorError::Failed(_) => "action_failed",
         }
     }
@@ -177,6 +186,7 @@ impl std::fmt::Display for DoorError {
             DoorError::UnexpectedArgument(a) => {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
+            DoorError::InvalidArguments(why) => write!(f, "{why}"),
             DoorError::UnregisteredType(t) => {
                 write!(f, "no decoder registered for action type `{t}`")
             }
@@ -206,7 +216,9 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             action_label: action.label.clone(),
             description: action.description.clone(),
             locus: action.locus,
+            kind: action.kind,
             input: InputSpec::of(&action.input),
+            params: action.params().to_vec(),
         });
     }
     for child in &resource.children {
@@ -253,6 +265,19 @@ pub fn encode(
         (ActionInput::Prompted { build, .. }, Some(text)) => Ok(build(text)),
         (ActionInput::Prompted { .. }, None) => Err(DoorError::MissingArgument(address.clone())),
     }
+}
+
+/// Build an action from the canonical typed JSON argument object advertised
+/// by [`ActionDescriptor::params`]. Binding is strict and completes before any
+/// document mutation or application effect is attempted.
+pub fn encode_json(
+    resources: &[Resource],
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<EncodedAction, DoorError> {
+    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    spec.build_json(arguments)
+        .map_err(|error| DoorError::InvalidArguments(error.to_string()))
 }
 
 /// Perform the operation `address` names, attributed to `actor`.
@@ -321,6 +346,46 @@ pub fn invoke_with_context(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
+    let encoded = encode(resources, address, argument)?;
+    dispatch_encoded_with_context(
+        doc, resources, address, encoded, provenance, registry, transport,
+    )
+}
+
+/// Typed-argument counterpart to [`invoke`].
+pub fn invoke_json(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+) -> Result<Dispatched, DoorError> {
+    let encoded = encode_json(resources, address, arguments)?;
+    dispatch_encoded_with_context(
+        doc,
+        resources,
+        address,
+        encoded,
+        InvocationProvenance {
+            actor,
+            ambient: None,
+        },
+        registry,
+        transport,
+    )
+}
+
+fn dispatch_encoded_with_context(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    encoded: EncodedAction,
+    provenance: InvocationProvenance<'_>,
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+) -> Result<Dispatched, DoorError> {
     let resource = find_resource(resources, &address.resource)
         .ok_or_else(|| DoorError::Unknown(address.clone()))?;
     let spec = resource
@@ -328,6 +393,12 @@ pub fn invoke_with_context(
         .iter()
         .find(|candidate| candidate.id == address.action)
         .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    if spec.kind != OperationKind::Document {
+        return Err(DoorError::Failed(format!(
+            "{} operation must be handled by the owning application",
+            spec.kind.as_str()
+        )));
+    }
     let mut context = ActionContext::for_resource(
         &spec.label,
         resource.id.as_str(),
@@ -337,7 +408,6 @@ pub fn invoke_with_context(
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }
-    let encoded = encode(resources, address, argument)?;
     let action = registry
         .decode(&encoded)
         .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
