@@ -102,6 +102,7 @@ enum ActivityFocus {
     Brief(usize),
     Lens(LensSelection),
     Detail(DetailAction),
+    ExplorerPane(ExplorerPane),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,26 @@ impl DetailAction {
             Self::Open => "Open",
             Self::Compare => "Compare",
             Self::Undo => "Undo",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ExplorerPane {
+    #[default]
+    Timeline,
+    Browse,
+    Details,
+}
+
+impl ExplorerPane {
+    const ALL: [Self; 3] = [Self::Timeline, Self::Browse, Self::Details];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Timeline => "Timeline",
+            Self::Browse => "Browse",
+            Self::Details => "Details",
         }
     }
 }
@@ -278,6 +299,8 @@ pub struct RoomActivityPane {
     detail_action_rects: Vec<(DetailAction, Rect)>,
     comparison: Option<HistoryComparison>,
     comparison_selection: Vec<HistoryEntryId>,
+    explorer_pane: ExplorerPane,
+    explorer_pane_rects: Vec<(ExplorerPane, Rect)>,
     narrative: Option<ui::GroundedNarrative>,
 }
 
@@ -347,6 +370,8 @@ impl RoomActivityPane {
             detail_action_rects: Vec::new(),
             comparison: None,
             comparison_selection: Vec::new(),
+            explorer_pane: ExplorerPane::default(),
+            explorer_pane_rects: Vec::new(),
             narrative: None,
         }
     }
@@ -903,9 +928,10 @@ impl RoomActivityPane {
         let rows_y0 = (self.sheet.y0 + self.chrome_height()).min(self.sheet.y1);
         let rows_y1 = (self.sheet.y1 - 8.0).max(rows_y0);
         let three_panel = self.view == ActivityView::Explore && self.sheet.width() >= 900.0;
+        let compact_tabs = self.view == ActivityView::Explore && !three_panel;
         self.timeline.set_rect(Rect::new(
             self.sheet.x0 + 8.0 + if three_panel { EXPLORER_LEFT_W } else { 0.0 },
-            rows_y0,
+            rows_y0 + if compact_tabs { 34.0 } else { 0.0 },
             (self.sheet.x1 - 8.0 - if three_panel { EXPLORER_DETAIL_W } else { 0.0 })
                 .max(self.sheet.x0 + 8.0),
             rows_y1,
@@ -965,11 +991,42 @@ impl RoomActivityPane {
         match self.view {
             ActivityView::CatchUp => self.draw_catch_up(scene, transform, tr, theme),
             ActivityView::Explore => {
+                self.draw_explorer_panel_tabs(scene, transform, tr, theme);
                 self.draw_explorer_sidebars(scene, transform, tr, theme);
-                self.timeline.draw(scene, transform, tr, theme, presence);
+                if self.sheet.width() >= 900.0 || self.explorer_pane == ExplorerPane::Timeline {
+                    self.timeline.draw(scene, transform, tr, theme, presence);
+                }
             }
         }
         self.draw_keyboard_focus(scene, transform, theme);
+    }
+
+    fn draw_explorer_panel_tabs(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.explorer_pane_rects.clear();
+        if self.sheet.width() >= 900.0 {
+            return;
+        }
+        let y = self.sheet.y0 + self.chrome_height();
+        let items: Vec<_> = ExplorerPane::ALL
+            .into_iter()
+            .map(|pane| (pane, pane.label().to_string()))
+            .collect();
+        let selected = self.explorer_pane;
+        self.explorer_pane_rects = draw_chip_row(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + 30.0),
+            &items,
+            |pane| *pane == selected,
+        );
     }
 
     /// Paint one unambiguous two-pixel focus ring. It is deliberately static:
@@ -997,24 +1054,39 @@ impl RoomActivityPane {
     ) {
         self.lens_rects.clear();
         self.detail_action_rects.clear();
-        if self.sheet.width() < 900.0 {
+        let compact = self.sheet.width() < 900.0;
+        if compact && self.explorer_pane == ExplorerPane::Timeline {
             return;
         }
-        let top = self.sheet.y0 + self.chrome_height();
+        let top = self.sheet.y0 + self.chrome_height() + if compact { 34.0 } else { 0.0 };
         let bottom = self.sheet.y1 - 8.0;
-        let left = Rect::new(
-            self.sheet.x0 + 8.0,
-            top,
-            self.sheet.x0 + EXPLORER_LEFT_W,
-            bottom,
-        );
-        let right = Rect::new(
-            self.sheet.x1 - EXPLORER_DETAIL_W,
-            top,
-            self.sheet.x1 - 8.0,
-            bottom,
-        );
-        for rect in [left, right] {
+        let content = Rect::new(self.sheet.x0 + 8.0, top, self.sheet.x1 - 8.0, bottom);
+        let left = if compact {
+            content
+        } else {
+            Rect::new(
+                self.sheet.x0 + 8.0,
+                top,
+                self.sheet.x0 + EXPLORER_LEFT_W,
+                bottom,
+            )
+        };
+        let right = if compact {
+            content
+        } else {
+            Rect::new(
+                self.sheet.x1 - EXPLORER_DETAIL_W,
+                top,
+                self.sheet.x1 - 8.0,
+                bottom,
+            )
+        };
+        let show_left = !compact || self.explorer_pane == ExplorerPane::Browse;
+        let show_right = !compact || self.explorer_pane == ExplorerPane::Details;
+        for rect in [(show_left, left), (show_right, right)]
+            .into_iter()
+            .filter_map(|(show, rect)| show.then_some(rect))
+        {
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1024,252 +1096,256 @@ impl RoomActivityPane {
             );
         }
         let size = theme.tokens.typography.scale.sm;
-        tr.draw_text_weighted(
-            scene,
-            "Browse by",
-            size,
-            theme.tokens.colors.text_primary,
-            at(transform, left.x0 + 12.0, left.y0 + 12.0),
-            None,
-            ui::text_render::TextWeight::Medium,
-        );
-        let mut y = left.y0 + 38.0;
-        self.draw_lens_row(
-            scene,
-            transform,
-            tr,
-            theme,
-            &LensSelection::All,
-            "Everything",
-            &mut y,
-            left,
-        );
-        let apps: Vec<(String, usize)> = self
-            .facet_index
-            .apps
-            .iter()
-            .map(|(label, count)| (label.clone(), *count))
-            .collect();
-        for (label, count) in apps.into_iter().take(4) {
-            let lens = LensSelection::App(label.clone());
-            self.draw_lens_row(
+        if show_left {
+            tr.draw_text_weighted(
                 scene,
-                transform,
-                tr,
-                theme,
-                &lens,
-                &format!("{label}  {count}"),
-                &mut y,
-                left,
-            );
-        }
-        let kinds: Vec<(String, usize)> = self
-            .facet_index
-            .resource_kinds
-            .iter()
-            .map(|(label, count)| (label.clone(), *count))
-            .collect();
-        for (label, count) in kinds.into_iter().take(4) {
-            let lens = LensSelection::ResourceKind(label.clone());
-            self.draw_lens_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                &lens,
-                &format!("{label}  {count}"),
-                &mut y,
-                left,
-            );
-        }
-        let resources: Vec<(String, usize)> = self
-            .facet_index
-            .resources
-            .iter()
-            .map(|(label, count)| (label.clone(), *count))
-            .collect();
-        for (label, count) in resources.into_iter().take(3) {
-            let lens = LensSelection::Resource(label.clone());
-            self.draw_lens_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                &lens,
-                &format!("{label}  {count}"),
-                &mut y,
-                left,
-            );
-        }
-        let groups: Vec<(String, usize)> = self
-            .facet_index
-            .work_groups
-            .iter()
-            .map(|(label, count)| (label.clone(), *count))
-            .collect();
-        for (label, count) in groups.into_iter().take(2) {
-            let lens = LensSelection::WorkGroup(label.clone());
-            self.draw_lens_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                &lens,
-                &format!("{label}  {count}"),
-                &mut y,
-                left,
-            );
-        }
-        let facets: Vec<(String, String, usize)> = self
-            .facet_index
-            .facets
-            .iter()
-            .flat_map(|(key, values)| {
-                values
-                    .iter()
-                    .map(|(value, count)| (key.clone(), value.clone(), *count))
-            })
-            .collect();
-        for (key, value, count) in facets.into_iter().take(3) {
-            let lens = LensSelection::Facet(key.clone(), value.clone());
-            self.draw_lens_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                &lens,
-                &format!("{key}: {value}  {count}"),
-                &mut y,
-                left,
-            );
-        }
-        if self.facet_index.unclassified > 0 {
-            self.draw_lens_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                &LensSelection::Unclassified,
-                &format!("Unclassified  {}", self.facet_index.unclassified),
-                &mut y,
-                left,
-            );
-        }
-
-        tr.draw_text_weighted(
-            scene,
-            "Provenance",
-            size,
-            theme.tokens.colors.text_primary,
-            at(transform, right.x0 + 12.0, right.y0 + 12.0),
-            None,
-            ui::text_render::TextWeight::Medium,
-        );
-        if let Some(detail) = self.selection_detail() {
-            let width = (right.width() - 24.0).max(0.0) as f32;
-            tr.draw_text(
-                scene,
-                &detail.title,
-                theme.tokens.typography.scale.base,
+                "Browse by",
+                size,
                 theme.tokens.colors.text_primary,
-                at(transform, right.x0 + 12.0, right.y0 + 40.0),
-                Some(width),
+                at(transform, left.x0 + 12.0, left.y0 + 12.0),
+                None,
+                ui::text_render::TextWeight::Medium,
             );
-            let people = detail.authors.join(", ");
-            let resources = detail
+            let mut y = left.y0 + 38.0;
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &LensSelection::All,
+                "Everything",
+                &mut y,
+                left,
+            );
+            let apps: Vec<(String, usize)> = self
+                .facet_index
+                .apps
+                .iter()
+                .map(|(label, count)| (label.clone(), *count))
+                .collect();
+            for (label, count) in apps.into_iter().take(4) {
+                let lens = LensSelection::App(label.clone());
+                self.draw_lens_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &lens,
+                    &format!("{label}  {count}"),
+                    &mut y,
+                    left,
+                );
+            }
+            let kinds: Vec<(String, usize)> = self
+                .facet_index
+                .resource_kinds
+                .iter()
+                .map(|(label, count)| (label.clone(), *count))
+                .collect();
+            for (label, count) in kinds.into_iter().take(4) {
+                let lens = LensSelection::ResourceKind(label.clone());
+                self.draw_lens_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &lens,
+                    &format!("{label}  {count}"),
+                    &mut y,
+                    left,
+                );
+            }
+            let resources: Vec<(String, usize)> = self
+                .facet_index
                 .resources
                 .iter()
-                .map(|resource| resource.label.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let facets = detail
+                .map(|(label, count)| (label.clone(), *count))
+                .collect();
+            for (label, count) in resources.into_iter().take(3) {
+                let lens = LensSelection::Resource(label.clone());
+                self.draw_lens_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &lens,
+                    &format!("{label}  {count}"),
+                    &mut y,
+                    left,
+                );
+            }
+            let groups: Vec<(String, usize)> = self
+                .facet_index
+                .work_groups
+                .iter()
+                .map(|(label, count)| (label.clone(), *count))
+                .collect();
+            for (label, count) in groups.into_iter().take(2) {
+                let lens = LensSelection::WorkGroup(label.clone());
+                self.draw_lens_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &lens,
+                    &format!("{label}  {count}"),
+                    &mut y,
+                    left,
+                );
+            }
+            let facets: Vec<(String, String, usize)> = self
+                .facet_index
                 .facets
                 .iter()
-                .map(|facet| format!("{}: {}", facet.key, facet.value))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let provenance = format!(
-                "{} action{}\n{}\n{}{}",
-                detail.entry_ids.len(),
-                if detail.entry_ids.len() == 1 { "" } else { "s" },
-                people,
-                if resources.is_empty() {
-                    "No resource declared"
-                } else {
-                    &resources
-                },
-                if facets.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{facets}")
-                },
-            );
-            tr.draw_text(
-                scene,
-                &provenance,
-                size,
-                theme.tokens.colors.text_dim,
-                at(transform, right.x0 + 12.0, right.y0 + 88.0),
-                Some(width),
-            );
-            let mut x = right.x0 + 12.0;
-            for action in [
-                DetailAction::Open,
-                DetailAction::Compare,
-                DetailAction::Undo,
-            ] {
-                let enabled = match action {
-                    DetailAction::Open => !detail.resources.is_empty(),
-                    DetailAction::Compare => detail.can_compare,
-                    DetailAction::Undo => detail.can_undo,
-                };
-                if !enabled {
-                    continue;
-                }
-                let rect = Rect::new(x, right.y0 + 170.0, x + 60.0, right.y0 + 198.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surface_white_5,
-                    None,
-                    &RoundedRect::from_rect(rect, 6.0),
-                );
-                tr.draw_text(
-                    scene,
-                    action.label(),
-                    size,
-                    theme.tokens.colors.text_primary,
-                    at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
-                    None,
-                );
-                self.detail_action_rects.push((action, rect));
-                x += 66.0;
-            }
-            let selected_ids = self.selected_ids();
-            if self.comparison_selection == selected_ids
-                && let Some(comparison) = &self.comparison
-            {
-                let mut lines = vec![format!(
-                    "Before {} B · After {} B · {} patches",
-                    comparison.before_document.len(),
-                    comparison.after_document.len(),
-                    comparison.patches.len()
-                )];
-                lines.extend(
-                    comparison
-                        .patches
+                .flat_map(|(key, values)| {
+                    values
                         .iter()
-                        .take(4)
-                        .map(|patch| format!("{:?}", patch.action)),
+                        .map(|(value, count)| (key.clone(), value.clone(), *count))
+                })
+                .collect();
+            for (key, value, count) in facets.into_iter().take(3) {
+                let lens = LensSelection::Facet(key.clone(), value.clone());
+                self.draw_lens_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &lens,
+                    &format!("{key}: {value}  {count}"),
+                    &mut y,
+                    left,
                 );
+            }
+            if self.facet_index.unclassified > 0 {
+                self.draw_lens_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &LensSelection::Unclassified,
+                    &format!("Unclassified  {}", self.facet_index.unclassified),
+                    &mut y,
+                    left,
+                );
+            }
+        }
+
+        if show_right {
+            tr.draw_text_weighted(
+                scene,
+                "Provenance",
+                size,
+                theme.tokens.colors.text_primary,
+                at(transform, right.x0 + 12.0, right.y0 + 12.0),
+                None,
+                ui::text_render::TextWeight::Medium,
+            );
+            if let Some(detail) = self.selection_detail() {
+                let width = (right.width() - 24.0).max(0.0) as f32;
                 tr.draw_text(
                     scene,
-                    &lines.join("\n"),
-                    size,
-                    theme.tokens.colors.text_dim,
-                    at(transform, right.x0 + 12.0, right.y0 + 214.0),
+                    &detail.title,
+                    theme.tokens.typography.scale.base,
+                    theme.tokens.colors.text_primary,
+                    at(transform, right.x0 + 12.0, right.y0 + 40.0),
                     Some(width),
                 );
+                let people = detail.authors.join(", ");
+                let resources = detail
+                    .resources
+                    .iter()
+                    .map(|resource| resource.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let facets = detail
+                    .facets
+                    .iter()
+                    .map(|facet| format!("{}: {}", facet.key, facet.value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let provenance = format!(
+                    "{} action{}\n{}\n{}{}",
+                    detail.entry_ids.len(),
+                    if detail.entry_ids.len() == 1 { "" } else { "s" },
+                    people,
+                    if resources.is_empty() {
+                        "No resource declared"
+                    } else {
+                        &resources
+                    },
+                    if facets.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n{facets}")
+                    },
+                );
+                tr.draw_text(
+                    scene,
+                    &provenance,
+                    size,
+                    theme.tokens.colors.text_dim,
+                    at(transform, right.x0 + 12.0, right.y0 + 88.0),
+                    Some(width),
+                );
+                let mut x = right.x0 + 12.0;
+                for action in [
+                    DetailAction::Open,
+                    DetailAction::Compare,
+                    DetailAction::Undo,
+                ] {
+                    let enabled = match action {
+                        DetailAction::Open => !detail.resources.is_empty(),
+                        DetailAction::Compare => detail.can_compare,
+                        DetailAction::Undo => detail.can_undo,
+                    };
+                    if !enabled {
+                        continue;
+                    }
+                    let rect = Rect::new(x, right.y0 + 170.0, x + 60.0, right.y0 + 198.0);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.surface_white_5,
+                        None,
+                        &RoundedRect::from_rect(rect, 6.0),
+                    );
+                    tr.draw_text(
+                        scene,
+                        action.label(),
+                        size,
+                        theme.tokens.colors.text_primary,
+                        at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
+                        None,
+                    );
+                    self.detail_action_rects.push((action, rect));
+                    x += 66.0;
+                }
+                let selected_ids = self.selected_ids();
+                if self.comparison_selection == selected_ids
+                    && let Some(comparison) = &self.comparison
+                {
+                    let mut lines = vec![format!(
+                        "Before {} B · After {} B · {} patches",
+                        comparison.before_document.len(),
+                        comparison.after_document.len(),
+                        comparison.patches.len()
+                    )];
+                    lines.extend(
+                        comparison
+                            .patches
+                            .iter()
+                            .take(4)
+                            .map(|patch| format!("{:?}", patch.action)),
+                    );
+                    tr.draw_text(
+                        scene,
+                        &lines.join("\n"),
+                        size,
+                        theme.tokens.colors.text_dim,
+                        at(transform, right.x0 + 12.0, right.y0 + 214.0),
+                        Some(width),
+                    );
+                }
             }
         }
     }
@@ -1289,6 +1365,9 @@ impl RoomActivityPane {
         y: &mut f64,
         bounds: Rect,
     ) {
+        if *y + 28.0 > bounds.y1 - 6.0 {
+            return;
+        }
         let rect = Rect::new(bounds.x0 + 6.0, *y, bounds.x1 - 6.0, *y + 28.0);
         if self.lens == *lens {
             scene.fill(
@@ -1717,6 +1796,16 @@ impl RoomActivityPane {
                 }
             }
             if self.view == ActivityView::Explore {
+                for (pane, rect) in self.explorer_pane_rects.clone() {
+                    if rect.contains(p) {
+                        self.keyboard_focus = Some(ActivityFocus::ExplorerPane(pane));
+                        self.explorer_pane = pane;
+                        return RoomActivityOutcome {
+                            handled: true,
+                            ..RoomActivityOutcome::default()
+                        };
+                    }
+                }
                 for (action, rect) in self.detail_action_rects.clone() {
                     if !rect.contains(p) {
                         continue;
@@ -1863,6 +1952,11 @@ impl RoomActivityPane {
             ),
             ActivityView::Explore => {
                 order.extend(
+                    self.explorer_pane_rects
+                        .iter()
+                        .map(|(pane, _)| ActivityFocus::ExplorerPane(*pane)),
+                );
+                order.extend(
                     self.period_rects
                         .iter()
                         .map(|(period, _)| ActivityFocus::Period(*period)),
@@ -1915,6 +2009,10 @@ impl RoomActivityPane {
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::Detail(value) => self
                 .detail_action_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::ExplorerPane(value) => self
+                .explorer_pane_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
         }
@@ -2006,6 +2104,7 @@ impl RoomActivityPane {
                     outcome.undo_partial = applied.partial;
                 }
             }
+            ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
         }
         outcome
     }
@@ -2065,6 +2164,7 @@ impl RoomActivityPane {
             }
             ActivityFocus::Lens(LensSelection::Unclassified) => Some("Unclassified".to_string()),
             ActivityFocus::Detail(action) => Some(action.label().to_string()),
+            ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
         }
     }
 
@@ -2150,11 +2250,21 @@ impl RoomActivityPane {
                         None,
                         Some("Selected history action".to_string()),
                     ),
+                    ActivityFocus::ExplorerPane(value) => (
+                        Role::Tab,
+                        self.explorer_pane == *value,
+                        None,
+                        Some("Explorer panel".to_string()),
+                    ),
                 };
                 let mut state = AccessState::new()
                     .focusable(true)
-                    .focused(self.keyboard_focus.as_ref() == Some(focus))
-                    .selected(selected);
+                    .focused(self.keyboard_focus.as_ref() == Some(focus));
+                state = if role == Role::RadioButton {
+                    state.checked(selected)
+                } else {
+                    state.selected(selected)
+                };
                 if let Some(value) = expanded {
                     state = state.expanded(value);
                 }
@@ -2168,7 +2278,89 @@ impl RoomActivityPane {
                 Some(node)
             })
             .collect();
+        let mut history = AccessNode::new(Role::List).with_name("History entries");
+        history.children = (0..self.timeline.visible_len().min(100))
+            .filter_map(|index| self.timeline.visible_entry(index))
+            .map(|entry| {
+                AccessNode::new(Role::ListItem)
+                    .with_name(entry.summary.clone())
+                    .with_description(format!("By {}", entry.author.name))
+            })
+            .collect();
+        root.children.push(history);
+        if let Some(detail) = self.selection_detail() {
+            root.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Selected history detail")
+                    .with_description(format!(
+                        "{}; {} action{}; by {}",
+                        detail.title,
+                        detail.entry_ids.len(),
+                        if detail.entry_ids.len() == 1 { "" } else { "s" },
+                        detail.authors.join(", ")
+                    )),
+            );
+        }
         root
+    }
+
+    pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [0] => Some(self.sheet),
+            [0, index] => self
+                .focus_order()
+                .get(*index)
+                .and_then(|focus| self.rect_for_focus(focus)),
+            _ => None,
+        }
+    }
+
+    pub fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
+        let [0, index] = path else {
+            return false;
+        };
+        let Some(focus) = self.focus_order().get(*index).cloned() else {
+            return false;
+        };
+        self.keyboard_focus = Some(focus);
+        true
+    }
+
+    fn rect_for_focus(&self, focus: &ActivityFocus) -> Option<Rect> {
+        match focus {
+            ActivityFocus::Scope(value) => self
+                .scope_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::View(value) => self
+                .view_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Period(value) => self
+                .period_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Author(value) => self
+                .author_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Brief(value) => self
+                .brief_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Lens(value) => self
+                .lens_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Detail(value) => self
+                .detail_action_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::ExplorerPane(value) => self
+                .explorer_pane_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+        }
     }
 
     /// Write (or remove, for an empty label) a name over a run of the
@@ -2928,6 +3120,25 @@ mod tests {
         pane.layout(Rect::new(0.0, 0.0, 700.0, 900.0));
         assert!(pane.sheet.width() < 900.0);
         assert!(pane.timeline.rect().width() > pane.sheet.width() - 40.0);
+    }
+
+    #[test]
+    fn narrow_explorer_pushes_between_timeline_browse_and_details() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 700.0, 800.0));
+        paint(&mut pane);
+        assert_eq!(pane.explorer_pane_rects.len(), 3);
+
+        pane.explorer_pane = ExplorerPane::Browse;
+        paint(&mut pane);
+        assert!(!pane.lens_rects.is_empty());
+
+        pane.timeline.set_selection(Some((0, 0)));
+        pane.explorer_pane = ExplorerPane::Details;
+        paint(&mut pane);
+        assert!(!pane.detail_action_rects.is_empty());
     }
 
     #[test]
@@ -4217,9 +4428,15 @@ mod tests {
         assert_eq!(focused.name, pane.focused_control_label());
         assert_eq!(focused.state.expanded, Some(true));
         assert!(
-            snapshot.children.iter().all(|node| node.state.focusable),
-            "every published child is keyboard reachable"
+            snapshot
+                .children
+                .iter()
+                .take(pane.focus_order().len())
+                .all(|node| node.state.focusable)
         );
+        assert!(snapshot.children.iter().any(|node| {
+            node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
+        }));
     }
 
     #[test]

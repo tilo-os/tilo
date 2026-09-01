@@ -7134,6 +7134,17 @@ impl Widget for ShellOverlayHost {
         Some(root)
     }
 
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        self.overlay_flags()
+            .room_activity
+            .then(|| self.room_activity.accessibility_rect_for_path(path))
+            .flatten()
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        self.overlay_flags().room_activity && self.room_activity.focus_accessibility_path(path)
+    }
+
     /// Expose content + palette + sidebar as direct children so trait
     /// walkers can recurse into the live tree, in `build_layout`'s
     /// child-node order (sidebar last so it paints over the chrome).
