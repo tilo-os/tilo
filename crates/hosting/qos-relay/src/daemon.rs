@@ -69,6 +69,10 @@ pub struct Relay {
     /// Federation dial tasks — one per known peer relay. Aborted
     /// (per-handle) when the `Relay` drops.
     peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
+    /// Effective same-identity replication and serving policy, safe to expose
+    /// to the shell/fs orchestrators because service claims were intersected
+    /// with the verified certificate at startup.
+    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -107,6 +111,8 @@ pub struct RelayHandle {
     pub node_addr: EndpointAddr,
     /// Metrics view — read-only.
     pub metrics: Arc<Metrics>,
+    /// Effective device-mesh policy for routing and replication consumers.
+    pub mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
 }
 
 /// Bundle of identity material the relay needs to run. Loaded by
@@ -142,8 +148,26 @@ impl Relay {
     /// [`RelayError::Store`] if the persistent iroh secret or any
     /// configured workspace can't be loaded, and [`RelayError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
-    pub async fn start(cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+    pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
         validate_relay_identity(&identity)?;
+        if !cfg.device_role.can_serve() {
+            return Err(RelayError::Identity(
+                "qos-relay requires an always-on-server or hybrid device role".into(),
+            ));
+        }
+        cfg.services = cfg
+            .services
+            .authorized_by(&identity.device_cert.capabilities);
+        let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
+            device: identity.device_cert.device_public_key,
+            role: cfg.device_role,
+            services: cfg.services.clone(),
+            replication: cfg
+                .workspaces
+                .iter()
+                .map(|binding| (binding.id, binding.replication.clone()))
+                .collect(),
+        });
         std::fs::create_dir_all(&cfg.state_root)?;
         let endpoint = bind_endpoint(&cfg).await?;
         let workspaces = build_workspace_registry(&cfg)?;
@@ -186,6 +210,7 @@ impl Relay {
             own_signing_key: identity.device_signing_key,
             own_user_public_key: identity.user_public_key,
             peer_relay_tasks,
+            mesh_profile,
         })
     }
 
@@ -258,6 +283,7 @@ impl Relay {
         RelayHandle {
             node_addr: self.endpoint.addr(),
             metrics: self.metrics.clone(),
+            mesh_profile: self.mesh_profile.clone(),
         }
     }
 

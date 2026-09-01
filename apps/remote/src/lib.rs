@@ -64,6 +64,7 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod qos_route;
 pub mod rfb;
 pub mod session;
 pub mod ssh;

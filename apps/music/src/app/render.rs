@@ -6684,8 +6684,8 @@ impl Palette {
             accent_hover: theme.accent_hover,
             success: theme.status_success,
             border: theme.border_standard,
-            white5: col.surface_white_5,
-            white10: col.surface_white_10,
+            white5: col.lift(0.35),
+            white10: col.lift(0.72),
             toast_bg: col.surfaces.raised,
             scrim: col.surfaces.overlay,
         }

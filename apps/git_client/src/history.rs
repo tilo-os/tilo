@@ -254,7 +254,7 @@ impl HistoryView {
             y + ROW_H,
             area.x0 + 8.0,
             area.x1 - 8.0,
-            c.surface_white_5,
+            c.lift(0.35),
         );
     }
 
@@ -286,7 +286,7 @@ impl HistoryView {
             // Keep the selected commit legible and calm. The accent rail is
             // enough to identify selection while preserving graph lane
             // colours for topology rather than state.
-            draw::fill_rect(scene, t, rrect, c.surface_white_10);
+            draw::fill_rect(scene, t, rrect, c.lift(0.72));
             draw::fill_rect(
                 scene,
                 t,

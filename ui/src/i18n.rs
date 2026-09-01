@@ -1,4 +1,5 @@
 use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
+use std::cell::Cell;
 use std::collections::HashMap;
 use thiserror::Error;
 use unic_langid::LanguageIdentifier;
@@ -82,6 +83,17 @@ pub struct I18nManager {
     revision: u64,
 }
 
+/// Layout-stress translation mode used by screenshots and acceptance tests.
+/// It deliberately preserves digits and punctuation while expanding letters,
+/// making clipped labels and fixed-width controls visible before translators
+/// have completed a catalog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PseudoLocale {
+    #[default]
+    Off,
+    Expanded,
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum I18nError {
     #[error("invalid locale {0:?}")]
@@ -96,6 +108,43 @@ pub enum I18nError {
 
 thread_local! {
     static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
+    static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
+    static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
+}
+
+fn pseudo_expand(value: &str) -> String {
+    let mut expanded = String::with_capacity(value.len().saturating_mul(2).saturating_add(4));
+    expanded.push('⟦');
+    for ch in value.chars() {
+        let replacement = match ch {
+            'a' => "áa",
+            'A' => "ÁA",
+            'e' => "ée",
+            'E' => "ÉE",
+            'i' => "íi",
+            'I' => "ÍI",
+            'o' => "óo",
+            'O' => "ÓO",
+            'u' => "úu",
+            'U' => "ÚU",
+            'y' => "ýy",
+            'Y' => "ÝY",
+            _ => {
+                expanded.push(ch);
+                continue;
+            }
+        };
+        expanded.push_str(replacement);
+    }
+    expanded.push('⟧');
+    expanded
+}
+
+fn apply_pseudo_locale(value: String) -> String {
+    PSEUDO_LOCALE.with(|mode| match mode.get() {
+        PseudoLocale::Off => value,
+        PseudoLocale::Expanded => pseudo_expand(&value),
+    })
 }
 
 /// Parse a BCP-47 locale tag, falling back to `en-US` on a malformed value
@@ -301,16 +350,35 @@ impl I18nManager {
     /// catalog or active locale changes.
     #[must_use]
     pub fn revision() -> u64 {
-        MANAGER.with(|manager| {
+        let catalog = MANAGER.with(|manager| {
             manager
                 .borrow()
                 .as_ref()
                 .map_or(0, |manager| manager.revision)
-        })
+        });
+        catalog.wrapping_add(PSEUDO_REVISION.with(Cell::get))
+    }
+
+    /// Enable or disable pseudo-localized output. The retained-widget revision
+    /// changes on an effective transition so text is reshaped and layout can
+    /// be recomputed without restarting the application.
+    pub fn set_pseudo_locale(mode: PseudoLocale) {
+        PSEUDO_LOCALE.with(|current| {
+            if current.replace(mode) != mode {
+                PSEUDO_REVISION.with(|revision| {
+                    revision.set(revision.get().wrapping_add(1));
+                });
+            }
+        });
+    }
+
+    #[must_use]
+    pub fn pseudo_locale() -> PseudoLocale {
+        PSEUDO_LOCALE.with(Cell::get)
     }
 
     pub fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
-        MANAGER.with(|m| {
+        let resolved = MANAGER.with(|m| {
             if let Some(manager) = m.borrow().as_ref() {
                 let active = manager.bundles.get(&manager.current_locale).or_else(|| {
                     let same_language = |locale: &&LanguageIdentifier| {
@@ -337,7 +405,8 @@ impl I18nManager {
                 }
             }
             key.to_string()
-        })
+        });
+        apply_pseudo_locale(resolved)
     }
 
     /// Resolve a message without variables. This function-shaped form is
@@ -437,6 +506,22 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, I18nError::InvalidResource { .. }));
         assert_eq!(I18nManager::revision(), revision);
+        assert_eq!(I18nManager::lookup("greeting", None), "Hello");
+    }
+
+    #[test]
+    fn expanded_pseudo_locale_lengthens_text_and_invalidates_retained_widgets() {
+        I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        let initial = I18nManager::revision();
+
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        let expanded = I18nManager::lookup("greeting", None);
+        assert!(expanded.starts_with('⟦') && expanded.ends_with('⟧'));
+        assert!(expanded.chars().count() > "Hello".chars().count());
+        assert_ne!(I18nManager::revision(), initial);
+
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
         assert_eq!(I18nManager::lookup("greeting", None), "Hello");
     }
 }

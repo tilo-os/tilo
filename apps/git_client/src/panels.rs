@@ -217,9 +217,9 @@ impl PanelsView {
                     theme.accent_primary
                 }
             } else if hovered {
-                c.surface_white_20
+                c.lift(1.0)
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             };
             let fg = if primary {
                 Color::WHITE
@@ -285,7 +285,7 @@ impl PanelsView {
             18.0,
             &count.to_string(),
             c.text_dim,
-            c.surface_white_10,
+            c.lift(0.72),
             None,
         );
         draw::hline(
@@ -294,7 +294,7 @@ impl PanelsView {
             rect.y0 + 40.0,
             rect.x0 + 12.0,
             rect.x1 - 12.0,
-            c.surface_white_5,
+            c.lift(0.35),
         );
         // Content area below the header.
         Rect::new(rect.x0, rect.y0 + 48.0, rect.x1, rect.y1 - 12.0)

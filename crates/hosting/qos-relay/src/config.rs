@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::mesh::{DeviceRole, ReplicationIntent, ServiceCapabilities};
 use crate::policy::TrustPolicy;
 
 /// Top-level relay configuration.
@@ -69,6 +70,16 @@ pub struct RelayConfig {
     /// identity as this relay's cert.
     #[serde(default)]
     pub trust_policy: TrustPolicy,
+
+    /// How this certified device participates in the personal mesh. A relay
+    /// daemon defaults to an always-on server; its service claims are still
+    /// intersected with the signed device certificate at runtime.
+    #[serde(default = "default_device_role")]
+    pub device_role: DeviceRole,
+
+    /// Services advertised to same-identity clients and federated peers.
+    #[serde(default = "default_services")]
+    pub services: ServiceCapabilities,
 
     /// Workspaces the relay pins and forwards for. Populated by
     /// `qos-relay-admin bind-workspace`; hand-editable.
@@ -123,10 +134,27 @@ pub struct WorkspaceBinding {
     /// does not itself materialize history.
     #[serde(default = "true_default")]
     pub pin: bool,
+
+    /// Which existing collaboration/blob streams this device retains. A
+    /// server defaults to a full workspace replica, including file content.
+    #[serde(default = "default_server_replication")]
+    pub replication: ReplicationIntent,
 }
 
 fn true_default() -> bool {
     true
+}
+
+fn default_device_role() -> DeviceRole {
+    DeviceRole::AlwaysOnServer
+}
+
+fn default_services() -> ServiceCapabilities {
+    ServiceCapabilities::personal_server()
+}
+
+fn default_server_replication() -> ReplicationIntent {
+    ReplicationIntent::FullWorkspace
 }
 
 fn default_identity_root() -> PathBuf {
@@ -150,6 +178,8 @@ impl Default for RelayConfig {
             state_root: default_state_root(),
             iroh_listen: default_iroh_listen(),
             trust_policy: TrustPolicy::default(),
+            device_role: default_device_role(),
+            services: default_services(),
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
         }
@@ -205,7 +235,11 @@ impl RelayConfig {
         if self.workspaces.iter().any(|w| w.id == id) {
             return false;
         }
-        self.workspaces.push(WorkspaceBinding { id, pin });
+        self.workspaces.push(WorkspaceBinding {
+            id,
+            pin,
+            replication: default_server_replication(),
+        });
         true
     }
 
@@ -248,6 +282,9 @@ mod tests {
         assert_eq!(cfg.state_root, PathBuf::from("/var/lib/qos-relay"));
         assert_eq!(cfg.iroh_listen.port(), 0);
         assert!(cfg.workspaces.is_empty());
+        assert_eq!(cfg.device_role, DeviceRole::AlwaysOnServer);
+        assert!(cfg.services.workspace_replication);
+        assert!(cfg.services.inbound_relay);
     }
 
     #[test]
@@ -278,6 +315,10 @@ mod tests {
         assert!(cfg.add_workspace(1, true));
         assert!(!cfg.add_workspace(1, true));
         assert_eq!(cfg.workspaces.len(), 1);
+        assert_eq!(
+            cfg.workspaces[0].replication,
+            ReplicationIntent::FullWorkspace
+        );
     }
 
     #[test]
