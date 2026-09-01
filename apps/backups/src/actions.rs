@@ -19,8 +19,8 @@
 use automerge::{AutoCommit, ROOT};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -136,6 +136,16 @@ fn immediate_spec(id: &str, label: &str, action: &BackupsAction) -> ActionSpec {
         .unwrap_or_else(|_| {
             ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
         })
+        .with_contract(policy_contract())
+}
+
+fn policy_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["configuration".into(), "retention".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// The resource tree Backups publishes: the retention policy, with a child per
@@ -153,14 +163,17 @@ pub fn provide_resources(policy: &RetentionPolicy) -> Vec<Resource> {
         );
 
         let set_label = format!("Set {} retention", field.label().to_ascii_lowercase());
-        fr = fr.with_action(ActionSpec::prompted(
-            "set",
-            set_label,
-            "Count",
-            "0–999",
-            ExecutionLocus::ClientLocal,
-            move |text: &str| encode(&set_retention_action(field, parse_count(text))),
-        ));
+        fr = fr.with_action(
+            ActionSpec::prompted(
+                "set",
+                set_label,
+                "Count",
+                "0–999",
+                ExecutionLocus::ClientLocal,
+                move |text: &str| encode(&set_retention_action(field, parse_count(text))),
+            )
+            .with_contract(policy_contract()),
+        );
 
         // Offered only where there is room to move.
         if cur < 999 {
@@ -241,8 +254,11 @@ mod tests {
     fn ctrl_k_publishes_the_retention_tree() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one retention-policy root");
-        let root = &resources[0];
+        assert_eq!(resources.len(), 2, "policy and live backup-service roots");
+        let root = resources
+            .iter()
+            .find(|resource| resource.kind == "backups.policy")
+            .expect("retention-policy root");
         assert_eq!(root.kind, "backups.policy");
         assert_eq!(root.children.len(), 4, "one child per retention class");
 
@@ -280,6 +296,14 @@ mod tests {
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Monthly, 999);
         let resources = provide_resources(&BackupsDoc::policy(&doc, &ROOT));
+        assert!(
+            resources
+                .iter()
+                .flat_map(|resource| &resource.children)
+                .flat_map(|resource| &resource.actions)
+                .all(|action| action.contract.reversible
+                    && action.contract.retry == RetryPolicy::Idempotent)
+        );
         let root = &resources[0];
 
         let weekly = field_resource(root, PolicyField::Weekly);

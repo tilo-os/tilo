@@ -327,6 +327,10 @@ pub struct VpnApp {
     add_name: TextInput,
     add_endpoint: TextInput,
     pending: Option<Pending>,
+    /// A host-confirmed resource operation waiting for the next mutable-doc
+    /// sync pass. The widget operation hook intentionally receives a read-only
+    /// document; tunnel status is committed here after the real command runs.
+    queued_resource_toggle: Option<ConnId>,
     /// Most recent action results, newest last. Starts empty — populated
     /// only by real user actions (imports, connect attempts).
     activity: Vec<String>,
@@ -393,6 +397,7 @@ impl VpnApp {
             add_name: TextInput::local().with_font_size(13.0),
             add_endpoint: TextInput::local().with_font_size(13.0),
             pending: None,
+            queued_resource_toggle: None,
             activity: Vec::new(),
             import_rx: None,
             import_hint: ConnKind::WireGuard,
@@ -2583,6 +2588,10 @@ impl Widget for VpnApp {
         // reconcile real interface state, then poll real throughput counters.
         self.drain_import(state);
         self.refresh(state);
+        if let Some(id) = self.queued_resource_toggle.take() {
+            self.request_toggle(id);
+            self.confirm_pending(state);
+        }
         self.apply_pending_tool_intent(state);
         self.sample_throughput();
     }
@@ -2725,7 +2734,79 @@ impl Widget for VpnApp {
     /// Publish the vault + connections resource tree to the shell's Ctrl+K
     /// palette (see [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        if let Some(root) = resources.first_mut() {
+            for connection in &self.vault.connections {
+                let Some(resource) = root
+                    .children
+                    .iter_mut()
+                    .find(|resource| resource.id.0 == format!("vpn.connection:{}", connection.id))
+                else {
+                    continue;
+                };
+                let connecting = connection.status == ConnStatus::Connecting;
+                let (id, label) = if connection.is_connected() {
+                    ("disconnect", "Disconnect")
+                } else {
+                    ("connect", "Connect")
+                };
+                resource.actions.insert(
+                    0,
+                    qos_actions::ActionSpec::operation(
+                        id,
+                        label,
+                        qos_actions::OperationKind::Effect,
+                        "vpn.toggle-tunnel",
+                        &connection.id.to_string(),
+                    )
+                    .expect("VPN connection id is serializable")
+                    .with_contract(qos_actions::ActionContract {
+                        availability: if connecting {
+                            qos_actions::Availability::Unavailable {
+                                code: "transition_in_progress".into(),
+                                reason: "The tunnel is already changing state".into(),
+                            }
+                        } else {
+                            qos_actions::Availability::Available
+                        },
+                        permission: qos_actions::PermissionRequirement::Admin,
+                        risk: qos_actions::RiskLevel::Privileged,
+                        confirmation: qos_actions::ConfirmationPolicy::Confirm,
+                        retry: qos_actions::RetryPolicy::AtMostOnce,
+                        execution: qos_actions::ExecutionMode::Background { cancellable: false },
+                        result: qos_actions::ResultSpec::Job,
+                        ..qos_actions::ActionContract::default()
+                    }),
+                );
+            }
+        }
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect || type_id != "vpn.toggle-tunnel" {
+            return Ok(false);
+        }
+        let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid VPN connection id".to_string())?;
+        let connection = self
+            .vault
+            .get(id)
+            .ok_or_else(|| "VPN connection is no longer saved".to_string())?;
+        if connection.status == ConnStatus::Connecting {
+            return Err("The tunnel is already changing state".into());
+        }
+        self.queued_resource_toggle = Some(id);
+        Ok(true)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

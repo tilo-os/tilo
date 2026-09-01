@@ -54,8 +54,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::ImagerDoc;
@@ -176,6 +176,16 @@ fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
         .unwrap_or_else(|_| {
             ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
         })
+        .with_contract(profile_contract())
+}
+
+fn profile_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["configuration".into(), "image-profile".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// Add the identity/region prompted fields — hostname, full name, username,
@@ -184,66 +194,81 @@ fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
 /// only on the shape of [`ImagerAction`]. The password is intentionally
 /// absent: a secret must never be echoed through a palette prompt.
 fn with_identity_fields(mut res: Resource) -> Resource {
-    res = res.with_action(ActionSpec::prompted(
-        "hostname",
-        "Set hostname",
-        "Hostname",
-        "qos",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetHostname {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "full-name",
-        "Set full name",
-        "Full name",
-        "qOS User",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetFullName {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "username",
-        "Set username",
-        "Username",
-        "quser",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetUsername {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "timezone",
-        "Set timezone",
-        "Timezone",
-        "UTC",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetTimezone {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "keyboard",
-        "Set keyboard layout",
-        "Keyboard",
-        "us",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetKeyboard {
-                value: text.to_string(),
-            })
-        },
-    ));
+    res = res.with_action(
+        ActionSpec::prompted(
+            "hostname",
+            "Set hostname",
+            "Hostname",
+            "qos",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetHostname {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "full-name",
+            "Set full name",
+            "Full name",
+            "qOS User",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetFullName {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "username",
+            "Set username",
+            "Username",
+            "quser",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetUsername {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "timezone",
+            "Set timezone",
+            "Timezone",
+            "UTC",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetTimezone {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "keyboard",
+            "Set keyboard layout",
+            "Keyboard",
+            "us",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetKeyboard {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
     res
 }
 
@@ -465,6 +490,13 @@ mod tests {
     #[test]
     fn ctrl_k_publishes_the_customization_and_profile_actions() {
         let resources = provide_resources("qOS 1.0", &InstallProfile::default());
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .all(|action| action.contract.reversible
+                    && action.contract.retry == RetryPolicy::Idempotent)
+        );
         assert_eq!(resources.len(), 1, "one customization root");
         let root = &resources[0];
         assert_eq!(root.kind, "imager.customization");

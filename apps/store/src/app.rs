@@ -38,7 +38,10 @@ use std::rc::Rc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, ConfirmationPolicy, ExecutionMode, OperationKind, Resource,
+    ResultSpec, RetryPolicy, RiskLevel,
+};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{Column, Container, Row, Spacer, Text, TextInput, ToggleGroup, Widget};
 use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
@@ -918,7 +921,12 @@ impl Widget for StoreApp {
             "store.refresh",
             &"",
         ) {
-            root.actions.push(refresh);
+            root.actions.push(refresh.with_contract(ActionContract {
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: false },
+                result: ResultSpec::Job,
+                ..ActionContract::default()
+            }));
         }
         for item in &self.items {
             let action = item.action_kind(self.flatpak_available);
@@ -933,7 +941,42 @@ impl Widget for StoreApp {
                 "store.app",
                 &payload,
             ) {
-                resource.actions.push(spec);
+                let destructive = matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove);
+                let background = matches!(
+                    action,
+                    ActionKind::Update | ActionKind::FlatpakInstall | ActionKind::FlatpakUpdate
+                );
+                resource.actions.push(spec.with_contract(ActionContract {
+                    risk: if destructive {
+                        RiskLevel::Destructive
+                    } else {
+                        RiskLevel::Low
+                    },
+                    confirmation: if destructive {
+                        ConfirmationPolicy::Confirm
+                    } else {
+                        ConfirmationPolicy::None
+                    },
+                    retry: if matches!(
+                        action,
+                        ActionKind::Open | ActionKind::FlatpakOpen | ActionKind::NeedsFlatpakHost
+                    ) {
+                        RetryPolicy::AtMostOnce
+                    } else {
+                        RetryPolicy::RetryWithInvocationId
+                    },
+                    execution: if background {
+                        ExecutionMode::Background { cancellable: false }
+                    } else {
+                        ExecutionMode::Immediate
+                    },
+                    result: if background {
+                        ResultSpec::Job
+                    } else {
+                        ResultSpec::None
+                    },
+                    ..ActionContract::default()
+                }));
             }
             if let Some(remove) = item.remove_action() {
                 let payload = vec![item.id.clone(), action_code(remove).to_string()];
@@ -944,7 +987,14 @@ impl Widget for StoreApp {
                     "store.app",
                     &payload,
                 ) {
-                    resource.actions.push(spec);
+                    resource.actions.push(spec.with_contract(ActionContract {
+                        risk: RiskLevel::Destructive,
+                        confirmation: ConfirmationPolicy::Confirm,
+                        retry: RetryPolicy::RetryWithInvocationId,
+                        execution: ExecutionMode::Background { cancellable: false },
+                        result: ResultSpec::Job,
+                        ..ActionContract::default()
+                    }));
                 }
             }
             root.children.push(resource);

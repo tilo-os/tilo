@@ -29,7 +29,10 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, ConfirmationPolicy, OperationKind, PermissionRequirement, Resource,
+    RetryPolicy, RiskLevel,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -4174,6 +4177,21 @@ impl MonitorApp {
 impl Widget for MonitorApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("processes", "monitor.processes", "Processes");
+        root.actions.push(
+            ActionSpec::operation(
+                "refresh",
+                "Refresh processes",
+                OperationKind::Effect,
+                "monitor.refresh",
+                &"",
+            )
+            .expect("monitor operation payload is serializable")
+            .with_contract(ActionContract {
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                ..ActionContract::default()
+            }),
+        );
         for process in &self.model.processes {
             let mut resource = Resource::new(
                 format!("process:{}", process.pid),
@@ -4189,7 +4207,17 @@ impl Widget for MonitorApp {
                     "monitor.signal",
                     &payload,
                 ) {
-                    resource.actions.push(spec);
+                    resource.actions.push(spec.with_contract(ActionContract {
+                        permission: PermissionRequirement::Admin,
+                        risk: if verb == "kill" {
+                            RiskLevel::Destructive
+                        } else {
+                            RiskLevel::Privileged
+                        },
+                        confirmation: ConfirmationPolicy::Confirm,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }));
                 }
             }
             root.children.push(resource);
@@ -4205,7 +4233,14 @@ impl Widget for MonitorApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "monitor.signal" {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
+        if type_id == "monitor.refresh" {
+            self.sampler.refresh(&mut self.model);
+            return Ok(true);
+        }
+        if type_id != "monitor.signal" {
             return Ok(false);
         }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -4222,7 +4257,9 @@ impl Widget for MonitorApp {
         if !self.model.processes.iter().any(|p| p.pid == pid) {
             return Err("process is no longer running".into());
         }
-        let _ = self.sampler.signal(pid, signal);
+        if !self.sampler.signal(pid, signal) {
+            return Err("The operating system refused the process signal".into());
+        }
         self.model.processes.retain(|p| p.pid != pid);
         if self.selected_pid == Some(pid) {
             self.selected_pid = None;

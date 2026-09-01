@@ -3892,7 +3892,94 @@ impl Widget for BackupsApp {
     /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
     /// (see [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        let mut runtime =
+            qos_actions::Resource::new("backups.runtime", "backups.service", "Backup service");
+        for (id, label, type_id, available, reason, cancellable) in [
+            (
+                "backup-now",
+                "Back up now",
+                "backups.start",
+                self.job.is_none(),
+                "A backup is already running",
+                true,
+            ),
+            (
+                "cancel-backup",
+                "Cancel backup",
+                "backups.cancel",
+                self.job.is_some(),
+                "No backup is running",
+                true,
+            ),
+            (
+                "verify",
+                "Verify selected snapshot",
+                "backups.verify",
+                self.ui.sel_snapshot.is_some(),
+                "Select a snapshot to verify",
+                false,
+            ),
+        ] {
+            let spec = qos_actions::ActionSpec::operation(
+                id,
+                label,
+                qos_actions::OperationKind::Effect,
+                type_id,
+                &"",
+            )
+            .expect("backup operation payload is serializable")
+            .with_contract(qos_actions::ActionContract {
+                availability: if available {
+                    qos_actions::Availability::Available
+                } else {
+                    qos_actions::Availability::Unavailable {
+                        code: "state_conflict".into(),
+                        reason: reason.into(),
+                    }
+                },
+                permission: qos_actions::PermissionRequirement::Write,
+                retry: if id == "verify" {
+                    qos_actions::RetryPolicy::Idempotent
+                } else {
+                    qos_actions::RetryPolicy::AtMostOnce
+                },
+                execution: qos_actions::ExecutionMode::Background { cancellable },
+                result: qos_actions::ResultSpec::Job,
+                ..qos_actions::ActionContract::default()
+            });
+            runtime.actions.push(spec);
+        }
+        resources.push(runtime);
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        _payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        match type_id {
+            "backups.start" if self.job.is_none() => self.start_job(),
+            "backups.cancel" if self.job.is_some() => {
+                self.job = None;
+                self.toast_now("Backup cancelled");
+            }
+            "backups.verify" if self.ui.sel_snapshot.is_some() => {
+                self.toast_now("Verifying snapshot integrity…")
+            }
+            "backups.start" | "backups.cancel" | "backups.verify" => {
+                return Err("Backup operation is no longer available".into());
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

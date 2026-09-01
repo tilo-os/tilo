@@ -47,7 +47,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, ExecutionMode, OperationKind, PermissionRequirement,
+    Resource, ResultSpec, RetryPolicy,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
@@ -1764,7 +1767,23 @@ impl Widget for LogsApp {
             "logs.refresh",
             &"",
         ) {
-            root.actions.push(spec);
+            root.actions.push(spec.with_contract(ActionContract {
+                availability: if self.allow_live {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "journal_access_disabled".into(),
+                        reason: "Live journal access is disabled".into(),
+                    }
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: false },
+                result: ResultSpec::Resource {
+                    resource_kind: "logs.journal".into(),
+                },
+                ..ActionContract::default()
+            }));
         }
         vec![root]
     }
