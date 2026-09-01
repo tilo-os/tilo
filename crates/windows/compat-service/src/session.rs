@@ -129,6 +129,19 @@ where
             .map_err(Into::into)
     }
 
+    fn vm_uninstallation_status(&self, workspace_id: &str) -> Option<crate::VmUninstallation> {
+        self.service.vm_uninstallation_status(workspace_id)
+    }
+
+    fn refresh_vm_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<crate::VmUninstallation>, SessionError> {
+        self.service
+            .refresh_vm_uninstallation_status(workspace_id)
+            .map_err(Into::into)
+    }
+
     fn explain_entry(
         &self,
         entry: &RegisteredProgram,
@@ -172,28 +185,6 @@ where
                 program_id: entry.program.id.clone(),
                 query: entry.query.clone(),
                 vm_fallback: VmFallback::Disabled,
-                capabilities,
-                now_unix: now_unix(),
-            })
-            .map_err(Into::into)
-    }
-
-    fn launch_vm_fallback_entry(
-        &self,
-        entry: &RegisteredProgram,
-        workspace_id: &str,
-        capabilities: Vec<CapOverride>,
-    ) -> Result<crate::LaunchReceipt, SessionError> {
-        // This method is reached only through the separately named protocol
-        // request.  It is deliberately not a client boolean that can be
-        // smuggled into an ordinary launch frame.
-        self.service
-            .launch(&LaunchInput {
-                app_id: entry.app_id.clone(),
-                workspace_id: workspace_id.to_string(),
-                program_id: entry.program.id.clone(),
-                query: entry.query.clone(),
-                vm_fallback: VmFallback::Explicit,
                 capabilities,
                 now_unix: now_unix(),
             })
@@ -277,9 +268,13 @@ where
             .map_err(Into::into)
     }
 
-    fn uninstall_vm_published_application(&self, entry_id: &str) -> Result<(), SessionError> {
+    fn uninstall_vm_published_application(
+        &self,
+        workspace_id: &str,
+        entry_id: &str,
+    ) -> Result<crate::VmUninstallation, SessionError> {
         self.service
-            .uninstall_vm_published_application(entry_id)
+            .uninstall_vm_published_application(workspace_id, entry_id)
             .map_err(Into::into)
     }
 
@@ -679,6 +674,7 @@ where
         | ProtocolRequest::InstallInCapsule { version, .. }
         | ProtocolRequest::PublishVmCandidate { version, .. }
         | ProtocolRequest::RefreshVmInstallation { version }
+        | ProtocolRequest::RefreshVmUninstallation { version }
         | ProtocolRequest::RetryInstall { version, .. }
         | ProtocolRequest::RemoveLauncher { version, .. }
         | ProtocolRequest::VendorUninstall { version, .. }
@@ -752,20 +748,11 @@ where
                         .launch_published_vm(&application, &handoff.workspace_id, &capabilities)
                         .map(|receipt| ProtocolResponse::Launched { receipt })
                 } else {
-                    let entry = managed
-                        .entries()?
-                        .into_iter()
-                        .find(|entry| {
-                            entry.entry_id == entry_id
-                                && entry.program.kind == ProgramKind::Application
-                        })
-                        .ok_or(SessionError::UnknownEntry)?;
-                    let capabilities = authority
-                        .capabilities_for(&handoff.workspace_id, &entry.app_id)
-                        .map_err(SessionError::Authority)?;
-                    managed
-                        .launch_vm_fallback_entry(&entry, &handoff.workspace_id, capabilities)
-                        .map(|receipt| ProtocolResponse::Launched { receipt })
+                    // Private capsule entries cannot be mapped to an
+                    // authenticated guest publication. Treating their local
+                    // program ID as one would create an action guaranteed to
+                    // fail guest catalogue validation.
+                    Err(SessionError::UnknownEntry)
                 }
             } else {
                 Err(SessionError::UnknownEntry)
@@ -843,6 +830,15 @@ where
             }
             Ok(ProtocolResponse::VmInstallationRefreshed { installation })
         }
+        ProtocolRequest::RefreshVmUninstallation { .. } => {
+            let uninstallation = managed.refresh_vm_uninstallation_status(&handoff.workspace_id)?;
+            if let Some(status) = &uninstallation
+                && status.phase == crate::VmInstallationPhase::Completed
+            {
+                allowed_entry_ids.remove(&status.entry_id);
+            }
+            Ok(ProtocolResponse::VmUninstallationRefreshed { uninstallation })
+        }
         ProtocolRequest::RetryInstall { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
             let capabilities = authority
@@ -899,9 +895,12 @@ where
             if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) || !authorized {
                 return Err(SessionError::UnknownEntry);
             }
-            managed.uninstall_vm_published_application(&entry_id)?;
-            allowed_entry_ids.remove(&entry_id);
-            Ok(ProtocolResponse::VmVendorUninstalled { entry_id })
+            let uninstallation =
+                managed.uninstall_vm_published_application(&handoff.workspace_id, &entry_id)?;
+            if uninstallation.phase == crate::VmInstallationPhase::Completed {
+                allowed_entry_ids.remove(&entry_id);
+            }
+            Ok(ProtocolResponse::VmVendorUninstallation { uninstallation })
         }
         ProtocolRequest::DeleteData { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
@@ -945,6 +944,7 @@ where
     let vm_inventory = managed.vm_inventory();
     let vm_availability = vm_inventory.availability.clone();
     let vm_installation = managed.vm_installation_status(&handoff.workspace_id);
+    let vm_uninstallation = managed.vm_uninstallation_status(&handoff.workspace_id);
     if let Some(installation) = &vm_installation {
         authorize_vm_candidates(allowed_entry_ids, installation);
     }
@@ -973,9 +973,15 @@ where
             capsule_id: Some(entry.capsule_id),
             program_id: entry.program.id,
             explanation,
-            vm_launch_available: vm_availability.available,
-            vm_unavailable_reason: (!vm_availability.available)
-                .then(|| vm_availability.detail.clone()),
+            // Only an authenticated guest catalogue publication can be sent
+            // to the VM. A private Wine/Proton program has no trusted guest
+            // application ID, so it never exposes a predictably failing VM
+            // fallback action.
+            vm_launch_available: false,
+            vm_unavailable_reason: Some(
+                "Open in Windows VM is available only for published Windows guest applications."
+                    .to_string(),
+            ),
             // The resource broker gives every Wine/UMU launch a fresh
             // playback-only PipeWire/Pulse graph. A startup failure is a
             // launch error, not an imaginary unavailable feature in the UI.
@@ -1075,6 +1081,7 @@ where
         installations,
         vm_availability,
         vm_installation,
+        vm_uninstallation,
     })
 }
 

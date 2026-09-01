@@ -64,7 +64,7 @@ pub use service::{
     LaunchInput, LaunchReceipt, MatchReason, RouteKind, ServiceError, UnavailableVmDelegate,
     VmAvailability, VmCandidatePublication, VmDelegate, VmInstallCandidate, VmInstallConfirmation,
     VmInstallation, VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory,
-    VmPublishedApplication, VmRouteRequest,
+    VmPublishedApplication, VmRouteRequest, VmUninstallation,
 };
 pub use session::{
     CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
