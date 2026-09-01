@@ -50,7 +50,11 @@ pub use config::{
 pub use guest::{
     AgentError, AgentHealth, GuestAgent, GuestLaunch, GuestSession, RdpEndpoint, Secret,
 };
-pub use https_guest::{GuestBridgeConfig, HttpsGuestBridge};
+pub use https_guest::{
+    DiscoveredApplication, DiscoveredUninstaller, GuestBridgeConfig, HttpsGuestBridge,
+    InstallationOperationId, InstallationState, InstallationStatus, InstallerKind,
+    InstallerPackage, MAX_INSTALLER_BYTES, PublicationResult, StagedInstaller,
+};
 pub use libvirt::{DomainState, LibvirtBackend, VmBackend, VmBackendError, render_domain_xml};
 pub use presentation::{ApplicationPresentation, RecoveryPresentation};
 pub use publication::{Association, AssociationKind, Catalog, CatalogError, PublishedApplication};
