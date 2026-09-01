@@ -669,6 +669,10 @@ impl Default for SnippetsApp {
 }
 
 impl ui::widget::Widget for SnippetsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::SNIPPETS_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

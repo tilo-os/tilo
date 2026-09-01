@@ -1369,6 +1369,10 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
 }
 
 impl Widget for NotesApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::NOTES_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

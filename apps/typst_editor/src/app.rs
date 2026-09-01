@@ -1690,6 +1690,10 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
 }
 
 impl Widget for TypstApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::OPERATION_TYPE]
+    }
+
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         crate::actions::resources(doc)
     }
