@@ -1,9 +1,35 @@
 name: Build qOS Imager host downloads
 
+# Pushes and pull requests continuously prove each native build. An imager-v*
+# tag is different: all three jobs require protected platform credentials and
+# fail closed unless the resulting package is signed (and notarized on macOS).
 on:
   push:
+    branches: ["main"]
     tags: ["imager-v*"]
+    paths:
+      - "apps/imager/**"
+      - "ui/**"
+      - "crates/runtime/**"
+      - "crates/collab/actions/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".forgejo/workflows/release-imager.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "apps/imager/**"
+      - "ui/**"
+      - "crates/runtime/**"
+      - "crates/collab/actions/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".forgejo/workflows/release-imager.yml"
   workflow_dispatch:
+
+concurrency:
+  group: release-imager-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
@@ -15,21 +41,59 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Configure release signing
+        env:
+          SIGNING_KEY_B64: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_B64 }}
+          SIGNING_KEY_ID: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF:-}" in
+            refs/tags/imager-v*)
+              test -n "${SIGNING_KEY_B64:-}" && test -n "${SIGNING_KEY_ID:-}"
+              printf '%s' "$SIGNING_KEY_B64" | base64 --decode > /tmp/imager-signing-key.asc
+              gpg --batch --import /tmp/imager-signing-key.asc
+              rm -f /tmp/imager-signing-key.asc
+              echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
+              echo "QOS_LINUX_SIGNING_KEY=$SIGNING_KEY_ID" >> "$GITHUB_ENV"
+              ;;
+          esac
+      - run: cargo test -p imager --lib --locked
       - run: apps/imager/packaging/package-host.sh
-      - uses: actions/upload-artifact@v4
+      # Forgejo does not implement the Artifact API v2 used by v4.
+      - uses: actions/upload-artifact@v3
         with:
           name: qos-imager-linux
           path: |
             dist/qos-imager/qos-imager-linux.tar.gz
             dist/qos-imager/qos-imager-linux.tar.gz.sha256
+            dist/qos-imager/qos-imager-linux.tar.gz.asc
+          if-no-files-found: ignore
 
   windows:
     runs-on: windows
     steps:
       - uses: actions/checkout@v4
+      - name: Configure release signing
+        shell: powershell
+        env:
+          CERT_PFX_B64: ${{ secrets.IMAGER_WINDOWS_CERT_PFX_B64 }}
+          CERT_PASSWORD: ${{ secrets.IMAGER_WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/imager-v*") {
+            if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) {
+              throw "Windows release signing secrets are missing"
+            }
+            $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
+            [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+            "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+      - shell: powershell
+        run: cargo test -p imager --lib --locked
       - shell: powershell
         run: apps/imager/packaging/package-host.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         with:
           name: qos-imager-windows
           path: |
@@ -40,8 +104,40 @@ jobs:
     runs-on: macos
     steps:
       - uses: actions/checkout@v4
+      - name: Configure release signing
+        env:
+          CERT_P12_B64: ${{ secrets.IMAGER_MAC_CERT_P12_B64 }}
+          CERT_PASSWORD: ${{ secrets.IMAGER_MAC_CERT_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.IMAGER_MAC_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.IMAGER_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.IMAGER_APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.IMAGER_APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF:-}" in
+            refs/tags/imager-v*)
+              test -n "${CERT_P12_B64:-}" && test -n "${CERT_PASSWORD:-}"
+              test -n "${SIGNING_IDENTITY:-}" && test -n "${APPLE_ID:-}"
+              test -n "${APPLE_TEAM_ID:-}" && test -n "${APPLE_APP_PASSWORD:-}"
+              keychain="$RUNNER_TEMP/qos-imager-signing.keychain-db"
+              p12="$RUNNER_TEMP/qos-imager-signing.p12"
+              printf '%s' "$CERT_P12_B64" | base64 --decode > "$p12"
+              security create-keychain -p qos-ci "$keychain"
+              security unlock-keychain -p qos-ci "$keychain"
+              security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+              rm -f "$p12"
+              security set-key-partition-list -S apple-tool:,apple: -s -k qos-ci "$keychain"
+              security list-keychains -d user -s "$keychain"
+              echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
+              echo "QOS_MAC_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+              echo "QOS_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+              echo "QOS_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+              echo "QOS_APPLE_APP_PASSWORD=$APPLE_APP_PASSWORD" >> "$GITHUB_ENV"
+              ;;
+          esac
+      - run: cargo test -p imager --lib --locked
       - run: apps/imager/packaging/package-host.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v3
         with:
           name: qos-imager-macos
           path: |
