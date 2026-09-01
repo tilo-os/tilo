@@ -2949,7 +2949,7 @@ mod tests {
     }
 
     #[test]
-    fn restricted_peer_cannot_start_screen_share_but_can_stop_one_after_downgrade() {
+    fn screen_share_is_not_exposed_as_a_dead_call_control() {
         use ui::permissions::{Actor, PermissionContext, Role};
 
         let (mut app, mut doc) = app_with_doc();
@@ -2971,11 +2971,12 @@ mod tests {
             ),
         );
         let (_, controls) = app.overlay_controls_layout();
-        let share = controls
-            .iter()
-            .find(|(_, _, _, _, hit, _)| matches!(hit, Hit::CallShareScreen))
-            .expect("expanded call has a share control");
-        assert!(!share.3, "a denied new share is visibly disabled");
+        assert!(
+            controls
+                .iter()
+                .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen)),
+            "the shipped portal has no capture producer, so Chat must not show a dead share button"
+        );
 
         app.on_hit(Hit::CallShareScreen, &mut doc);
         assert!(
@@ -2987,16 +2988,10 @@ mod tests {
             "blocked capture publishes no sharing state"
         );
 
-        // Stopping is deliberately allowed after a downgrade so a person can
-        // always end an already-running transmission.
+        // The defensive action path still lets an already-running or restored
+        // share stop after a permission downgrade.
         app.call.sharing = true;
         app.sync_local_sharing(&mut doc);
-        let (_, controls) = app.overlay_controls_layout();
-        let share = controls
-            .iter()
-            .find(|(_, _, _, _, hit, _)| matches!(hit, Hit::CallShareScreen))
-            .expect("expanded call retains Stop share");
-        assert!(share.3, "Stop share remains available after downgrade");
         app.on_hit(Hit::CallShareScreen, &mut doc);
         assert!(!app.sharing_screen());
         assert!(
@@ -3057,40 +3052,17 @@ mod tests {
     }
 
     #[test]
-    fn share_control_reads_the_live_share_state() {
-        // The expanded controls surface a real Share/Stop toggle whose active
-        // state tracks `sharing_screen()` — driven by the portal grant, not a
-        // fabricated flag.
+    fn expanded_controls_do_not_advertise_screen_capture() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
         app.on_hit(Hit::CallExpand, &mut doc);
         let (_, buttons) = app.overlay_controls_layout();
-        let share = buttons
-            .iter()
-            .find(|(_, _, _, _, h, _)| matches!(h, Hit::CallShareScreen));
-        let (label, active, ..) =
-            share.expect("the expanded controls include a screen-share button");
-        assert_eq!(*label, "Share screen");
         assert!(
-            !*active,
-            "not sharing → the control reads inactive 'Share screen'"
+            buttons
+                .iter()
+                .all(|(_, _, _, _, h, _)| !matches!(h, Hit::CallShareScreen)),
+            "screen capture stays absent until a real production PipeWire producer exists"
         );
-        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
-            node: 7,
-            width: 800,
-            height: 600,
-        })));
-        app.on_hit(Hit::CallShareScreen, &mut doc);
-        let (_, buttons) = app.overlay_controls_layout();
-        let (label, active, ..) = buttons
-            .iter()
-            .find(|(_, _, _, _, h, _)| matches!(h, Hit::CallShareScreen))
-            .expect("share button present");
-        assert_eq!(
-            *label, "Stop share",
-            "sharing flips the control to 'Stop share'"
-        );
-        assert!(*active, "sharing → the control reads active");
     }
 
     // --- header Call button (was unreachable without a voice channel) ---
