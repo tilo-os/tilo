@@ -129,6 +129,15 @@ impl StagedInstaller {
 pub struct InstallationOperationId(String);
 
 impl InstallationOperationId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, AgentError> {
+        let value = value.into();
+        if valid_identifier(&value) && value.len() >= 16 {
+            Ok(Self(value))
+        } else {
+            Err(AgentError::InvalidInstaller)
+        }
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -140,7 +149,7 @@ impl InstallationOperationId {
 #[derive(Debug)]
 pub struct PreparedInstallation {
     pub operation_id: InstallationOperationId,
-    pub presentation: GuestLaunch,
+    pub(crate) presentation: GuestLaunch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -1291,6 +1300,8 @@ mod tests {
                 .is_err()
         );
         assert!(InstallerPackage::new(InstallerKind::Exe, 1, "not-a-digest").is_err());
+        assert!(InstallationOperationId::parse("too-short").is_err());
+        assert!(InstallationOperationId::parse("a".repeat(48)).is_ok());
     }
 
     #[test]
