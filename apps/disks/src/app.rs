@@ -26,7 +26,10 @@ use ui::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, ConfirmationPolicy, ExecutionMode, OperationKind,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
@@ -3206,7 +3209,23 @@ impl Widget for DisksApp {
                     "disks.operation",
                     &payload,
                 ) {
-                    disk.actions.push(spec);
+                    disk.actions.push(spec.with_contract(ActionContract {
+                        availability: if self.live {
+                            Availability::Available
+                        } else {
+                            Availability::Unavailable {
+                                code: "live_access_disabled".into(),
+                                reason: "Live disk access is disabled".into(),
+                            }
+                        },
+                        permission: PermissionRequirement::Admin,
+                        risk: RiskLevel::Privileged,
+                        confirmation: ConfirmationPolicy::Confirm,
+                        retry: RetryPolicy::AtMostOnce,
+                        execution: ExecutionMode::Background { cancellable: false },
+                        result: ResultSpec::Job,
+                        ..ActionContract::default()
+                    }));
                 }
             }
             for part in &drive.partitions {
@@ -3237,7 +3256,38 @@ impl Widget for DisksApp {
                         "disks.operation",
                         &payload,
                     ) {
-                        partition.actions.push(spec);
+                        let destructive = id == "format";
+                        partition.actions.push(spec.with_contract(ActionContract {
+                            availability: if self.live {
+                                Availability::Available
+                            } else {
+                                Availability::Unavailable {
+                                    code: "live_access_disabled".into(),
+                                    reason: "Live disk access is disabled".into(),
+                                }
+                            },
+                            permission: PermissionRequirement::Admin,
+                            risk: if destructive {
+                                RiskLevel::Destructive
+                            } else {
+                                RiskLevel::Privileged
+                            },
+                            confirmation: if destructive {
+                                ConfirmationPolicy::Phrase {
+                                    phrase: part.name.clone(),
+                                }
+                            } else {
+                                ConfirmationPolicy::Confirm
+                            },
+                            retry: if id == "benchmark" {
+                                RetryPolicy::Idempotent
+                            } else {
+                                RetryPolicy::AtMostOnce
+                            },
+                            execution: ExecutionMode::Background { cancellable: false },
+                            result: ResultSpec::Job,
+                            ..ActionContract::default()
+                        }));
                     }
                 }
                 disk.children.push(partition);

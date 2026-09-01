@@ -22,7 +22,10 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, OperationKind,
+    PermissionRequirement, Resource, RetryPolicy, RiskLevel,
+};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
@@ -4846,18 +4849,73 @@ impl Widget for FileExplorerWidget {
             "files.refresh",
             &"",
         ) {
+            folder.actions.push(spec.with_contract(ActionContract {
+                availability: if self.current_path.exists() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_missing".into(),
+                        reason: "The current folder no longer exists".into(),
+                    }
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                ..ActionContract::default()
+            }));
+        }
+        folder.actions.push(
+            ActionSpec::prompted_operation(
+                "navigate",
+                "Open location",
+                "Folder path",
+                "/path/to/folder",
+                OperationKind::View,
+                |path| {
+                    EncodedAction::encode_operation("files.navigate", &path)
+                        .expect("string payload")
+                },
+            )
+            .with_contract(ActionContract::view()),
+        );
+        for (id, label, type_id, available) in [
+            (
+                "new-folder",
+                "New folder",
+                "files.new-folder",
+                self.current_path.is_dir(),
+            ),
+            ("paste", "Paste", "files.paste", !self.clipboard.is_empty()),
+        ] {
+            let spec = ActionSpec::operation(id, label, OperationKind::Effect, type_id, &"")
+                .expect("file operation payload is serializable")
+                .with_contract(ActionContract {
+                    availability: if available {
+                        Availability::Available
+                    } else {
+                        Availability::Unavailable {
+                            code: if id == "paste" {
+                                "clipboard_empty"
+                            } else {
+                                "location_unavailable"
+                            }
+                            .into(),
+                            reason: if id == "paste" {
+                                "Copy or cut files before pasting"
+                            } else {
+                                "The current location cannot contain a new folder"
+                            }
+                            .into(),
+                        }
+                    },
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Low,
+                    confirmation: ConfirmationPolicy::None,
+                    retry: RetryPolicy::AtMostOnce,
+                    reversible: id == "new-folder",
+                    ..ActionContract::default()
+                });
             folder.actions.push(spec);
         }
-        folder.actions.push(ActionSpec::prompted_operation(
-            "navigate",
-            "Open location",
-            "Folder path",
-            "/path/to/folder",
-            OperationKind::View,
-            |path| {
-                EncodedAction::encode_operation("files.navigate", &path).expect("string payload")
-            },
-        ));
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
             let mut resource =
@@ -4865,7 +4923,9 @@ impl Widget for FileExplorerWidget {
             if let Ok(spec) =
                 ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
             {
-                resource.actions.push(spec);
+                resource
+                    .actions
+                    .push(spec.with_contract(ActionContract::view()));
             }
             folder.children.push(resource);
         }
@@ -4882,6 +4942,17 @@ impl Widget for FileExplorerWidget {
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
+            (OperationKind::Effect, "files.new-folder") => {
+                if !self.apply_command(FileCommand::NewFolder) {
+                    return Err("Could not create a folder in this location".into());
+                }
+            }
+            (OperationKind::Effect, "files.paste") => {
+                if self.clipboard.is_empty() {
+                    return Err("The clipboard is empty".into());
+                }
+                self.apply_command(FileCommand::Paste);
+            }
             (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
