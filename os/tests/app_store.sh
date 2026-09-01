@@ -221,6 +221,24 @@ else
     unit="$REPO/$unit_rel"
     users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \
                | sed 's|.*/apps/\([^/]*\)/.*|\1|' | tr '\n' ' ')"
+    # Collaboration is session state owned by the compositor, not an
+    # independent daemon. Starting a second broker would race the compositor
+    # for the same socket and split apps across two CRDT sessions. Prove the
+    # image ships the owner and that it binds the launcher's canonical path.
+    if [ "$svc" = "collab" ]; then
+      native="$REPO/shell/src/compositor/native.rs"
+      if grep -q 'let collab_broker.*=' "$native" \
+          && grep -q 'spawn_session_collab_broker' "$native" \
+          && grep -q 'launcher::services::collab_socket()' "$native"; then
+        ok "the native compositor starts 'collab' on the launcher's canonical service socket"
+      else
+        bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
+      fi
+      grep -q '^COPY --from=builder /out/shell /usr/bin/shell$' "$CONTAINERFILE" \
+        && ok "the image installs the compositor that owns 'collab'" \
+        || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
+      continue
+    fi
     if [ ! -r "$unit" ]; then
       bad "apps [$users] declare '$svc' as a required service, but $unit_rel does not exist.
       The launcher refuses to start those apps when
