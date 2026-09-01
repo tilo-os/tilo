@@ -165,8 +165,17 @@ impl OnboardingView {
     fn new_in_context(identity_dir: PathBuf, context: OnboardingContext) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir;
+        let minter: Minter = match context {
+            OnboardingContext::FullSystem => {
+                Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string()))
+            }
+            OnboardingContext::HostDesktop => Box::new(move || {
+                crate::onboarding::mint_into_for_legacy_linux_host(&mint_dir)
+                    .map_err(|e| e.to_string())
+            }),
+        };
         Self::with_all_handlers_in_context(
-            Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string())),
+            minter,
             Box::new(move |source, passphrase| {
                 let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
                 let profile = if passphrase.is_empty() {

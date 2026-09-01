@@ -66,15 +66,6 @@ pub enum Tab {
     Resources,
 }
 
-impl Tab {
-    fn other(self) -> Tab {
-        match self {
-            Tab::Processes => Tab::Resources,
-            Tab::Resources => Tab::Processes,
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
     Pid,
@@ -4015,7 +4006,7 @@ impl MonitorApp {
         true
     }
 
-    /// Global keys: Esc/Tab, selection nav, tree expand/collapse, Kill, and
+    /// Global keys: Esc, selection nav, tree expand/collapse, Kill, and
     /// single-character shortcuts.
     fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         match key {
@@ -4025,10 +4016,6 @@ impl MonitorApp {
                     self.proc_push.show_table();
                     *handled = true;
                 }
-            }
-            Key::Named(NamedKey::Tab) => {
-                self.tab = self.tab.other();
-                *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) if self.tab == Tab::Processes => {
                 self.move_selection(-1);
@@ -4107,6 +4094,79 @@ impl MonitorApp {
             _ => return false,
         }
         true
+    }
+
+    fn accessibility_targets(&self) -> Vec<(Rect, ui::a11y::AccessNode)> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let button = |rect: Rect, label: &str| {
+            (
+                rect,
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(rect),
+            )
+        };
+        let mut targets = vec![
+            button(self.hit.tab_proc, "Processes"),
+            button(self.hit.tab_res, "Resources"),
+            button(self.hit.interval, "Refresh interval"),
+            button(self.hit.kernel_toggle, "Show kernel processes"),
+            button(self.hit.tree_toggle, "Tree or flat process view"),
+            button(self.hit.sum_toggle, "Subtree or per-process totals"),
+        ];
+        if self.hit.search.area() > 0.0 {
+            let search = self
+                .search_input
+                .accessibility()
+                .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name("Search processes"))
+                .with_bounds(self.hit.search);
+            targets.push((self.hit.search, search));
+        }
+        for (sort, rect) in &self.hit.sort_headers {
+            let label = match sort {
+                SortKey::Pid => "PID",
+                SortKey::Name => "name",
+                SortKey::User => "user",
+                SortKey::Cpu => "CPU",
+                SortKey::Mem => "memory",
+                SortKey::Threads => "threads",
+            };
+            targets.push(button(*rect, &format!("Sort by {label}")));
+        }
+        for (pid, rect) in &self.hit.rows {
+            let name = self
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == *pid)
+                .map_or_else(
+                    || format!("Process {pid}"),
+                    |process| format!("{} — PID {pid}", process.name),
+                );
+            targets.push((
+                *rect,
+                AccessNode::new(Role::ListItem)
+                    .with_name(name)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.selected_pid == Some(*pid)),
+                    )
+                    .with_bounds(*rect),
+            ));
+        }
+        if self.hit.stop_btn.area() > 0.0 {
+            targets.push(button(self.hit.stop_btn, "Stop selected process"));
+        }
+        if self.hit.kill_btn.area() > 0.0 {
+            targets.push(button(self.hit.kill_btn, "Kill selected process"));
+        }
+        targets
+            .into_iter()
+            .filter(|(rect, _)| rect.area() > 0.0)
+            .collect()
     }
 }
 
@@ -4260,10 +4320,32 @@ impl Widget for MonitorApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.search_input
-            .is_focused()
-            .then(|| self.search_input.accessibility())
-            .flatten()
+        if let Some(confirm) = self.confirm_dialog.as_ref() {
+            return confirm.dialog.accessibility();
+        }
+        let children = self
+            .accessibility_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, node))| {
+                node.with_key(index as u64)
+                    .with_action_target(format!("monitor-target:{index}"))
+            })
+            .collect();
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("System Monitor")
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, _)| *rect)
     }
 
     fn needs_commit(&self) -> bool {
@@ -6305,5 +6387,38 @@ mod tests {
             !overlaps(a.hit.confirm_toggle, a.hit.tree_toggle),
             "confirm pill clears the tree pill"
         );
+    }
+
+    #[test]
+    fn tab_key_is_left_for_toolkit_focus_navigation() {
+        let mut a = app();
+        let original = a.tab;
+        let mut handled = false;
+        a.on_key(
+            &Key::Named(NamedKey::Tab),
+            None,
+            false,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        );
+        assert_eq!(a.tab, original, "Tab must not silently switch dashboards");
+        assert!(!handled, "the toolkit owns Tab focus traversal");
+    }
+
+    #[test]
+    fn monitor_semantic_controls_are_operable_at_their_drawn_rects() {
+        let mut a = app();
+        draw_at(&mut a, 1_280.0, 720.0);
+        let node = Widget::accessibility(&a).expect("monitor is semantic");
+        assert!(!node.children.is_empty());
+        for (index, child) in node.children.iter().enumerate() {
+            assert!(child.action_target.is_some(), "control {index} is operable");
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&a, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "semantic control {index} must activate at its drawn rect"
+            );
+        }
     }
 }

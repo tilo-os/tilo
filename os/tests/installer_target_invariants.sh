@@ -23,10 +23,12 @@ else
 fi
 
 if grep -Fq 'COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml' "$containerfile" \
-   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
-  ok "normal greetd configuration is restored in the target"
+   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
+   && grep -Fq '[initial_session]' "$backend" \
+   && grep -Fq 'user = "%s"' "$backend"; then
+  ok "encrypted startup hands off directly to the installed user's session"
 else
-  bad "normal greetd configuration is not bundled and restored"
+  bad "installed system would ask for a second login after disk authentication"
 fi
 
 if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"' "$backend"; then
@@ -56,6 +58,27 @@ if grep -Fq 'TARGET_MAJ_MIN=' "$backend" \
   ok "live-medium refusal compares stable block identities and fails closed"
 else
   bad "live-medium disk guard still relies on path-string equality"
+fi
+
+if grep -Fq 'ENCRYPT=1' "$backend" \
+   && grep -Fq 'native qOS requires --pin' "$backend" \
+   && grep -Fq 'verified_tpm || ENROL_ARGS+=(--passphrase)' "$backend" \
+   && grep -Fq '&& kernel_lockdown_active' "$backend" \
+   && grep -Fq '&& target_verified_boot_ready' "$backend" \
+   && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
+   && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
+  ok "native qOS requires encryption and target-verified short-PIN startup"
+else
+  bad "native qOS installer can bypass encryption or the startup secret"
+fi
+
+disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
+if grep -Fq -- '--passphrase) force_passphrase=1' "$disk_encrypt" \
+   && grep -Fq 'have_tpm2 && [ "$force_passphrase" -eq 0 ]' "$disk_encrypt"; then
+  ok "TPM short-PIN enrollment requires a verified-boot decision"
+else
+  bad "disk helper can create a misleading TPM slot while boot is unverified"
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
