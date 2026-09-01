@@ -47,8 +47,10 @@ ExclusiveArch:  x86_64 aarch64
 Requires:       pam
 # wgpu reaches Vulkan through ash, which dlopens libvulkan.so.1.
 Requires:       vulkan-loader
-# libEGL.so.1, for the DRM backend's buffer path.
-Requires:       libglvnd-egl
+# libEGL.so.1, for the DRM backend's buffer path. Require the ABI capability,
+# not Fedora's current provider package name, so RPM can select whichever
+# implementation supplies it without tripping explicit-library policy.
+Requires:       libEGL.so.1()(64bit)
 # An ICD for the loader to find. Recommends rather than Requires because the
 # driver is hardware-specific — a Mesa host wants this one, an NVIDIA host gets
 # its ICD from the proprietary or nvidia-open driver package instead, and
@@ -87,7 +89,7 @@ minutes ago can be logged into without reinstalling this package.
 
 Install this only on a machine you develop qOS on. It decides which program
 runs as a login session, from a file in the user's home directory. It is kept
-to a subpackage precisely so that decision is visible in `rpm -q` and absent
+to a sub-package precisely so that decision is visible in `rpm -q` and absent
 by default; see the header of /usr/libexec/qos-session-dev for the checks it
 makes before it execs anything, and DEVELOPMENT.md for the threat model.
 

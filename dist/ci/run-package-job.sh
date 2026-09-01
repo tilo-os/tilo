@@ -61,6 +61,8 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
 
     inner_command='
         set -eu
+        PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        export PATH
         mkdir -p /artifacts
         cd /workspace
         exec dist/ci/run-package-job.sh
@@ -138,7 +140,15 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
                 docker cp "$container:$volume/." "$rootfs$volume/"
             done < <(docker inspect --format \
                 '{{range .Mounts}}{{println .Destination}}{{end}}' "$container")
-            mkdir -p "$rootfs/artifacts"
+            mkdir -p "$rootfs/artifacts" "$rootfs/tmp" "$rootfs/var/tmp"
+            chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp"
+            if [[ $distro == arch ]]; then
+                # The Arch OCI layers omit package-manager state directories
+                # when they are empty. pacman requires both before its first
+                # database synchronization in an exported userspace.
+                mkdir -p "$rootfs/var/lib/pacman/sync" \
+                    "$rootfs/var/cache/pacman/pkg"
+            fi
             if [[ $distro == ubuntu-24.04 || $distro == debian-13 ]]; then
                 install -Dm755 "$repo_root/dist/ci/proot-apt-key" \
                     "$rootfs/usr/local/libexec/qos-proot-apt-key"
@@ -237,7 +247,9 @@ ubuntu-24.04|debian-13)
     stage=build-deb
     dist/debian/build-deb.sh
     stage=inspect-deb
-    dpkg-deb --info dist/debian/build/qos-session*.deb
+    for package in dist/debian/build/qos-session*.deb; do
+        dpkg-deb --info "$package"
+    done
     stage=install-test-deb
     dist/debian/test-package.sh \
         dist/debian/build/qos-session_[0-9]*.deb \
@@ -290,7 +302,7 @@ arch)
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
     # Empty directories are not represented in an OCI layer and can disappear
     # when the ARM image is exported rather than started by Docker.
-    mkdir -p /var/lib/pacman
+    mkdir -p /var/lib/pacman/sync /var/cache/pacman/pkg
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
     stage=install-compiler-cache

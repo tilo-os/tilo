@@ -30,7 +30,7 @@ package_qos-session() {
     'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
     'openssl' 'fontconfig' 'freetype2' 'harfbuzz'
   )
-  optdepends=('vulkan-mesa-layers: Mesa Vulkan support' 'xdg-desktop-portal: sandbox portals' 'greetd: display manager')
+  optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'xdg-desktop-portal: sandbox portals' 'greetd: display manager')
   cd "$srcdir/payload"
   install -Dm755 bin/qos-shell bin/qos-launcher -t "$pkgdir/usr/bin"
   install -Dm755 libexec/qos-unlock-helper libexec/qos-session -t "$pkgdir/usr/libexec"
