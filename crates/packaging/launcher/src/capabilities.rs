@@ -305,8 +305,30 @@ fn allows(
 /// (binding `/` over the sandbox root would replace the namespace the
 /// sandbox just built).
 fn is_bindable_path(raw: &str) -> bool {
+    use std::path::Component;
+
     let path = Path::new(raw);
-    path.is_absolute() && raw != "/" && !raw.trim().is_empty()
+    if !path.is_absolute() || raw.trim().is_empty() {
+        return false;
+    }
+    if raw
+        .as_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|segment| segment == b"." || segment == b"..")
+    {
+        return false;
+    }
+    let mut normal_components = 0usize;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(_) => normal_components = normal_components.saturating_add(1),
+            // A parent component can turn `/allowed/..` into `/`; accepting
+            // it would widen both the bwrap bind and the Landlock PathFd rule.
+            Component::ParentDir | Component::CurDir | Component::Prefix(_) => return false,
+        }
+    }
+    normal_components > 0
 }
 
 /// Host paths a device class needs, as they exist on *this* machine.
@@ -556,16 +578,19 @@ mod tests {
     }
 
     #[test]
-    fn relative_and_root_paths_are_refused() {
+    fn relative_root_and_lexical_escape_paths_are_refused() {
         let caps = vec![
             fs_grant("dev.qos.books", "relative/path", Verb::Write),
             fs_grant("dev.qos.books", "/", Verb::Write),
+            fs_grant("dev.qos.books", "//", Verb::Write),
+            fs_grant("dev.qos.books", "/tmp/..", Verb::Write),
+            fs_grant("dev.qos.books", "/var/./workspace", Verb::Write),
         ];
         let plan = CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1), fake_device_paths);
         assert_eq!(
             plan,
             CapabilityPlan::empty(),
-            "neither a relative path nor the root is a bindable grant: {plan:?}"
+            "root aliases and traversal must never become bind/Landlock grants: {plan:?}"
         );
     }
 
