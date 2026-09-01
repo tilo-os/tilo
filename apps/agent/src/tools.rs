@@ -126,7 +126,7 @@ impl Revealed {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Answer {
     pub actions: Vec<String>,
-    pub arguments: Vec<Option<String>>,
+    pub arguments: Vec<serde_json::Map<String, Value>>,
     pub why: String,
     /// What the request still asks for that nothing shown could express yet
     /// — the words after the steps named, kept for when an earlier step
@@ -250,22 +250,17 @@ fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
                                     plan::NOTHING_FITS
                                 )
                             },
-                            "argument": {
-                                "anyOf": [{ "type": "string" }, { "type": "null" }],
+                            "arguments": {
+                                "type": "object",
                                 "description":
-                                    "The value this operation collects, in the form its own \
-                                     prompt asks for — see `describe_operation`, which gives \
-                                     you that prompt, the application's own example of a \
-                                     value, and what the application says about the thing \
-                                     being acted on. The example is the shape, not the \
-                                     answer. Null for an operation that takes nothing, and \
-                                     null for one that takes what an earlier step produced: \
-                                     that is content, it is filled in from what actually \
-                                     happened, and nothing you could write would name real \
-                                     bytes."
+                                    "The complete JSON argument object described by \
+                                     `describe_operation`, keyed by the application's \
+                                     parameter names. Use {} for a nullary operation. Values \
+                                     retain their declared JSON types; never stringify numbers, \
+                                     booleans, arrays, objects or null."
                             }
                         },
-                        "required": ["operation", "argument"],
+                        "required": ["operation", "arguments"],
                         "additionalProperties": false
                     }
                 },
@@ -470,22 +465,19 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         {
             let _ = write!(s, "; currently unavailable: {reason}");
         }
-        match &o.descriptor.input {
-            qos_actions::InputSpec::Text {
-                collects: qos_actions::Collects::Words,
-                prompt,
-                ..
-            } => {
-                let _ = write!(
-                    s,
-                    "; takes an argument: {prompt} (ask `{DESCRIBE_OPERATION}` for its shape)"
-                );
-            }
-            qos_actions::InputSpec::Text {
-                collects: qos_actions::Collects::Content,
-                ..
-            } => s.push_str("; takes what an earlier step produced, not words"),
-            qos_actions::InputSpec::None => {}
+        if o.wants_content() {
+            s.push_str("; takes what an earlier step produced, not words");
+        } else if !o.descriptor.params.is_empty() {
+            let _ = write!(
+                s,
+                "; takes {} structured argument{} (ask `{DESCRIBE_OPERATION}` for the schema)",
+                o.descriptor.params.len(),
+                if o.descriptor.params.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
         }
         s.push('\n');
     }
@@ -563,37 +555,14 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
             s.push('\n');
         }
     }
-    match &d.input {
-        qos_actions::InputSpec::None => {
-            s.push_str("  argument: none. Pass null.\n");
-        }
-        qos_actions::InputSpec::Text {
-            prompt,
-            placeholder,
-            collects: qos_actions::Collects::Words,
-        } => {
-            let _ = writeln!(s, "  argument: required — {prompt}");
-            if !placeholder.is_empty() {
-                let _ = writeln!(s, "  the application's own example of one: {placeholder}");
-            }
-            s.push_str(
-                "  Put the value in this step's `argument`, in exactly that form. The \
-                 application parses it, and one it cannot read leaves the thing \
-                 untouched rather than doing something else to it.\n",
-            );
-        }
-        qos_actions::InputSpec::Text {
-            prompt,
-            collects: qos_actions::Collects::Content,
-            ..
-        } => {
-            let _ = writeln!(
-                s,
-                "  argument: content, not words — {prompt}. Leave it null: it is \
-                 whatever the step before this one produced, filled in from what \
-                 actually happened. Nothing you could write would name real bytes."
-            );
-        }
+    if d.params.is_empty() {
+        s.push_str("  arguments: none. Pass {}.\n");
+    } else if offer.wants_content() {
+        s.push_str(
+            "  arguments: produced content, not words. It must be bound from the prior step.\n",
+        );
+    } else {
+        s.push_str("  Pass one JSON object containing exactly the parameters above.\n");
     }
     // What the resource says about itself. An application with a fact and no
     // operation to hang it on publishes a child resource that exports
@@ -627,7 +596,7 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
         .ok_or_else(|| "the plan named no steps".to_string())?;
 
     let mut actions: Vec<String> = Vec::new();
-    let mut arguments: Vec<Option<String>> = Vec::new();
+    let mut arguments: Vec<serde_json::Map<String, Value>> = Vec::new();
     for step in steps {
         // Only strings, and never coerced. Anything else means the answer
         // did not have the shape it was asked for, and quietly stringifying
@@ -646,13 +615,11 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
             ));
         }
         actions.push(operation.to_string());
-        arguments.push(
-            step.get("argument")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|a| !a.is_empty())
-                .map(str::to_string),
-        );
+        let arguments_object = step
+            .get("arguments")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("step {operation:?} supplied no argument object"))?;
+        arguments.push(arguments_object.clone());
     }
     if actions.is_empty() {
         return Err("the plan named nothing to do".to_string());
@@ -706,6 +673,15 @@ mod tests {
         label: &str,
         input: InputSpec,
     ) -> Offer {
+        let params = matches!(&input, InputSpec::Text { .. })
+            .then(|| {
+                vec![qos_actions::ActionParam::required(
+                    "value",
+                    qos_actions::ParamType::Text,
+                    "value",
+                )]
+            })
+            .unwrap_or_default();
         Offer {
             app,
             descriptor: ActionDescriptor {
@@ -717,7 +693,7 @@ mod tests {
                 locus: ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
                 contract: qos_actions::ActionContract::default(),
-                params: Vec::new(),
+                params,
                 input,
             },
         }
@@ -829,7 +805,7 @@ mod tests {
         assert!(revealed.contains(plan::NOTHING_FITS));
 
         let call = json!({
-            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "argument": "a.png"}],
+            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
             "why": "", "then": null
         });
         let refused = read_plan(&call, &revealed, STEPS).expect_err("nothing revealed it yet");
@@ -844,7 +820,13 @@ mod tests {
             "{listed}"
         );
         let answer = read_plan(&call, &revealed, STEPS).expect("now it has been shown");
-        assert_eq!(answer.arguments, vec![Some("a.png".to_string())]);
+        assert_eq!(
+            answer.arguments,
+            vec![serde_json::Map::from_iter([(
+                "value".into(),
+                Value::String("a.png".into())
+            )])]
+        );
     }
 
     /// A kind crosses applications by construction: the filter is the
@@ -861,17 +843,16 @@ mod tests {
         assert!(!out.contains("harbour.png#rename"), "{out}");
     }
 
-    /// The description carries the application's own prompt, its own
-    /// example, and the fact the publishing resource states with no
-    /// operation on it — none of which a flat list ever reached.
+    /// The description carries the declared typed parameter and the fact the
+    /// publishing resource states with no operation on it — neither of which
+    /// a flat list reaches.
     #[test]
     fn describing_an_operation_carries_its_prompt_its_example_and_the_resources_own_facts() {
         let out = describe(
             &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
             &room(),
         );
-        assert!(out.contains("The new name"), "{out}");
-        assert!(out.contains("example of one: notes.md"), "{out}");
+        assert!(out.contains("value: text (required)"), "{out}");
         assert!(out.contains("512 x 320 pixels"), "{out}");
     }
 
@@ -884,7 +865,7 @@ mod tests {
             &room(),
         );
         assert!(out.contains("content, not words"), "{out}");
-        assert!(out.contains("Leave it null"), "{out}");
+        assert!(out.contains("bound from the prior step"), "{out}");
     }
 
     /// An address that is not on offer and one that does not exist are
@@ -958,7 +939,7 @@ mod tests {
         let mut revealed = Revealed::new();
         revealed.reveal("a#b");
         let steps: Vec<Value> = (0..=STEPS)
-            .map(|_| json!({"operation": "a#b", "argument": null}))
+            .map(|_| json!({"operation": "a#b", "arguments": {}}))
             .collect();
         let err = read_plan(
             &json!({"steps": steps, "why": "", "then": null}),
@@ -977,7 +958,7 @@ mod tests {
         revealed.reveal("chat.app#open");
         let answer = read_plan(
             &json!({
-                "steps": [{"operation": "chat.app#open", "argument": null}],
+                "steps": [{"operation": "chat.app#open", "arguments": {}}],
                 "why": "the conversation is not open",
                 "then": "post it there"
             }),
@@ -989,7 +970,7 @@ mod tests {
         // A blank is nothing, not a clause whose words are no words.
         let blank = read_plan(
             &json!({
-                "steps": [{"operation": "chat.app#open", "argument": null}],
+                "steps": [{"operation": "chat.app#open", "arguments": {}}],
                 "why": "", "then": "   "
             }),
             &revealed,
@@ -1009,7 +990,7 @@ mod tests {
         revealed.reveal("word-processor.document#insert-table");
 
         let call = json!({
-            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "argument": "a.png"}],
+            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
             "why": "", "then": null
         });
         let err = read_plan(&call, &revealed, STEPS).expect_err("never revealed");

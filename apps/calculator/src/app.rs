@@ -891,6 +891,10 @@ fn field_accepts(ch: char) -> bool {
 }
 
 impl Widget for CalculatorApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::CALCULATOR_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

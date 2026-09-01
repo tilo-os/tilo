@@ -800,7 +800,13 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
         } else {
             name.clone()
         };
-        let stable = SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_else(|| idx.to_string());
+        // Never publish a positional fallback: after a concurrent reorder it
+        // could make an old address operate on a different sheet. Legacy or
+        // malformed rows without a durable identity remain usable on-screen,
+        // but are deliberately absent from the headless action surface.
+        let Some(stable) = SheetsDoc::sheet_resource_id(doc, idx) else {
+            continue;
+        };
         let mut sheet = Resource::new(format!("sheets.sheet:{stable}"), "sheets.sheet", label);
 
         // Rename — a prompted action carrying the new name.

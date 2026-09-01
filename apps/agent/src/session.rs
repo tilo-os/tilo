@@ -477,7 +477,11 @@ impl Session {
     /// through [`Editor::invoke`] — never against the survey `id` was
     /// chosen from. An operation that has gone away since is a refusal
     /// here, not a substitution.
-    fn perform(&mut self, id: &str, argument: Option<&str>) -> Result<Result<(), String>> {
+    fn perform(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Result<(), String>> {
         let Some(address) = surface::decode_address(id) else {
             return Ok(Err("that no longer names anything I can find".to_string()));
         };
@@ -497,7 +501,7 @@ impl Session {
             return Ok(Err("that isn't open here, so I can't act on it".to_string()));
         };
         let target_app_id = ed.contract().app_id;
-        match ed.invoke(&view, &address, argument, &registry) {
+        match ed.invoke_json(&view, &address, arguments, &registry) {
             Ok(Some(delta)) => {
                 let req = CollabRequest::DocumentIncremental { data: delta };
                 if is_primary {
@@ -672,12 +676,12 @@ impl Session {
                 // come back naming a step this turn already performed, and
                 // without the guard "put it in the open document" placed
                 // the same image twice.
-                Instruction::Perform { id, argument } => {
+                Instruction::Perform { id, arguments } => {
                     if self.dispatched_this_turn.contains(id) {
                         true
                     } else {
                         let id = id.clone();
-                        match self.perform(&id, argument.as_deref())? {
+                        match self.perform(&id, arguments)? {
                             Ok(()) => {
                                 self.dispatched_this_turn.insert(id);
                                 true
