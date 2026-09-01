@@ -66,6 +66,8 @@ pub enum AppStatus {
     Running,
     NeedsAttention,
     Installing,
+    Failed,
+    Uninstalled,
 }
 impl AppStatus {
     pub const fn label(self) -> &'static str {
@@ -74,6 +76,8 @@ impl AppStatus {
             Self::Running => "Running",
             Self::NeedsAttention => "Needs attention",
             Self::Installing => "Installing",
+            Self::Failed => "Setup failed",
+            Self::Uninstalled => "Uninstalled · data retained",
         }
     }
 }
@@ -105,6 +109,13 @@ pub struct WindowsApp {
     pub launch_unavailable_reason: Option<String>,
     pub route_override_available: bool,
     pub route_override_unavailable_reason: Option<String>,
+    pub can_retry_install: bool,
+    pub can_remove_launcher: bool,
+    pub can_vendor_uninstall: bool,
+    pub can_delete_data: bool,
+    pub installation_detail: Option<String>,
+    pub vm_fallback_available: bool,
+    pub vm_fallback_unavailable_reason: Option<String>,
 }
 
 impl WindowsApp {

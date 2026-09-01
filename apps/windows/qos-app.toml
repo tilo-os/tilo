@@ -29,6 +29,7 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.portals]
+file-chooser = "via-host"
 
 [sandbox.services]
 compat = "optional@1"
@@ -41,5 +42,5 @@ splash-segments = ["bin/windows[0x0:0x400000]"]
 splash-budget = 250
 
 [providers]
-mime = []
-ext = []
+mime = ["application/vnd.microsoft.portable-executable", "application/x-msi"]
+ext = ["exe", "msi"]
