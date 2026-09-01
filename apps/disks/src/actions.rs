@@ -308,22 +308,39 @@ mod tests {
         assert_eq!(here, there, "the peer sees the same projected inventory");
     }
 
-    /// The honest steady state: Disks fabricates no action or resource surface.
-    /// Exercised on the live widget *after* a real event (a cursor move through
-    /// the production `handle_event`), `Widget::resources` is empty (nothing to
-    /// publish to Ctrl+K) and no action-host undo boundary is recorded
-    /// (`take_committed_action` is `None`) — both toolkit defaults, because no
-    /// action is ever dispatched and no `ui::ActionHost` is embedded.
+    /// Disks publishes its projected devices and per-machine effects to Ctrl+K,
+    /// without fabricating a document action or undo boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_ctrl_k_effects_without_recording_a_document_action() {
         let (mut app, mut doc) = synced();
 
         // Real event path: move the pointer over the surface.
         send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
 
+        let resources = Widget::resources(&app, &doc);
+        assert_eq!(resources.len(), 1, "one storage-system root");
+        let system = &resources[0];
+        assert_eq!(system.kind, "disks.system");
+        let partition = system
+            .children
+            .iter()
+            .flat_map(|drive| &drive.children)
+            .find(|resource| resource.kind == "disks.partition")
+            .expect("a partition resource");
+        let actions: Vec<&str> = partition
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in ["benchmark", "format"] {
+            assert!(
+                actions.contains(&expected),
+                "partition publishes {expected}: {actions:?}",
+            );
+        }
         assert!(
-            Widget::resources(&app, &doc).is_empty(),
-            "Disks publishes no Ctrl+K resource tree — its only shared state is a projection + view state",
+            actions.iter().any(|id| matches!(*id, "mount" | "unmount")),
+            "partition publishes the mount action appropriate to its state: {actions:?}",
         );
         assert!(
             app.take_committed_action().is_none(),

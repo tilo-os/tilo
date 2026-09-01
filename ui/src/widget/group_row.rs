@@ -232,6 +232,10 @@ impl GroupRow {
     /// layout and pixels. This method deliberately calls the owning group
     /// directly, preserving its real app draw path and geometry while omitting
     /// only the output clip.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture painting mirrors the Widget draw context plus target selection"
+    )]
     pub fn draw_capture_targets(
         &mut self,
         target_ids: &[String],

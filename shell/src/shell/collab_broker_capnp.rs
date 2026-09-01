@@ -378,6 +378,11 @@ impl CapnpBrokerState {
     /// Address one operation back to the exact connection that published it.
     /// The returned receiver resolves only after the application reports a
     /// structured completion; dropping the connection resolves as a refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the surface or action is unavailable or the
+    /// invocation cannot be sent to its owning connection.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -635,12 +640,10 @@ impl CapnpBrokerState {
                     "capnp fanout: no action stream yet, action dropped"
                 );
             }
-            CollabEvent::ScrollbackBatch { .. } => {
+            CollabEvent::ScrollbackBatch { .. } | CollabEvent::Invocation { .. } => {
                 // Per-request in the capnp schema, not a stream; apps
-                // wanting late history repeat `fetchScrollbackFor`.
-            }
-            CollabEvent::Invocation { .. } => {
-                // Invocations are point-to-point and never enter fanout.
+                // wanting late history repeat `fetchScrollbackFor`; invocations
+                // are point-to-point and never enter fanout.
             }
         }
     }
@@ -1216,6 +1219,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            drop(registry);
             let _ = pending.tx.send(completion);
             Ok(())
         })

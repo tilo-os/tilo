@@ -286,20 +286,24 @@ mod tests {
         );
     }
 
-    /// The honest steady state: the file explorer's production `Widget` impl
-    /// fabricates no action or resource surface. `Widget::resources` is empty
-    /// (nothing to publish to Ctrl+K) and no action host records an undo
-    /// boundary, because no action is ever dispatched.
+    /// The file explorer publishes the current folder's view/effect operations
+    /// to Ctrl+K without recording a document action or undo boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_ctrl_k_operations_without_recording_a_document_action() {
         let mut w = FileExplorerWidget::new();
         let mut doc = AutoCommit::new();
         w.sync(&mut doc, &ROOT);
 
-        assert!(
-            Widget::resources(&w, &doc).is_empty(),
-            "the file explorer publishes no Ctrl+K resource tree — its only shared state is native text",
-        );
+        let resources = Widget::resources(&w, &doc);
+        assert_eq!(resources.len(), 1, "one current-folder root");
+        let folder = &resources[0];
+        assert_eq!(folder.kind, "files.folder");
+        let actions: Vec<&str> = folder
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(actions, ["refresh", "navigate"]);
         assert!(
             w.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

@@ -409,8 +409,22 @@ impl SemanticTree {
                                     action: operation.action.clone(),
                                     value: Some(value.to_string()),
                                 };
-                                EncodedAction::encode_operation(SEMANTIC_OPERATION_TYPE, &operation)
-                                    .expect("semantic operation is serializable")
+                                match EncodedAction::encode_operation(
+                                    SEMANTIC_OPERATION_TYPE,
+                                    &operation,
+                                ) {
+                                    Ok(action) => action,
+                                    Err(error) => {
+                                        tracing::error!(
+                                            %error,
+                                            "semantic operation could not be serialized"
+                                        );
+                                        EncodedAction {
+                                            type_id: SEMANTIC_OPERATION_TYPE.to_string(),
+                                            payload: Vec::new(),
+                                        }
+                                    }
+                                }
                             },
                         ),
                         _ => match ActionSpec::operation(
