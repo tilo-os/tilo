@@ -61,7 +61,6 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use osk::InputPurpose;
@@ -69,17 +68,9 @@ use osk::OskWidget;
 use osk::imclient::{ImState, InputMethodClient, try_input_method};
 use osk::inject::default_injector;
 use osk::input_purpose_name;
-use taffy::prelude::*;
 use ui::app::UserEvent;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 /// Default offscreen viewport for `--shots`. Phone-portrait-ish width with
 /// just enough height for the toolbar + suggestion bar + four key rows
@@ -92,28 +83,39 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 360);
 /// compositor does not advertise `zwp_input_method_manager_v2`, or when
 /// `--shots` fails to render (taffy layout failure, e.g. the tree exceeds its
 /// node capacity).
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new_with_args("dev.qos.osk", shot_root)
+            .shot_root(shot_root)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .allowed_live_flags(&["--input-method", "--no-input-method"])
+            .allowed_live_options(&["--purpose"])
+            .disable_headless()
+            .live_handler(run_live),
+    );
+}
 
-    let args: Vec<String> = std::env::args().collect();
-    // A `--purpose <kind>` selects the field-specific layout (number pad,
-    // dialpad, email, …) so a human (or a snapshot) can eyeball each one.
-    let purpose = parse_purpose_arg(&args);
-    if let Some(out) = parse_shots_arg(&args) {
-        let mut widget = OskWidget::new();
-        if let Some(p) = purpose {
-            widget.set_purpose(p);
-        }
-        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
-        return Ok(());
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by LaunchSpec's argument-aware root factory"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let mut widget = OskWidget::new();
+    if let Some(purpose) = parse_purpose_arg(args) {
+        widget.set_purpose(purpose);
     }
+    Ok(Box::new(widget))
+}
+
+fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let purpose = parse_purpose_arg(args);
 
     // --- pick the input path. Prefer auto-show via input-method-v2 when the
     // compositor supports it: the keyboard appears on text focus, follows the
     // field's content purpose, hides on blur, and commits text via the IM. Fall
     // back to the always-visible keyboard + virtual-keyboard injection
     // otherwise. ---
-    let im_pref = parse_input_method_pref(&args);
+    let im_pref = parse_input_method_pref(args);
     let im = match im_pref {
         // Force the always-visible path; never try the input method.
         InputMethodPref::Off => None,
@@ -121,11 +123,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         InputMethodPref::Require => match try_input_method() {
             Some(im) => Some(im),
             None => {
-                return Err(
+                return Err(LaunchError::Operation(
                     "osk: --input-method requested but the compositor does not advertise \
                      zwp_input_method_manager_v2"
                         .into(),
-                );
+                ));
             }
         },
         // Default: use it if present, otherwise degrade silently.
@@ -289,46 +291,21 @@ enum InputMethodPref {
 
 /// Read the input-method preference from the args. `--no-input-method` forces it
 /// off; `--input-method` requires it; absence means auto-detect.
-fn parse_input_method_pref(args: &[String]) -> InputMethodPref {
-    if args.iter().any(|a| a == "--no-input-method") {
+fn parse_input_method_pref(args: &LaunchArgs) -> InputMethodPref {
+    if args.has("--no-input-method") {
         InputMethodPref::Off
-    } else if args.iter().any(|a| a == "--input-method") {
+    } else if args.has("--input-method") {
         InputMethodPref::Require
     } else {
         InputMethodPref::Auto
     }
 }
 
-/// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
-/// in `args`, otherwise `None`.
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
 /// Returns the [`InputPurpose`] requested by `--purpose <kind>` (or
 /// `--purpose=<kind>`), or `None` when absent. An unrecognised kind is ignored
 /// (the keyboard falls back to plain text) so a typo doesn't abort launch.
-fn parse_purpose_arg(args: &[String]) -> Option<InputPurpose> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--purpose" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--purpose=") {
-            break rest.to_string();
-        }
-    };
-    purpose_from_str(&raw)
+fn parse_purpose_arg(args: &LaunchArgs) -> Option<InputPurpose> {
+    args.value("--purpose").and_then(purpose_from_str)
 }
 
 /// Map a `--purpose` value to an [`InputPurpose`]. Accepts both the short
@@ -347,80 +324,4 @@ fn purpose_from_str(s: &str) -> Option<InputPurpose> {
         "time" => InputPurpose::Time,
         _ => return None,
     })
-}
-
-/// Run one offscreen frame against `widget` at `viewport` and write the
-/// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
-fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    out: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
-    // so the same frame can be graded in both light and dark (default dark).
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("osk: wrote shot to {}", out.display());
-    Ok(())
 }
