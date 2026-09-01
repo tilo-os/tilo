@@ -12,7 +12,7 @@ not replace the host's boot chain, greeter, or package manager.
 | --- | --- | --- |
 | Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`, `arm64` |
 | Debian 13 | `qos-session_*+deb13*.deb` | `amd64`, `arm64` |
-| Fedora | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
+| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
 | Arch / Arch Linux ARM | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
 | Nix / NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
 
