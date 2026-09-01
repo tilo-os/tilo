@@ -101,6 +101,10 @@ pub struct WindowsApp {
     pub status: AppStatus,
     pub grants: Vec<Grant>,
     pub fallback_detail: String,
+    pub launch_available: bool,
+    pub launch_unavailable_reason: Option<String>,
+    pub route_override_available: bool,
+    pub route_override_unavailable_reason: Option<String>,
 }
 
 impl WindowsApp {
