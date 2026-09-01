@@ -813,7 +813,9 @@ impl RoomActivityPane {
                 .active_workspace()
                 .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room))
                 .unwrap_or_default(),
-            RoomScope::AllWorkspaces => WorkspaceHistoryQuery::default(),
+            RoomScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
+                tree.workspaces.iter().map(|workspace| workspace.room),
+            ),
         };
         let changed = self.history_index.refresh_with_workspace_entries(
             tree,

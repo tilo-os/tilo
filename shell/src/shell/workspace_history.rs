@@ -104,11 +104,14 @@ impl WorkspaceHistoryEntry {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceHistoryQuery {
-    /// `None` includes every open record.  `Some` includes only records held
-    /// by, or originally minted in, this room.
+    /// `Some` includes only records held by, or originally minted in, this
+    /// room. `None` defers scope to `rooms`.
     pub room: Option<RoomId>,
+    /// When set, restrict a multi-workspace query to this exact union instead
+    /// of treating `room: None` as unrestricted device history.
+    pub rooms: Option<Vec<RoomId>>,
     pub limit: usize,
 }
 
@@ -116,6 +119,7 @@ impl Default for WorkspaceHistoryQuery {
     fn default() -> Self {
         Self {
             room: None,
+            rooms: None,
             limit: 500,
         }
     }
@@ -129,7 +133,17 @@ impl WorkspaceHistoryQuery {
         }
     }
 
-    fn bounded_limit(self) -> usize {
+    pub fn for_rooms(rooms: impl IntoIterator<Item = RoomId>) -> Self {
+        let mut rooms: Vec<_> = rooms.into_iter().collect();
+        rooms.sort();
+        rooms.dedup();
+        Self {
+            rooms: Some(rooms),
+            ..Self::default()
+        }
+    }
+
+    fn bounded_limit(&self) -> usize {
         self.limit.clamp(1, MAX_FEED_ENTRIES)
     }
 }
@@ -245,19 +259,36 @@ impl WorkspaceHistoryIndex {
         supplied: Option<&[HistoryEntry]>,
     ) -> bool {
         let limit = query.bounded_limit();
-        let referenced = referenced_records(tree, query.room);
+        let referenced = query.rooms.as_ref().map_or_else(
+            || referenced_records(tree, query.room),
+            |rooms| {
+                rooms
+                    .iter()
+                    .flat_map(|room| referenced_records(tree, Some(*room)))
+                    .collect()
+            },
+        );
         let referenced_ids: BTreeSet<RecordId> =
             referenced.iter().map(|record| record.id.clone()).collect();
         let open = records.open_records();
 
         let mut included = Vec::new();
         for checkout in &open {
-            let belongs = query.room.is_none()
-                || referenced_ids.contains(&checkout.id)
-                || records.read(&checkout.id, |doc| {
-                    home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
-                        == query.room.map(|room| room.as_uuid())
-                }) == Some(true);
+            let belongs = if let Some(rooms) = query.rooms.as_ref() {
+                referenced_ids.contains(&checkout.id)
+                    || records.read(&checkout.id, |doc| {
+                        home(doc)
+                            .and_then(|value| value.parse::<uuid::Uuid>().ok())
+                            .is_some_and(|home| rooms.iter().any(|room| room.as_uuid() == home))
+                    }) == Some(true)
+            } else {
+                query.room.is_none()
+                    || referenced_ids.contains(&checkout.id)
+                    || records.read(&checkout.id, |doc| {
+                        home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
+                            == query.room.map(|room| room.as_uuid())
+                    }) == Some(true)
+            };
             if belongs {
                 included.push(checkout.clone());
             }
@@ -281,7 +312,7 @@ impl WorkspaceHistoryIndex {
                 .collect()
         });
         let fingerprint = Fingerprint {
-            query,
+            query: query.clone(),
             documents,
             references: referenced.clone(),
             supplied_tree_rows,
@@ -490,7 +521,7 @@ mod tests {
         }
         let mut index = WorkspaceHistoryIndex::new();
         let query = WorkspaceHistoryQuery::for_room(room);
-        assert!(index.refresh(&mut tree, &records, query));
+        assert!(index.refresh(&mut tree, &records, query.clone()));
         let generation = index.generation();
         assert!(!index.refresh(&mut tree, &records, query));
         assert_eq!(index.generation(), generation);
@@ -545,6 +576,7 @@ mod tests {
             WorkspaceHistoryQuery {
                 room: Some(room),
                 limit: 2,
+                ..WorkspaceHistoryQuery::default()
             },
         );
         let times: Vec<_> = index
@@ -554,5 +586,45 @@ mod tests {
             .collect();
         assert!(times.windows(2).all(|pair| pair[0] <= pair[1]));
         assert_eq!(times.len(), 2);
+    }
+
+    #[test]
+    fn multi_workspace_scope_excludes_open_records_outside_the_tree() {
+        let (mut tree, room) = tree_and_room();
+        let represented = RoomId::new();
+        let records = RecordStore::in_memory();
+        let first = action_record(&records, RecordId::for_file("first.md"), room, 20);
+        let second = action_record(&records, RecordId::for_file("second.md"), represented, 30);
+        let private = action_record(
+            &records,
+            RecordId::for_file("private.md"),
+            RoomId::new(),
+            40,
+        );
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(first.id.to_string(), first.kind.to_string());
+        tree.room_records_held
+            .entry(represented)
+            .or_default()
+            .insert(second.id.to_string(), second.kind.to_string());
+
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(
+            &mut tree,
+            &records,
+            WorkspaceHistoryQuery::for_rooms([room, represented]),
+        );
+
+        assert!(index.entries().iter().any(
+            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &first.id)
+        ));
+        assert!(index.entries().iter().any(
+            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &second.id)
+        ));
+        assert!(!index.entries().iter().any(
+            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &private.id)
+        ));
     }
 }
