@@ -293,6 +293,11 @@ impl ApplianceOwnerClient {
 
     /// Execute one fixed appliance lifecycle action through the existing
     /// polkit boundary. There is intentionally no generic command facility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another owner action is active or the appliance
+    /// has not been provisioned.
     pub fn lifecycle(&mut self, action: LifecycleAction) -> Result<(), String> {
         if self.action_pending {
             return Err("A Windows appliance action is already in progress.".into());
@@ -320,6 +325,11 @@ impl ApplianceOwnerClient {
     /// Materialise a ten-minute, purpose-bound appliance connection and then
     /// take the owner to the already-authorised recovery/update desktop. The
     /// system-owned lease reaper closes it even if this manager exits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another owner action is active or the appliance
+    /// has not been provisioned.
     pub fn open_temporary_egress(&mut self, purpose: EgressPurpose) -> Result<(), String> {
         if self.action_pending {
             return Err("A Windows appliance action is already in progress.".into());
@@ -416,7 +426,10 @@ impl ApplianceOwnerClient {
                     notice =
                         Some("The authorised Windows setup or recovery desktop is open.".into());
                 }
-                OwnerEvent::Imported(Err(error)) | OwnerEvent::Recovery(Err(error)) => {
+                OwnerEvent::Imported(Err(error))
+                | OwnerEvent::Recovery(Err(error))
+                | OwnerEvent::Lifecycle(_, Err(error))
+                | OwnerEvent::Egress(_, Err(error)) => {
                     self.action_pending = false;
                     notice = Some(error);
                 }
@@ -424,20 +437,12 @@ impl ApplianceOwnerClient {
                     self.action_pending = false;
                     notice = Some(action.complete_notice().into());
                 }
-                OwnerEvent::Lifecycle(_, Err(error)) => {
-                    self.action_pending = false;
-                    notice = Some(error);
-                }
                 OwnerEvent::Egress(purpose, Ok(())) => {
                     self.action_pending = false;
                     notice = Some(purpose.ready_notice().into());
                     if let Err(error) = self.start_recovery() {
                         notice = Some(error);
                     }
-                }
-                OwnerEvent::Egress(_, Err(error)) => {
-                    self.action_pending = false;
-                    notice = Some(error);
                 }
             }
         }
