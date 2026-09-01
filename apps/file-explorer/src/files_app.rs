@@ -22,6 +22,7 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
@@ -4734,6 +4735,65 @@ impl FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+        let mut folder = Resource::new(
+            format!("folder:{}", self.current_path.display()),
+            "files.folder",
+            self.current_path.display().to_string(),
+        );
+        if let Ok(spec) = ActionSpec::operation(
+            "refresh",
+            "Refresh folder",
+            OperationKind::Effect,
+            "files.refresh",
+            &"",
+        ) {
+            folder.actions.push(spec);
+        }
+        folder.actions.push(ActionSpec::prompted_operation(
+            "navigate",
+            "Open location",
+            "Folder path",
+            "/path/to/folder",
+            OperationKind::View,
+            |path| {
+                EncodedAction::encode_operation("files.navigate", &path).expect("string payload")
+            },
+        ));
+        for entry in &self.entries {
+            let path = entry.path.to_string_lossy().into_owned();
+            let mut resource =
+                Resource::new(format!("entry:{path}"), "files.entry", entry.name.clone());
+            if let Ok(spec) =
+                ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
+            {
+                resource.actions.push(spec);
+            }
+            folder.children.push(resource);
+        }
+        vec![folder]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Result<bool, String> {
+        match (kind, type_id) {
+            (OperationKind::Effect, "files.refresh") => self.refresh(),
+            (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                self.open_path(PathBuf::from(value));
+            }
+            _ => return Ok(false),
+        }
+        self.structure_dirty = true;
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::ReadDoc;
         self.refresh_metadata_if_due(Instant::now());

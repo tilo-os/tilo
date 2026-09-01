@@ -409,6 +409,8 @@ impl ChannelHandle {
                 row.set_resource_label(&a.resource_label);
                 row.set_action_label(&a.action_label);
                 row.set_description(a.description.as_deref().unwrap_or(""));
+                row.set_operation_kind(&a.operation_kind);
+                row.set_params_json(&a.params_json);
                 let mut input = row.init_input();
                 match &a.input {
                     ExportedInput::None => input.set_none(()),
@@ -712,6 +714,10 @@ pub struct ExportedAction {
     pub resource_label: String,
     pub action_label: String,
     pub description: Option<String>,
+    /// `document`, `effect`, or `view`.
+    pub operation_kind: String,
+    /// JSON encoding of the canonical typed parameter descriptors.
+    pub params_json: String,
     pub input: ExportedInput,
 }
 

@@ -1126,6 +1126,36 @@ impl Widget for RemoteApp {
         self.actions.take_committed()
     }
 
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::REMOTE_CONNECT_OPERATION_TYPE
+        {
+            return Ok(false);
+        }
+        let encoded_id = std::str::from_utf8(payload)
+            .map_err(|_| "connection id payload is not UTF-8".to_string())?;
+        let Some(encoded_id) = encoded_id
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            return Err("connection id payload is not a JSON string".to_string());
+        };
+        let id = uuid::Uuid::parse_str(encoded_id)
+            .map_err(|_| "invalid Remote connection id".to_string())?;
+        if self.workspace.get(id).is_none() {
+            return Err("saved connection no longer exists".to_string());
+        }
+        self.open_session(id);
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Publish our own connection list into the shared document the first
         // time we run, then adopt any remote additions. The live app's list
