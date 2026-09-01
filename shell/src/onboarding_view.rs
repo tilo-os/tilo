@@ -26,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{Modifiers, WindowEvent};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::onboarding::{
     ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY, INTRO_POINTS, INTRO_TITLE, MintedIdentity,
@@ -106,8 +107,12 @@ impl OnboardingView {
                     .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
                 runtime_identity::set_active_identity(&import_dir, runtime_id)
                     .map_err(|error| error.to_string())?;
-                crate::firstboot::ensure_device_certificate_for_record(
-                    &profile.record_path,
+                // Restoring on a fresh machine must provision the exact same
+                // complete root -> device chain as minting. The narrower
+                // identity-keyed certificate helper leaves the legacy system
+                // owner/certificate absent until a later login repair.
+                crate::firstboot::ensure_collaboration_identity(
+                    &import_dir,
                     &crate::firstboot::collaboration_identity_paths(),
                 )
                 .map_err(|error| error.to_string())?;
@@ -278,18 +283,12 @@ impl OnboardingView {
             .with_on_change_path(KEY_CONNECT_PATH)
             .with_placeholder("Choose an encrypted backup or legacy identity JSON")
             .with_font_size(theme.tokens.typography.scale.base);
-        let passphrase_value = self
-            .connect_passphrase
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default();
-        let passphrase = TextInput::local()
-            .with_id("onboarding.connect.passphrase.field")
-            .with_external_buffer(Arc::clone(&self.connect_passphrase))
-            .with_initial_value(&passphrase_value)
-            .with_placeholder("Passphrase for encrypted backups")
-            .with_secret(true)
-            .with_font_size(theme.tokens.typography.scale.base);
+        let passphrase = secret_input(
+            "onboarding.connect.passphrase.field",
+            &self.connect_passphrase,
+            "Passphrase for encrypted backups",
+        )
+        .with_font_size(theme.tokens.typography.scale.base);
         let spacing = &theme.tokens.spacing;
         let mut body = Column::new()
                 .with_no_padding()
@@ -411,36 +410,20 @@ impl OnboardingView {
                     .with_role(ui::tokens::typography::TextRole::Caption, theme)
                     .with_color(theme.text_dim),
             ));
-        let backup_passphrase = self
-            .backup_passphrase
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default();
-        let backup_confirmation = self
-            .backup_confirmation
-            .lock()
-            .map(|value| value.clone())
-            .unwrap_or_default();
         let backup_fields = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s3)
-            .push(Box::new(
-                TextInput::local()
-                    .with_id("onboarding.backup.passphrase")
-                    .with_external_buffer(Arc::clone(&self.backup_passphrase))
-                    .with_initial_value(&backup_passphrase)
-                    .with_placeholder("Passphrase — at least 12 characters")
-                    .with_secret(true),
-            ))
-            .push(Box::new(
-                TextInput::local()
-                    .with_id("onboarding.backup.confirmation")
-                    .with_external_buffer(Arc::clone(&self.backup_confirmation))
-                    .with_initial_value(&backup_confirmation)
-                    .with_placeholder("Confirm passphrase")
-                    .with_secret(true),
-            ));
+            .push(Box::new(secret_input(
+                "onboarding.backup.passphrase",
+                &self.backup_passphrase,
+                "Long, unique passphrase — 12+ characters",
+            )))
+            .push(Box::new(secret_input(
+                "onboarding.backup.confirmation",
+                &self.backup_confirmation,
+                "Confirm passphrase",
+            )));
         let mut backup = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -573,14 +556,29 @@ fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
     }
 }
 
+fn secret_input(id: &str, buffer: &Arc<Mutex<String>>, placeholder: &str) -> TextInput {
+    let input = TextInput::local()
+        .with_id(id)
+        .with_external_buffer(Arc::clone(buffer))
+        .with_placeholder(placeholder)
+        .with_secret(true);
+    match buffer.lock() {
+        Ok(value) => input.with_initial_value(&value),
+        Err(_) => input,
+    }
+}
+
 fn clear_secret(buffer: &Arc<Mutex<String>>) {
     if let Ok(mut value) = buffer.lock() {
-        // Best-effort overwrite before dropping the long-lived OOBE copy.
-        // The cryptographic layer also keeps derived and plaintext buffers in
-        // zeroizing containers.
-        let zeros = "\0".repeat(value.len());
-        value.replace_range(.., &zeros);
-        value.clear();
+        value.zeroize();
+    }
+}
+
+impl Drop for OnboardingView {
+    fn drop(&mut self) {
+        clear_secret(&self.connect_passphrase);
+        clear_secret(&self.backup_passphrase);
+        clear_secret(&self.backup_confirmation);
     }
 }
 
@@ -612,16 +610,16 @@ impl Widget for OnboardingView {
                         self.error = None;
                     }
                     PickerPurpose::BackupIdentity => {
-                        let mut passphrase = self
-                            .backup_passphrase
-                            .lock()
-                            .map(|value| value.as_bytes().to_vec())
-                            .unwrap_or_default();
+                        let passphrase = Zeroizing::new(
+                            self.backup_passphrase
+                                .lock()
+                                .map(|value| value.as_bytes().to_vec())
+                                .unwrap_or_default(),
+                        );
                         let export = self.flow.minted().map_or_else(
                             || Err("the identity is not ready to back up".to_string()),
                             |identity| (self.exporter)(&identity.path, &path, &passphrase),
                         );
-                        passphrase.fill(0);
                         match export {
                             Ok(()) => {
                                 self.backup_saved = Some(path);
@@ -672,22 +670,19 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_BACKUP_BROWSE) {
             let _ = state.put(root, KEY_BACKUP_BROWSE, ScalarValue::Boolean(false));
             if self.flow.screen() == Screen::Done && self.picker.is_none() {
-                let passphrase = self
-                    .backup_passphrase
-                    .lock()
-                    .map(|value| value.clone())
-                    .unwrap_or_default();
-                let confirmation = self
-                    .backup_confirmation
-                    .lock()
-                    .map(|value| value.clone())
-                    .unwrap_or_default();
-                self.backup_error = if passphrase.chars().count() < 12 {
-                    Some("Use at least 12 characters so an offline attacker cannot cheaply guess the passphrase.".to_string())
-                } else if passphrase != confirmation {
-                    Some("The two passphrases do not match.".to_string())
-                } else {
-                    None
+                self.backup_error = match (
+                    self.backup_passphrase.lock(),
+                    self.backup_confirmation.lock(),
+                ) {
+                    (Ok(passphrase), Ok(_)) if passphrase.chars().count() < 12 => Some(
+                        "Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe."
+                            .to_string(),
+                    ),
+                    (Ok(passphrase), Ok(confirmation)) if *passphrase != *confirmation => {
+                        Some("The two passphrases do not match.".to_string())
+                    }
+                    (Ok(_), Ok(_)) => None,
+                    _ => Some("The passphrase fields are temporarily unavailable.".to_string()),
                 };
                 if self.backup_error.is_none() {
                     let (initial, roots) = onboarding_picker_scope();
@@ -719,13 +714,13 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
             if self.flow.screen() == Screen::Connect {
-                let mut passphrase = self
-                    .connect_passphrase
-                    .lock()
-                    .map(|value| value.as_bytes().to_vec())
-                    .unwrap_or_default();
+                let passphrase = Zeroizing::new(
+                    self.connect_passphrase
+                        .lock()
+                        .map(|value| value.as_bytes().to_vec())
+                        .unwrap_or_default(),
+                );
                 let import = (self.importer)(&source, &passphrase);
-                passphrase.fill(0);
                 match import {
                     Ok(identity) => {
                         self.error = None;
@@ -1001,6 +996,9 @@ impl Widget for OnboardingView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some((_, picker)) = self.picker.as_ref() {
+            return vec![picker];
+        }
         self.composed
             .as_ref()
             .map(std::convert::AsRef::as_ref)
@@ -1009,6 +1007,9 @@ impl Widget for OnboardingView {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some((_, picker)) = self.picker.as_mut() {
+            return vec![picker];
+        }
         self.composed
             .as_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))

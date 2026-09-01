@@ -65,7 +65,7 @@ mod secure_store;
 
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
-    import_portable_backup_with_provider, verify_portable_backup,
+    import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
 };
 pub use secure_store::{BrokerFileProvider, SecretProvider};
 
