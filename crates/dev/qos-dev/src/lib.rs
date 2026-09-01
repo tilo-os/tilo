@@ -1290,8 +1290,7 @@ fn form_screen_content(
             multiline: true,
             disabled: false,
         },
-        labeled_check_row(
-            "enabled-row",
+        labeled_check_node(
             "enabled",
             enabled.reference(localized),
             format!("{name}-draft-enabled"),
@@ -1328,22 +1327,19 @@ fn settings_screen_content(
             description.reference(localized),
             qos_ui_graph::UiTextRole::Body,
         ),
-        labeled_check_row(
-            "notifications-row",
+        labeled_check_node(
             "notifications",
             notifications.reference(localized),
             format!("{name}-notifications"),
             true,
         ),
-        labeled_check_row(
-            "compact-row",
+        labeled_check_node(
             "compact",
             compact.reference(localized),
             format!("{name}-compact"),
             true,
         ),
-        labeled_check_row(
-            "analytics-row",
+        labeled_check_node(
             "analytics",
             analytics.reference(localized),
             format!("{name}-analytics"),
@@ -1409,40 +1405,28 @@ fn screen_text(id: &str, value: String, role: qos_ui_graph::UiTextRole) -> qos_u
     }
 }
 
-fn labeled_check_row(
-    row_id: &str,
+fn labeled_check_node(
     control_id: &str,
     label: String,
     value_path: String,
     toggle: bool,
 ) -> qos_ui_graph::UiNode {
-    let control = if toggle {
+    if toggle {
         qos_ui_graph::UiNode::Toggle {
             id: control_id.into(),
-            accessible_name: label.clone(),
+            label: Some(label),
+            accessible_name: String::new(),
             value_path,
             enabled: true,
         }
     } else {
         qos_ui_graph::UiNode::Checkbox {
             id: control_id.into(),
-            accessible_name: label.clone(),
+            label: Some(label),
+            accessible_name: String::new(),
             value_path,
             enabled: true,
         }
-    };
-    qos_ui_graph::UiNode::Row {
-        id: row_id.into(),
-        children: vec![
-            control,
-            screen_text(
-                &format!("{control_id}-label"),
-                label,
-                qos_ui_graph::UiTextRole::Label,
-            ),
-        ],
-        no_wrap: true,
-        fill_remaining_height: false,
     }
 }
 
@@ -5407,6 +5391,18 @@ mod tests {
                     }) if label == "account-name-label" && accessible_name.is_empty()
                 ));
                 assert!(document.node("name-label").is_none());
+            }
+            if template == ScreenTemplate::Settings {
+                assert!(matches!(
+                    document.node("notifications"),
+                    Some(qos_ui_graph::UiNode::Toggle {
+                        label: Some(label),
+                        accessible_name,
+                        ..
+                    }) if label == "account-notifications" && accessible_name.is_empty()
+                ));
+                assert!(document.node("notifications-row").is_none());
+                assert!(document.node("notifications-label").is_none());
             }
         }
     }
