@@ -1018,6 +1018,13 @@ mod gst_pipeline {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gst")]
+    mod generated_clip {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/generated_clip.rs"
+        ));
+    }
 
     /// A muxer that is still writing is never given up on, however long it
     /// takes; one that has gone quiet is.
@@ -1070,9 +1077,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn a_render_reports_progress_and_finishes_where_it_was_told() {
-        let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip");
-        };
+        let clip = demo_clip();
         let project = project_over(&clip, 4.0, 1.0);
         let out = std::env::temp_dir().join(format!("qos-ve-job-{}.mp4", std::process::id()));
         std::fs::remove_file(&out).ok();
@@ -1116,9 +1121,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn cancelling_a_render_stops_it_and_leaves_no_file() {
-        let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip");
-        };
+        let clip = demo_clip();
         // Long enough that the cancel lands mid-encode rather than after it.
         let project = project_over(&clip, 2.0, 20.0);
         let out = std::env::temp_dir().join(format!("qos-ve-cancel-{}.mp4", std::process::id()));
@@ -1184,9 +1187,9 @@ mod tests {
 
     /// Write a `secs`-long tone to `path` and hand back its duration.
     ///
-    /// The bundled demo clip carries a video track and nothing else — it is a
-    /// screen recording — so it cannot prove anything about audio. A
-    /// generated tone can: it has a known, plainly non-zero level.
+    /// A generated tone has a known, plainly non-zero level, so the mixer
+    /// assertions do not depend on the source clip's independently tested AAC
+    /// track.
     #[cfg(feature = "gst")]
     fn write_tone(path: &std::path::Path, secs: f64) {
         use gstreamer as gst;
@@ -1351,9 +1354,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_export_muxes_the_timelines_audio() {
-        let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip");
-        };
+        let clip = demo_clip();
         let pid = std::process::id();
         let tone = std::env::temp_dir().join(format!("qos-ve-tone-{pid}.wav"));
         write_tone(&tone, 1.5);
@@ -1395,17 +1396,14 @@ mod tests {
     /// -- which is precisely how this file's audio tests flaked under load,
     /// and the failure then named the wrong thing as broken.
     ///
-    /// The bundled demo clip is a screen recording: `vide` handlers, no
-    /// `soun`. There is no level to read off it, and asking for one has to
-    /// fail rather than come back with a number.
+    /// A deliberately video-only encoded fixture has no level to read, and
+    /// asking for one has to fail rather than come back with a number.
     #[cfg(feature = "gst")]
     #[test]
     #[should_panic(expected = "no readable audio stream")]
     #[serial_test::serial(video_editor_gst)]
     fn a_file_with_no_audio_track_cannot_be_asked_for_its_level() {
-        let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip");
-        };
+        let clip = generated_clip::encoded_video_only();
         let _ = audio_peak(&clip);
     }
 
@@ -1415,9 +1413,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn volume_and_mute_reach_the_encoded_audio() {
-        let Some(clip) = demo_clip() else {
-            panic!("this test needs the bundled demo clip");
-        };
+        let clip = demo_clip();
         let pid = std::process::id();
         let tone = std::env::temp_dir().join(format!("qos-ve-tone2-{pid}.wav"));
         write_tone(&tone, 1.0);
@@ -2162,27 +2158,11 @@ mod tests {
     }
     // --- real footage, end to end ----------------------------------------
 
-    /// The bundled demo clip, if this checkout has it. Its absence is
-    /// reported by the caller rather than silently skipping — a test that
-    /// cannot look is not a test that passed.
+    /// Deterministic moving footage encoded by the same `GStreamer` stack the
+    /// export tests exercise. Generation remains fail-loud.
     #[cfg(feature = "gst")]
-    fn demo_clip() -> Option<std::path::PathBuf> {
-        // Set by the harness; otherwise walk up to the repository root.
-        if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
-            let p = std::path::PathBuf::from(p);
-            return p.exists().then_some(p);
-        }
-        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        for _ in 0..5 {
-            let candidate = dir.join(".claude/demo-artifacts/qos-demo-57s.mp4");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-        None
+    fn demo_clip() -> std::path::PathBuf {
+        generated_clip::encoded_video()
     }
 
     /// A one-clip project sourcing `path` from `in_point` for `len` seconds.
@@ -2198,10 +2178,10 @@ mod tests {
             id: mid,
             name: "demo".into(),
             kind: MediaKind::Video,
-            duration: 57.0,
-            width: 1920,
-            height: 1080,
-            fps: 30.0,
+            duration: generated_clip::DURATION_SECS,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            fps: f64::from(generated_clip::FPS),
             palette: 3,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
@@ -2324,13 +2304,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_export_encodes_the_source_footage() {
-        let Some(clip) = demo_clip() else {
-            panic!(
-                "this test needs the bundled demo clip at \
-                 .claude/demo-artifacts/qos-demo-57s.mp4 (or $QOS_VE_TEST_CLIP); \
-                 it cannot verify the export without real footage",
-            );
-        };
+        let clip = demo_clip();
         // A second and a half of real video, from a second in — far enough
         // past the head that the picture has content.
         let project = project_over(&clip, 8.0, 1.5);
@@ -2394,11 +2368,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_grade_changes_the_encoded_footage() {
-        let Some(clip) = demo_clip() else {
-            panic!(
-                "this test needs the bundled demo clip; see the_export_encodes_the_source_footage"
-            );
-        };
+        let clip = demo_clip();
         let neutral = project_over(&clip, 8.0, 0.6);
         let mut bright = neutral.clone();
         let cid = bright.clips[0].id;
@@ -2472,17 +2442,9 @@ mod tests {
     #[serial_test::serial(video_editor_gst)]
     fn transitions_reach_the_encoded_file_as_distinct_pictures() {
         use crate::model::Transition;
-        let Some(clip) = demo_clip() else {
-            panic!(
-                "this test needs the bundled demo clip; see the_export_encodes_the_source_footage"
-            );
-        };
+        let clip = demo_clip();
         // Two clips over one source, the incoming one inverted so the two
         // pictures are unmistakably different whatever the footage does.
-        // Cutting two moments out of the same clip is not enough on its
-        // own: the bundled demo is a screen recording that barely moves,
-        // so two instants of it are the same picture, and then every
-        // arrangement of them — dissolve, wipe, anything — looks alike.
         let build = |kind: Transition| {
             let mut p = project_over(&clip, 2.0, 1.0);
             let track = p.tracks[0].id;
