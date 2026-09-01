@@ -999,6 +999,7 @@ pub enum CapsuleError {
 #[cfg(test)]
 mod tests {
     use compat_catalogue::{Architecture, MatchKind, Runtime, SecurityProfileRef};
+    use std::io::{SeekFrom, Write};
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
@@ -1104,5 +1105,36 @@ mod tests {
                 .is_file()
         );
         assert!(store.load(&state.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn staged_installer_must_match_the_bytes_that_were_inspected() {
+        let directory = TempDir::new().unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        let mut selected = tempfile::NamedTempFile::new().unwrap();
+        let mut pe = vec![0_u8; 0x200];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+        selected.write_all(&pe).unwrap();
+        selected.flush().unwrap();
+        let mut source = selected.reopen().unwrap();
+        let inspected = crate::inspect_installer(&mut source, "favorite.exe").unwrap();
+
+        selected.as_file_mut().seek(SeekFrom::Start(0x100)).unwrap();
+        selected.as_file_mut().write_all(b"changed").unwrap();
+        selected.as_file_mut().flush().unwrap();
+        assert!(matches!(
+            store.copy_installer(
+                &state.id,
+                &mut source,
+                &inspected.sha256,
+                InstallerKind::Exe,
+                crate::MAX_INSTALLER_BYTES,
+            ),
+            Err(CapsuleError::InstallerChanged)
+        ));
     }
 }
