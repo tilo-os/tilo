@@ -12,5 +12,5 @@ entry=$(path /usr/share/wayland-sessions/qos-dev.desktop)
 [[ -x $wrapper ]] || { echo "missing developer session wrapper" >&2; exit 1; }
 [[ -f $entry ]] || { echo "missing developer session entry" >&2; exit 1; }
 grep -q '^Exec=/usr/libexec/qos-session-dev$' "$entry"
-grep -q '^TryExec=/usr/bin/qos-shell$' "$entry"
+grep -q '^TryExec=/usr/libexec/qos-session-dev$' "$entry"
 grep -q -- '--firstboot' "$wrapper"
