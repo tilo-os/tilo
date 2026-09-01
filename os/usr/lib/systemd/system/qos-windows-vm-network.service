@@ -1,0 +1,43 @@
+[Unit]
+Description=qOS Windows appliance host-only libvirt network
+Documentation=file:///usr/share/doc/qos/windows-vm.md
+# Fedora's split libvirt daemons own the qemu:///system and network sockets.
+After=virtqemud.service virtnetworkd.service
+Wants=virtqemud.socket virtnetworkd.socket
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/qos-windows-vm-network
+
+# This process only asks libvirt to define an immutable local bridge. It has no
+# reason to open an IP socket, write the image, inspect home, or retain caps.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
