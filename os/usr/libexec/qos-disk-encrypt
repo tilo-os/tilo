@@ -5,7 +5,7 @@
 # Split out of qos-install so the destructive block work is one testable unit:
 #
 #   qos-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
-#   qos-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2]
+#   qos-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2] [--passphrase]
 #   qos-disk-encrypt enrol    <luks-part> --reseal [--pin-file F]
 #   qos-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #   qos-disk-encrypt teardown <disk> [--mnt DIR]
@@ -183,12 +183,16 @@ EOF
 have_tpm2() { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; }
 
 cmd_enrol() {
-  local dev="" key="" pin_file="" want_fido2=0 reseal=0
+  local dev="" key="" pin_file="" want_fido2=0 reseal=0 force_passphrase=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
       --fido2) want_fido2=1; shift ;;
+      # A TPM is useful only behind verified boot. The installer passes this
+      # when Secure Boot is not active so PCR 7="off" is never presented as a
+      # hardware-backed short-PIN boundary.
+      --passphrase) force_passphrase=1; shift ;;
       # Re-bind an already-installed volume to a TPM: after a cleared or replaced
       # chip, or after turning Secure Boot on or off (PCR 7 changes either way).
       # No new recovery key — the existing one is what authorises this — and the
@@ -305,7 +309,7 @@ cmd_enrol() {
   # register, so the seal breaks if the boot policy changes, while PCR 4 (the
   # boot artefacts themselves) would break the seal on every OS update and send
   # the user to the recovery key each time.
-  if have_tpm2; then
+  if have_tpm2 && [ "$force_passphrase" -eq 0 ]; then
     if [ -n "$pin_file" ]; then
       log "  enrolling TPM2 with a PIN…"
       NEWPIN="$(cat "$pin_file")" systemd-cryptenroll "${unlock[@]}" \
@@ -320,7 +324,11 @@ cmd_enrol() {
       log "  TPM2 enrolled."
     fi
   else
-    log "  no TPM2 device — this machine unlocks by typing a secret, not automatically."
+    if have_tpm2; then
+      log "  Secure Boot is not active — using a passphrase instead of a misleading TPM slot."
+    else
+      log "  no TPM2 device — this machine unlocks with a disk passphrase."
+    fi
     if [ -n "$pin_file" ]; then
       # The PIN the caller collected becomes an ordinary passphrase slot, so the
       # user has something short to type at boot instead of the recovery key.

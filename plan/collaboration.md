@@ -26,8 +26,9 @@ silently replaced.
 Native qOS and the legacy-host compatibility route deliberately have different
 trust models. A normal qOS installation creates identity through the dedicated
 OOBE and requires a LUKS2-encrypted system before that identity is created.
-TPM2 machines use one required startup PIN bound to the TPM; machines without
-TPM2 require a normal disk passphrase. That same credential is the local
+Machines with TPM2 and verified boot use one required startup PIN bound to the
+TPM; machines without either part of that boundary require a normal disk
+passphrase. That same credential is the local
 session-unlock credential, and successful disk authentication hands directly
 to the installed user's first session rather than immediately prompting for a
 second password. Native provisioning remains responsible for protected-key
