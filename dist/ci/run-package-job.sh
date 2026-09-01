@@ -17,6 +17,11 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     arch=$3
     revision=${4:-}
     case "$arch" in amd64|arm64) ;; *) usage ;; esac
+    if [[ $arch == arm64 ]]; then
+        cargo_jobs=2
+    else
+        cargo_jobs=4
+    fi
 
     repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
     output=$repo_root/dist/ci-output/$distro-$arch
@@ -55,6 +60,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env QOS_EXPECT_ARCH="$arch" \
             --env QOS_DEB_REVISION="$revision" \
             --env CARGO_INCREMENTAL=0 \
+            --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_TERM_COLOR=never \
             "$image" -c "$inner_command" 2> >(tee "$create_log" >&2))
     else
@@ -141,7 +147,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_PACKAGE_DISTRO="$distro"
         export QOS_EXPECT_ARCH="$arch"
         export QOS_DEB_REVISION="$revision"
-        export CARGO_INCREMENTAL=0 CARGO_TERM_COLOR=never
+        export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
         set +e
         "$tools_dir/proot" -0 -q "$tools_dir/qemu-argv0-wrapper" \
@@ -259,7 +265,7 @@ arch)
     cp dist/arch/build/*.pkg.tar.zst /artifacts/
     ;;
 nix)
-    export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false'
+    export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
     stage=install-nix-tools
     nix-env -iA nixpkgs.gzip nixpkgs.file
     stage=build-nix
