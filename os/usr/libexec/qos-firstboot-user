@@ -35,9 +35,10 @@ if ! id "$user" >/dev/null 2>&1; then
   # brightness silently does nothing.
   useradd -m -G wheel,qos-identity,video "$user"
 else
-  # Existing accounts from before the backlight rule shipped: joining
-  # the group is idempotent, so this is safe to run on every boot.
-  usermod -aG video "$user" || true
+  # Joining both capability groups is idempotent. Existing accounts from
+  # before either rule shipped need the device-identity group as well as
+  # backlight access.
+  usermod -aG qos-identity,video "$user" || true
 fi
 
 printf '%s:%s\n' "$user" "$hash" | chpasswd -e

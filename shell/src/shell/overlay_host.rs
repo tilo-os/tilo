@@ -101,6 +101,13 @@ type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, Stri
 pub struct ShellOverlayHost {
     rect: Rect,
     content: Box<dyn Widget>,
+    /// Trusted first-login chrome. While present it is the entire root
+    /// surface: desktop content, launch affordances, and every other overlay
+    /// stay unreachable until a real identity has been provisioned and the
+    /// user dismisses the result screen.
+    onboarding: Option<crate::onboarding_view::OnboardingView>,
+    /// One-shot relayout edge raised when onboarding releases the desktop.
+    onboarding_released: bool,
     /// Floating sidebar wheel. Optional so tests can build a bare host
     /// without one; production always provides it.
     sidebar: Option<Box<dyn Widget>>,
@@ -850,6 +857,8 @@ impl ShellOverlayHost {
         Self {
             rect: Rect::ZERO,
             content,
+            onboarding: None,
+            onboarding_released: false,
             sidebar: None,
             outputs: Vec::new(),
             palette,
@@ -920,6 +929,29 @@ impl ShellOverlayHost {
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: ProjectionOverlay::default(),
         }
+    }
+
+    /// Gate this host behind the shell-owned identity ceremony.
+    ///
+    /// This lives on the compositor root rather than in a pre-session winit
+    /// window: on a fresh machine there is no display server before `shell`,
+    /// and an application-shaped setup window could be imitated by an app.
+    #[must_use]
+    pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
+        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
+        self
+    }
+
+    /// Activate first-login chrome on an already constructed compositor
+    /// host. Production uses this after resolving the canonical XDG path.
+    pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
+        self.onboarding_released = false;
+    }
+
+    /// Whether first-login chrome is still withholding the desktop.
+    pub fn onboarding_active(&self) -> bool {
+        self.onboarding.is_some()
     }
 
     /// Replace the real protocol broker. Headless tests use this to drive
@@ -6407,6 +6439,15 @@ const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
 impl Widget for ShellOverlayHost {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.sync(s, p);
+            let finished = onboarding.finished();
+            if finished {
+                self.onboarding = None;
+                self.onboarding_released = true;
+            }
+            return;
+        }
         self.content.sync(s, p);
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.sync(s, p);
@@ -6415,6 +6456,9 @@ impl Widget for ShellOverlayHost {
     }
 
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            return onboarding.update(doc, path);
+        }
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         // Workspace switch before anything walking `group_row_ptrs` (it
@@ -6496,6 +6540,23 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            let child = onboarding.build_layout(taffy, theme, node_map);
+            let node = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::percent(1.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap_or(child);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
@@ -6628,6 +6689,14 @@ impl Widget for ShellOverlayHost {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            if let Ok(children) = taffy.children(node)
+                && let Some(&child) = children.first()
+            {
+                onboarding.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
+            }
+            return;
+        }
         // One more pass if the card sized against a stale host width;
         // settles in a single extra frame.
         if (self.palette_layout_host_w - self.rect.width()).abs() > f64::EPSILON {
@@ -6724,6 +6793,10 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.draw(scene, transform, text_renderer, theme, presence);
+            return;
+        }
         // Split into four layer passes — was one 372-line function; see
         // each helper (in the other `impl ShellOverlayHost` block) for
         // what it covers.
@@ -6746,6 +6819,29 @@ impl Widget for ShellOverlayHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            let child_node = taffy
+                .children(node_id)
+                .ok()
+                .and_then(|children| children.first().copied())
+                .unwrap_or(node_id);
+            onboarding.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+            // First-login is a modal machine surface. Even an event the
+            // current control does not consume must never fall through to
+            // hidden desktop chrome.
+            *handled = true;
+            return;
+        }
         // Split into named gates and dispatch stages — was one
         // 1591-line function. Each helper (in the other `impl
         // ShellOverlayHost` block) covers one gate or stage, called in
@@ -6847,6 +6943,9 @@ impl Widget for ShellOverlayHost {
     /// walkers can recurse into the live tree, in `build_layout`'s
     /// child-node order (sidebar last so it paints over the chrome).
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(onboarding) = self.onboarding.as_ref() {
+            return vec![onboarding];
+        }
         let mut out: Vec<&dyn Widget> = Vec::with_capacity(3);
         out.push(self.content.as_ref());
         out.push(&self.palette);
@@ -6857,6 +6956,9 @@ impl Widget for ShellOverlayHost {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            return vec![onboarding];
+        }
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(3);
         out.push(self.content.as_mut());
         out.push(&mut self.palette);
@@ -6864,6 +6966,12 @@ impl Widget for ShellOverlayHost {
             out.push(s.as_mut());
         }
         out
+    }
+
+    fn take_focus_reset(&mut self) -> bool {
+        self.onboarding
+            .as_mut()
+            .is_some_and(Widget::take_focus_reset)
     }
 
     fn get_rect(&self) -> Rect {
@@ -6876,6 +6984,12 @@ impl Widget for ShellOverlayHost {
     /// shadow every child signal, leaving it at `Rect::ZERO`. Uses `|`,
     /// not `||`, so both children clear their own flags this tick.
     fn take_structure_dirty(&mut self) -> bool {
+        if std::mem::take(&mut self.onboarding_released) {
+            return true;
+        }
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            return onboarding.take_structure_dirty();
+        }
         // Before resync, or it sees "widget has X, tree doesn't" and evicts X.
         self.harvest_widget_only_groups_into_tree();
         // Pumped here too since the shots driver's relayout path skips
@@ -6892,6 +7006,9 @@ impl Widget for ShellOverlayHost {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        if let Some(onboarding) = self.onboarding.as_ref() {
+            return onboarding.needs_animation_frame();
+        }
         // Continuous redraws while overview crossfade, quick-settings
         // open/close, or any inner widget's animation is in flight;
         // `tick_*` clear their own flags once elapsed, so this idles.
