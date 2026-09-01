@@ -40,7 +40,7 @@ pub struct VmLaunchGrants {
 ///
 /// This is deliberately not a filesystem permission or a host path.  The
 /// capability broker is the only component allowed to turn it into a private
-/// per-launch projection for FreeRDP.
+/// per-launch projection for `FreeRDP`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PortalDocumentAccess {
     ReadOnly,
@@ -58,7 +58,7 @@ impl PortalDocumentAccess {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortalDocumentGrant {
     /// An unguessable, broker-owned portal document handle.  It is never a
-    /// host path and is not presented to the guest or FreeRDP.
+    /// host path and is not presented to the guest or `FreeRDP`.
     pub handle: String,
     pub access: PortalDocumentAccess,
 }

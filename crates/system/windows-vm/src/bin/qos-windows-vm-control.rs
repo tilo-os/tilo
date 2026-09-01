@@ -30,6 +30,10 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the root controller keeps its complete typed action dispatch in one auditable function"
+)]
 fn run() -> Result<(), String> {
     let mut arguments = env::args_os().skip(1);
     let action = arguments
@@ -100,16 +104,16 @@ fn run() -> Result<(), String> {
         "suspend" => backend.suspend(&config).map_err(|e| e.to_string()),
         "resume" => backend.resume(&config).map_err(|e| e.to_string()),
         "graphics-attach" => {
-            if rest.len() != 2 {
+            let [kind, identifier] = rest.as_slice() else {
                 return Err("usage: qos-windows-vm-control graphics-attach {sriov-vf|mdev} <canonical-id>".to_string());
-            }
+            };
             if Path::new(GRAPHICS_ASSIGNMENT).exists() {
                 return Err("a Windows graphics partition is already recorded; detach it first".to_string());
             }
             let capabilities = GraphicsCapabilities::probe().map_err(|error| error.to_string())?;
-            let assignment = match rest[0].as_str() {
-                "sriov-vf" => capabilities.sriov_assignment(&rest[1]),
-                "mdev" => capabilities.mediated_assignment(&rest[1]),
+            let assignment = match kind.as_str() {
+                "sriov-vf" => capabilities.sriov_assignment(identifier),
+                "mdev" => capabilities.mediated_assignment(identifier),
                 _ => None,
             }
             .ok_or_else(|| {

@@ -29,7 +29,7 @@ pub enum ProtocolRequest {
         entry_id: String,
     },
     /// Opens exactly one portal-selected document in a published Windows app.
-    /// The descriptor accompanies this frame via SCM_RIGHTS; no path crosses.
+    /// The descriptor accompanies this frame via `SCM_RIGHTS`; no path crosses.
     LaunchVmWithPortalFile {
         version: u16,
         entry_id: String,

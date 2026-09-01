@@ -101,7 +101,7 @@ impl GuestNetworkProxy {
                 worker_token,
                 require_guest_peer,
                 worker_shutdown,
-            )
+            );
         });
         Ok(Self {
             binding,
@@ -149,6 +149,10 @@ fn validate_hosts(hosts: &[String]) -> Result<(), GuestNetworkError> {
     Ok(())
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the detached relay worker owns its listener and shared lease state"
+)]
 fn serve(
     listener: TcpListener,
     hosts: Arc<std::sync::Mutex<Vec<String>>>,
@@ -202,9 +206,8 @@ fn serve_connect(
     if !policy.permits(&host) {
         return write_response(&mut client, "502 Bad Gateway");
     }
-    let mut upstream = match connect_upstream(&Destination::Domain(host.clone(), port), &policy) {
-        Ok(stream) => stream,
-        Err(_) => return write_response(&mut client, "502 Bad Gateway"),
+    let Ok(mut upstream) = connect_upstream(&Destination::Domain(host, port), &policy) else {
+        return write_response(&mut client, "502 Bad Gateway");
     };
     if shutdown.load(Ordering::Acquire) {
         return write_response(&mut client, "502 Bad Gateway");
@@ -246,9 +249,7 @@ fn parse_connect(head: &str) -> Option<(String, u16, String)> {
         return None;
     }
     let authority = parts.next()?;
-    if parts.next().is_none() {
-        return None;
-    }
+    parts.next()?;
     let (host, port) = authority.rsplit_once(':')?;
     let port = port.parse().ok()?;
     if host.is_empty() || host.len() > 253 || host.bytes().any(|byte| byte.is_ascii_whitespace()) {
