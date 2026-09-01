@@ -9,23 +9,12 @@
 //!
 //! # Key custody
 //!
-//! The symmetric key lives in `vault.key` next to the ciphertext, created
-//! with the OS CSPRNG on first save and written `0600` (owner read/write
-//! only) on unix. This protects the vault blob itself — the file that a
-//! backup captures, that a sync would carry, or that another user on the
-//! box could otherwise read — while keeping the vault recoverable by
-//! backing up the data directory (an authenticator that can't be restored
-//! locks you out of every account, so key material must not be bound to
-//! anything ephemeral like a machine id).
-//!
-//! [`load_or_create_key`] is the single seam for stronger custody: when
-//! the compositor exposes a keyring capability over the cluster's
-//! Unix-socket channel (the same boundary used for file-access and
-//! collaboration prompts), only that function changes — it requests an
-//! AEAD seal/open from the keyring instead of reading a local key file,
-//! and the on-disk format stays identical. The honest limitation today is
-//! that a local reader with access to the data directory sees both the key
-//! and the ciphertext; the keyring seam closes that gap.
+//! In a normal desktop session the symmetric key is held by the freedesktop
+//! Secret Service through `secret-tool`, separate from the ciphertext. An
+//! existing owner-only `vault.key` is migrated only after a verified Secret
+//! Service round-trip, then removed. Headless/test environments without the
+//! client use the explicit owner-only local fallback so recovery and tests do
+//! not silently lose an authenticator vault.
 //!
 //! # Migration
 //!
@@ -38,7 +27,9 @@
 //! crashes the app — the vault still works in-memory for the session and
 //! for the `--shots` renderer.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -62,6 +53,12 @@ const SEAL_FORMAT: u8 = 1;
 const NONCE_LEN: usize = 24;
 /// Symmetric key width (256-bit).
 const KEY_LEN: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyCustody {
+    SecretService,
+    LocalFile,
+}
 
 /// Resolve the data directory: `$XDG_DATA_HOME/qos-authenticator`
 /// (falling back to `$HOME/.local/share/...`). Returns `None` when no
@@ -95,7 +92,7 @@ fn legacy_plaintext_path_in(dir: &Path) -> PathBuf {
 /// (or when it can't be read/decrypted) — never an error to the caller.
 pub fn load() -> Vault {
     match data_dir() {
-        Some(dir) => load_at(&dir),
+        Some(dir) => load_at_with_custody(&dir, key_custody()),
         None => Vault::new(),
     }
 }
@@ -103,15 +100,20 @@ pub fn load() -> Vault {
 /// Persist the vault, sealed. Best-effort: logs and returns on any error.
 pub fn save(vault: &Vault) {
     if let Some(dir) = data_dir() {
-        save_at(&dir, vault);
+        save_at_with_custody(&dir, vault, key_custody());
     }
 }
 
 /// Load (and, if needed, migrate) the vault stored under `dir`.
+#[cfg(test)]
 fn load_at(dir: &Path) -> Vault {
+    load_at_with_custody(dir, KeyCustody::LocalFile)
+}
+
+fn load_at_with_custody(dir: &Path, custody: KeyCustody) -> Vault {
     let enc = dir.join("vault.enc");
     if enc.exists() {
-        return match (load_or_create_key(dir), std::fs::read(&enc)) {
+        return match (load_or_create_key(dir, custody), std::fs::read(&enc)) {
             (Some(key), Ok(blob)) => {
                 if let Some(plaintext) = open(&key, &blob) {
                     parse_vault(&plaintext)
@@ -133,7 +135,7 @@ fn load_at(dir: &Path) -> Vault {
         let mut v = Vault::new();
         v.accounts = file.accounts;
         v.renumber();
-        save_at(dir, &v);
+        save_at_with_custody(dir, &v, custody);
         if enc.exists()
             && let Err(e) = std::fs::remove_file(&legacy)
         {
@@ -146,12 +148,17 @@ fn load_at(dir: &Path) -> Vault {
 }
 
 /// Seal + write the vault under `dir`.
+#[cfg(test)]
 fn save_at(dir: &Path, vault: &Vault) {
+    save_at_with_custody(dir, vault, KeyCustody::LocalFile);
+}
+
+fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::warn!(error = %e, "authenticator: could not create data dir");
         return;
     }
-    let Some(key) = load_or_create_key(dir) else {
+    let Some(key) = load_or_create_key(dir, custody) else {
         tracing::warn!("authenticator: no vault key available; changes kept in memory only");
         return;
     };
@@ -197,7 +204,168 @@ fn parse_vault(plaintext: &[u8]) -> Vault {
 ///
 /// This is the single point of key custody — see the module docs for the
 /// keyring seam that will replace the local key file.
-fn load_or_create_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
+fn load_or_create_key(dir: &Path, custody: KeyCustody) -> Option<Zeroizing<[u8; KEY_LEN]>> {
+    match custody {
+        KeyCustody::SecretService => secret_service_key(dir),
+        KeyCustody::LocalFile => local_file_key(dir),
+    }
+}
+
+fn key_custody() -> KeyCustody {
+    let available = Command::new("secret-tool")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if available {
+        KeyCustody::SecretService
+    } else {
+        KeyCustody::LocalFile
+    }
+}
+
+fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
+    match lookup_secret_service_key() {
+        Ok(Some(key)) => return Some(key),
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(%error, "authenticator: Secret Service lookup failed; refusing local fallback");
+            return None;
+        }
+    }
+
+    let local_path = key_path_in(dir);
+    let (key, migrated) = match std::fs::read(&local_path) {
+        Ok(bytes) if bytes.len() == KEY_LEN => {
+            let mut key = Zeroizing::new([0u8; KEY_LEN]);
+            key.copy_from_slice(&bytes);
+            (key, true)
+        }
+        Ok(_) => {
+            tracing::warn!("authenticator: local vault key is malformed; not replacing it");
+            return None;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut key = Zeroizing::new([0u8; KEY_LEN]);
+            getrandom::getrandom(key.as_mut_slice()).ok()?;
+            (key, false)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "authenticator: local vault key could not be read for migration");
+            return None;
+        }
+    };
+
+    if let Err(error) = store_secret_service_key(&key) {
+        tracing::warn!(%error, "authenticator: Secret Service key creation failed");
+        return None;
+    }
+    match lookup_secret_service_key() {
+        Ok(Some(stored)) if stored.as_ref() == key.as_ref() => {
+            if migrated && let Err(error) = std::fs::remove_file(&local_path) {
+                tracing::warn!(%error, "authenticator: migrated vault key but could not remove local copy");
+            }
+            Some(key)
+        }
+        _ => {
+            tracing::warn!("authenticator: Secret Service did not return the stored key");
+            None
+        }
+    }
+}
+
+fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
+    let output = Command::new("secret-tool")
+        .args(["lookup", "application", "qOS", "purpose", "totp-vault"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("secret-tool could not start: {error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return if error.is_empty() {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let encoded = String::from_utf8(output.stdout)
+        .map_err(|_| "Secret Service returned non-UTF-8 key material".to_string())?;
+    if encoded.trim().is_empty() {
+        Ok(None)
+    } else {
+        decode_key(encoded.trim()).map(Some)
+    }
+}
+
+fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
+    let mut child = Command::new("secret-tool")
+        .args([
+            "store",
+            "--label=qOS authenticator vault",
+            "application",
+            "qOS",
+            "purpose",
+            "totp-vault",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("secret-tool could not start: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "secret-tool stdin unavailable".to_string())?
+        .write_all(encode_key(key).as_bytes())
+        .map_err(|error| format!("could not send key to Secret Service: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("secret-tool wait failed: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn encode_key(key: &[u8; KEY_LEN]) -> String {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(KEY_LEN * 2);
+    for byte in key {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn decode_key(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
+    if encoded.len() != KEY_LEN * 2 {
+        return Err("Secret Service key has the wrong length".into());
+    }
+    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    for (byte, pair) in key.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
+        let &[hi, lo] = pair else {
+            return Err("Secret Service key is not hexadecimal".into());
+        };
+        let high = hex_nibble(hi)?;
+        let low = hex_nibble(lo)?;
+        *byte = high
+            .checked_mul(16)
+            .and_then(|value| value.checked_add(low))
+            .ok_or_else(|| "Secret Service key is not hexadecimal".to_string())?;
+    }
+    Ok(key)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, String> {
+    char::from(byte)
+        .to_digit(16)
+        .and_then(|value| u8::try_from(value).ok())
+        .ok_or_else(|| "Secret Service key is not hexadecimal".into())
+}
+
+fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     let path = key_path_in(dir);
     match std::fs::read(&path) {
         Ok(bytes) if bytes.len() == KEY_LEN => {
@@ -333,6 +501,14 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 0x01;
         assert!(open(&key, &tampered).is_none());
+    }
+
+    #[test]
+    fn secret_service_key_encoding_round_trips_and_rejects_bad_material() {
+        let key = [0xa5; KEY_LEN];
+        assert_eq!(decode_key(&encode_key(&key)).unwrap().as_ref(), &key);
+        assert!(decode_key("short").is_err());
+        assert!(decode_key(&"z".repeat(KEY_LEN * 2)).is_err());
     }
 
     #[test]

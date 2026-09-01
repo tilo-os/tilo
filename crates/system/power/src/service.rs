@@ -96,6 +96,18 @@ pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<P
     (signals, suspend)
 }
 
+/// Map logind's `PrepareForSleep` value to the mandatory compositor action.
+/// The session locks on the pre-sleep edge and only resets its idle state after
+/// resume. Keeping this pure makes the security decision testable without D-Bus.
+#[must_use]
+pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
+    if going_to_sleep {
+        PowerSignal::Lock
+    } else {
+        PowerSignal::ResumedFromSleep
+    }
+}
+
 /// The running power service. Construct with [`Self::connect`], then [`Self::run`] on a
 /// tokio runtime.
 pub struct PowerService {
@@ -299,11 +311,11 @@ impl PowerService {
         // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
-                debug!(target: "qos::power", "system preparing for sleep");
+                info!(target: "qos::power", "system preparing for sleep: locking session");
             } else {
                 info!(target: "qos::power", "resumed from sleep");
-                self.bridge.push_signal(PowerSignal::ResumedFromSleep);
             }
+            self.bridge.push_signal(sleep_reaction(going_to_sleep));
         }
     }
 
@@ -402,6 +414,12 @@ mod tests {
         assert_eq!(Effect::from(Some(PowerAction::Lock)), Effect::Lock);
         assert_eq!(Effect::from(Some(PowerAction::Ignore)), Effect::None);
         assert_eq!(Effect::from(None), Effect::None);
+    }
+
+    #[test]
+    fn sleep_always_locks_before_resume_is_reported() {
+        assert_eq!(sleep_reaction(true), PowerSignal::Lock);
+        assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
     }
 
     #[test]
