@@ -20,6 +20,7 @@ INSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSInstaller.ps1"
 UNINSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSUninstaller.ps1"
 PROCESS_JOB="$OS_ROOT/usr/share/qos/windows/guest/qOS-ProcessJob.ps1"
 PROCESS_JOB_BROKER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSProcessJobBroker.ps1"
+COMPAT_DOC="$OS_ROOT/../docs/windows-compatibility.md"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 fails=0
@@ -29,7 +30,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$COMPAT_DOC"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -106,7 +107,15 @@ has "$PROCESS_JOB" 'JobObjectLimitKillOnJobClose = 0x00002000' 'abandoned helper
 has "$PROCESS_JOB" 'accounting.ActiveProcesses == 0' 'Explorer restoration waits for the whole job to become empty'
 has "$PROCESS_JOB" 'The process is already in an incompatible parent job.' 'incompatible nested jobs fail closed before resume'
 lacks "$PROCESS_JOB" 'const uint JobObjectLimitBreakaway' 'qOS does not permit explicit job breakaway'
-lacks "$PROCESS_JOB" 'shell32.dll' 'native containment helper never launches through a shell broker'
+has "$PROCESS_JOB" 'CommandLineToArgvW(string commandLine' 'EXE uninstall discovery uses the native Windows argv parser'
+has "$PROCESS_JOB" 'MaxUninstallArguments = 32' 'EXE uninstall argument count is bounded'
+has "$PROCESS_JOB" 'MaxUninstallArgumentChars = 4096' 'each EXE uninstall argument is bounded'
+has "$PROCESS_JOB" 'MaxUninstallCommandChars = 16384' 'aggregate EXE uninstall arguments are bounded'
+lacks "$PROCESS_JOB" 'ShellExecuteEx' 'native process helper never launches the vendor command through ShellExecute'
+has "$PROCESS_JOB" '[IO.FileAttributes]::ReparsePoint' 'EXE uninstall paths reject reparse points'
+has "$PROCESS_JOB" 'qOS executable uninstall path has an untrusted owner' 'EXE uninstall paths require a trusted owner'
+has "$PROCESS_JOB" 'grants write access to an untrusted principal' 'EXE uninstall paths reject untrusted write ACEs'
+has "$PROCESS_JOB" "\$root.StartsWith((\$programRoot + '\\')" 'EXE uninstall roots must be product-specific Program Files children'
 has "$BRIDGE" 'Require-UploadAuth' 'installer upload has a metadata-bound HMAC contract'
 has "$BRIDGE" 'installer upload needs an exact content length' 'installer upload requires an exact size'
 has "$BRIDGE" 'TransformFinalBlock' 'guest recomputes installer SHA-256 while streaming'
@@ -137,11 +146,25 @@ has "$BRIDGE" 'uninstallAvailable = $canUninstall' 'authenticated catalogue pers
 has "$BRIDGE" "operationKind = 'uninstallation'" 'uninstall has a distinct typed operation'
 has "$BRIDGE" 'Reset-UninstallRecord' 'failed uninstall operations become safely retryable'
 has "$BRIDGE" 'Complete-UninstallPublication' 'successful uninstall retracts its publication'
+has "$INSTALL" '{"schemaVersion":2,"records":[]}' 'new uninstall stores use the tagged v2 schema'
+has "$BRIDGE" '[int]$store.schemaVersion -ne 1' 'legacy MSI-only uninstall stores remain readable'
+has "$BRIDGE" "kind = 'msi'" 'legacy MSI records migrate to the tagged kind'
+has "$BRIDGE" '[qOS.WindowsGuest.ProcessJob]::ParseUninstallCommandLine($uninstallString)' 'registry EXE uninstall commands are parsed but never executed raw'
+has "$BRIDGE" 'Get-qOSValidatedExecutableUninstallContract' 'EXE uninstall discovery and persistence enforce the bound contract'
+has "$BRIDGE" 'executableSha256 = $validatedUninstaller.executableSha256' 'administrator uninstall records persist the exact EXE digest'
+has "$BRIDGE" "operationKind = 'uninstallation'" 'uninstall jobs retain a typed operation discriminator'
 has "$UNINSTALLER" 'RunMsiUninstaller' 'uninstaller accepts only a parsed MSI product code'
+has "$UNINSTALLER" 'Get-qOSValidatedExecutableUninstallContract $job' 'EXE uninstaller revalidates root, ACL, path, argv, and digest at execution'
+has "$UNINSTALLER" 'RunExecutableUninstaller' 'EXE uninstaller uses the direct typed process-job argv method'
+has "$UNINSTALLER" '-Verb RunAs' 'requireAdministrator EXE uninstallers use the fixed visible UAC broker'
+has "$PROCESS_JOB_BROKER" "[string]\$job.operationKind -eq 'uninstallation'" 'elevated broker accepts only typed EXE uninstall jobs'
+has "$PROCESS_JOB_BROKER" 'Get-qOSValidatedExecutableUninstallContract $job' 'elevated broker repeats EXE binding and digest validation after UAC'
+has "$PROCESS_JOB_BROKER" 'RunExecutableUninstaller' 'elevated broker invokes the EXE uninstaller without a shell'
 lacks "$UNINSTALLER" "-ArgumentList @('/x'" 'uninstaller cannot bypass its contained typed method'
 has "$UNINSTALLER" 'Where-Object { $_.SessionId -eq $sessionId }' 'uninstaller hides Explorer only in its managed session'
 lacks "$UNINSTALLER" 'UninstallString' 'registry uninstall command strings are never executed'
 lacks "$UNINSTALLER" 'Invoke-Expression' 'uninstaller has no free-form command evaluator'
+has "$COMPAT_DOC" 'The raw `UninstallString` is neither stored nor run.' 'EXE uninstall acceptance and raw-command rejection are documented'
 
 VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
 REMOTE_APP="$VM_ROOT/src/remote_app.rs"
