@@ -47,6 +47,7 @@ mod recovery_banner;
 mod review_overlay;
 mod ruler;
 mod style_color_picker;
+mod template_picker;
 mod zoom_control;
 pub use ui::num;
 pub mod styles;
