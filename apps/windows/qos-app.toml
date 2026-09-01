@@ -31,7 +31,7 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-compat = "required@1"
+compat = "optional@1"
 collab = "optional@1"
 
 [entrypoint]

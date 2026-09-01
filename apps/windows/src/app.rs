@@ -1,7 +1,7 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
 use crate::model::{Catalogue, Route};
-use crate::provider::{CompatibilityProvider, EmptyProvider, SampleProvider};
+use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
 use crate::strings;
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -36,21 +36,27 @@ pub struct WindowsApp {
     notice: Option<String>,
     route_buttons: Vec<Button>,
     reset_button: Button,
+    launch_button: Button,
     route_signal: Rc<Cell<Option<Route>>>,
     reset_signal: Rc<Cell<bool>>,
+    launch_signal: Rc<Cell<bool>>,
 }
 
 impl WindowsApp {
     pub fn new_live() -> Self {
-        Self::with_provider(Box::new(EmptyProvider))
+        match LiveProvider::connect() {
+            Ok(provider) => Self::with_provider(Box::new(provider)),
+            Err(detail) => Self::with_provider(Box::new(EmptyProvider::with_detail(detail))),
+        }
     }
     pub fn new_offline() -> Self {
         Self::with_provider(Box::new(SampleProvider::new()))
     }
-    pub fn with_provider(provider: Box<dyn CompatibilityProvider>) -> Self {
+    pub fn with_provider(mut provider: Box<dyn CompatibilityProvider>) -> Self {
         let catalogue = provider.catalogue();
         let route_signal = Rc::new(Cell::new(None));
         let reset_signal = Rc::new(Cell::new(false));
+        let launch_signal = Rc::new(Cell::new(false));
         let route_buttons = Route::ALL
             .iter()
             .map(|route| {
@@ -66,6 +72,7 @@ impl WindowsApp {
             })
             .collect();
         let reset = Rc::clone(&reset_signal);
+        let launch = Rc::clone(&launch_signal);
         Self {
             provider,
             catalogue,
@@ -83,8 +90,12 @@ impl WindowsApp {
             )
             .with_size(195.0, 32.0)
             .on_click(move || reset.set(true)),
+            launch_button: Button::new("windows-launch", "windows-launch", None)
+                .with_size(132.0, 32.0)
+                .on_click(move || launch.set(true)),
             route_signal,
             reset_signal,
+            launch_signal,
         }
     }
     fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
@@ -92,6 +103,9 @@ impl WindowsApp {
     }
     fn refresh(&mut self) {
         self.catalogue = self.provider.catalogue();
+        if let Some(notice) = self.provider.take_notice() {
+            self.notice = Some(notice);
+        }
         if self.selected >= self.catalogue.apps.len() {
             self.selected = 0;
         }
@@ -122,6 +136,14 @@ impl WindowsApp {
                 self.notice = Some(strings::t("windows-route-reset"));
             }
             self.refresh();
+        }
+        if self.launch_signal.replace(false)
+            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+        {
+            self.notice = self.provider.launch(&id).err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-launch-queued"));
+            }
         }
     }
     fn fill(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -395,6 +417,16 @@ impl Widget for WindowsApp {
             theme.text_primary,
             TextWeight::Bold,
         );
+        let launch = Rect::new(
+            status.x1 + 16.0,
+            status.y0 - 2.0,
+            status.x1 + 148.0,
+            status.y1 + 2.0,
+        );
+        self.launch_button.apply_layout_external(launch);
+        self.launch_button.set_enabled(app.launch_available);
+        self.launch_button.set_style(ButtonStyle::Primary);
+        self.launch_button.draw(scene, t, tr, theme, presence);
         let card = Rect::new(detail.x0, detail.y0 + 118.0, detail.x1, detail.y0 + 238.0);
         Self::pill(scene, t, card, theme.bg_primary);
         Self::text(
@@ -448,6 +480,9 @@ impl Widget for WindowsApp {
                 } else {
                     ButtonStyle::Neutral
                 });
+                shared_button.set_enabled(
+                    app.route_override_available && (*route != Route::Vm || app.launch_available),
+                );
                 shared_button.draw(scene, t, tr, theme, presence);
             }
         }
@@ -559,6 +594,8 @@ impl Widget for WindowsApp {
         }
         self.reset_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.launch_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.apply_control_signals();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -609,6 +646,7 @@ impl Widget for WindowsApp {
             "windows-use-recommendation".into(),
             self.reset_button.get_rect(),
         ));
+        rects.push(("windows-launch".into(), self.launch_button.get_rect()));
         rects
     }
     fn children(&self) -> Vec<&dyn Widget> {
@@ -618,6 +656,7 @@ impl Widget for WindowsApp {
             .map(|button| button as &dyn Widget)
             .collect::<Vec<_>>();
         children.push(&self.reset_button);
+        children.push(&self.launch_button);
         children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -627,6 +666,7 @@ impl Widget for WindowsApp {
             .map(|button| button as &mut dyn Widget)
             .collect::<Vec<_>>();
         children.push(&mut self.reset_button);
+        children.push(&mut self.launch_button);
         children
     }
 }
@@ -665,6 +705,7 @@ mod tests {
                 "windows-route-proton",
                 "windows-route-vm",
                 "windows-use-recommendation",
+                "windows-launch",
             ]
         );
     }

@@ -15,3 +15,5 @@ windows-route-vm = Windows VM
 windows-use-recommendation = Use recommendation
 windows-route-set = Route updated. Launches still require local confirmation.
 windows-route-reset = Using the catalogue recommendation again.
+windows-launch = Open app
+windows-launch-queued = Launch handed to the qOS compatibility service.
