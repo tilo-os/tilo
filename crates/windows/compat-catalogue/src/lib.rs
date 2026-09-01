@@ -192,6 +192,10 @@ pub struct ApplicationQuery {
     /// SHA-256 of the executable bytes, when the launcher has verified them.
     #[serde(default)]
     pub executable_sha256: Option<String>,
+    /// SHA-256 of an installer payload, when matching an installer before it
+    /// has produced an executable.
+    #[serde(default)]
+    pub installer_sha256: Option<String>,
     #[serde(default)]
     pub publisher: Option<String>,
     #[serde(default)]
@@ -214,6 +218,7 @@ impl ApplicationQuery {
             game_id: normalize_optional(self.game_id.as_deref()),
             executable: normalize_executable(self.executable.as_deref()),
             executable_sha256: normalize_digest(self.executable_sha256.as_deref()),
+            installer_sha256: normalize_digest(self.installer_sha256.as_deref()),
             publisher: normalize_optional(self.publisher.as_deref()),
             product: normalize_optional(self.product.as_deref()),
         }
@@ -236,6 +241,9 @@ pub struct MatchKey {
     /// Exact executable digest. This outranks every textual identity key.
     #[serde(default)]
     pub executable_sha256: Option<String>,
+    /// Exact installer payload digest.
+    #[serde(default)]
+    pub installer_sha256: Option<String>,
     #[serde(default)]
     pub publisher: Option<String>,
     #[serde(default)]
@@ -256,6 +264,7 @@ impl MatchKey {
             game_id: normalize_optional(self.game_id.as_deref()),
             executable: normalize_executable(self.executable.as_deref()),
             executable_sha256: normalize_digest(self.executable_sha256.as_deref()),
+            installer_sha256: normalize_digest(self.installer_sha256.as_deref()),
             publisher: normalize_optional(self.publisher.as_deref()),
             product: normalize_optional(self.product.as_deref()),
         }
@@ -546,6 +555,7 @@ pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, Cat
         game_id: get(&["game_id", "gameId", "appid"]),
         executable: get(&["executable", "exe", "command"]),
         executable_sha256: get(&["executable_sha256", "exe_sha256", "sha256"]),
+        installer_sha256: get(&["installer_sha256", "installerSha256", "installer_sha256sum"]),
         publisher: get(&["publisher", "developer"]),
         product: get(&["product", "name", "title"]),
     };
@@ -554,12 +564,270 @@ pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, Cat
         && query.game_id.is_none()
         && query.executable.is_none()
         && query.executable_sha256.is_none()
+        && query.installer_sha256.is_none()
         && query.publisher.is_none()
         && query.product.is_none()
     {
         return Err(CatalogueError::UmuMetadataEmpty);
     }
     Ok(query)
+}
+
+/// A row from UMU's upstream compatibility CSV. The parser intentionally
+/// keeps only the stable identity columns; all other columns are preserved by
+/// neither the resolver nor the launcher until they have an explicit schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UmuCsvRow {
+    pub title: String,
+    pub store: String,
+    pub codename: String,
+    pub umu_id: String,
+}
+
+impl UmuCsvRow {
+    /// Convert the UMU identity into a catalogue query.
+    #[must_use]
+    pub fn query(&self) -> ApplicationQuery {
+        ApplicationQuery {
+            app_id: Some(self.codename.clone()),
+            game_id: Some(self.umu_id.clone()),
+            product: Some(self.title.clone()),
+            ..ApplicationQuery::default()
+        }
+    }
+}
+
+/// Parse UMU's pinned CSV format (including quoted RFC-4180 fields).
+///
+/// # Errors
+///
+/// Returns [`CatalogueError::InvalidUmuCsv`] for malformed CSV, missing
+/// required headers, duplicate headers, oversized input, or incomplete rows.
+pub fn parse_umu_csv(input: &str) -> Result<Vec<UmuCsvRow>, CatalogueError> {
+    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_ROWS: usize = 100_000;
+    if input.len() > MAX_BYTES {
+        return Err(CatalogueError::InvalidUmuCsv(
+            "input exceeds 8 MiB".to_owned(),
+        ));
+    }
+    let rows = parse_csv_rows(input)?;
+    let Some(header) = rows.first() else {
+        return Err(CatalogueError::InvalidUmuCsv("missing header".to_owned()));
+    };
+    let mut indexes = BTreeMap::new();
+    for (index, field) in header.iter().enumerate() {
+        let name = field.trim().to_ascii_uppercase();
+        if name.is_empty() || indexes.insert(name.clone(), index).is_some() {
+            return Err(CatalogueError::InvalidUmuCsv(
+                "invalid or duplicate header".to_owned(),
+            ));
+        }
+    }
+    let required = ["TITLE", "STORE", "CODENAME", "UMU_ID"];
+    if required.iter().any(|name| !indexes.contains_key(*name)) {
+        return Err(CatalogueError::InvalidUmuCsv(
+            "required headers are TITLE, STORE, CODENAME, UMU_ID".to_owned(),
+        ));
+    }
+    let mut result = Vec::new();
+    for row in rows.iter().skip(1) {
+        if row.iter().all(|field| field.trim().is_empty()) {
+            continue;
+        }
+        if result.len() >= MAX_ROWS || row.len() != header.len() {
+            return Err(CatalogueError::InvalidUmuCsv(
+                "invalid row width or row count".to_owned(),
+            ));
+        }
+        let field = |name: &str| {
+            indexes
+                .get(name)
+                .and_then(|index| row.get(*index))
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let row = UmuCsvRow {
+            title: field("TITLE").ok_or_else(|| missing_umu_field("TITLE"))?,
+            store: field("STORE").ok_or_else(|| missing_umu_field("STORE"))?,
+            codename: field("CODENAME").ok_or_else(|| missing_umu_field("CODENAME"))?,
+            umu_id: field("UMU_ID").ok_or_else(|| missing_umu_field("UMU_ID"))?,
+        };
+        for (name, value) in [
+            ("UMU title", &row.title),
+            ("UMU store", &row.store),
+            ("UMU codename", &row.codename),
+            ("UMU ID", &row.umu_id),
+        ] {
+            validate_token(name, value)?;
+        }
+        result.push(row);
+    }
+    Ok(result)
+}
+
+/// Turn UMU rows into Proton records using the qOS runner/security references
+/// supplied by the caller. The records are marked vendor provenance and remain
+/// unsigned until a trusted catalogue loader authenticates the source.
+///
+/// # Errors
+///
+/// Returns a CSV or catalogue validation error when a row, identity, runner,
+/// or security-profile reference is malformed.
+pub fn proton_records_from_umu_csv(
+    input: &str,
+    runner: &Runner,
+    security_profile: &SecurityProfileRef,
+    settings: &RunnerSettings,
+) -> Result<Vec<Record>, CatalogueError> {
+    let rows = parse_umu_csv(input)?;
+    let records = rows
+        .into_iter()
+        .map(|row| {
+            let slug = umu_slug(&row)?;
+            Ok(Record {
+                id: format!("umu-{slug}"),
+                version: RECORD_VERSION,
+                provenance: Provenance::Vendor,
+                signed: false,
+                matches: vec![MatchKey {
+                    game_id: Some(row.umu_id),
+                    ..MatchKey::default()
+                }],
+                recipe: Recipe {
+                    layer: Layer::Proton,
+                    runner: runner.clone(),
+                    settings: settings.clone(),
+                    security_profile: security_profile.clone(),
+                    proton_recipe: Some(format!("umu-{slug}")),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, CatalogueError>>()?;
+    Catalogue {
+        schema_version: CATALOGUE_SCHEMA_VERSION,
+        records: records.clone(),
+    }
+    .validate()?;
+    Ok(records)
+}
+
+fn parse_csv_rows(input: &str) -> Result<Vec<Vec<String>>, CatalogueError> {
+    let bytes = input.as_bytes();
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = Vec::new();
+    let mut quoted = false;
+    let mut closed_quote = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let Some(&byte) = bytes.get(index) else {
+            return Err(CatalogueError::InvalidUmuCsv(
+                "invalid byte offset".to_owned(),
+            ));
+        };
+        if quoted {
+            if byte == b'"' {
+                if bytes.get(index.saturating_add(1)) == Some(&b'"') {
+                    field.push(b'"');
+                    index = index.saturating_add(2);
+                } else {
+                    quoted = false;
+                    closed_quote = true;
+                    index = index.saturating_add(1);
+                }
+            } else {
+                field.push(byte);
+                index = index.saturating_add(1);
+            }
+            continue;
+        }
+        if closed_quote {
+            if byte == b' ' || byte == b'\t' {
+                index = index.saturating_add(1);
+                continue;
+            }
+            if byte != b',' && byte != b'\n' && byte != b'\r' {
+                return Err(CatalogueError::InvalidUmuCsv(
+                    "characters after closing quote".to_owned(),
+                ));
+            }
+            closed_quote = false;
+        }
+        match byte {
+            b'"' if field.is_empty() => {
+                quoted = true;
+                index = index.saturating_add(1);
+            }
+            b'"' => {
+                return Err(CatalogueError::InvalidUmuCsv(
+                    "quote inside unquoted field".to_owned(),
+                ));
+            }
+            b',' => {
+                row.push(csv_field(&field)?);
+                field.clear();
+                index = index.saturating_add(1);
+            }
+            b'\n' => {
+                row.push(csv_field(&field)?);
+                field.clear();
+                if !row.is_empty() {
+                    rows.push(std::mem::take(&mut row));
+                }
+                index = index.saturating_add(1);
+            }
+            b'\r' => {
+                if bytes.get(index.saturating_add(1)) != Some(&b'\n') {
+                    return Err(CatalogueError::InvalidUmuCsv(
+                        "bare carriage return".to_owned(),
+                    ));
+                }
+                index = index.saturating_add(1);
+            }
+            _ => {
+                field.push(byte);
+                index = index.saturating_add(1);
+            }
+        }
+    }
+    if quoted || closed_quote {
+        return Err(CatalogueError::InvalidUmuCsv(
+            "unterminated quoted field".to_owned(),
+        ));
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(csv_field(&field)?);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn csv_field(bytes: &[u8]) -> Result<String, CatalogueError> {
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| CatalogueError::InvalidUmuCsv("field is not UTF-8".to_owned()))
+}
+
+fn missing_umu_field(name: &str) -> CatalogueError {
+    CatalogueError::InvalidUmuCsv(format!("missing {name} field"))
+}
+
+fn umu_slug(row: &UmuCsvRow) -> Result<String, CatalogueError> {
+    let mut slug = String::new();
+    for character in format!("{}-{}-{}", row.store, row.codename, row.umu_id).chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_owned();
+    if slug.is_empty() {
+        return Err(CatalogueError::InvalidUmuCsv(
+            "identity produces empty ID".to_owned(),
+        ));
+    }
+    Ok(slug)
 }
 
 fn plan_from_record(record: &Record, kind: MatchKind) -> LaunchPlan {
@@ -600,6 +868,7 @@ struct NormalizedQuery {
     game_id: Option<String>,
     executable: Option<String>,
     executable_sha256: Option<String>,
+    installer_sha256: Option<String>,
     publisher: Option<String>,
     product: Option<String>,
 }
@@ -613,6 +882,7 @@ impl NormalizedKey {
             || self.game_id.is_some()
             || self.executable.is_some()
             || self.executable_sha256.is_some()
+            || self.installer_sha256.is_some()
             || self.publisher.is_some()
             || self.product.is_some()
     }
@@ -629,6 +899,10 @@ impl NormalizedKey {
                 self.executable_sha256.as_ref(),
                 query.executable_sha256.as_ref(),
             )
+            && equal_if_present(
+                self.installer_sha256.as_ref(),
+                query.installer_sha256.as_ref(),
+            )
             && equal_if_present(self.publisher.as_ref(), query.publisher.as_ref())
             && equal_if_present(self.product.as_ref(), query.product.as_ref())
     }
@@ -643,7 +917,7 @@ fn record_match_kind(record: &Record, query: &NormalizedQuery) -> Option<MatchKi
             if !key.matches(query) {
                 return None;
             }
-            if key.executable_sha256.is_some() {
+            if key.executable_sha256.is_some() || key.installer_sha256.is_some() {
                 Some(MatchKind::ExecutableDigest)
             } else if key.package_id.is_some() {
                 Some(MatchKind::PackageId)
@@ -669,6 +943,7 @@ fn validate_key(key: &MatchKey, record_id: &str) -> Result<(), CatalogueError> {
         ("game id", key.game_id.as_deref()),
         ("executable", key.executable.as_deref()),
         ("executable SHA-256", key.executable_sha256.as_deref()),
+        ("installer SHA-256", key.installer_sha256.as_deref()),
         ("publisher", key.publisher.as_deref()),
         ("product", key.product.as_deref()),
     ];
@@ -681,6 +956,14 @@ fn validate_key(key: &MatchKey, record_id: &str) -> Result<(), CatalogueError> {
         }
     }
     if let Some(digest) = key.executable_sha256.as_deref()
+        && (digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(CatalogueError::InvalidExecutableDigest {
+            record_id: record_id.to_owned(),
+            digest: digest.to_owned(),
+        });
+    }
+    if let Some(digest) = key.installer_sha256.as_deref()
         && (digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {
         return Err(CatalogueError::InvalidExecutableDigest {
@@ -796,6 +1079,8 @@ pub enum CatalogueError {
     UmuMetadataNotObject,
     #[error("UMU metadata did not contain a usable application identity")]
     UmuMetadataEmpty,
+    #[error("invalid UMU CSV: {0}")]
+    InvalidUmuCsv(String),
 }
 
 #[cfg(test)]
@@ -1046,5 +1331,31 @@ mod tests {
         let query = query_from_umu_metadata(&metadata).expect("usable metadata");
         assert_eq!(query.game_id.as_deref(), Some("123"));
         assert_eq!(query.executable.as_deref(), Some("Game\\game.exe"));
+    }
+
+    #[test]
+    fn parses_umu_csv_and_builds_proton_records() {
+        let csv =
+            "TITLE,STORE,CODENAME,UMU_ID,EXTRA\n\"A, Great Game\",steam,GreatGame,123,ignored\n";
+        let rows = parse_umu_csv(csv).expect("valid UMU CSV");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "A, Great Game");
+        assert_eq!(rows[0].query().game_id.as_deref(), Some("123"));
+        let runner = Runner::new("umu-proton", "10").expect("valid runner");
+        let security_profile = profile();
+        let settings = RunnerSettings::default();
+        let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
+            .expect("valid Proton records");
+        assert_eq!(records[0].recipe.layer, Layer::Proton);
+        assert_eq!(
+            records[0].recipe.proton_recipe.as_deref(),
+            Some("umu-steam-greatgame-123")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_umu_csv() {
+        assert!(parse_umu_csv("TITLE,STORE\nGame,steam\n").is_err());
+        assert!(parse_umu_csv("TITLE,STORE,CODENAME,UMU_ID\n\"unterminated,steam,x,1\n").is_err());
     }
 }
