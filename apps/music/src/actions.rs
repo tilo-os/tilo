@@ -93,14 +93,17 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
-        MusicAction::AddTrackToPlaylist { playlist, track } => {
-            ("Add track to playlist", playlist, "music.playlist", track)
-        }
-        MusicAction::RemoveTrackFromPlaylist { playlist, track } => (
+        MusicAction::AddTrackToPlaylist { playlist, track: _ } => (
+            "Add track to playlist",
+            playlist,
+            "music.playlist",
+            playlist,
+        ),
+        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ } => (
             "Remove track from playlist",
             playlist,
             "music.playlist",
-            track,
+            playlist,
         ),
         MusicAction::MoveTrackInPlaylist { playlist, .. } => {
             ("Reorder playlist", playlist, "music.playlist", playlist)

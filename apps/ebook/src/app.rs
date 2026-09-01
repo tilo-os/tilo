@@ -2555,7 +2555,7 @@ impl BooksApp {
             doc,
             crate::actions::EBOOK_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Books", "Books", action),
+            qos_actions::ActionContext::for_action("org.qos.Ebook", "Ebook", action),
         );
     }
 

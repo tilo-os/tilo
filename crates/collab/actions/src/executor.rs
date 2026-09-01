@@ -348,6 +348,7 @@ fn dispatch_by_maybe_context(
     actor: Option<&[u8]>,
     context: Option<ActionContext>,
 ) -> Result<Dispatched, ActionError> {
+    let context = context.map(|context| context.with_inferred_app(&encoded.type_id));
     match action.locus() {
         ExecutionLocus::ClientLocal => {
             let env = envelope_for(doc, action, encoded, actor, context);
