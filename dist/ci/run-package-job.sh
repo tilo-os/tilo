@@ -22,13 +22,21 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     else
         cargo_jobs=4
     fi
-    export SCCACHE_S3_KEY_PREFIX="quickdesktop/package/v1/$distro/$arch"
-    export SCCACHE_IGNORE_SERVER_IO_ERROR=1
-
     cache_env=()
-    while IFS= read -r name; do
-        cache_env+=(--env "$name")
-    done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+    if [[ ${QOS_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then
+        export SCCACHE_S3_KEY_PREFIX="quickdesktop/package/v1/$distro/$arch"
+        export SCCACHE_IGNORE_SERVER_IO_ERROR=1
+        while IFS= read -r name; do
+            cache_env+=(--env "$name")
+        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+    else
+        # PRoot inherits this process's environment, unlike Docker where only
+        # cache_env is forwarded. Scrub runner-injected credentials before an
+        # untrusted pull request can enter either target userspace.
+        while IFS= read -r name; do
+            unset "$name"
+        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+    fi
 
     repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
     output=$repo_root/dist/ci-output/$distro-$arch
