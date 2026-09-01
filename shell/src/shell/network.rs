@@ -228,6 +228,9 @@ pub struct InboundAppCrdtSigned {
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
+    /// Live workspace role established from the authenticated peer's user
+    /// certificate before this entry was queued.
+    pub role: collab_types::Role,
     /// Boxed to mirror the wire shape and bound the queue entry size —
     /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
@@ -697,6 +700,7 @@ impl ShellNetwork {
         app_id: String,
         cluster_id: String,
         record_id: String,
+        role: collab_types::Role,
         envelope: collab_types::SignedOp,
     ) {
         if let Ok(mut buf) = self.inbound_app_crdt_signed.lock() {
@@ -705,6 +709,7 @@ impl ShellNetwork {
                 app_id,
                 cluster_id,
                 record_id,
+                role,
                 envelope: Box::new(envelope),
             });
         }
@@ -1365,9 +1370,17 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } => {
-                if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+                let role = if self.require_peer_identity {
+                    self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
+                } else {
+                    Some(collab_types::Role::Editor)
+                };
+                if peer_hash != self.local_peer_hash
+                    && self.is_in_room(&cluster_id)
+                    && let Some(role) = role
+                {
                     self.handle_app_crdt_signed_message(
-                        peer_hash, app_id, cluster_id, record_id, *envelope,
+                        peer_hash, app_id, cluster_id, record_id, role, *envelope,
                     );
                 }
             }
@@ -1696,6 +1709,60 @@ impl ShellNetwork {
             crate::shell::state::Verb::Write,
         )
     }
+
+    /// Authenticate a signed document envelope against the transport device,
+    /// exact document route, and current workspace policy. Replay and
+    /// signature-state checks remain in the broker drainer, which owns the
+    /// channel log.
+    fn peer_document_role(
+        &self,
+        origin: &crate::shell::state::PeerOrigin,
+        cluster_id: &str,
+        app_id: &str,
+        record_id: &str,
+        envelope: &collab_types::SignedOp,
+    ) -> Option<collab_types::Role> {
+        let identity = self.peer_identities.get(origin)?;
+        if *envelope.author.as_bytes() != identity.device_pubkey {
+            return None;
+        }
+        let person = collab_types::caps::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        )
+        .id()
+        .to_string();
+        let room = RoomId::parse(cluster_id)?;
+        let replica = self.replica.lock().ok()?;
+        let tree_handle = replica.tree.clone();
+        drop(replica);
+        let tree = tree_handle.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)?;
+        let role = workspace.role_of(&person)?;
+        let artifact = collab_types::document_artifact_id(app_id, cluster_id, record_id);
+        if envelope.artifact != artifact
+            || envelope.attestation_id
+                != collab_types::document_attestation_id(app_id, cluster_id, record_id)
+            || envelope.op_class != collab_types::OpClass::Splice
+            || envelope.encryption.is_some()
+            || collab_types::DocumentMutation::decode(&envelope.payload).is_err()
+        {
+            return None;
+        }
+        let actor = collab_types::Actor::person(Some(role), person)
+            .with_principal(collab_types::Principal::App(app_id.to_string()))
+            .in_room(cluster_id.to_string());
+        let resource = collab_types::ResourceRef::Artifact {
+            app: Some(app_id.to_string()),
+            kind: collab_types::ArtifactKind::Note,
+            instance: artifact,
+        };
+        let allowed = workspace.allows(&actor, &resource, collab_types::Verb::Write);
+        drop(tree);
+        allowed.then_some(role)
+    }
 }
 
 fn selected_device_cert(
@@ -1903,6 +1970,39 @@ mod tests {
         drop(replica);
         assert!(net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
 
+        let route = crate::shell::collab_broker::CrdtRoute::record(
+            "dev.qos.notes",
+            room.to_string(),
+            "meeting-notes",
+        );
+        let signing = ed25519_dalek::SigningKey::from_bytes(&device.to_bytes());
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(b"change".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::Ed25519PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, &signing).expect("signed mutation");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),
+            Some(collab_types::Role::Editor),
+        );
+
         let mut revoked = RevocationEntry {
             user_public_key: cert.user_public_key,
             revoked_device_public_key: cert.device_public_key,
@@ -1920,6 +2020,17 @@ mod tests {
         );
         assert!(net.peer_identities.get(&origin).is_none());
         assert!(!net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),
+            None,
+            "revocation removes document authority as well as app access",
+        );
     }
 
     #[test]
@@ -2700,6 +2811,7 @@ mod tests {
             "notes".to_string(),
             "cluster-7".to_string(),
             "uuid:9f".to_string(),
+            collab_types::Role::Editor,
             envelope.clone(),
         );
         let buf = buf_handle.lock().unwrap().clone();
@@ -2708,6 +2820,7 @@ mod tests {
         assert_eq!(buf[0].app_id, "notes");
         assert_eq!(buf[0].cluster_id, "cluster-7");
         assert_eq!(buf[0].record_id, "uuid:9f");
+        assert_eq!(buf[0].role, collab_types::Role::Editor);
         assert_eq!(*buf[0].envelope, envelope);
     }
 
