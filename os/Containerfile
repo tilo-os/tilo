@@ -711,10 +711,14 @@ COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
 COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
 COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
 COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
+COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service /usr/lib/systemd/system/qos-windows-vm-egress-reaper.service
+COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer /usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer
 COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
+COPY docs/windows-presentation.md /usr/share/doc/qos/windows-presentation.md
 RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
               /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
-    && systemctl enable qos-windows-vm-network.service
+              /usr/libexec/qos-windows-rail \
+    && systemctl enable qos-windows-vm-network.service qos-windows-vm-egress-reaper.timer
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
