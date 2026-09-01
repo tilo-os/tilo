@@ -20,10 +20,14 @@ use std::time::{Duration, Instant};
 /// Default idle duration before the display blanks (5 minutes).
 pub const DEFAULT_BLANK_SECS: u64 = 300;
 
+/// Default idle duration before the session locks (5 minutes).
+pub const DEFAULT_LOCK_SECS: u64 = 300;
+
 /// Env var overriding the idle-to-blank timeout, in seconds; `0` disables blanking. Unset → [`DEFAULT_BLANK_SECS`].
 pub const BLANK_SECS_ENV: &str = "QOS_IDLE_BLANK_SECS";
 
-/// Env var enabling idle-to-lock, in seconds. Unset (or `0`) → no automatic lock (Super+L chord still works on keyboard-capable backends).
+/// Env var overriding idle-to-lock, in seconds. Unset → [`DEFAULT_LOCK_SECS`];
+/// `0` explicitly disables automatic locking (Super+L still works).
 pub const LOCK_SECS_ENV: &str = "QOS_IDLE_LOCK_SECS";
 
 /// Env var enabling idle-to-suspend, in seconds. Unset (or `0`) → no automatic suspend from this
@@ -51,7 +55,7 @@ pub enum SessionTransition {
 pub struct IdleConfig {
     /// Idle duration before the display blanks. `None` disables blanking.
     pub blank_timeout: Option<Duration>,
-    /// Idle duration before the session auto-locks. `None` disables idle-to-lock (manual lock via chord/command still works).
+    /// Idle duration before the session auto-locks. `None` explicitly disables idle-to-lock.
     pub lock_timeout: Option<Duration>,
     /// Idle duration before the session suspends. `None` disables idle-to-suspend. Sourced from
     /// the Settings power policy in production ([`Self::with_suspend`]); [`SUSPEND_SECS_ENV`] is the headless override.
@@ -62,7 +66,7 @@ impl Default for IdleConfig {
     fn default() -> Self {
         Self {
             blank_timeout: Some(Duration::from_secs(DEFAULT_BLANK_SECS)),
-            lock_timeout: None,
+            lock_timeout: Some(Duration::from_secs(DEFAULT_LOCK_SECS)),
             suspend_timeout: None,
         }
     }
@@ -87,8 +91,9 @@ impl IdleConfig {
 
     /// Pure helper for [`Self::from_env`] so tests can drive the parser with fixture strings without poking the real environment.
     ///
-    /// `blank`: unset → [`DEFAULT_BLANK_SECS`]; `"0"` → disabled; a valid positive integer → that
-    /// many seconds; garbage → the default (never refuse to start over a typo). `lock`/`suspend`: unset/`"0"`/garbage → disabled; a valid positive integer → that many seconds.
+    /// `blank`/`lock`: unset or garbage → their secure defaults; `"0"` → explicitly disabled;
+    /// a valid positive integer → that many seconds. `suspend` remains opt-in: unset, `"0"`, or
+    /// garbage disables it.
     pub fn from_env_values(blank: Option<&str>, lock: Option<&str>, suspend: Option<&str>) -> Self {
         let blank_timeout = match blank {
             None => Some(Duration::from_secs(DEFAULT_BLANK_SECS)),
@@ -98,7 +103,14 @@ impl IdleConfig {
                 Err(_) => Some(Duration::from_secs(DEFAULT_BLANK_SECS)),
             },
         };
-        // Both lock and suspend are "off unless explicitly set to a positive number" — the same opt-in parse.
+        let lock_timeout = match lock {
+            None => Some(Duration::from_secs(DEFAULT_LOCK_SECS)),
+            Some(s) => match s.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(n) => Some(Duration::from_secs(n)),
+                Err(_) => Some(Duration::from_secs(DEFAULT_LOCK_SECS)),
+            },
+        };
         let opt_in = |v: Option<&str>| -> Option<Duration> {
             match v {
                 None => None,
@@ -110,7 +122,7 @@ impl IdleConfig {
         };
         Self {
             blank_timeout,
-            lock_timeout: opt_in(lock),
+            lock_timeout,
             suspend_timeout: opt_in(suspend),
         }
     }
@@ -272,10 +284,10 @@ mod tests {
     // IdleConfig::from_env_values
 
     #[test]
-    fn config_defaults_blank_five_minutes_no_lock() {
+    fn config_defaults_blank_and_lock_after_five_minutes() {
         let c = IdleConfig::from_env_values(None, None, None);
         assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(c.lock_timeout, None);
+        assert_eq!(c.lock_timeout, Some(Duration::from_secs(300)));
         assert_eq!(c.suspend_timeout, None);
     }
 
@@ -296,10 +308,10 @@ mod tests {
     }
 
     #[test]
-    fn config_garbage_blank_falls_back_to_default_garbage_lock_disables() {
+    fn config_garbage_blank_and_lock_fall_back_to_secure_defaults() {
         let c = IdleConfig::from_env_values(Some("nonsense"), Some("nonsense"), Some("nonsense"));
         assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
-        assert_eq!(c.lock_timeout, None);
+        assert_eq!(c.lock_timeout, Some(Duration::from_secs(300)));
         assert_eq!(c.suspend_timeout, None);
     }
 
