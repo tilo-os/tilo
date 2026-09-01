@@ -840,8 +840,12 @@ impl FeedsApp {
     /// before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
-        self.actions
-            .dispatch(doc, actions::FEEDS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::FEEDS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Feeds", "Feeds", action),
+        );
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
         // store for a change this widget already mirrored.
