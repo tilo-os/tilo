@@ -15,6 +15,7 @@ $focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | ConvertFrom-Json
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
+$railJobsRoot = Join-Path $root 'rail-jobs'
 $managedSessionPath = Join-Path $root 'managed-session.json'
 $installerRoot = 'C:\ProgramData\qOS\InstallerSession'
 $processJobHelper = Join-Path $installerRoot 'qOS-ProcessJob.ps1'
@@ -145,6 +146,50 @@ function Start-FocusedApplication($app) {
         throw
     }
     return @{ user = $user; taskName = $taskName; applicationId = $app.id }
+}
+
+function Start-RailApplication($app, $networkProxy, [string]$launchNonce) {
+    $managed = Get-ManagedSession
+    $path = Resolve-ManagedExecutable $app
+    New-Item -ItemType Directory -Force -Path $railJobsRoot | Out-Null
+    $jobPath = Join-Path $railJobsRoot "$([string]$app.id).json"
+    if (Test-Path -LiteralPath $jobPath -PathType Leaf) {
+        # RDS aliases have no authenticated per-invocation argv. Replacing an
+        # extant job would let a second request redirect a running process, so
+        # one alias has exactly one pending operation.
+        throw 'a qOS RemoteApp operation is already pending for this application'
+    }
+    $job = @{ applicationId = [string]$app.id; launchNonce = $launchNonce; expiresAtUnix = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 120); executable = $path; arguments = [string]$app.arguments; networkProxy = $networkProxy }
+    $job | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $jobPath -Encoding UTF8 -NoNewline
+    # The wrapper runs as the one managed identity. It gets only this one
+    # ephemeral job, not the bridge key or administrator publication manifest.
+    $acl = Get-Acl -LiteralPath $jobPath
+    $account = New-Object System.Security.Principal.NTAccount([string]$managed.username)
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($account, 'Read', 'None', 'Allow')
+    [void]$acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $jobPath -AclObject $acl
+    return $managed
+}
+
+function Get-NetworkProxyLease($value) {
+    if ($null -eq $value) { return $null }
+    $endpoint = [string]$value.endpoint
+    $token = [string]$value.token
+    if ($endpoint -notmatch '^192\.168\.251\.1:([1-9][0-9]{0,4})$' -or [int]$Matches[1] -gt 65535 -or $token -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw 'invalid host-only qOS network lease'
+    }
+    return @{ endpoint = $endpoint; token = $token.ToLowerInvariant() }
+}
+
+function Remove-ExpiredRailJobs() {
+    if (-not (Test-Path -LiteralPath $railJobsRoot -PathType Container)) { return }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    foreach ($path in @(Get-ChildItem -LiteralPath $railJobsRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        try {
+            $job = Get-Content -Raw -LiteralPath $path.FullName | ConvertFrom-Json
+            if ([Int64]$job.expiresAtUnix -le $now) { Remove-Item -LiteralPath $path.FullName -Force -ErrorAction SilentlyContinue }
+        } catch { Remove-Item -LiteralPath $path.FullName -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 function Get-PublishedManifest() {
@@ -856,6 +901,7 @@ while ($listener.IsListening) {
             'POST /v1/launch' {
                 $request = $body | ConvertFrom-Json
                 if ($request.applicationId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or $request.launchNonce -notmatch '^[A-Za-z0-9-]{16,128}$') { throw 'invalid launch request' }
+                Remove-ExpiredRailJobs
                 $app = (Get-PublishedManifest).applications | Where-Object { $_.id -eq $request.applicationId } | Select-Object -First 1
                 if ($null -eq $app) { throw 'application is not published' }
                 $requestedPresentation = [string]$request.presentationBackend
@@ -867,9 +913,12 @@ while ($listener.IsListening) {
                 $name = $null
                 $password = $null
                 if ($requestedPresentation -ne 'app_focused_spice') {
-                    $managed = Get-ManagedSession
+                    $networkProxy = Get-NetworkProxyLease $request.networkProxy
+                    $managed = Start-RailApplication $app $networkProxy ([string]$request.launchNonce)
                     $name = [string]$managed.username
                     $password = [string]$managed.password
+                } elseif ($null -ne $request.networkProxy) {
+                    throw 'focused SPICE cannot receive a network lease'
                 }
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
