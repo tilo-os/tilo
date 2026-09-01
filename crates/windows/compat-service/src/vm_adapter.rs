@@ -10,18 +10,175 @@
 
 use launcher::capabilities::CapabilityPlan;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     AudioProxyLease, VmAvailability, VmDelegate, VmInstallCandidate, VmInstallation,
     VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPublishedApplication,
-    VmRouteRequest,
+    VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,
+    VmSharedSessionLeaseSummary,
 };
+
+/// Authoritative host-side view of the one shared Windows user/session.
+///
+/// The tracker is fed only by the capability broker's materialized result and
+/// by the authenticated guest catalogue. A management client cannot name a
+/// contributor or claim a grant. This matters because RDP redirects are
+/// session-wide: every Windows process in the session can potentially use the
+/// union while it is active.
+#[derive(Clone, Debug, Default)]
+pub struct VmSharedSessionTracker {
+    inner: Arc<Mutex<SharedSessionState>>,
+}
+
+#[derive(Debug, Default)]
+struct SharedSessionState {
+    display_names: BTreeMap<String, String>,
+    leases: BTreeMap<String, SharedSessionLease>,
+}
+
+#[derive(Clone, Debug)]
+struct SharedSessionLease {
+    published_application_id: String,
+    grants: BTreeSet<VmSharedSessionGrantKind>,
+}
+
+impl VmSharedSessionTracker {
+    fn register_catalog(&self, catalog: &windows_vm::Catalog) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.display_names = catalog
+                .applications
+                .iter()
+                .map(|application| (application.id.clone(), application.display_name.clone()))
+                .collect();
+        }
+    }
+
+    fn activate(
+        &self,
+        request: &windows_vm::LaunchRequest,
+        brokered: &windows_vm::BrokeredLaunch,
+    ) -> Result<(), windows_vm::LaunchError> {
+        let mut grants = BTreeSet::from([VmSharedSessionGrantKind::AudioPlayback]);
+        if brokered.clipboard {
+            grants.insert(VmSharedSessionGrantKind::Clipboard);
+        }
+        if brokered.microphone {
+            grants.insert(VmSharedSessionGrantKind::Microphone);
+        }
+        if brokered.network {
+            grants.insert(VmSharedSessionGrantKind::NetworkEgress);
+        }
+        if brokered.shares.iter().any(|share| share.read_only) {
+            grants.insert(VmSharedSessionGrantKind::PortalFilesReadOnly);
+        }
+        if brokered.shares.iter().any(|share| !share.read_only) {
+            grants.insert(VmSharedSessionGrantKind::PortalFilesReadWrite);
+        }
+        let mut state = self.inner.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "shared Windows session lease state is unavailable".to_string(),
+            )
+        })?;
+        if state.leases.contains_key(&brokered.lease_id) {
+            return Err(windows_vm::LaunchError::CapabilityBroker(
+                "capability broker reused an active Windows session lease".to_string(),
+            ));
+        }
+        state.leases.insert(
+            brokered.lease_id.clone(),
+            SharedSessionLease {
+                published_application_id: request.application_id.clone(),
+                grants,
+            },
+        );
+        Ok(())
+    }
+
+    fn revoke(&self, lease_id: &str) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.leases.remove(lease_id);
+        }
+    }
+
+    /// Bounded DTO for the management UI. Opaque lease IDs, workspace IDs,
+    /// portal document IDs, paths, and credentials never leave the broker.
+    #[must_use]
+    pub fn summary(&self) -> VmSharedSessionLeaseSummary {
+        let Ok(state) = self.inner.lock() else {
+            return VmSharedSessionLeaseSummary::default();
+        };
+        let effective_grants = state
+            .leases
+            .values()
+            .flat_map(|lease| lease.grants.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let contributors = state
+            .leases
+            .values()
+            .map(|lease| lease.published_application_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|published_application_id| VmSharedSessionContributor {
+                published_application_id: published_application_id.to_string(),
+                display_name: state
+                    .display_names
+                    .get(published_application_id)
+                    .cloned()
+                    .unwrap_or_else(|| published_application_id.to_string()),
+            })
+            .collect::<Vec<_>>();
+        VmSharedSessionLeaseSummary {
+            active: !contributors.is_empty(),
+            effective_grants,
+            contributors,
+        }
+    }
+}
+
+/// Capability broker decorator which records only resources the underlying
+/// canonical broker actually materialized. Revocation removes the summary
+/// before tearing down the resources, so UI state cannot linger after access.
+#[derive(Debug)]
+pub struct SharedSessionCapabilityBroker<C> {
+    inner: C,
+    tracker: VmSharedSessionTracker,
+}
+
+impl<C> SharedSessionCapabilityBroker<C> {
+    #[must_use]
+    pub fn new(inner: C, tracker: VmSharedSessionTracker) -> Self {
+        Self { inner, tracker }
+    }
+}
+
+impl<C: windows_vm::CapabilityBroker> windows_vm::CapabilityBroker
+    for SharedSessionCapabilityBroker<C>
+{
+    fn materialize(
+        &self,
+        request: &windows_vm::LaunchRequest,
+    ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
+        let brokered = self.inner.materialize(request)?;
+        if let Err(error) = self.tracker.activate(request, &brokered) {
+            self.inner.revoke(&brokered.lease_id);
+            return Err(error);
+        }
+        Ok(brokered)
+    }
+
+    fn revoke(&self, lease_id: &str) {
+        self.tracker.revoke(lease_id);
+        self.inner.revoke(lease_id);
+    }
+}
 
 /// Privileged qOS authority for a future RAIL capability projection used by
 /// the Windows appliance. It is intentionally an injected adapter rather than
@@ -39,6 +196,80 @@ pub trait VmPortalAuthority: Send + Sync {
         workspace_id: &str,
         capabilities: &CapabilityPlan,
     ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError>;
+}
+
+/// Live projection of canonical qOS grants which have an exact RAIL
+/// transport and revocation boundary today.
+///
+/// Clipboard is represented by the ordinary `Device("clipboard")` grant and
+/// microphone by `Device("microphone")`. Files are deliberately absent: a
+/// filesystem path is not an opaque portal document handle. Network is also
+/// absent because `CapabilityPlan::net_hosts` may be filtered while the
+/// Windows appliance currently has only an all-or-nothing NAT NIC.
+#[derive(Clone, Copy, Debug)]
+pub struct CanonicalRailPortalAuthority {
+    native_rail: bool,
+}
+
+impl CanonicalRailPortalAuthority {
+    #[must_use]
+    pub fn new(presentation: windows_vm::ApplicationPresentation) -> Self {
+        Self {
+            native_rail: presentation == windows_vm::ApplicationPresentation::NativeRail,
+        }
+    }
+}
+
+impl VmPortalAuthority for CanonicalRailPortalAuthority {
+    fn grants_for(
+        &self,
+        _app_id: &str,
+        _workspace_id: &str,
+        capabilities: &CapabilityPlan,
+    ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError> {
+        let device_granted = |name: &str| {
+            self.native_rail && capabilities.devices.iter().any(|device| device == name)
+        };
+        Ok(windows_vm::VmLaunchGrants {
+            network: false,
+            clipboard: device_granted("clipboard"),
+            microphone: device_granted("microphone"),
+            portal_documents: Vec::new(),
+        })
+    }
+}
+
+/// Materialises channel-only RAIL resources from the canonical projection.
+/// The microphone's actual private PipeWire source is created by
+/// [`AudioIsolatedRailLauncher`]; this lease controls whether that source and
+/// the FreeRDP redirectors exist and ensures the shared-session tracker sees
+/// only the materialised result.
+#[derive(Debug, Default)]
+pub struct CanonicalRailCapabilityBroker {
+    next: AtomicU64,
+}
+
+impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
+    fn materialize(
+        &self,
+        request: &windows_vm::LaunchRequest,
+    ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
+        if request.grants.network || !request.grants.portal_documents.is_empty() {
+            return Err(windows_vm::LaunchError::CapabilityBroker(
+                "the Windows appliance received a grant without an exact live broker".to_string(),
+            ));
+        }
+        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
+        Ok(windows_vm::BrokeredLaunch {
+            lease_id: format!("rail-{}-{sequence}", std::process::id()),
+            network: false,
+            clipboard: request.grants.clipboard,
+            microphone: request.grants.microphone,
+            shares: Vec::new(),
+        })
+    }
+
+    fn revoke(&self, _lease_id: &str) {}
 }
 
 /// Safe authority for the live app-focused SPICE presentation. `RemoteApp`
@@ -92,6 +323,77 @@ pub struct AudioIsolatedSpiceLauncher<R> {
     root: PathBuf,
     next: AtomicU64,
     uid: u32,
+}
+
+/// Native RAIL presentation through qOS's rootless Xwayland bridge and a
+/// private audio graph. Playback is always present; the proxy publishes a
+/// source only when the brokered shared-session lease includes microphone.
+pub struct AudioIsolatedRailLauncher<R> {
+    runner: R,
+    root: PathBuf,
+    next: AtomicU64,
+    uid: u32,
+}
+
+impl<R> AudioIsolatedRailLauncher<R> {
+    #[must_use]
+    pub fn new(runner: R) -> Self {
+        // SAFETY: `geteuid` reads process credentials and has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        Self {
+            runner,
+            root: PathBuf::from(format!("/run/user/{uid}/qos-windows-vm")),
+            next: AtomicU64::new(0),
+            uid,
+        }
+    }
+}
+
+impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedRailLauncher<R> {
+    fn launch(
+        &self,
+        guest: &windows_vm::GuestLaunch,
+        brokered: &windows_vm::BrokeredLaunch,
+    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
+        let lease = AudioProxyLease::start(
+            self.root
+                .join(format!("rail-{}-{sequence}", std::process::id())),
+            self.uid,
+            brokered.microphone,
+        )
+        .map_err(|error| windows_vm::RemoteAppError::FreeRdp {
+            code: None,
+            stderr: format!("private audio setup failed: {error}"),
+        })?;
+        let audio_runtime = lease
+            .pipewire_socket()
+            .parent()
+            .ok_or_else(|| windows_vm::RemoteAppError::FreeRdp {
+                code: None,
+                stderr: "private audio endpoint has no runtime directory".to_string(),
+            })?
+            .to_path_buf();
+        let request = windows_vm::FreeRdpLauncher::new(())
+            .with_binary("/usr/libexec/qos-windows-rail")
+            .command(guest, brokered)?
+            .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
+            .env("PIPEWIRE_REMOTE", "pipewire-0")
+            .env(
+                "PULSE_SERVER",
+                format!("unix:{}", lease.pulse_socket().display()),
+            );
+        let output = self.runner.run(&request)?;
+        if !output.success {
+            return Err(windows_vm::RemoteAppError::FreeRdp {
+                code: output.code,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(windows_vm::RemoteAppProcess {
+            exit_code: output.code,
+        })
+    }
 }
 
 impl<R> AudioIsolatedSpiceLauncher<R> {
@@ -168,6 +470,7 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
     /// It is descriptive for availability; `WindowsAppliance::launch` still
     /// verifies the guest's actual response before a viewer is started.
     presentation: windows_vm::ApplicationPresentation,
+    shared_session: VmSharedSessionTracker,
     launch_gate: Mutex<()>,
     installer: Mutex<Option<ActiveVmInstallation>>,
     uninstaller: Mutex<Option<ActiveVmUninstallation>>,
@@ -232,10 +535,26 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
         portal: P,
         presentation: windows_vm::ApplicationPresentation,
     ) -> Self {
+        Self::with_shared_session_tracker(
+            appliance,
+            portal,
+            presentation,
+            VmSharedSessionTracker::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn with_shared_session_tracker(
+        appliance: windows_vm::WindowsAppliance<B, A, C, L>,
+        portal: P,
+        presentation: windows_vm::ApplicationPresentation,
+        shared_session: VmSharedSessionTracker,
+    ) -> Self {
         Self {
             appliance,
             portal,
             presentation,
+            shared_session,
             launch_gate: Mutex::new(()),
             installer: Mutex::new(None),
             uninstaller: Mutex::new(None),
@@ -257,7 +576,7 @@ where
     P: VmPortalAuthority,
 {
     fn availability(&self) -> VmAvailability {
-        match self.appliance.launch_readiness() {
+        let mut availability = match self.appliance.launch_readiness() {
             Ok(_) => VmAvailability::ready(format!(
                 "Ready for an explicit fallback launch using {}.",
                 self.presentation
@@ -274,24 +593,29 @@ where
                 )
             }
             Err(error) => VmAvailability::unavailable(error.to_string()),
-        }
+        };
+        availability.shared_session = self.shared_session.summary();
+        availability
     }
 
     fn inventory(&self) -> VmInventory {
         let availability = self.availability();
         let applications = match self.appliance.cached_catalog() {
-            Ok(Some(catalog)) => catalog
-                .applications
-                .iter()
-                .map(|application| VmPublishedApplication {
-                    entry_id: vm_entry_id(&application.id),
-                    app_id: vm_app_id(&application.id),
-                    published_application_id: application.id.clone(),
-                    display_name: application.display_name.clone(),
-                    presentation: self.presentation.to_string(),
-                    uninstall_available: application.uninstall_available,
-                })
-                .collect(),
+            Ok(Some(catalog)) => {
+                self.shared_session.register_catalog(&catalog);
+                catalog
+                    .applications
+                    .iter()
+                    .map(|application| VmPublishedApplication {
+                        entry_id: vm_entry_id(&application.id),
+                        app_id: vm_app_id(&application.id),
+                        published_application_id: application.id.clone(),
+                        display_name: application.display_name.clone(),
+                        presentation: self.presentation.to_string(),
+                        uninstall_available: application.uninstall_available,
+                    })
+                    .collect()
+            }
             // A missing or malformed persisted catalogue fails closed: it is
             // never replaced with a host executable scan and never wakes the
             // guest merely to populate the manager.
@@ -724,6 +1048,14 @@ fn validate_portal_projection(
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("microphone"));
     }
+    if grants.clipboard
+        && !capabilities
+            .devices
+            .iter()
+            .any(|device| device == "clipboard")
+    {
+        return Err(windows_vm::LaunchError::BrokerEscalated("clipboard"));
+    }
     Ok(())
 }
 
@@ -743,6 +1075,37 @@ mod tests {
     }
 
     #[test]
+    fn canonical_rail_projection_materializes_only_exact_device_grants() {
+        use windows_vm::CapabilityBroker as _;
+
+        let authority =
+            CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::NativeRail);
+        let capabilities = CapabilityPlan {
+            devices: vec!["clipboard".to_string(), "microphone".to_string()],
+            allow_network: true,
+            net_hosts: vec!["example.test".to_string()],
+            ro_paths: vec!["/tmp/document".into()],
+            ..CapabilityPlan::empty()
+        };
+        let grants = authority
+            .grants_for("app", "workspace", &capabilities)
+            .unwrap();
+        assert!(grants.clipboard && grants.microphone);
+        assert!(!grants.network);
+        assert!(grants.portal_documents.is_empty());
+
+        let lease = CanonicalRailCapabilityBroker::default()
+            .materialize(&windows_vm::LaunchRequest {
+                workspace_id: "workspace".to_string(),
+                application_id: "published.app".to_string(),
+                grants,
+            })
+            .unwrap();
+        assert!(lease.clipboard && lease.microphone);
+        assert!(!lease.network && lease.shares.is_empty());
+    }
+
+    #[test]
     fn app_focused_broker_materializes_an_explicit_empty_lease() {
         use windows_vm::CapabilityBroker as _;
         let broker = DenyAllVmCapabilityBroker::default();
@@ -756,6 +1119,78 @@ mod tests {
         lease.validate().unwrap();
         assert!(!lease.network && !lease.clipboard && !lease.microphone);
         assert!(lease.shares.is_empty());
+    }
+
+    #[test]
+    fn shared_session_summary_comes_from_materialized_broker_resources() {
+        use windows_vm::CapabilityBroker as _;
+
+        struct Broker;
+        impl windows_vm::CapabilityBroker for Broker {
+            fn materialize(
+                &self,
+                _: &windows_vm::LaunchRequest,
+            ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
+                Ok(windows_vm::BrokeredLaunch {
+                    lease_id: "server-lease".to_string(),
+                    network: false,
+                    clipboard: true,
+                    microphone: false,
+                    shares: vec![windows_vm::ShareBinding {
+                        drive_name: "QOS1".to_string(),
+                        portal_document_id: "portal-document".to_string(),
+                        host_path: "/run/qos/windows-vm/leases/server-lease/portal-document".into(),
+                        read_only: true,
+                    }],
+                })
+            }
+
+            fn revoke(&self, _: &str) {}
+        }
+
+        let tracker = VmSharedSessionTracker::default();
+        tracker.register_catalog(&windows_vm::Catalog {
+            generation: 1,
+            applications: vec![windows_vm::PublishedApplication {
+                id: "published.app".to_string(),
+                display_name: "Published app".to_string(),
+                remote_app_alias: "published.app".to_string(),
+                icon_sha256: None,
+                associations: Vec::new(),
+                uninstall_available: false,
+            }],
+        });
+        let broker = SharedSessionCapabilityBroker::new(Broker, tracker.clone());
+        let request = windows_vm::LaunchRequest {
+            workspace_id: "workspace".to_string(),
+            application_id: "published.app".to_string(),
+            grants: windows_vm::VmLaunchGrants {
+                network: false,
+                clipboard: true,
+                microphone: false,
+                portal_documents: vec!["portal-document".to_string()],
+            },
+        };
+        let lease = broker.materialize(&request).unwrap();
+        let summary = tracker.summary();
+        assert!(summary.active);
+        assert_eq!(
+            summary.effective_grants,
+            vec![
+                VmSharedSessionGrantKind::AudioPlayback,
+                VmSharedSessionGrantKind::Clipboard,
+                VmSharedSessionGrantKind::PortalFilesReadOnly,
+            ]
+        );
+        assert_eq!(
+            summary.contributors,
+            vec![VmSharedSessionContributor {
+                published_application_id: "published.app".to_string(),
+                display_name: "Published app".to_string(),
+            }]
+        );
+        broker.revoke(&lease.lease_id);
+        assert_eq!(tracker.summary(), VmSharedSessionLeaseSummary::default());
     }
 
     #[test]

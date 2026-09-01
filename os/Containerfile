@@ -373,7 +373,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p settings \
-        -p windows-vm --bin qos-windows-vm-control \
+        -p windows-vm --bin qos-windows-vm-control --bin qos-windows-rail \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback -p qos-cli -p ush -p qos-projector \
@@ -404,6 +404,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-cli-shim \
           target/release/qos-ush \
           target/release/qos-windows-vm-control \
+          target/release/qos-windows-rail \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
            p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
@@ -687,6 +688,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     edk2-ovmf \
     virtio-win \
     freerdp \
+    xwayland-satellite \
     virt-viewer \
     xorriso \
     genisoimage \
@@ -704,6 +706,7 @@ COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
 COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
 COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
 COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
+COPY --from=builder /out/qos-windows-rail /usr/libexec/qos-windows-rail
 COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
 COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
 COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules

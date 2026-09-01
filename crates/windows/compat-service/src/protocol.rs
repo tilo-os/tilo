@@ -6,7 +6,7 @@ use crate::{
     VmInstallConfirmation, VmInstallation, VmUninstallation,
 };
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.

@@ -10,7 +10,7 @@ fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-ovmf virtio-win freerdp virt-viewer xorriso; do
+for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"
