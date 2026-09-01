@@ -137,6 +137,12 @@ fn cli_inspect_lists_payload() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("package-id: qpkg:"), "inspect: {stdout}");
+    assert!(stdout.contains("archive-size:"), "inspect: {stdout}");
+    assert!(
+        stdout.contains("payload-size: 3 bytes"),
+        "inspect: {stdout}"
+    );
+    assert!(stdout.contains("package-overhead:"), "inspect: {stdout}");
     assert!(stdout.contains("bin/hello"), "inspect: {stdout}");
 }
 

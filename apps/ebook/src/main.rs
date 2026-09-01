@@ -41,6 +41,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// # Errors
 ///
 /// Returns an error if a `--shots` capture fails to render or write its PNG.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.ebook", live_root)

@@ -37,5 +37,14 @@
 )]
 
 pub use cli;
+pub use comemo;
+pub use iroh;
+pub use qos_callstream;
 pub use runtime;
+pub use rustypipe;
+pub use tiny_skia;
+pub use typst;
+pub use typst_assets;
+pub use typst_pdf;
+pub use typst_render;
 pub use ui;

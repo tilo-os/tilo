@@ -1,17 +1,17 @@
 [Unit]
 Description=QuickDesktop First Boot Setup
 # Machine-wide first-boot setup only. This runs as root before anyone has
-# logged in, so it deliberately does NOT mint the user's signing identity —
-# `$HOME` here is root's, and a key written there is owned by root and
-# unreadable by the person it belongs to. Identity minting happens in the
-# user's own session, see the `qos-identity.service` user unit.
+# logged in and only creates idempotent configuration directories. Personal
+# identity creation is an acknowledged compositor OOBE, never a system unit.
 ConditionPathExists=!/etc/qos/.firstboot-done
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/shell --firstboot
+# `--firstboot-only` must exit after setup. `--firstboot` intentionally falls
+# through into a compositor for the host-package session wrapper.
+ExecStart=/usr/bin/shell --firstboot-only
 ExecStartPost=/usr/bin/touch /etc/qos/.firstboot-done
 RemainAfterExit=yes
 

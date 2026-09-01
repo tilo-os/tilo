@@ -15,6 +15,7 @@ name = "qos-catalogue"
 path = "src/main.rs"
 
 [dependencies]
+atomic-file = { path = "../../system/atomic-file" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
 # Read side of the `qos-install` registry — the same list the desktop
