@@ -437,8 +437,10 @@ the freedesktop Secret Service, migrate a verified local key into it, and
 remove the adjacent copy only after a read-back match. A headless environment
 without Secret Service retains a visibly reported owner-only fallback.
 
-`apps/totp/src/storage.rs` still stores its encryption key alongside its
-ciphertext and remains the unresolved part of this defect.
+The authenticator vault is closed too: normal desktop sessions keep its key in
+Secret Service, verify a migrated key by reading it back, and only then remove
+the adjacent owner-only fallback. Headless/compatibility sessions retain the
+same explicitly documented fallback rather than silently losing the vault.
 
 The identity defect is closed: schema-1 plaintext records migrate to public
 metadata plus Secret Service storage (or a truthful host-only 0600 fallback),
