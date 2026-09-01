@@ -33,7 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec, RetryPolicy};
+use qos_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, RetryPolicy};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -76,6 +76,7 @@ pub struct DbClientApp {
     /// it lands back through the document reconcile (peer-added connections do
     /// not set this, so they are listed but not auto-connected).
     pending_connect_id: Option<Uuid>,
+    resource_operation: Option<qos_actions::InvocationId>,
 
     rect: Rect,
     node: Option<NodeId>,
@@ -201,6 +202,7 @@ impl DbClientApp {
             modal: ConnectModal::new(),
             actions: ui::ActionHost::new(),
             pending_connect_id: None,
+            resource_operation: None,
             rect: Rect::ZERO,
             node: None,
             seeded: false,
@@ -435,6 +437,10 @@ impl DbClientApp {
 }
 
 impl Widget for DbClientApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["db_client.query", "db_client.connect"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("database", "database.workspace", "Database");
         let mut query = ActionSpec::prompted_operation(
@@ -443,11 +449,10 @@ impl Widget for DbClientApp {
             "SQL query",
             "SELECT …",
             OperationKind::Effect,
+            "db_client.query",
             |sql| EncodedAction::encode_operation("db_client.query", &sql).expect("string payload"),
-        )
-        .returns(ResultSpec::Json {
-            schema: serde_json::json!({"type":"object","description":"tabular query result"}),
-        });
+        );
+        query = query.execution(ExecutionMode::Background { cancellable: false });
         if self.session.active_connection().is_none() {
             query = query.unavailable("not_connected", "Connect to a database before running SQL");
         }
@@ -466,9 +471,10 @@ impl Widget for DbClientApp {
                 "db_client.connect",
                 &id.to_string(),
             ) {
-                resource
-                    .actions
-                    .push(spec.retry_policy(RetryPolicy::Idempotent));
+                resource.actions.push(
+                    spec.retry_policy(RetryPolicy::Idempotent)
+                        .execution(ExecutionMode::Background { cancellable: false }),
+                );
             }
             if !self.demo {
                 let remove = crate::actions::remove_connection_action(id);
@@ -531,6 +537,63 @@ impl Widget for DbClientApp {
         }
         self.dirty = true;
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect
+            || !matches!(type_id, "db_client.query" | "db_client.connect")
+        {
+            return Ok(None);
+        }
+        if self.resource_operation.is_some() || self.session.busy() {
+            return Err("another database operation is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_operation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        let pending = self.resource_operation?;
+        if pending != invocation {
+            return None;
+        }
+        self.session.drain();
+        if self.session.busy() {
+            return None;
+        }
+        self.resource_operation = None;
+        Some(match &self.session.status {
+            RunStatus::Error(message) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "db_client.operation_failed".into(),
+                    message: message.clone(),
+                    details: None,
+                    retryable: false,
+                },
+            },
+            _ => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+        })
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -2496,5 +2559,29 @@ mod behavior_tests {
             !app.session.connected,
             "a peer-added connection is not auto-opened"
         );
+    }
+
+    #[test]
+    fn resource_query_is_pending_until_the_database_worker_finishes() {
+        let (mut app, doc) = synced();
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&"SELECT 1").unwrap();
+        assert_eq!(
+            app.start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                "db_client.query",
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        app.session.block_until_idle();
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
     }
 }

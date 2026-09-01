@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::FeedsDoc;
@@ -375,6 +375,7 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     ) {
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
+            execution: ExecutionMode::Background { cancellable: false },
             tags: vec!["network".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -546,7 +547,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             refresh.contract.execution,
-            qos_actions::ExecutionMode::Immediate
+            qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
 

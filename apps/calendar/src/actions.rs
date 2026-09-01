@@ -64,7 +64,9 @@ fn calendar_operation(
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
         | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
-        CalendarOperation::Sync => spec.retry_policy(RetryPolicy::Idempotent),
+        CalendarOperation::Sync => spec
+            .retry_policy(RetryPolicy::Idempotent)
+            .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
         CalendarOperation::ExportIcs => spec.destructive(),
     }
 }
@@ -461,6 +463,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "Show calendar view",
             "month / week / day / agenda",
             OperationKind::View,
+            CALENDAR_OPERATION_TYPE,
             vec![
                 ActionParam::required("view", ParamType::Text, "Calendar view to show")
                     .with_choices(["month", "week", "day", "agenda"]),

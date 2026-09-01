@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::MailDoc;
@@ -358,6 +358,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     ) {
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
+            execution: ExecutionMode::Background { cancellable: false },
             tags: vec!["network".into(), "mail".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -559,7 +560,7 @@ mod tests {
         let refresh = mailbox.actions.iter().find(|a| a.id == "refresh").unwrap();
         assert_eq!(
             refresh.contract.execution,
-            qos_actions::ExecutionMode::Immediate
+            qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
 
