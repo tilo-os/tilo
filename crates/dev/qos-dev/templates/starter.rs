@@ -10,11 +10,9 @@ pub fn app_root() -> Box<dyn Widget> {
         ui::i18n::I18nManager::format("starter-greeting", &[("name", name.into())])
     })
     .with_id("greeting");
-    let input = TextInput::local()
-        .with_initial_value(&name.get())
+    let input = TextInput::from_state(&name)
         .with_id("name-input")
-        .with_placeholder("starter-name-placeholder")
-        .on_change(name.text_sink());
+        .with_placeholder("starter-name-placeholder");
 
     Box::new(ui::column![
         Text::new("starter-title").with_role(TextRole::Title),

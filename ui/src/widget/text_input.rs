@@ -146,6 +146,11 @@ enum DragUnit {
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
 
+struct LocalTextBinding {
+    state: crate::LocalState<String>,
+    observed_revision: u64,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -183,6 +188,12 @@ pub struct TextInput {
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
     last_notified_text: String,
+    /// Typed process-local model mirrored in both directions during the
+    /// ordinary widget sync/event lifecycle.
+    local_state: Option<LocalTextBinding>,
+    /// A programmatic/model change can alter multiline measurement without
+    /// pretending to be a user edit through `take_dirty`.
+    model_layout_dirty: bool,
     /// Gates whether edits splice into `state`, materialising a missing path
     /// lazily on the first effective edit.
     crdt_bound: bool,
@@ -354,6 +365,8 @@ impl TextInput {
             dirty: false,
             on_change: None,
             last_notified_text: String::new(),
+            local_state: None,
+            model_layout_dirty: false,
             crdt_bound: false,
             path_was_present: false,
             external_buffer: None,
@@ -411,6 +424,7 @@ impl TextInput {
 
     /// After binding, [`sync`] reads from `obj` regardless of the string-path mode.
     pub fn bind_text(&mut self, obj: ObjId) {
+        self.local_state = None;
         self.bound_text = Some(obj);
         self.crdt_bound = true;
     }
@@ -766,6 +780,24 @@ impl TextInput {
         s
     }
 
+    /// Create a true two-way binding to typed process-local text state.
+    ///
+    /// User edits update `state`; mutations through any clone of `state`
+    /// update this input on the next synchronization pass. Several inputs and
+    /// read-only [`Text`](super::Text) views can therefore share one value
+    /// without initial-value snapshots, callbacks, or app-owned fan-out.
+    /// Selecting a document or external-buffer binding later replaces this
+    /// process-local binding explicitly.
+    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+        let value = state.get();
+        let mut input = Self::local().with_initial_value(&value);
+        input.local_state = Some(LocalTextBinding {
+            state: state.clone(),
+            observed_revision: state.revision(),
+        });
+        input
+    }
+
     /// Create an input bound to one root-level document string.
     ///
     /// The path may contain either an Automerge string scalar or `Text`
@@ -793,6 +825,7 @@ impl TextInput {
         self.text.retain(filter);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
         self
     }
 
@@ -804,6 +837,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.dirty = false;
         self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
         self
     }
 
@@ -818,8 +852,10 @@ impl TextInput {
         self.selection_anchor = None;
         self.clamp_to_text();
         self.dirty = false;
+        self.model_layout_dirty = self.multiline;
         self.last_edit_time = None;
         self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
     }
 
     pub fn value(&self) -> &str {
@@ -843,8 +879,18 @@ impl TextInput {
             return;
         }
         self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
         if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
+        }
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state
+            && binding.state.with(|value| value != &self.text)
+        {
+            binding.state.set(self.text.clone());
+            binding.observed_revision = binding.state.revision();
         }
     }
 
@@ -855,6 +901,7 @@ impl TextInput {
         let mut sink = AutoCommit::new();
         self.insert_str(s, &mut sink, None);
         self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
     }
 
     pub fn cursor_pos(&self) -> usize {
@@ -2130,6 +2177,7 @@ impl TextInput {
     /// dynamically first.
     #[must_use]
     pub fn with_on_change_path(mut self, path: &str) -> Self {
+        self.local_state = None;
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
         self
@@ -2139,6 +2187,7 @@ impl TextInput {
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
+        self.local_state = None;
         self.external_buffer = Some(buffer);
         self.crdt_bound = false;
         self
@@ -3322,6 +3371,17 @@ impl Widget for TextInput {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let local_value = self.local_state.as_mut().and_then(|binding| {
+            let revision = binding.state.revision();
+            if revision == binding.observed_revision {
+                return None;
+            }
+            binding.observed_revision = revision;
+            Some(binding.state.get())
+        });
+        if let Some(value) = local_value {
+            self.set_text(&value);
+        }
         if self.dirty
             && let Some(buffer) = &self.external_buffer
             && let Ok(mut value) = buffer.lock()
@@ -3416,6 +3476,7 @@ impl Widget for TextInput {
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         if !self.multiline {
+            self.model_layout_dirty = false;
             return taffy::Size::ZERO;
         }
         let width = known.width.unwrap_or(match available.width {
@@ -3429,6 +3490,7 @@ impl Widget for TextInput {
             reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
         )]
         let height = self.content_height() as f32;
+        self.model_layout_dirty = false;
         taffy::Size { width, height }
     }
 
@@ -3620,7 +3682,7 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
     /// A disabled input claims no cursor and defers to the host default.
@@ -5220,6 +5282,73 @@ mod tests {
             mods(false, false),
         );
         assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_multiple_inputs() {
+        let state = crate::LocalState::new(String::from("Ada"));
+        let mut first = TextInput::from_state(&state);
+        let mut second = TextInput::from_state(&state);
+        let mut document = AutoCommit::new();
+
+        state.set(String::from("Grace"));
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(first.value(), "Grace");
+        assert_eq!(second.value(), "Grace");
+        assert_eq!(first.take_dirty(), None, "model updates are not user edits");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &crate::a11y::Action::SetValue("Lin".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "Lin", "user edits publish typed state");
+
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), "Lin", "sibling input follows the model");
+        assert_eq!(second.take_dirty(), None);
+
+        first.set_text("programmatic");
+        assert_eq!(state.get(), "programmatic");
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.value(), "programmatic");
+        assert_eq!(first.take_dirty(), None);
+    }
+
+    #[test]
+    fn local_state_binding_coexists_with_an_app_callback() {
+        let state = crate::LocalState::new(String::from("before"));
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut input = TextInput::from_state(&state)
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        let mut document = AutoCommit::new();
+
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("after".into()),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "after");
+        assert_eq!(&*changes.borrow(), &["after"]);
+    }
+
+    #[test]
+    fn local_state_model_update_invalidates_multiline_measurement_only() {
+        let state = crate::LocalState::new(String::from("short"));
+        let mut input = TextInput::from_state(&state).multiline(true);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 80.0));
+        assert!(!Widget::layout_needs_measure(&input));
+
+        state.set(String::from("a much longer line\nwith another row"));
+        let mut document = AutoCommit::new();
+        Widget::sync(&mut input, &mut document, &automerge::ROOT);
+
+        assert!(Widget::layout_needs_measure(&input));
+        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
     }
 
     /// Otherwise caret-following scroll hides the first characters.
