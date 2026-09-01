@@ -19,12 +19,16 @@ one qcow2 disk, and makes a small guest-tools ISO. It deliberately does not
 accept, log, or retain a product key. Complete Windows Setup and enter any
 licence in the explicitly owner-authorised provisioning console.
 
-For the target normal qOS application presentation, use a Windows Server ISO licensed for
-the official Remote Desktop Services RemoteApp role. The guest payload refuses
-consumer Windows editions rather than using RDP Wrapper, patching `termsrv`, or
-pretending an ordinary RDP desktop is a RemoteApp window. A client Windows ISO
-can be used only for the recovery console and is not a successful appliance
-configuration.
+For the best normal qOS application presentation, use a Windows Server ISO
+licensed for the official Remote Desktop Services RemoteApp role. qOS also
+accepts a client Windows ISO: the guest setup writes the native Terminal
+Services application allow-list used by WinApps-style integrations and tries
+the normal FreeRDP RAIL request. This is explicitly best-effort because client
+Windows does not promise a RemoteApp host API; qOS never installs RDP Wrapper
+or patches `termsrv`. If RAIL is unavailable, qOS attaches an app-focused
+whole-guest SPICE/virt-viewer surface after the guest has focused the requested
+program; the qOS UI labels this as a whole-surface fallback, never as seamless
+windows. The full desktop remains a separate owner-authorised recovery surface.
 
 ## Guest setup (target operational flow)
 
@@ -38,9 +42,10 @@ Set-ExecutionPolicy RemoteSigned -Scope Process
 ```
 
 The script accepts only existing executables under `C:\Program Files`,
-`C:\Program Files (x86)`, or `C:\Windows`; it writes the official RemoteApp
-allow-list and keeps each published alias stable. Discovery does not equate to
-publication.
+`C:\Program Files (x86)`, or `C:\Windows`; it writes the native RemoteApp
+allow-list and keeps each published alias stable. On Server this is consumed
+by the official RDS role; on client Windows it is the documented compatibility
+surface used by WinApps-like clients. Discovery does not equate to publication.
 
 qOS also ships a pinned copy of Bottles' upstream program metadata to improve
 catalogue matching. It is read-only reference data: only identities and runner

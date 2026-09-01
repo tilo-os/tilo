@@ -31,9 +31,10 @@ impl<R> FreeRdpLauncher<R> {
     pub fn new(runner: R) -> Self {
         Self {
             runner,
-            // qOS intentionally ships no XWayland. The native Wayland client
-            // gives each RAIL application an ordinary foreign Wayland surface.
-            binary: OsString::from("wlfreerdp"),
+            // FreeRDP's upstream RAIL client is xfreerdp.  It is only used
+            // when qOS has explicitly provisioned a RAIL-capable local
+            // surface; there is no upstream `wlfreerdp` binary to assume.
+            binary: OsString::from("xfreerdp"),
         }
     }
 
@@ -71,6 +72,10 @@ impl<R> FreeRdpLauncher<R> {
             .arg("/network:auto")
             .arg("/gfx:AVC444")
             .arg("/rfx")
+            // RAIL is an application surface, not a hidden full-desktop
+            // session. Audio redirection is enabled by the capability-aware
+            // session adapter when it supplies the corresponding FreeRDP
+            // option; this low-level launcher keeps the conservative default.
             .arg("/audio-mode:0")
             .stdin_secret(&stdin);
 
@@ -103,6 +108,83 @@ impl<R: CommandRunner> RemoteAppLauncher for FreeRdpLauncher<R> {
         let output = self.runner.run(&request)?;
         if !output.success {
             return Err(RemoteAppError::FreeRdp {
+                code: output.code,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(RemoteAppProcess {
+            exit_code: output.code,
+        })
+    }
+}
+
+/// Upstream virt-viewer/remote-viewer fallback for hosts without a local RAIL
+/// surface. The guest bridge is responsible for focusing the requested
+/// application before this command is issued. This is a whole guest display,
+/// not a seamless window; the qOS UI must label that distinction. No
+/// application path or guest shell text crosses this boundary; the viewer
+/// attaches only to qOS's fixed singleton domain.
+#[derive(Clone, Debug)]
+pub struct AppFocusedSpiceLauncher<R> {
+    runner: R,
+    binary: OsString,
+}
+
+impl<R> AppFocusedSpiceLauncher<R> {
+    #[must_use]
+    pub fn new(runner: R) -> Self {
+        Self {
+            runner,
+            binary: OsString::from("remote-viewer"),
+        }
+    }
+
+    #[must_use]
+    pub fn with_binary(mut self, binary: impl Into<OsString>) -> Self {
+        self.binary = binary.into();
+        self
+    }
+
+    pub fn command(
+        &self,
+        guest: &GuestLaunch,
+        brokered: &BrokeredLaunch,
+    ) -> Result<CommandRequest, RemoteAppError> {
+        validate_alias(&guest.remote_app_alias)?;
+        brokered.validate()?;
+        // SPICE is deliberately attached through libvirt rather than a guest
+        // TCP listener.  It has no implicit clipboard, drive, microphone, or
+        // network redirection.  A caller that needs one of those capabilities
+        // must use the capability-specific RAIL adapter instead.
+        if brokered.clipboard
+            || brokered.microphone
+            || brokered.network
+            || !brokered.shares.is_empty()
+        {
+            return Err(RemoteAppError::SpiceCapabilityRequiresRail);
+        }
+        Ok(CommandRequest::new(self.binary.clone())
+            .args([
+                "--connect",
+                "qemu:///system",
+                "--attach",
+                crate::APPLIANCE_DOMAIN_NAME,
+                "--wait",
+            ])
+            .arg(format!("--title=qOS — {}", guest.remote_app_alias)))
+    }
+}
+
+impl<R: CommandRunner> RemoteAppLauncher for AppFocusedSpiceLauncher<R> {
+    fn launch(
+        &self,
+        guest: &GuestLaunch,
+        brokered: &BrokeredLaunch,
+    ) -> Result<RemoteAppProcess, RemoteAppError> {
+        let request = self.command(guest, brokered)?;
+        let output = self.runner.run(&request)?;
+        if !output.success {
+            return Err(RemoteAppError::Spice {
                 code: output.code,
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
             });
@@ -157,6 +239,10 @@ pub enum RemoteAppError {
     Command(#[from] CommandError),
     #[error("FreeRDP exited with code {code:?}: {stderr}")]
     FreeRdp { code: Option<i32>, stderr: String },
+    #[error("SPICE viewer exited with code {code:?}: {stderr}")]
+    Spice { code: Option<i32>, stderr: String },
+    #[error("SPICE fallback cannot carry qOS capability redirects; use a RAIL surface")]
+    SpiceCapabilityRequiresRail,
     #[error("guest returned an invalid RemoteApp alias")]
     InvalidAlias,
     #[error("guest returned an invalid RDP username")]
@@ -253,5 +339,58 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "+clipboard"));
         assert!(args.iter().any(|arg| arg.starts_with("/drive:QOS1,")));
         assert!(args.iter().any(|arg| arg.starts_with("/microphone:")));
+    }
+
+    #[test]
+    fn rail_uses_upstream_client_binary_not_a_nonexistent_wayland_wrapper() {
+        let launcher = FreeRdpLauncher::new(Runner::default());
+        let request = launcher
+            .command(&guest(), &BrokeredLaunch::deny_all("lease"))
+            .unwrap();
+        assert_eq!(request.program, OsString::from("xfreerdp"));
+        assert!(
+            request
+                .args
+                .iter()
+                .any(|arg| arg == "/app:program:qos-word")
+        );
+    }
+
+    #[test]
+    fn spice_fallback_attaches_only_to_the_singleton_domain() {
+        let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+        let request = launcher
+            .command(&guest(), &BrokeredLaunch::deny_all("lease"))
+            .unwrap();
+        assert_eq!(request.program, OsString::from("remote-viewer"));
+        let args = request
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg == "--attach"));
+        assert!(args.iter().any(|arg| arg == crate::APPLIANCE_DOMAIN_NAME));
+        assert!(!args.iter().any(|arg| arg.contains("/app")));
+    }
+
+    #[test]
+    fn spice_fallback_does_not_silently_redirect_files_or_devices() {
+        let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+        let brokered = BrokeredLaunch {
+            lease_id: "lease".to_string(),
+            network: false,
+            clipboard: false,
+            microphone: false,
+            shares: vec![ShareBinding {
+                drive_name: "QOS1".to_string(),
+                portal_document_id: "document-42".to_string(),
+                host_path: "/run/qos/windows-vm/leases/lease/document-42".into(),
+                read_only: true,
+            }],
+        };
+        assert!(matches!(
+            launcher.command(&guest(), &brokered),
+            Err(RemoteAppError::SpiceCapabilityRequiresRail)
+        ));
     }
 }
