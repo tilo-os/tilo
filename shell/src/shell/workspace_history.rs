@@ -98,11 +98,11 @@ pub struct WorkspaceSeenFrontier {
 }
 
 impl WorkspaceSeenFrontier {
-    /// Replace this frontier with exactly what the current index exposed.
+    /// Advance origins the current index exposed, retaining absent origins and
+    /// previously acknowledged exceptions outside a bounded projection.
     /// A room-scoped tree is only a projection of the global tree document, so
     /// its visible changes are exceptions rather than an unsafe global head.
     pub fn mark_seen(&mut self, index: &WorkspaceHistoryIndex) {
-        self.documents.clear();
         let room_scoped = index.query.as_ref().is_some_and(|query| {
             query.room.is_some() || query.rooms.as_ref().is_some_and(|rooms| rooms.len() == 1)
         });
@@ -275,6 +275,44 @@ impl WorkspaceHistoryIndex {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Retain only names whose whole positional span belongs to one document.
+    /// Until named-range storage carries an explicit multi-origin membership
+    /// list, dropping an ambiguous band is safer than visually absorbing and
+    /// potentially undoing changes from another record.
+    pub fn origin_safe_named_ranges(&self, ranges: &[ui::NamedRange]) -> Vec<ui::NamedRange> {
+        let projected: Vec<(HistoryEntryId, &HistoryOrigin)> = self
+            .entries
+            .iter()
+            .map(|row| (row.timeline_entry().id, &row.id.origin))
+            .collect();
+        ranges
+            .iter()
+            .filter(|range| {
+                let Some(start) = projected.iter().position(|(id, _)| *id == range.start) else {
+                    return false;
+                };
+                let end = match range.end {
+                    Some(id) => projected
+                        .iter()
+                        .position(|(candidate, _)| *candidate == id)
+                        .map(|index| index.saturating_add(1)),
+                    None => Some(projected.len()),
+                };
+                let Some(end) = end else {
+                    return false;
+                };
+                if end <= start {
+                    return false;
+                }
+                let origin = projected[start].1;
+                projected[start..end]
+                    .iter()
+                    .all(|(_, candidate)| *candidate == origin)
+            })
+            .cloned()
+            .collect()
     }
 
     /// Return rows not causally covered by `frontier`. Persisted heads which
@@ -725,6 +763,83 @@ mod tests {
         assert_eq!(decoded, frontier);
         assert!(decoded.documents["workspace-tree"].heads.is_empty());
         assert!(!decoded.documents["workspace-tree"].exceptions.is_empty());
+    }
+
+    #[test]
+    fn mark_seen_retains_an_origin_omitted_from_the_current_index() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
+        let mut frontier = WorkspaceSeenFrontier::default();
+        frontier.documents.insert(
+            "record:uuid:temporarily-unavailable".to_string(),
+            DocumentSeenFrontier {
+                heads: vec!["11".repeat(32)],
+                exceptions: BTreeSet::new(),
+            },
+        );
+        frontier.mark_seen(&index);
+        assert_eq!(
+            frontier.documents["record:uuid:temporarily-unavailable"].heads,
+            ["11".repeat(32)]
+        );
+    }
+
+    #[test]
+    fn bounded_room_projection_unions_prior_tree_exceptions() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let query = WorkspaceHistoryQuery {
+            room: Some(room),
+            limit: 1,
+            ..WorkspaceHistoryQuery::default()
+        };
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(&mut tree, &records, query.clone());
+        let mut frontier = WorkspaceSeenFrontier::default();
+        frontier.mark_seen(&index);
+        let before = frontier.documents["workspace-tree"].exceptions.clone();
+        assert_eq!(before.len(), 1);
+
+        tree.doc.put(&ROOT, "status", "new").unwrap();
+        tree.doc.commit_with(CommitOptions::default().with_time(50));
+        index.refresh(&mut tree, &records, query);
+        frontier.mark_seen(&index);
+        let after = &frontier.documents["workspace-tree"].exceptions;
+        assert_eq!(after.len(), 2);
+        assert!(before.is_subset(after));
+    }
+
+    #[test]
+    fn named_range_cannot_absorb_an_interleaved_foreign_record() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let record = action_record(&records, RecordId::for_tab(55), room, 20);
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.id.to_string(), record.kind.to_string());
+        tree.doc.put(&ROOT, "status", "done").unwrap();
+        tree.doc.commit_with(CommitOptions::default().with_time(30));
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
+        let tree_ids: Vec<_> = index
+            .entries()
+            .iter()
+            .filter(|row| row.id.origin == HistoryOrigin::WorkspaceTree)
+            .map(|row| row.timeline_entry().id)
+            .collect();
+        assert!(tree_ids.len() >= 2);
+        let range = ui::NamedRange {
+            id: "tree-band".into(),
+            label: "Workspace work".into(),
+            start: tree_ids[0],
+            end: tree_ids.last().copied(),
+            named_by: None,
+            created: std::time::SystemTime::UNIX_EPOCH,
+        };
+        assert!(index.origin_safe_named_ranges(&[range]).is_empty());
     }
 
     #[test]
