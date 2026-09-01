@@ -91,6 +91,7 @@ const LAB_SOURCES: &[&str] = &[
 const SHOT_SOURCES: &[&str] = &[
     "ctrl_k_palette.rs",
     "data_table.rs",
+    "denied_state_shots.rs",
     "fractional_scale_shots.rs",
     "gallery_shots.rs",
     "history_cases.rs",
@@ -103,6 +104,7 @@ const SHOT_SOURCES: &[&str] = &[
     "table_shots.rs",
     "text_shots.rs",
     "textinput_ext_shots.rs",
+    "undo_controls_shots.rs",
     "widget_showcase_snapshot.rs",
     "widget_snapshot.rs",
 ];
@@ -165,6 +167,16 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
         }
     }
     Ok(())
+}
+
+/// Report a scenario setup/rendering failure to its command-line caller.
+#[allow(
+    clippy::exit,
+    reason = "scenario runners are CLI binaries and must return a failing status when rendering fails"
+)]
+pub fn fatal(message: impl std::fmt::Display) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
 }
 
 #[allow(
