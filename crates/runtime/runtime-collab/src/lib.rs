@@ -65,6 +65,7 @@ pub mod collab_capnp {
 
 use capnp_rpc::rpc_twoparty_capnp;
 
+pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
@@ -411,6 +412,7 @@ impl ChannelHandle {
                 row.set_description(a.description.as_deref().unwrap_or(""));
                 row.set_operation_kind(&a.operation_kind);
                 row.set_params_json(&a.params_json);
+                row.set_contract_json(&a.contract_json);
                 let mut input = row.init_input();
                 match &a.input {
                     ExportedInput::None => input.set_none(()),
@@ -473,6 +475,138 @@ impl ChannelHandle {
         }
         req.send().promise.await?;
         Ok(())
+    }
+
+    /// Publish an accepted/progress/terminal v2 lifecycle update. The broker
+    /// validates ownership, invocation identity, ordering, and terminal-once.
+    pub async fn update_invocation(&self, id: u64, update_json: &str) -> Result<(), NotAvailable> {
+        let mut req = self.inner.update_invocation_request();
+        {
+            let mut b = req.get();
+            b.set_id(id);
+            b.set_update_json(update_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Whether the caller requested cooperative cancellation of this job.
+    pub async fn invocation_cancellation(&self, id: u64) -> Result<bool, NotAvailable> {
+        let mut req = self.inner.invocation_cancellation_request();
+        req.get().set_id(id);
+        let reply = req.send().promise.await?;
+        Ok(reply.get()?.get_cancelled())
+    }
+
+    /// Snapshot the authenticated session action directory.
+    pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
+        let reply = self.inner.action_catalogue_request().send().promise.await?;
+        Ok(reply
+            .get()?
+            .get_catalogue_json()?
+            .to_str()
+            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
+            .to_owned())
+    }
+
+    /// Subscribe to complete, level-triggered action-directory snapshots.
+    pub async fn subscribe_action_catalogue(&self) -> Result<ActionCatalogueStream, NotAvailable> {
+        let reply = self
+            .inner
+            .subscribe_action_catalogue_request()
+            .send()
+            .promise
+            .await?;
+        Ok(ActionCatalogueStream {
+            inner: Rc::new(reply.get()?.get_stream()?),
+        })
+    }
+
+    /// Invoke one broker-published action. Actor identity and policy are
+    /// resolved by the broker from this certified channel.
+    pub async fn invoke_published_action(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        confirmation_json: &str,
+    ) -> Result<(u64, String), NotAvailable> {
+        let mut request = self.inner.invoke_published_action_request();
+        {
+            let mut params = request.get();
+            params.set_peer_id(peer_id);
+            params.set_resource(resource);
+            params.set_action(action);
+            params.set_argument(argument.unwrap_or(""));
+            params.set_has_argument(argument.is_some());
+            params.set_confirmation_json(confirmation_json);
+        }
+        let reply = request.send().promise.await?;
+        let result = reply.get()?;
+        Ok((
+            result.get_id(),
+            result
+                .get_update_json()?
+                .to_str()
+                .map_err(|error| {
+                    capnp::Error::failed(format!("invalid invocation update: {error}"))
+                })?
+                .to_owned(),
+        ))
+    }
+
+    pub async fn published_invocation_status(
+        &self,
+        id: u64,
+    ) -> Result<Option<String>, NotAvailable> {
+        let mut request = self.inner.published_invocation_status_request();
+        request.get().set_id(id);
+        let reply = request.send().promise.await?;
+        let result = reply.get()?;
+        if result.get_found() {
+            Ok(Some(
+                result
+                    .get_update_json()?
+                    .to_str()
+                    .map_err(|error| {
+                        capnp::Error::failed(format!("invalid invocation status: {error}"))
+                    })?
+                    .to_owned(),
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn cancel_published_invocation(&self, id: u64) -> Result<String, NotAvailable> {
+        let mut request = self.inner.cancel_published_invocation_request();
+        request.get().set_id(id);
+        let reply = request.send().promise.await?;
+        Ok(reply
+            .get()?
+            .get_update_json()?
+            .to_str()
+            .map_err(|error| capnp::Error::failed(format!("invalid cancellation update: {error}")))?
+            .to_owned())
+    }
+
+    pub async fn launch_published_application(
+        &self,
+        app_id: &str,
+    ) -> Result<(u64, String), NotAvailable> {
+        let mut request = self.inner.launch_published_application_request();
+        request.get().set_app_id(app_id);
+        let reply = request.send().promise.await?;
+        let result = reply.get()?;
+        Ok((
+            result.get_id(),
+            result
+                .get_update_json()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid launch update: {error}")))?
+                .to_owned(),
+        ))
     }
 
     /// Ask this session to open the "say something about this" surface,
@@ -653,6 +787,23 @@ pub struct ActionStream {
     inner: Rc<ActionStreamClient>,
 }
 
+#[derive(Clone)]
+pub struct ActionCatalogueStream {
+    inner: Rc<ActionCatalogueStreamClient>,
+}
+
+impl ActionCatalogueStream {
+    pub async fn read(&self) -> Result<String, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        Ok(reply
+            .get()?
+            .get_catalogue_json()?
+            .to_str()
+            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
+            .to_owned())
+    }
+}
+
 impl ActionStream {
     /// Pull the next action published into this room.
     ///
@@ -718,6 +869,8 @@ pub struct ExportedAction {
     pub operation_kind: String,
     /// JSON encoding of the canonical typed parameter descriptors.
     pub params_json: String,
+    /// JSON encoding of the complete safety/lifecycle/result contract.
+    pub contract_json: String,
     pub input: ExportedInput,
 }
 

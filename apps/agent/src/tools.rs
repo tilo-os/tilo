@@ -323,14 +323,26 @@ pub fn answer(name: &str, input: &Value, catalogue: &Catalogue, revealed: &mut R
 /// What is running, and what could be opened.
 fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
     let mut s = String::new();
-    for contract in CONTRACTS {
-        let open = catalogue.held.contains(&contract.namespace);
+    let applications = catalogue
+        .offers
+        .iter()
+        .map(|offer| offer.app.as_str())
+        .chain(catalogue.held.iter().copied())
+        .chain(CONTRACTS.iter().map(|contract| contract.namespace))
+        .collect::<BTreeSet<_>>();
+    for application in applications {
+        let contract = CONTRACTS
+            .iter()
+            .find(|contract| contract.namespace == application);
+        let title = contract.map_or(application, |contract| contract.title);
+        let open = catalogue.held.contains(&application)
+            || catalogue.offers.iter().any(|offer| {
+                offer.app == application && offer.descriptor.resource_kind != APPLICATION_KIND
+            });
         let count = catalogue
             .offers
             .iter()
-            .filter(|o| {
-                o.app == contract.namespace && o.descriptor.resource_kind != APPLICATION_KIND
-            })
+            .filter(|o| o.app == application && o.descriptor.resource_kind != APPLICATION_KIND)
             .count();
         // The operation that would open it — if the room granted one. A
         // denied open is *absent* from the catalogue, so it is absent here
@@ -338,9 +350,9 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
         let opener = catalogue
             .offers
             .iter()
-            .find(|o| o.app == contract.namespace && surface::opens(o.address()).is_some());
+            .find(|o| o.app == application && surface::opens(o.address()).is_some());
 
-        let _ = write!(s, "{} ({})", contract.title, contract.namespace);
+        let _ = write!(s, "{title} ({application})");
         s.push_str(if open { " — open" } else { " — not open" });
         let _ = write!(
             s,
@@ -351,7 +363,7 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
             let _ = write!(
                 s,
                 "; ask `{LIST_OPERATIONS}` with application=\"{}\" for them",
-                contract.namespace
+                application
             );
         }
         match opener {
@@ -683,7 +695,8 @@ mod tests {
             })
             .unwrap_or_default();
         Offer {
-            app,
+            app: app.to_string(),
+            broker_peer_id: None,
             descriptor: ActionDescriptor {
                 address: ActionAddress::new(resource, action),
                 resource_kind: kind.to_string(),
@@ -755,7 +768,8 @@ mod tests {
         let word_processor_open = Catalogue {
             held: vec!["word-processor"],
             offers: vec![Offer {
-                app: "chat",
+                app: "chat".to_string(),
+                broker_peer_id: None,
                 descriptor: ActionDescriptor {
                     address: surface::open_address("chat"),
                     resource_kind: APPLICATION_KIND.to_string(),
