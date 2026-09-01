@@ -445,7 +445,17 @@ mod tests {
         let doc = doc_with_image();
         let res = PhotosResources.resources(&doc);
         let ids: Vec<&str> = res[0].actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["rotate-right", "rotate-left", "crop"]);
+        assert_eq!(
+            ids,
+            vec![
+                "rotate-right",
+                "rotate-left",
+                "crop",
+                "open",
+                "copy",
+                "save",
+            ]
+        );
     }
 
     #[test]

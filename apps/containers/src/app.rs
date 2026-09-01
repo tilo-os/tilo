@@ -22,6 +22,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::PathSegment;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
@@ -29,7 +30,6 @@ use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, TextInput, Widget,
 };
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -986,13 +986,24 @@ impl Widget for ContainersApp {
                 container.name.clone(),
             );
             let verbs: &[(&str, &str)] = if container.status.is_running() {
-                &[("stop", "Stop"), ("restart", "Restart"), ("pause", "Pause"), ("shell", "Open shell")]
+                &[
+                    ("stop", "Stop"),
+                    ("restart", "Restart"),
+                    ("pause", "Pause"),
+                    ("shell", "Open shell"),
+                ]
             } else {
                 &[("start", "Start"), ("remove", "Remove")]
             };
             for (verb, label) in verbs {
                 let payload = vec![(*verb).to_string(), container.id.clone()];
-                if let Ok(spec) = ActionSpec::operation(*verb, *label, OperationKind::Effect, "containers.container", &payload) {
+                if let Ok(spec) = ActionSpec::operation(
+                    *verb,
+                    *label,
+                    OperationKind::Effect,
+                    "containers.container",
+                    &payload,
+                ) {
                     resource.actions.push(spec);
                 }
             }
@@ -1001,24 +1012,58 @@ impl Widget for ContainersApp {
         for image in &self.engine.images {
             let reference = image.reference();
             let payload = vec!["remove".to_string(), reference.clone()];
-            let mut resource = Resource::new(format!("image:{reference}"), "containers.image", reference);
-            if let Ok(spec) = ActionSpec::operation("remove", "Remove image", OperationKind::Effect, "containers.image", &payload) { resource.actions.push(spec); }
+            let mut resource =
+                Resource::new(format!("image:{reference}"), "containers.image", reference);
+            if let Ok(spec) = ActionSpec::operation(
+                "remove",
+                "Remove image",
+                OperationKind::Effect,
+                "containers.image",
+                &payload,
+            ) {
+                resource.actions.push(spec);
+            }
             root.children.push(resource);
         }
         for volume in &self.engine.volumes {
             let payload = vec!["remove".to_string(), volume.name.clone()];
-            let mut resource = Resource::new(format!("volume:{}", volume.name), "containers.volume", volume.name.clone());
-            if let Ok(spec) = ActionSpec::operation("remove", "Remove volume", OperationKind::Effect, "containers.volume", &payload) { resource.actions.push(spec); }
+            let mut resource = Resource::new(
+                format!("volume:{}", volume.name),
+                "containers.volume",
+                volume.name.clone(),
+            );
+            if let Ok(spec) = ActionSpec::operation(
+                "remove",
+                "Remove volume",
+                OperationKind::Effect,
+                "containers.volume",
+                &payload,
+            ) {
+                resource.actions.push(spec);
+            }
             root.children.push(resource);
         }
         vec![root]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
-        if kind != OperationKind::Effect { return Ok(false); }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let Some(verb) = args.first().map(String::as_str) else { return Err("missing operation".into()) };
-        let Some(target) = args.get(1).map(String::as_str) else { return Err("missing target".into()) };
+        let Some(verb) = args.first().map(String::as_str) else {
+            return Err("missing operation".into());
+        };
+        let Some(target) = args.get(1).map(String::as_str) else {
+            return Err("missing target".into());
+        };
         match type_id {
             "containers.container" => match verb {
                 "start" => self.apply_action(Action::Start, target),

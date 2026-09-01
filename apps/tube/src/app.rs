@@ -1123,23 +1123,9 @@ impl TubeApp {
                 }
             }
             Action::ToggleLike(id) => {
-                // The visible cache follows the canonical CRDT operation. The
-                // toolbar and exported resource now build the same payload and
-                // cross the same ActionHost boundary.
-                self.actions.dispatch_with_context(
-                    state,
-                    crate::actions::TUBE_ACTION_TYPE,
-                    &crate::actions::TubeAction::LikeVideo {
-                        video_id: id.clone(),
-                    },
-                    qos_actions::ActionContext::for_action(
-                        "org.qos.Tube",
-                        "Tube",
-                        &crate::actions::TubeAction::LikeVideo {
-                            video_id: id.clone(),
-                        },
-                    ),
-                );
+                // The CRDT dispatch happens in `handle_event`, where the
+                // mutable document boundary lives. This helper maintains the
+                // immediate visible cache for both direct and exported paths.
                 self.model.toggle_like(&id);
             }
             Action::Share(id) => {
@@ -1887,6 +1873,19 @@ impl Widget for TubeApp {
         let actions = action::drain(&self.bus);
         let mut changed = false;
         for a in actions {
+            if let Action::ToggleLike(id) = &a {
+                // Direct toolbar activation crosses the exact ActionHost
+                // boundary used by the exported resource action.
+                let operation = crate::actions::TubeAction::LikeVideo {
+                    video_id: id.clone(),
+                };
+                self.actions.dispatch_with_context(
+                    state,
+                    crate::actions::TUBE_ACTION_TYPE,
+                    &operation,
+                    qos_actions::ActionContext::for_action("org.qos.Tube", "Tube", &operation),
+                );
+            }
             changed |= self.apply(a, state, path);
         }
         // If a just-applied action opened a watch page, kick off real playback

@@ -46,10 +46,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 
 use crate::futo::FutoSwipeModel;
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
@@ -925,17 +925,38 @@ impl Widget for OskWidget {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut keyboard = Resource::new("keyboard", "osk.keyboard", "On-screen keyboard");
         keyboard.actions.push(ActionSpec::prompted_operation(
-            "type", "Type text", "Text to type", "Text", OperationKind::Effect,
+            "type",
+            "Type text",
+            "Text to type",
+            "Text",
+            OperationKind::Effect,
             |text| EncodedAction::encode_operation("osk.type", &text).expect("string payload"),
         ));
-        for (id, label) in [("backspace", "Backspace"), ("enter", "Enter"), ("space", "Space")] {
-            if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "osk.key", &id) { keyboard.actions.push(spec); }
+        for (id, label) in [
+            ("backspace", "Backspace"),
+            ("enter", "Enter"),
+            ("space", "Space"),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "osk.key", &id)
+            {
+                keyboard.actions.push(spec);
+            }
         }
         vec![keyboard]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
-        if kind != OperationKind::Effect { return Ok(false); }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
             "osk.type" => self.apply_action(KeyAction::Char(value)),

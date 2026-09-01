@@ -668,6 +668,7 @@ mod tests {
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
+                params: Vec::new(),
                 input,
             },
         }
@@ -738,6 +739,7 @@ mod tests {
                     description: None,
                     locus: ExecutionLocus::ServerPreferred,
                     kind: qos_actions::OperationKind::Effect,
+                    params: Vec::new(),
                     input: InputSpec::None,
                 },
             }],
