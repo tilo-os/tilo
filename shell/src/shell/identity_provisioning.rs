@@ -43,7 +43,12 @@ impl DiskIdentityStore {
     /// created.
     pub fn from_env() -> Result<Self, io::Error> {
         let base = runtime_identity::identity_dir_from_env()?;
-        let path = base.join("primary.json");
+        // Imported identities keep a fingerprinted filename. Resolve the
+        // active runtime identity first so every consumer shares one
+        // canonical selection and a successful import remains ready on the
+        // next login.
+        let path = runtime_identity::resolve_active_identity(&base)
+            .unwrap_or_else(|| base.join("primary.json"));
         Ok(Self { path })
     }
 
