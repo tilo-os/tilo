@@ -176,8 +176,9 @@ pub fn write_signed_prediction(
         )
     };
     let path = dir.join(name);
-    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)
-        .with_context(|| format!("writing {}", path.display()))?;
+    let json = serde_json::to_string_pretty(&doc)?;
+    atomic_file::write_with_mode(&path, json.as_bytes(), 0o644)
+        .with_context(|| format!("atomically writing {}", path.display()))?;
     Ok(path)
 }
 

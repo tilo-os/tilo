@@ -397,6 +397,14 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Restore stable-key selection and discard keys absent from this model.
+    #[must_use]
+    pub fn with_selection(mut self, mut selection: KeySelection<M::Key>) -> Self {
+        selection.reconcile(|key| self.model.index_of(key).is_some());
+        self.selection = selection;
+        self
+    }
+
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
@@ -1256,7 +1264,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_5,
+                crate::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.base, 13),
                 None,
                 &RoundedRect::from_rect(track, radius),
             );
@@ -1923,6 +1931,21 @@ mod tests {
     fn vec_model_rejects_duplicate_keys() {
         let result = VecListModel::new(vec![1, 1], |value| *value);
         assert!(matches!(result, Err(DuplicateListKey)));
+    }
+
+    #[test]
+    fn restored_selection_discards_keys_absent_from_the_model() {
+        let mut selection = KeySelection::new();
+        selection.toggle(1_u64);
+        selection.toggle(99_u64);
+        let list = VirtualList::new(HugeList { count: 10 }, 24.0, |_, index, _| {
+            Box::new(crate::widget::Text::new(&format!("Item {index}")))
+        })
+        .with_selection(selection);
+
+        assert!(list.selection().is_selected(&1));
+        assert!(!list.selection().is_selected(&99));
+        assert_eq!(list.selection().len(10), 1);
     }
 
     #[test]

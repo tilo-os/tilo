@@ -1,0 +1,55 @@
+#!/usr/bin/bash
+# Define and start qOS's one host-only libvirt network without ever replacing
+# a same-named foreign network.  This is deliberately a root-owned image
+# contract rather than a user-writable libvirt XML file.
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+readonly URI='qemu:///system'
+readonly NAME='qos-windows-hostonly'
+readonly XML='/usr/share/qos/windows/libvirt/qos-windows-hostonly.xml'
+readonly EGRESS_NAME='qos-windows-egress'
+readonly EGRESS_XML='/usr/share/qos/windows/libvirt/qos-windows-egress.xml'
+
+die() { printf '%s\n' "qos-windows-vm-network: $*" >&2; exit 1; }
+
+[ "${EUID}" -eq 0 ] || die 'must run as root'
+[ -r "$XML" ] || die "missing immutable network definition: $XML"
+[ -r "$EGRESS_XML" ] || die "missing immutable egress definition: $EGRESS_XML"
+
+# An existing object is accepted only when it is ours and still default-deny.
+# Refusing a collision is important: `virsh net-destroy/undefine` here would
+# let this unit unexpectedly take ownership of somebody else's VM network.
+if virsh --connect "$URI" net-info "$NAME" >/dev/null 2>&1; then
+    actual="$(virsh --connect "$URI" net-dumpxml "$NAME")"
+    printf '%s\n' "$actual" | grep -Fq '<qos:windows-hostonly ' \
+        || die "existing $NAME is not a qOS host-only network"
+    printf '%s\n' "$actual" | grep -Eq "<forward[[:space:]]+mode=['\"]none['\"][[:space:]]*/>" \
+        || die "existing $NAME has forwarding enabled"
+    printf '%s\n' "$actual" | grep -Eq "<bridge[[:space:]]+name=['\"]virbr-qoswin['\"]" \
+        || die "existing $NAME uses an unexpected bridge"
+else
+    virsh --connect "$URI" net-define "$XML"
+fi
+
+virsh --connect "$URI" net-autostart "$NAME"
+if ! virsh --connect "$URI" net-info "$NAME" | grep -q '^Active:.*yes'; then
+    virsh --connect "$URI" net-start "$NAME"
+fi
+
+# Define the capability network, but deliberately leave it inactive and never
+# autostart it. The VM controller attaches a live-only interface for a
+# purpose-bound activation/update lease and removes it on close/expiry.
+if virsh --connect "$URI" net-info "$EGRESS_NAME" >/dev/null 2>&1; then
+    actual_egress="$(virsh --connect "$URI" net-dumpxml "$EGRESS_NAME")"
+    printf '%s\n' "$actual_egress" | grep -Fq '<qos:windows-egress ' \
+        || die "existing $EGRESS_NAME is not a qOS egress network"
+    printf '%s\n' "$actual_egress" | grep -Eq "<forward[[:space:]]+mode=['\"]nat['\"][[:space:]]*/>" \
+        || die "existing $EGRESS_NAME does not use NAT"
+else
+    virsh --connect "$URI" net-define "$EGRESS_XML"
+fi
+virsh --connect "$URI" net-autostart "$EGRESS_NAME" --disable
+if virsh --connect "$URI" net-info "$EGRESS_NAME" | grep -q '^Active:.*yes'; then
+    virsh --connect "$URI" net-destroy "$EGRESS_NAME"
+fi

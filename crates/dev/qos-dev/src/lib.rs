@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use serde::{Deserialize, Serialize};
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -87,6 +88,12 @@ pub enum ComponentTemplate {
     Form,
     /// A source-agnostic virtualized tree with typed configuration.
     Tree,
+    /// A source-agnostic sparse variable-height list with retained delegates.
+    List,
+    /// A source-agnostic sparse table with app-defined columns and cells.
+    Table,
+    /// Advanced text with shared style, polygon flow, and replaceable layout.
+    Text,
 }
 
 #[derive(Debug)]
@@ -315,8 +322,9 @@ pub struct PackageOutcome {
     pub entrypoints: Vec<PathBuf>,
 }
 
-/// One validated structural edit to a serialized UI object graph.
-#[derive(Clone, Debug, PartialEq)]
+/// One validated edit to a serialized UI object graph.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum UiGraphEdit {
     Insert {
         parent: String,
@@ -334,6 +342,18 @@ pub enum UiGraphEdit {
         id: String,
         parent: String,
         index: usize,
+    },
+    /// Set one serialized node property. A dotted path addresses nested
+    /// objects such as `text.value` or `navigate.route`.
+    SetProperty {
+        id: String,
+        property: String,
+        value: serde_json::Value,
+    },
+    /// Remove one serialized node property so its schema default applies.
+    UnsetProperty {
+        id: String,
+        property: String,
     },
 }
 
@@ -553,6 +573,9 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
         ComponentTemplate::Display => "display",
         ComponentTemplate::Form => "form",
         ComponentTemplate::Tree => "tree",
+        ComponentTemplate::List => "list",
+        ComponentTemplate::Table => "table",
+        ComponentTemplate::Text => "text",
     }
 }
 
@@ -1940,6 +1963,9 @@ fn component_source(
         ),
         ComponentTemplate::Form => form_component_source(name, module_name, type_name),
         ComponentTemplate::Tree => tree_component_source(name, module_name, type_name),
+        ComponentTemplate::List => list_component_source(name, module_name, type_name),
+        ComponentTemplate::Table => table_component_source(name, module_name, type_name),
+        ComponentTemplate::Text => text_component_source(name, module_name, type_name),
     }
 }
 
@@ -2207,6 +2233,493 @@ mod tests {{
     )
 }
 
+fn list_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let mut source = format!(
+        r#"use std::hash::Hash;
+use ui::selection::KeySelection;
+use ui::widget::virtual_list::{{ListModel, ListRowState, VirtualList}};
+use ui::widget::Element;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Config<K: Clone + Eq + Hash> {{
+    pub accessible_name: String,
+    pub selection: KeySelection<K>,
+    pub multi_select: bool,
+    pub viewport_height: f32,
+    pub estimated_row_height: f32,
+}}
+
+impl<K: Clone + Eq + Hash> Default for {type_name}Config<K> {{
+    fn default() -> Self {{
+        Self {{
+            accessible_name: "{name}-accessible-name".into(),
+            selection: KeySelection::new(),
+            multi_select: true,
+            viewport_height: 360.0,
+            estimated_row_height: 48.0,
+        }}
+    }}
+}}
+
+/// Build one reusable `{name}` over any resident, database, or paged list model.
+///
+/// The row delegate receives ready, loading, and error states. The concrete
+/// return type preserves `VirtualList` activation, notification, measurement,
+/// scrolling, selection, and reorder methods for app-specific configuration.
+pub fn {module_name}<M: ListModel>(
+    id: &str,
+    model: M,
+    config: &{type_name}Config<M::Key>,
+    row_delegate: impl for<'a> FnMut(&M, usize, &M::Key, ListRowState<'a>) -> Element + 'static,
+    encode_key: impl Fn(&M::Key) -> String + 'static,
+) -> VirtualList<M> {{
+    VirtualList::new_async(model, config.estimated_row_height, row_delegate)
+        .with_id(id)
+        .with_accessible_name(&config.accessible_name)
+        .with_semantic_key(encode_key)
+        .with_viewport_height(config.viewport_height)
+        .multi_select(config.multi_select)
+        .with_selection(config.selection.clone())
+}}
+"#
+    );
+    source.push_str(&list_component_test_source(module_name, type_name));
+    (source, vec![accessible_name])
+}
+
+fn list_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use ui::a11y::{{Action, Role}};
+    use ui::headless::SemanticExpectation;
+    use ui::widget::{{Button, Container, Text}};
+
+    struct SparseItems {{
+        count: usize,
+    }}
+
+    impl ListModel for SparseItems {{
+        type Key = u64;
+
+        fn len(&self) -> usize {{
+            self.count
+        }}
+
+        fn key_at(&self, index: usize) -> Option<Self::Key> {{
+            (index < self.count)
+                .then_some(index)
+                .and_then(|index| u64::try_from(index).ok())
+        }}
+
+        fn index_of(&self, key: &Self::Key) -> Option<usize> {{
+            usize::try_from(*key).ok().filter(|index| *index < self.count)
+        }}
+    }}
+
+    #[test]
+    fn component_keeps_sparse_variable_interactive_rows() {{
+        const ITEM_COUNT: usize = 100_000_000;
+        let mut selection = KeySelection::new();
+        selection.select_only(3);
+        let config = {type_name}Config {{
+            selection,
+            ..{type_name}Config::default()
+        }};
+        let list = {module_name}(
+            "example-list",
+            SparseItems {{ count: ITEM_COUNT }},
+            &config,
+            |_model, index, key, _state| {{
+                let height = if index % 5 == 0 {{ 72.0 }} else {{ 44.0 }};
+                Box::new(Container::new().with_height(height).with_child(Box::new(
+                    ui::row![
+                        Text::new(&format!("Item {{index}}")),
+                        Button::new(
+                            &format!("open-{{key}}"),
+                            "Open",
+                            Some("open-requested"),
+                        )
+                        .with_click_value(key.to_string()),
+                    ],
+                )))
+            }},
+            u64::to_string,
+        );
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(list),
+            (560, 360),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("example-list")
+                .semantic_target("key:3")
+                .role(Role::ListItem)
+                .selected(true),
+        )
+        .expect("restored stable-key selection");
+        app.perform_semantic_named("example-list", Some("key:4"), &Action::Activate)
+            .expect("visible stable key remains selectable");
+        app.perform_named("open-0", &Action::Activate)
+            .expect("delegated control remains independently interactive");
+
+        let semantics = app.inspection().root.semantics.expect("list semantics");
+        assert_eq!(semantics.role, Role::List);
+        assert!(semantics.children.len() < 30, "only the viewport is mounted");
+        assert_eq!(semantics.children[0].set_size, Some(ITEM_COUNT));
+        let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
+        let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
+        assert!((first - second).abs() > 1.0, "delegate heights drive geometry");
+        assert!(app.dump_json().contains("open-requested"));
+    }}
+}}
+"#
+    )
+}
+
+fn table_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let mut source = format!(
+        r#"use ui::selection::KeySelection;
+use ui::widget::data_table::{{ColumnDef, DataTable, TableModel}};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Config {{
+    pub accessible_name: String,
+    pub selection: KeySelection<u64>,
+    pub selectable: bool,
+    pub viewport_height: f32,
+    pub estimated_row_height: f32,
+}}
+
+impl Default for {type_name}Config {{
+    fn default() -> Self {{
+        Self {{
+            accessible_name: "{name}-accessible-name".into(),
+            selection: KeySelection::new(),
+            selectable: true,
+            viewport_height: 480.0,
+            estimated_row_height: 32.0,
+        }}
+    }}
+}}
+
+/// Build one reusable `{name}` over any resident, database, or paged table model.
+///
+/// App-defined columns retain text, custom paint, or real child-widget cells.
+/// The concrete return type preserves sorting, resizing, activation, targeted
+/// model notifications, measurement, scrolling, and selection methods.
+pub fn {module_name}<Row, M>(
+    id: &str,
+    columns: Vec<ColumnDef<Row>>,
+    model: M,
+    config: &{type_name}Config,
+) -> DataTable<Row>
+where
+    M: TableModel<Row = Row> + 'static,
+{{
+    DataTable::from_model(columns, model)
+        .with_id(id)
+        .with_accessible_name(&config.accessible_name)
+        .selectable(config.selectable)
+        .with_model_selection(config.selection.clone())
+        .with_viewport(config.viewport_height, config.estimated_row_height)
+}}
+"#
+    );
+    source.push_str(&table_component_test_source(module_name, type_name));
+    (source, vec![accessible_name])
+}
+
+fn table_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use ui::a11y::{{Action, Role}};
+    use ui::headless::SemanticExpectation;
+    use ui::widget::Button;
+    use ui::widget::data_table::{{ColumnWidth, TableRowState}};
+
+    struct Row {{
+        name: String,
+    }}
+
+    struct SparseRows {{
+        count: usize,
+        resident: Row,
+    }}
+
+    impl TableModel for SparseRows {{
+        type Row = Row;
+
+        fn len(&self) -> usize {{
+            self.count
+        }}
+
+        fn key_at(&self, index: usize) -> Option<u64> {{
+            (index < self.count)
+                .then_some(index)
+                .and_then(|index| u64::try_from(index).ok())
+        }}
+
+        fn index_of(&self, key: u64) -> Option<usize> {{
+            usize::try_from(key).ok().filter(|index| *index < self.count)
+        }}
+
+        fn row_state(&self, index: usize) -> TableRowState<'_, Row> {{
+            if index < self.count {{
+                TableRowState::Ready(&self.resident)
+            }} else {{
+                TableRowState::Error("Row outside the model")
+            }}
+        }}
+    }}
+
+    #[test]
+    fn component_keeps_sparse_variable_interactive_table_rows() {{
+        const ROW_COUNT: usize = 100_000_000;
+        let columns = vec![
+            ColumnDef::<Row>::new("name", "Name", ColumnWidth::Flex(1.0))
+                .with_text(|row| row.name.clone()),
+            ColumnDef::<Row>::new("actions", "Actions", ColumnWidth::Fixed(112.0))
+                .with_widget(|_row, index| {{
+                    Box::new(
+                        Button::new(
+                            &format!("open-{{index}}"),
+                            "Open",
+                            Some("open-requested"),
+                        )
+                        .with_click_value(index.to_string())
+                        .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
+                    )
+                }}),
+        ];
+        let mut selection = KeySelection::new();
+        selection.select_only(3);
+        let config = {type_name}Config {{
+            selection,
+            ..{type_name}Config::default()
+        }};
+        let table = {module_name}(
+            "example-table",
+            columns,
+            SparseRows {{
+                count: ROW_COUNT,
+                resident: Row {{ name: "Resident row".into() }},
+            }},
+            &config,
+        );
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(table),
+            (720, 420),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("example-table")
+                .semantic_target("row:3:0")
+                .role(Role::Row)
+                .selected(true),
+        )
+        .expect("restored stable-key row selection");
+        app.perform_semantic_named("example-table", Some("row:4:0"), &Action::Activate)
+            .expect("visible stable row remains selectable");
+        app.perform_named("open-3", &Action::Activate)
+            .expect("retained cell control remains independently interactive");
+
+        let semantics = app.inspection().root.semantics.expect("table semantics");
+        assert_eq!(semantics.role, Role::Table);
+        assert!(semantics.children.len() < 40, "only the viewport is mounted");
+        assert_eq!(semantics.children[0].set_size, Some(ROW_COUNT));
+        let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
+        let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
+        assert!((first - second).abs() > 1.0, "measured rows drive geometry");
+        assert!(app.dump_json().contains("open-requested"));
+    }}
+}}
+"#
+    )
+}
+
+fn text_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let body = ScreenMessage::new(name, "body", "Replace this copy with application content.");
+    let mut source = format!(
+        r#"use ui::widget::Text;
+use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextStyle}};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Props {{
+    pub message: String,
+    pub style: TextStyle,
+}}
+
+impl {type_name}Props {{
+    #[must_use]
+    pub fn new(message: impl Into<String>, style: TextStyle) -> Self {{
+        Self {{ message: message.into(), style }}
+    }}
+}}
+
+impl Default for {type_name}Props {{
+    fn default() -> Self {{
+        Self::new(
+            "{name}-body",
+            TextStyle::new(18.0)
+                .with_line_height(1.5)
+                .with_kerning(true)
+                .with_letter_spacing(0.15)
+                .with_auto_hyphenation("en-US"),
+        )
+    }}
+}}
+
+/// Build ordinary reusable `{name}` text with one style shared by layout and paint.
+pub fn {module_name}(id: &str, props: &{type_name}Props) -> Text {{
+    Text::new(&props.message)
+        .with_id(id)
+        .with_style(props.style.clone())
+}}
+
+/// Keep the standard Text lifecycle while replacing measurement and painting.
+pub fn {module_name}_with_engine<E: TextLayoutEngine + 'static>(
+    id: &str,
+    props: &{type_name}Props,
+    engine: E,
+) -> Text {{
+    {module_name}(id, props).with_layout_engine(engine)
+}}
+
+/// Flow and exactly clip the text to a concave or convex local-coordinate polygon.
+pub fn {module_name}_in_region(
+    id: &str,
+    props: &{type_name}Props,
+    region: TextFlowRegion,
+) -> Text {{
+    {module_name}_with_engine(id, props, PolygonTextLayout::new(region))
+}}
+"#
+    );
+    source.push_str(&text_component_test_source(module_name, type_name));
+    (source, vec![body])
+}
+
+fn text_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use ui::a11y::Role;
+    use ui::headless::SemanticExpectation;
+    use ui::kurbo::Point;
+    use ui::{{TextLayoutConstraints, TextRenderer}};
+
+    struct RecordingLayout(Rc<Cell<u32>>);
+
+    impl TextLayoutEngine for RecordingLayout {{
+        fn measure(
+            &mut self,
+            _renderer: &mut TextRenderer,
+            _text: &str,
+            _constraints: TextLayoutConstraints,
+            _style: &TextStyle,
+        ) -> (f32, f32) {{
+            self.0.set(self.0.get().saturating_add(1));
+            (320.0, 96.0)
+        }}
+
+        fn draw(
+            &mut self,
+            _renderer: &mut TextRenderer,
+            _scene: &mut ui::vello::Scene,
+            _text: &str,
+            _constraints: TextLayoutConstraints,
+            _style: &TextStyle,
+            _color: ui::peniko::Color,
+            _transform: ui::kurbo::Affine,
+        ) {{}}
+    }}
+
+    #[test]
+    fn component_keeps_text_semantics_with_a_custom_engine() {{
+        let measures = Rc::new(Cell::new(0));
+        let props = {type_name}Props::new(
+            "Advanced typography",
+            TextStyle::new(18.0).with_kerning(true),
+        );
+        let text = {module_name}_with_engine(
+            "example-text",
+            &props,
+            RecordingLayout(Rc::clone(&measures)),
+        );
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(text),
+            (480, 240),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("example-text")
+                .role(Role::StaticText)
+                .name("Advanced typography"),
+        )
+        .expect("custom engine retains Text accessibility");
+        assert!(measures.get() > 0, "custom engine participates in layout");
+    }}
+
+    #[test]
+    fn component_accepts_non_rectangular_text_flow() {{
+        let props = {type_name}Props::new("Polygon text", TextStyle::new(18.0));
+        let region = TextFlowRegion::polygon([
+            Point::new(0.0, 0.0),
+            Point::new(360.0, 0.0),
+            Point::new(360.0, 180.0),
+            Point::new(220.0, 180.0),
+            Point::new(220.0, 72.0),
+            Point::new(140.0, 72.0),
+            Point::new(140.0, 180.0),
+            Point::new(0.0, 180.0),
+        ])
+        .expect("valid concave region");
+        let text = {module_name}_in_region("polygon-text", &props, region);
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(text),
+            (400, 220),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("polygon-text")
+                .role(Role::StaticText)
+                .name("Polygon text"),
+        )
+        .expect("polygon layout retains Text accessibility");
+    }}
+}}
+"#
+    )
+}
+
 /// Render one reusable Rust component without writing it.
 ///
 /// This is the same validated source used by `qos-dev add component`; build
@@ -2256,7 +2769,7 @@ fn screen_registry_source(names: &[String]) -> String {
         let function = name.replace('-', "_");
         let _ = writeln!(
             source,
-            "\n\n/// Build the `{name}` screen.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build(include_str!(\"../ui/{name}.json\"), theme)\n}}"
+            "\n\n/// Build the `{name}` screen.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    {function}_with(theme, UiBuildContext::default())\n}}\n\n/// Build `{name}` with app-owned component factories and other services.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}_with(\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build_with(include_str!(\"../ui/{name}.json\"), theme, context)\n}}"
         );
     }
     source.push_str(
@@ -2272,7 +2785,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         let _ = writeln!(source, "        {name:?} => Some({function}(theme)),");
     }
     source.push_str(
-        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
+        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n    context: &UiBuildContext,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
     );
     for name in names {
         let _ = writeln!(
@@ -2281,7 +2794,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         );
     }
     source.push_str(
-        "        _ => return None,\n    };\n    Some(build_routed(source, theme, navigation))\n}\n\n/// Build a history-aware host for all registered screens.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, |route, theme, navigation| {\n        get_routed(route, theme, navigation)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build(source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget(theme)?))\n}\n\nfn build_routed(\n    source: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    let context = UiBuildContext::default().with_router(navigation.clone());\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
+        "        _ => return None,\n    };\n    let context = context.clone().with_router(navigation.clone());\n    Some(build_with(source, theme, context))\n}\n\n/// Build a history-aware host for all registered screens.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    router_with(initial, theme, UiBuildContext::default())\n}\n\n/// Build the screen router with app-owned component factories and services.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router_with(\n    initial: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, move |route, theme, navigation| {\n        get_routed(route, theme, navigation, &context)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build_with(\n    source: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
     );
     source
 }
@@ -2356,7 +2869,7 @@ pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
     serde_json::from_str(source).context("parsing UI node JSON")
 }
 
-/// Apply one structural edit and atomically replace the graph file only after
+/// Apply one edit and atomically replace the graph file only after
 /// the complete candidate validates.
 ///
 /// # Errors
@@ -2364,7 +2877,45 @@ pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
 /// Returns a load, structural-validation, or atomic-write error. The source
 /// file remains unchanged on failure.
 pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
+    edit_ui_graph_batch(path, vec![edit])
+}
+
+/// Parse a JSON array of tagged graph edits suitable for
+/// [`edit_ui_graph_batch`].
+///
+/// # Errors
+///
+/// Returns an error when the source is not a non-empty array of supported,
+/// structurally valid edit objects.
+pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>> {
+    let edits: Vec<UiGraphEdit> =
+        serde_json::from_str(source).context("parsing UI graph edit batch")?;
+    if edits.is_empty() {
+        bail!("UI graph edit batch must contain at least one edit");
+    }
+    Ok(edits)
+}
+
+/// Apply a non-empty edit batch and publish the graph exactly once after every
+/// operation and the resulting complete graph validate.
+///
+/// # Errors
+///
+/// Returns a load, edit, validation, or atomic-write error. The source file
+/// remains byte-for-byte unchanged when any operation fails.
+pub fn edit_ui_graph_batch(path: &Path, edits: Vec<UiGraphEdit>) -> Result<()> {
+    if edits.is_empty() {
+        bail!("UI graph edit batch must contain at least one edit");
+    }
     let mut document = load_ui_graph(path)?;
+    for (index, edit) in edits.into_iter().enumerate() {
+        apply_ui_graph_edit(&mut document, edit)
+            .with_context(|| format!("applying UI graph edit {}", index.saturating_add(1)))?;
+    }
+    write_ui_graph(path, &document)
+}
+
+fn apply_ui_graph_edit(document: &mut qos_ui_graph::UiDocument, edit: UiGraphEdit) -> Result<()> {
     match edit {
         UiGraphEdit::Insert {
             parent,
@@ -2378,8 +2929,58 @@ pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
         UiGraphEdit::Move { id, parent, index } => {
             document.move_node(&id, &parent, index)?;
         }
+        UiGraphEdit::SetProperty {
+            id,
+            property,
+            value,
+        } => {
+            set_ui_node_property(document, &id, &property, Some(value))?;
+        }
+        UiGraphEdit::UnsetProperty { id, property } => {
+            set_ui_node_property(document, &id, &property, None)?;
+        }
     }
-    write_ui_graph(path, &document)
+    Ok(())
+}
+
+fn set_ui_node_property(
+    document: &mut qos_ui_graph::UiDocument,
+    id: &str,
+    property: &str,
+    value: Option<serde_json::Value>,
+) -> Result<()> {
+    let node = document
+        .node(id)
+        .cloned()
+        .with_context(|| format!("UI graph has no node {id:?}"))?;
+    let segments: Vec<_> = property.split('.').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        bail!("property path must contain non-empty dot-separated names");
+    }
+    let mut serialized = serde_json::to_value(node).context("serializing UI node")?;
+    let Some((leaf, parents)) = segments.split_last() else {
+        bail!("property path must contain a name");
+    };
+    let mut current = &mut serialized;
+    for segment in parents {
+        current = current
+            .as_object_mut()
+            .and_then(|object| object.get_mut(*segment))
+            .with_context(|| format!("node {id:?} has no object property path {property:?}"))?;
+    }
+    let object = current
+        .as_object_mut()
+        .with_context(|| format!("node {id:?} property parent is not an object"))?;
+    if let Some(value) = value {
+        object.insert((*leaf).to_owned(), value);
+    } else if object.remove(*leaf).is_none() {
+        bail!("node {id:?} has no property {property:?}");
+    }
+    let replacement: qos_ui_graph::UiNode = serde_json::from_value(serialized)
+        .with_context(|| format!("property {property:?} is not valid for node {id:?}"))?;
+    document
+        .replace_node(id, replacement)
+        .with_context(|| format!("validating property {property:?} on node {id:?}"))
 }
 
 /// Rewrite a valid graph in the canonical pretty-printed form.
@@ -2501,6 +3102,7 @@ fn write_ui_node_tree(node: &qos_ui_graph::UiNode, depth: usize, output: &mut St
         qos_ui_graph::UiNode::TextInput { .. } => "text-input",
         qos_ui_graph::UiNode::Checkbox { .. } => "checkbox",
         qos_ui_graph::UiNode::Toggle { .. } => "toggle",
+        qos_ui_graph::UiNode::Component { .. } => "component",
         qos_ui_graph::UiNode::Spacer { .. } => "spacer",
     };
     let _ = writeln!(output, "{}{} ({kind})", "  ".repeat(depth), node.id());
@@ -4981,7 +5583,7 @@ fn prompt_component_template(
 ) -> Result<ComponentTemplate> {
     writeln!(
         output,
-        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior"
+        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows\n  5) table    Any TableModel with app-defined columns and cells\n  6) text     Styled text with polygon flow or a custom layout engine"
     )
     .context("showing component template choices")?;
     loop {
@@ -4990,9 +5592,12 @@ fn prompt_component_template(
             "1" | "display" | "d" => return Ok(ComponentTemplate::Display),
             "2" | "form" | "f" => return Ok(ComponentTemplate::Form),
             "3" | "tree" | "t" => return Ok(ComponentTemplate::Tree),
+            "4" | "list" | "l" => return Ok(ComponentTemplate::List),
+            "5" | "table" | "data" => return Ok(ComponentTemplate::Table),
+            "6" | "text" | "typography" => return Ok(ComponentTemplate::Text),
             _ => writeln!(
                 output,
-                "  ! unknown component template {value:?}; choose 1-3 or `display`, `form`, or `tree`"
+                "  ! unknown component template {value:?}; choose 1-6 or `display`, `form`, `tree`, `list`, `table`, or `text`"
             )
             .context("showing component template error")?,
         }
@@ -5772,6 +6377,9 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "qos-dev run");
     let _ = writeln!(out, "qos-dev add component profile-card --template form");
     let _ = writeln!(out, "qos-dev add component project-tree --template tree");
+    let _ = writeln!(out, "qos-dev add component activity-list --template list");
+    let _ = writeln!(out, "qos-dev add component results-table --template table");
+    let _ = writeln!(out, "qos-dev add component article-body --template text");
     let _ = writeln!(out, "qos-dev add screen settings --template settings");
     let _ = writeln!(out, "qos-dev add scenario empty-state");
     let _ = writeln!(out, "qos-dev scenario run");
@@ -5804,7 +6412,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. A `{{\"type\":\"component\"}}` node can mount an app-owned retained component; register its factory in `UiBuildContext` and pass it to `screens::router_with`."
         );
     }
     if spec.template == Template::Async {
@@ -6350,6 +6958,42 @@ mod tests {
     }
 
     #[test]
+    fn component_wizard_exposes_the_sparse_list_template() {
+        let mut input = std::io::Cursor::new(b"4\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::List);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Any ListModel"));
+    }
+
+    #[test]
+    fn component_wizard_exposes_the_sparse_table_template() {
+        let mut input = std::io::Cursor::new(b"5\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::Table);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Any TableModel"));
+    }
+
+    #[test]
+    fn component_wizard_exposes_the_advanced_text_template() {
+        let mut input = std::io::Cursor::new(b"6\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::Text);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("custom layout engine"));
+    }
+
+    #[test]
     fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -6457,6 +7101,97 @@ mod tests {
     }
 
     #[test]
+    fn add_list_component_preserves_the_generic_sparse_model_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "activity-list".into(),
+                template: ComponentTemplate::List,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source = std::fs::read_to_string(app.join("src/components/activity_list.rs")).unwrap();
+        syn::parse_file(&source).unwrap();
+        assert!(source.contains("pub struct ActivityListConfig"));
+        assert!(source.contains("M: ListModel"));
+        assert!(source.contains("VirtualList::new_async"));
+        assert!(source.contains("ListRowState<'a>"));
+        assert!(source.contains("with_selection(config.selection.clone())"));
+        let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
+        assert_eq!(
+            parse_component_registry(&registry).unwrap(),
+            ["activity-list"]
+        );
+        assert!(registry.contains("pub mod activity_list;"));
+    }
+
+    #[test]
+    fn add_table_component_preserves_the_generic_column_and_model_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "results-table".into(),
+                template: ComponentTemplate::Table,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source = std::fs::read_to_string(app.join("src/components/results_table.rs")).unwrap();
+        syn::parse_file(&source).unwrap();
+        assert!(source.contains("pub struct ResultsTableConfig"));
+        assert!(source.contains("M: TableModel<Row = Row>"));
+        assert!(source.contains("columns: Vec<ColumnDef<Row>>"));
+        assert!(source.contains("DataTable::from_model"));
+        assert!(source.contains("with_model_selection(config.selection.clone())"));
+        let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
+        assert_eq!(
+            parse_component_registry(&registry).unwrap(),
+            ["results-table"]
+        );
+        assert!(registry.contains("pub mod results_table;"));
+    }
+
+    #[test]
+    fn add_text_component_exposes_standard_polygon_and_custom_engine_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "article-body".into(),
+                template: ComponentTemplate::Text,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source = std::fs::read_to_string(app.join("src/components/article_body.rs")).unwrap();
+        syn::parse_file(&source).unwrap();
+        assert!(source.contains("pub struct ArticleBodyProps"));
+        assert!(source.contains("pub fn article_body(id: &str"));
+        assert!(source.contains("pub fn article_body_with_engine<E: TextLayoutEngine"));
+        assert!(source.contains("pub fn article_body_in_region("));
+        assert!(source.contains("PolygonTextLayout::new(region)"));
+        assert!(source.contains("with_auto_hyphenation(\"en-US\")"));
+    }
+
+    #[test]
     fn component_generation_is_dry_run_safe_and_localizes_template_copy() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
@@ -6504,6 +7239,56 @@ mod tests {
         let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
         assert!(
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
+            "{catalog}"
+        );
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "activity-list".into(),
+                template: ComponentTemplate::List,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains("activity-list-accessible-name = { \"Activity List\" }"),
+            "{catalog}"
+        );
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "results-table".into(),
+                template: ComponentTemplate::Table,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains("results-table-accessible-name = { \"Results Table\" }"),
+            "{catalog}"
+        );
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "article-body".into(),
+                template: ComponentTemplate::Text,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains(
+                "article-body-body = { \"Replace this copy with application content.\" }"
+            ),
             "{catalog}"
         );
     }
@@ -7292,6 +8077,190 @@ mod tests {
     }
 
     #[test]
+    fn ui_graph_property_edits_are_nested_typed_and_atomic() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "text.value".into(),
+                value: serde_json::json!("Recent projects"),
+            },
+        )
+        .expect("set nested title value");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "size".into(),
+                value: serde_json::json!(24.0),
+            },
+        )
+        .expect("set typed size");
+        let source = std::fs::read_to_string(&graph).unwrap();
+        assert!(source.contains("Recent projects"));
+        assert!(source.contains("\"size\": 24.0"));
+
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::UnsetProperty {
+                id: "title".into(),
+                property: "size".into(),
+            },
+        )
+        .expect("restore schema default");
+        assert!(matches!(
+            load_ui_graph(&graph).unwrap().node("title"),
+            Some(qos_ui_graph::UiNode::Text { size: None, .. })
+        ));
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let error = edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "size".into(),
+                value: serde_json::json!("large"),
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("not valid"), "{error:#}");
+        assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
+
+        let typo = edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "typo".into(),
+                value: serde_json::json!(true),
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{typo:#}").contains("not valid"), "{typo:#}");
+        assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
+    }
+
+    #[test]
+    fn ui_graph_edit_batches_mix_operations_and_roll_back_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let edits = parse_ui_graph_edits(
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","style":"primary"}},
+              {"op":"move","id":"create","parent":"root","index":1},
+              {"op":"set-property","id":"create","property":"enabled","value":false},
+              {"op":"set-property","id":"title","property":"size","value":24},
+              {"op":"unset-property","id":"title","property":"size"}
+            ]"#,
+        )
+        .expect("parse mixed edit batch");
+        assert_eq!(edits.len(), 6);
+        assert!(
+            serde_json::to_string(&edits)
+                .unwrap()
+                .contains("\"op\":\"set-property\"")
+        );
+        let null_edit = parse_ui_graph_edits(
+            r#"[{"op":"set-property","id":"title","property":"size","value":null}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            null_edit.as_slice(),
+            [UiGraphEdit::SetProperty {
+                value: serde_json::Value::Null,
+                ..
+            }]
+        ));
+        edit_ui_graph_batch(&graph, edits).expect("apply mixed batch");
+
+        let document = load_ui_graph(&graph).unwrap();
+        assert_eq!(
+            document
+                .nodes()
+                .iter()
+                .map(|node| node.id())
+                .collect::<Vec<_>>(),
+            ["root", "title", "create", "body"]
+        );
+        assert!(matches!(
+            document.node("create"),
+            Some(qos_ui_graph::UiNode::Button { enabled: false, .. })
+        ));
+        assert!(matches!(
+            document.node("title"),
+            Some(qos_ui_graph::UiNode::Text { size: None, .. })
+        ));
+        assert!(
+            std::fs::read_to_string(&graph)
+                .unwrap()
+                .contains("Recent projects")
+        );
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let invalid = parse_ui_graph_edits(
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Do not publish"},
+              {"op":"set-property","id":"title","property":"size","value":"large"}
+            ]"#,
+        )
+        .unwrap();
+        let error = edit_ui_graph_batch(&graph, invalid).unwrap_err();
+        assert!(error.to_string().contains("edit 2"), "{error:#}");
+        assert_eq!(
+            std::fs::read(&graph).unwrap(),
+            before_invalid,
+            "a later failure must roll back the complete batch"
+        );
+        assert!(parse_ui_graph_edits("[]").is_err());
+        assert!(edit_ui_graph_batch(&graph, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn ui_graph_tools_insert_inspect_and_edit_app_components() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let component = parse_ui_node(
+            r#"{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}"#,
+        )
+        .expect("component node");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::Insert {
+                parent: "root".into(),
+                index: 2,
+                node: component,
+            },
+        )
+        .expect("insert component");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile".into(),
+                property: "props.title".into(),
+                value: serde_json::json!("Grace"),
+            },
+        )
+        .expect("edit component prop");
+
+        assert!(
+            ui_graph_tree(&graph)
+                .unwrap()
+                .contains("profile (component)")
+        );
+        assert!(matches!(
+            load_ui_graph(&graph).unwrap().node("profile"),
+            Some(qos_ui_graph::UiNode::Component { props, .. })
+                if props.get("title") == Some(&serde_json::json!("Grace"))
+        ));
+    }
+
+    #[test]
     fn explicit_ui_builder_plan_is_deterministic() {
         let plan = ui_builder_plan(
             Path::new("ui/main.json"),
@@ -7879,6 +8848,9 @@ mod tests {
         assert!(app_lib(&spec).contains("screens::router(\"main\", &Theme::default())"));
         assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
+        assert!(app_readme(&spec).contains("qos-dev ui set"));
+        assert!(app_readme(&spec).contains("qos-dev ui apply"));
+        assert!(app_readme(&spec).contains("screens::router_with"));
     }
 
     #[test]
@@ -8010,6 +8982,9 @@ mod tests {
             assert!(readme.contains("qos-dev run\n"));
             assert!(readme.contains("qos-dev add component profile-card --template form"));
             assert!(readme.contains("qos-dev add component project-tree --template tree"));
+            assert!(readme.contains("qos-dev add component activity-list --template list"));
+            assert!(readme.contains("qos-dev add component results-table --template table"));
+            assert!(readme.contains("qos-dev add component article-body --template text"));
             assert!(readme.contains("qos-dev scenario run\n"));
             assert!(readme.contains("qos-dev scenario run --artifacts target/scenario-artifacts"));
             assert!(
@@ -8067,8 +9042,11 @@ mod tests {
             syn::parse_file(&locale_registry.1)
                 .expect("generated locale registry is valid Rust syntax");
             if template == Template::Graph {
-                syn::parse_file(&screen_registry_source(&["main".into()]))
-                    .expect("generated screen registry is valid Rust syntax");
+                let registry = screen_registry_source(&["main".into()]);
+                syn::parse_file(&registry).expect("generated screen registry is valid Rust syntax");
+                assert!(registry.contains("pub fn main_with("));
+                assert!(registry.contains("pub fn router_with("));
+                assert!(registry.contains("context.clone().with_router"));
             }
         }
     }

@@ -236,6 +236,23 @@ enum UiCommand {
         #[arg(long)]
         index: usize,
     },
+    /// Change one node property without replacing the complete node.
+    Set {
+        file: PathBuf,
+        #[arg(long)]
+        id: String,
+        /// Dot-separated serialized property, for example `text.value`.
+        #[arg(long)]
+        property: String,
+        #[command(flatten)]
+        edit: PropertyEditArgs,
+    },
+    /// Apply a JSON array of graph edits as one validated publication.
+    Apply {
+        file: PathBuf,
+        /// JSON file containing tagged insert/remove/replace/move/set operations.
+        edits: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -247,6 +264,17 @@ struct NodeSourceArgs {
     /// File containing one node JSON object.
     #[arg(long, group = "node-source")]
     node_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+#[group(id = "property-edit", required = true, multiple = false)]
+struct PropertyEditArgs {
+    /// JSON value, or an unquoted string when JSON parsing does not apply.
+    #[arg(long, group = "property-edit")]
+    value: Option<String>,
+    /// Remove the property so its schema default applies.
+    #[arg(long, group = "property-edit")]
+    unset: bool,
 }
 
 #[derive(clap::Args)]
@@ -468,6 +496,12 @@ enum ComponentTemplateArg {
     Form,
     /// Source-agnostic virtualized tree with typed configuration.
     Tree,
+    /// Source-agnostic sparse variable-height list with retained delegates.
+    List,
+    /// Source-agnostic sparse table with app-defined columns and cells.
+    Table,
+    /// Styled text with polygon flow or a custom layout engine.
+    Text,
 }
 
 fn main() -> ExitCode {
@@ -634,6 +668,9 @@ fn run_add(args: AddArgs) -> Result<()> {
                     ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
                     ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
                     ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
+                    ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
+                    ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
+                    ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
                 },
             },
             options,
@@ -725,8 +762,38 @@ fn run_ui(args: UiArgs) -> Result<()> {
             qos_dev::edit_ui_graph(&file, qos_dev::UiGraphEdit::Move { id, parent, index })?;
             println!("Updated {}", file.display());
         }
+        UiCommand::Set {
+            file,
+            id,
+            property,
+            edit,
+        } => {
+            let graph_edit = match (edit.value, edit.unset) {
+                (Some(source), false) => qos_dev::UiGraphEdit::SetProperty {
+                    id,
+                    property,
+                    value: parse_ui_property_value(source),
+                },
+                (None, true) => qos_dev::UiGraphEdit::UnsetProperty { id, property },
+                _ => anyhow::bail!("choose exactly one of --value or --unset"),
+            };
+            qos_dev::edit_ui_graph(&file, graph_edit)?;
+            println!("Updated {}", file.display());
+        }
+        UiCommand::Apply { file, edits } => {
+            let source = std::fs::read_to_string(&edits)
+                .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
+            let edits = qos_dev::parse_ui_graph_edits(&source)?;
+            let count = edits.len();
+            qos_dev::edit_ui_graph_batch(&file, edits)?;
+            println!("Applied {count} edits to {}", file.display());
+        }
     }
     Ok(())
+}
+
+fn parse_ui_property_value(source: String) -> serde_json::Value {
+    serde_json::from_str(&source).unwrap_or(serde_json::Value::String(source))
 }
 
 fn read_ui_node(source: NodeSourceArgs) -> Result<qos_ui_graph::UiNode> {
@@ -1029,6 +1096,75 @@ mod tests {
         let Command::Add(AddArgs { command: None }) = wizard.command else {
             panic!("expected interactive add command");
         };
+    }
+
+    #[test]
+    fn add_command_exposes_the_reusable_list_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "activity-list",
+            "--template",
+            "list",
+        ])
+        .expect("list component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::List,
+                    ..
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn add_command_exposes_the_reusable_table_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "results-table",
+            "--template",
+            "table",
+        ])
+        .expect("table component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::Table,
+                    ..
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn add_command_exposes_the_advanced_text_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "article-body",
+            "--template",
+            "text",
+        ])
+        .expect("text component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::Text,
+                    ..
+                })
+            })
+        ));
     }
 
     #[test]
@@ -1350,6 +1486,117 @@ mod tests {
                 "node.json",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn ui_set_accepts_one_typed_property_edit() {
+        let set = Cli::try_parse_from([
+            "qos-dev",
+            "ui",
+            "set",
+            "ui/main.json",
+            "--id",
+            "title",
+            "--property",
+            "text.value",
+            "--value",
+            "Recent projects",
+        ])
+        .expect("UI property command");
+        assert!(matches!(
+            set.command,
+            Command::Ui(UiArgs {
+                command: UiCommand::Set {
+                    edit: PropertyEditArgs {
+                        value: Some(_),
+                        unset: false,
+                    },
+                    ..
+                }
+            })
+        ));
+
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "ui",
+                "set",
+                "ui/main.json",
+                "--id",
+                "title",
+                "--property",
+                "size",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "ui",
+                "set",
+                "ui/main.json",
+                "--id",
+                "title",
+                "--property",
+                "size",
+                "--value",
+                "24",
+                "--unset",
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            parse_ui_property_value("true".into()),
+            serde_json::json!(true)
+        );
+        assert_eq!(parse_ui_property_value("24".into()), serde_json::json!(24));
+        assert_eq!(
+            parse_ui_property_value("Recent projects".into()),
+            serde_json::json!("Recent projects")
+        );
+
+        let apply =
+            Cli::try_parse_from(["qos-dev", "ui", "apply", "ui/main.json", "ui/edits.json"])
+                .expect("UI batch command");
+        assert!(matches!(
+            apply.command,
+            Command::Ui(UiArgs {
+                command: UiCommand::Apply { file, edits }
+            }) if file.as_path() == std::path::Path::new("ui/main.json")
+                && edits.as_path() == std::path::Path::new("ui/edits.json")
+        ));
+    }
+
+    #[test]
+    fn ui_apply_reads_and_publishes_one_complete_batch() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("main.json");
+        let edits = temp.path().join("edits.json");
+        qos_dev::init_ui_graph(&graph, "Projects", false).unwrap();
+        std::fs::write(
+            &edits,
+            r#"[
+              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"open","label":"Open"}}
+            ]"#,
+        )
+        .unwrap();
+
+        run_ui(UiArgs {
+            command: UiCommand::Apply {
+                file: graph.clone(),
+                edits,
+            },
+        })
+        .expect("apply batch through CLI handler");
+
+        let document = qos_dev::load_ui_graph(&graph).unwrap();
+        assert!(document.node("open").is_some());
+        assert!(
+            std::fs::read_to_string(graph)
+                .unwrap()
+                .contains("Recent projects")
         );
     }
 }

@@ -613,17 +613,12 @@ fn cmd_harden(
         if let Some(d) = auth_file.parent() {
             std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
         }
-        std::fs::write(auth_file, &*auth).with_context(|| {
+        atomic_file::write_with_mode(auth_file, &auth, 0o600).with_context(|| {
             format!(
-                "recording the reset authorisation in {}",
+                "atomically recording the reset authorisation in {}",
                 auth_file.display()
             )
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(auth_file, std::fs::Permissions::from_mode(0o600))?;
-        }
         lockout::set_reset_auth(runner, &auth, None)?;
         println!(
             "reset authorisation set; recorded in {}",
@@ -850,12 +845,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
             let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
         }
     }
-    std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    atomic_file::write_with_mode(path, bytes, 0o600)
+        .with_context(|| format!("atomically writing {}", path.display()))?;
     Ok(())
 }
 

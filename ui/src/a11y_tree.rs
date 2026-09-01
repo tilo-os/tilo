@@ -39,7 +39,21 @@ use crate::widget::Widget;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
-use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, Resource};
+use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
+use serde::{Deserialize, Serialize};
+
+/// Operation type used when the retained semantic tree projects an ordinary
+/// UI affordance into the resource/action catalogue. This makes the same
+/// control addressable from Ctrl+K, the automation socket, and agents without
+/// inventing an app-specific command bus.
+pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "qos.ui.semantic-action";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SemanticOperation {
+    pub node: String,
+    pub action: String,
+    pub value: Option<String>,
+}
 
 /// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
 /// as long as the backing widget or resource recurs.
@@ -350,6 +364,73 @@ impl SemanticTree {
         self.nodes.get(id).and_then(|n| n.action(name))
     }
 
+    /// Project every currently operable accessibility node into the canonical
+    /// qOS resource/action surface. Bespoke app actions remain preferable for
+    /// domain operations; this projection closes the driveability gap for
+    /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
+    pub(crate) fn action_resources(&self) -> Vec<Resource> {
+        self.iter()
+            .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
+            .filter_map(|node| {
+                let verbs = node
+                    .actions
+                    .iter()
+                    .filter_map(|action| match &action.kind {
+                        SemanticActionKind::Verb(verb) => Some((action, verb)),
+                        SemanticActionKind::App(_) | SemanticActionKind::AppPrompted { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                if verbs.is_empty() {
+                    return None;
+                }
+
+                let label = node
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", node.role));
+                let mut resource =
+                    Resource::new(format!("ui:{}", node.id.as_str()), "qos.ui.control", label);
+                for (action, verb) in verbs {
+                    let operation = SemanticOperation {
+                        node: node.id.0.clone(),
+                        action: action.name.clone(),
+                        value: None,
+                    };
+                    let spec = match verb {
+                        Action::SetValue(_) => ActionSpec::prompted_operation(
+                            action.name.clone(),
+                            action.label.clone(),
+                            "Value",
+                            node.value.as_deref().unwrap_or(""),
+                            OperationKind::Effect,
+                            move |value| {
+                                let operation = SemanticOperation {
+                                    node: operation.node.clone(),
+                                    action: operation.action.clone(),
+                                    value: Some(value.to_string()),
+                                };
+                                EncodedAction::encode_operation(SEMANTIC_OPERATION_TYPE, &operation)
+                                    .expect("semantic operation is serializable")
+                            },
+                        ),
+                        _ => match ActionSpec::operation(
+                            action.name.clone(),
+                            action.label.clone(),
+                            OperationKind::Effect,
+                            SEMANTIC_OPERATION_TYPE,
+                            &operation,
+                        ) {
+                            Ok(spec) => spec,
+                            Err(_) => continue,
+                        },
+                    };
+                    resource.actions.push(spec);
+                }
+                Some(resource)
+            })
+            .collect()
+    }
+
     /// `None` if `(id, name)` is not a prompted action.
     pub fn build_prompted(&self, id: &SemanticId, name: &str, arg: &str) -> Option<EncodedAction> {
         self.prompted
@@ -371,7 +452,21 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::Focus),
         });
     }
-    if !s.disabled {
+    if !s.disabled
+        && matches!(
+            access.role,
+            Role::Button
+                | Role::ToggleButton
+                | Role::Checkbox
+                | Role::RadioButton
+                | Role::Switch
+                | Role::Tab
+                | Role::MenuItem
+                | Role::ListItem
+                | Role::TreeItem
+                | Role::Link
+        )
+    {
         out.push(SemanticAction {
             name: "activate".into(),
             label: "Activate".into(),
@@ -639,7 +734,7 @@ mod tests {
     use super::*;
     use crate::theme::Theme;
     use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-    use crate::widget::{Button, Column, Widget};
+    use crate::widget::{Button, Column, TextInput, Widget};
     use std::collections::HashMap;
     use taffy::TaffyTree;
 
@@ -791,6 +886,57 @@ mod tests {
             node.action("activate").unwrap().kind,
             SemanticActionKind::Verb(Action::Activate)
         ));
+    }
+
+    #[test]
+    fn plain_text_is_not_falsely_advertised_as_activatable() {
+        let label = crate::a11y::AccessNode::new(Role::Label);
+        assert!(
+            verbs_for(&label)
+                .iter()
+                .all(|action| action.name != "activate"),
+            "the retained semantic tree must agree with AccessKit"
+        );
+    }
+
+    #[test]
+    fn operable_controls_project_into_resource_actions() {
+        let mut button = Button::new("go", "Go", None);
+        let node_map = layout(&mut button);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&button, &node_map, None, &[]);
+        let resources = tree.action_resources();
+        let go = resources
+            .iter()
+            .find(|resource| resource.label == "Go")
+            .expect("button is externally driveable");
+        assert_eq!(go.kind, "qos.ui.control");
+        assert!(go.actions.iter().any(|action| action.id == "activate"));
+    }
+
+    #[test]
+    fn projected_text_value_reaches_the_semantic_operation() {
+        let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
+        let node_map = layout(&mut field);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&field, &node_map, None, &[]);
+        let resources = tree.action_resources();
+        let spec = resources
+            .iter()
+            .find(|resource| resource.label == "Destination")
+            .and_then(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "set-value")
+            })
+            .expect("editable field publishes set-value");
+        let encoded = match &spec.input {
+            ActionInput::Prompted { build, .. } => build("/tmp/report.pdf"),
+            ActionInput::Immediate(_) => panic!("set-value must collect a value"),
+        };
+        let operation: SemanticOperation = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(operation.value.as_deref(), Some("/tmp/report.pdf"));
     }
 
     #[test]

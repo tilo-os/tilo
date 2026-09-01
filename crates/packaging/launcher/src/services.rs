@@ -64,6 +64,8 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
+pub const COMPAT_SERVICE: &str = "compat";
+const COMPAT_PROTOCOL_VERSION: u16 = 1;
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.
@@ -106,6 +108,20 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
+    #[error("required compatibility service has no authenticated workspace launch context")]
+    CompatContextMissing,
+    #[error("failed to authenticate the launch to compatibility service `{path}`: {source}")]
+    CompatHandoffFailed {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ServiceLaunchContext<'a> {
+    pub app_id: &'a str,
+    pub workspace_id: Option<&'a str>,
 }
 
 /// Discover `$XDG_RUNTIME_DIR/qos/services/`.
@@ -273,6 +289,29 @@ pub fn resolve_service_binds(
     services: &BTreeMap<String, String>,
     no_services: bool,
 ) -> Result<Vec<ResolvedService>, ServiceError> {
+    resolve_service_binds_inner(services, no_services, None)
+}
+
+/// Resolve service descriptors and write the compositor-authenticated
+/// compatibility preamble before the descriptor enters the app sandbox.
+///
+/// # Errors
+///
+/// Returns the same service resolution errors as [`resolve_service_binds`],
+/// plus a context or handoff error when the `compat` service is connected.
+pub fn resolve_service_binds_for_launch(
+    services: &BTreeMap<String, String>,
+    no_services: bool,
+    context: ServiceLaunchContext<'_>,
+) -> Result<Vec<ResolvedService>, ServiceError> {
+    resolve_service_binds_inner(services, no_services, Some(context))
+}
+
+fn resolve_service_binds_inner(
+    services: &BTreeMap<String, String>,
+    no_services: bool,
+    context: Option<ServiceLaunchContext<'_>>,
+) -> Result<Vec<ResolvedService>, ServiceError> {
     // Start child fds well above stdio (3) — 17, 18, 19… keeps them out of
     // the way of bwrap's own fds (allocated from ~10 upwards).
     let mut next_child_fd: i32 = 17;
@@ -312,7 +351,7 @@ pub fn resolve_service_binds(
         // as an absent socket, so it has to be treated the same way, or a
         // leftover file from a crash turns every subsequent launch into a
         // failed one.
-        let stream = match UnixStream::connect(&path) {
+        let mut stream = match UnixStream::connect(&path) {
             Ok(stream) => stream,
             Err(source) => {
                 if req.is_required() {
@@ -326,6 +365,24 @@ pub fn resolve_service_binds(
                 continue;
             }
         };
+        if name == COMPAT_SERVICE {
+            let Some((context, workspace_id)) = context
+                .and_then(|context| context.workspace_id.map(|workspace| (context, workspace)))
+            else {
+                if req.is_required() {
+                    return Err(ServiceError::CompatContextMissing);
+                }
+                tracing::warn!("optional compatibility service skipped without workspace context");
+                continue;
+            };
+            if let Err(source) = write_compat_handoff(&mut stream, context.app_id, workspace_id) {
+                if req.is_required() {
+                    return Err(ServiceError::CompatHandoffFailed { path, source });
+                }
+                tracing::warn!(%source, "optional compatibility service rejected launch handoff");
+                continue;
+            }
+        }
         // Owned from here, and deliberately left `FD_CLOEXEC`. The fork+dup2
         // never sets CLOEXEC on the descriptor it creates, so the app's copy
         // survives the exec whatever this one says. Clearing the flag here was
@@ -348,6 +405,25 @@ pub fn resolve_service_binds(
     }
 
     Ok(out)
+}
+
+fn write_compat_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+) -> std::io::Result<()> {
+    let value = serde_json::json!({
+        "protocol": COMPAT_PROTOCOL_VERSION,
+        "app_id": app_id,
+        "workspace_id": workspace_id,
+    });
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| std::io::Error::other("compatibility handoff is too large"))?;
+    stream.write_all(&length.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()
 }
 
 /// Convert resolved services into `ServiceBind`s consumable by the
