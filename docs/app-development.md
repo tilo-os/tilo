@@ -711,23 +711,26 @@ qos-dev ui component ui/main.json profile-card \
 (`profile-card`, `profile-card-2`, ...), and atomically rejects a bad factory
 name, non-object props, invalid parent, duplicate explicit id, or out-of-range
 index. Use `--id`, `--parent`, and `--index` when placement must be explicit.
-Register the generated typed construction boundary once when building a screen
-or router:
+Apps created with `--template graph` already pass the generated
+`components::ui_graph_context()` to their screen router. Adding the component
+updates that registry in the same atomic publication, so the two commands above
+are the complete wiring path—there is no app-root edit:
 
 ```rust
-use ui::{Theme, UiBuildContext};
-
-let context = components::profile_card::register_ui_graph(
-    UiBuildContext::default(),
-);
-let app = screens::router_with("main", &Theme::default(), context)?;
+let app = screens::router_with(
+    "main",
+    &Theme::default(),
+    components::ui_graph_context(),
+)?;
 ```
 
 The generated `from_ui_graph` function converts `title` and `detail` into the
 same typed `ProfileCardProps` used by ordinary Rust callers and returns precise
-field errors. For a custom component shape, write the equivalent small function
-from `UiComponentRequest` to `Element` and register it with
-`UiBuildContext::with_component`.
+field errors. Older generated graph roots are migrated when their original
+router call is still intact; customized app roots are never rewritten. For a
+custom component shape, write the equivalent small function from
+`UiComponentRequest` to `Element` and register it with
+`UiBuildContext::with_component` or extend the app-owned context explicitly.
 
 The factory returns an ordinary retained widget, so its child controls, model
 bindings, focus, accessibility, inspection, and headless scenarios work exactly
