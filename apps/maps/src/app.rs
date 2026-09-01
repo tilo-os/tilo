@@ -2853,14 +2853,14 @@ impl MapsApp {
             let card_h = 132.0;
             let cr = Rect::new(x, y, right, y + card_h);
             draw::fill_rrect(scene, t, cr, 12.0, c.surfaces.base);
-            // Category swatch.
-            let cat_col = canvas::category_color(theme, sel.category);
+            // Accent identifies the current selection. Category is written
+            // directly below, so it does not need a competing colour stripe.
             draw::fill_rrect(
                 scene,
                 t,
                 Rect::new(cr.x0, cr.y0, cr.x0 + 5.0, cr.y1),
                 12.0,
-                cat_col,
+                theme.accent_primary,
             );
             draw::text_w(
                 scene,
@@ -3081,20 +3081,18 @@ impl MapsApp {
         if selected {
             draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
         }
-        let cat_col = canvas::category_color(theme, p.category);
-        draw::fill_circle(
-            scene,
-            t,
-            Point::new(r.x0 + 18.0, r.center().y),
-            9.0,
-            cat_col,
-        );
+        // Lists use one quiet marker treatment; the category label carries the
+        // information without turning saved places into a rainbow of competing
+        // priorities. Saturated category colours stay on actual map markers,
+        // where they help scan spatially distinct places.
+        let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
+        draw::fill_circle(scene, t, Point::new(r.x0 + 18.0, r.center().y), 9.0, marker);
         draw::fill_circle(
             scene,
             t,
             Point::new(r.x0 + 18.0, r.center().y),
             3.2,
-            draw::mix(c.surfaces.base, Color::WHITE, 0.7),
+            theme.accent_primary,
         );
         let tx = r.x0 + 36.0;
         draw::text_clip(
@@ -3158,11 +3156,13 @@ impl MapsApp {
         if selected {
             draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
         }
-        let cat_col = canvas::category_color(theme, poi.category);
-        let ring = draw::mix(c.surfaces.base, Color::WHITE, 0.85);
+        // The pictogram, category label and map marker already identify this
+        // POI. Keeping list decoration neutral makes distance and selection
+        // easier to scan across mixed categories.
+        let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
         let cc = Point::new(r.x0 + 18.0, r.center().y);
-        draw::fill_circle(scene, t, cc, 11.0, cat_col);
-        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, ring, cat_col);
+        draw::fill_circle(scene, t, cc, 11.0, marker);
+        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, theme.text_primary, marker);
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
         let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
@@ -3557,7 +3557,9 @@ impl MapsApp {
         let row_h = 36.0;
         let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
 
-        // Leave / Arrive segmented toggle.
+        // Travel mode above is the person's first decision. Timing is a
+        // refinement, so its selector is deliberately quieter: a soft active
+        // state with a focused edge rather than a second full-accent control.
         let seg_rect = Rect::new(x, y, x + toggle_w, y + row_h);
         draw::fill_rrect(scene, t, seg_rect, 9.0, c.surfaces.base);
         let modes = [
@@ -3570,9 +3572,21 @@ impl MapsApp {
             let seg = Rect::new(sx, seg_rect.y0, sx + seg_w, seg_rect.y1);
             let active = tt.mode == *m;
             if active {
-                draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
+                let active_rect = seg.inflate(-3.0, -3.0);
+                draw::fill_rrect(
+                    scene,
+                    t,
+                    active_rect,
+                    7.0,
+                    draw::alpha(theme.accent_primary, 0.14),
+                );
+                draw::stroke_rrect(scene, t, active_rect, 7.0, 1.0, theme.accent_primary);
             }
-            let fg = if active { Color::WHITE } else { theme.text_dim };
+            let fg = if active {
+                theme.accent_primary
+            } else {
+                theme.text_dim
+            };
             draw::text_center(
                 scene,
                 tr,
@@ -4210,7 +4224,7 @@ impl Widget for MapsApp {
                         self.endpoints
                             .pointer_press(p, event, scale_factor, *modifiers)
                 {
-                    self.search.set_focused(false);
+                    self.search.dismiss();
                     self.apply_endpoint_effect(effect);
                     *handled = true;
                     return;
@@ -4224,9 +4238,10 @@ impl Widget for MapsApp {
                     .find(|(r, _)| r.contains(p))
                     .map(|(_, h)| h.clone())
                 {
-                    // Clicking outside the search bar unfocuses it.
-                    if !matches!(hit, Hit::Search(SearchHit::Field)) {
-                        self.search.set_focused(false);
+                    // A result popover is transient. Keep it open for its own
+                    // field/padding, but dismiss it before any other action.
+                    if !matches!(hit, Hit::Search(SearchHit::Field | SearchHit::Consume)) {
+                        self.search.dismiss();
                     }
                     self.endpoints.dismiss();
                     self.dispatch(&hit, state);
@@ -4240,7 +4255,7 @@ impl Widget for MapsApp {
                     *handled = true;
                 }
                 if !consumed {
-                    self.search.set_focused(false);
+                    self.search.dismiss();
                     self.endpoints.dismiss();
                     // The standalone control stack is below modal/panel targets
                     // above, but above the actual map surface.
@@ -5170,9 +5185,11 @@ mod tests {
             "the panel list behind the results is suppressed"
         );
 
-        // Dismiss the results → the panel list returns.
-        a.search.set_focused(false);
+        // Dismiss the transient results → the panel list returns, without
+        // retaining stale suggestions for the next focus.
+        a.search.dismiss();
         assert!(!a.search_overlay_active());
+        assert!(a.search.results().is_empty());
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
         let panel_rows_back = a
@@ -6699,8 +6716,20 @@ mod tests {
         );
         key_named(&mut a, NamedKey::Backspace);
         assert_eq!(a.model.query, "h", "Backspace deletes a char");
+        a.search.replace_results(vec![crate::model::Place::new(
+            "suggestion",
+            "Helpful suggestion",
+            Category::Museum,
+            "Example address",
+            LatLon::new(48.14, 11.57),
+        )]);
         key_named(&mut a, NamedKey::Escape);
         assert!(!a.search.is_focused(), "Escape unfocuses search");
+        assert_eq!(a.model.query, "h", "Escape preserves the query");
+        assert!(
+            a.search.results().is_empty(),
+            "Escape drops transient suggestions"
+        );
     }
 
     /// `+`/`-` zoom the map through the key path.

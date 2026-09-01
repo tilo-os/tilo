@@ -14,7 +14,7 @@
 //! projection + an input router, in keeping with the toolkit's
 //! "state lives in the CRDT" contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -270,6 +270,11 @@ pub struct ChatApp {
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
+    /// People evidenced in the active chat workspace: the local person plus
+    /// authors, reactors, mentioned people, and voice participants in that
+    /// workspace's channels. The backing document's `users` map is a global
+    /// directory, so exposing it directly here would make people from another
+    /// workspace appear in this workspace's People/call chrome.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
     /// Voice membership per channel in the active workspace (cached from the
@@ -696,8 +701,13 @@ impl ChatApp {
     }
 
     /// Stage a named scenario for a headless screenshot against the ephemeral
-    /// demo workspace. The default (empty) scenario is the rich desktop frame:
-    /// an open thread beside the conversation and a live call huddle.
+    /// demo workspace. The default is an ordinary reading/conversation frame;
+    /// collaboration states are explicit so a capture does not teach a floating
+    /// call as Chat's resting state.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the screenshot scenario dispatcher keeps each named visual contract explicit and adjacent"
+    )]
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "narrow" => {
@@ -714,6 +724,21 @@ impl ChatApp {
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
+            }
+            "people" => {
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+            }
+            "thread-narrow" => {
+                self.thread_open = Some("m_concept".into());
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+            }
+            "collaboration" => {
+                self.thread_open = Some("m_concept".into());
+                self.right_flap.open();
+                self.call.join("c_huddle");
             }
             "starter" => {
                 // The real first-run empty workspace (no demo content).
@@ -818,10 +843,9 @@ impl ChatApp {
                 });
             }
             _ => {
-                // Desktop demo: reveal the thread beside the conversation and
-                // put this peer in the Design Huddle so the call surface shows.
-                self.right_flap.open();
-                self.call.join("c_huddle");
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
             }
         }
     }
@@ -1437,7 +1461,6 @@ impl ChatApp {
         self.workspaces = ChatDoc::list_workspaces(doc);
         self.channels = ChatDoc::list_channels(doc);
         self.categories = ChatDoc::list_categories(doc);
-        self.users = ChatDoc::list_users(doc);
         // Keep the active channel valid (e.g. after a workspace switch).
         if self
             .channel(&self.active_channel)
@@ -1463,18 +1486,22 @@ impl ChatApp {
             };
         }
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
-        // Cache voice membership for every voice channel in this workspace.
+        // Cache voice membership for this workspace only. The document's
+        // channel list is global, so filtering here is as important as it is
+        // for the People projection below: a huddle elsewhere is not a huddle
+        // in the workspace currently on screen.
         self.voice_members.clear();
         for ch in self
             .channels
             .iter()
-            .filter(|c| c.kind == model::ChannelKind::Voice)
+            .filter(|c| c.workspace == self.active_ws && c.kind == model::ChannelKind::Voice)
         {
             let members = ChatDoc::list_voice_members(doc, &ch.id);
             if !members.is_empty() {
                 self.voice_members.insert(ch.id.clone(), members);
             }
         }
+        self.users = self.workspace_people(doc);
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
         // the caret/selection while typing (the draft we just wrote back equals
@@ -1507,6 +1534,55 @@ impl ChatApp {
             self.draft_main = draft;
         }
         self.set_composer_focus();
+    }
+
+    /// Project the document-global identity directory onto evidence local to
+    /// the active chat workspace. Membership is not stored separately in this
+    /// document, so claiming every known identity is "in" the selected
+    /// workspace would be dishonest. Channel activity and voice membership
+    /// are durable, workspace-owned evidence; the local identity is included
+    /// so a brand-new workspace remains a valid one-person surface.
+    fn workspace_people(&self, doc: &AutoCommit) -> Vec<User> {
+        let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
+        ids.extend(self.former_ids.iter().cloned());
+
+        for channel in self
+            .channels
+            .iter()
+            .filter(|channel| channel.workspace == self.active_ws)
+        {
+            for message in ChatDoc::list_messages(doc, &channel.id) {
+                ids.insert(message.author);
+                for reaction in message.reactions {
+                    ids.extend(reaction.users);
+                }
+                ids.extend(message.mentions.into_iter().map(|mention| mention.user));
+            }
+        }
+        for members in self.voice_members.values() {
+            ids.extend(members.iter().map(|member| member.user.clone()));
+        }
+
+        let mut people: Vec<_> = ChatDoc::list_users(doc)
+            .into_iter()
+            .filter(|user| ids.contains(&user.id))
+            .collect();
+        if !people.iter().any(|user| self.is_me(&user.id)) {
+            people.push(User {
+                id: self.me.id.clone(),
+                name: self.me.name.clone(),
+                initials: self.me.initials.clone(),
+                color_idx: self.me.color_idx,
+                status: model::Presence::Online,
+                is_agent: false,
+            });
+        }
+        people.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        people
     }
 
     /// Advance the local read watermark for the channel currently in view so
@@ -1561,6 +1637,24 @@ impl ChatApp {
                 .then_with(|| a.0.name.cmp(&b.0.name))
         });
         rows
+    }
+
+    /// Whether this workspace has somebody besides the local participant. An
+    /// agent is still a collaborator (and should surface collaboration
+    /// controls), but it is never counted or labelled as a person.
+    pub(crate) fn has_other_collaborator(&self) -> bool {
+        self.users.iter().any(|u| !self.is_me(&u.id))
+    }
+
+    /// The roster's public destination name. `People` is precise when every
+    /// entry is human; once an agent is present, `Collaborators` accurately
+    /// covers both and the row itself keeps the agent visibly typed.
+    pub(crate) fn roster_label(&self) -> &'static str {
+        if self.users.iter().any(|u| u.is_agent) {
+            "Collaborators"
+        } else {
+            "People"
+        }
     }
 
     // --- responsive flap geometry ----------------------------------------
@@ -1664,6 +1758,11 @@ impl ChatApp {
         )
     }
     pub(crate) fn thread_rect(&self) -> Rect {
+        // A thread is content, not a secondary sidebar. On a narrow window it
+        // becomes the pushed detail view rather than a cramped popover.
+        if self.right_mode == FlapMode::Overlay && self.thread_open.is_some() {
+            return self.rect;
+        }
         let x0 = self.right_pane_x0();
         Rect::new(x0, self.rect.y0, x0 + THREAD_W, self.rect.y1)
     }
@@ -2255,6 +2354,31 @@ mod screenshare_reuse_tests {
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+
+    fn user(id: &str, is_agent: bool) -> User {
+        User {
+            id: id.into(),
+            name: id.into(),
+            initials: "U".into(),
+            color_idx: 0,
+            status: crate::model::Presence::Online,
+            is_agent,
+        }
+    }
+
+    #[test]
+    fn roster_vocabulary_never_calls_an_agent_a_person() {
+        let mut app = ChatApp::new_ephemeral();
+        app.users = vec![user("u_me", false), user("u_scribe", true)];
+        assert!(
+            app.has_other_collaborator(),
+            "the agent is another collaborator"
+        );
+        assert_eq!(app.roster_label(), "Collaborators");
+
+        app.users = vec![user("u_me", false), user("u_aria", false)];
+        assert_eq!(app.roster_label(), "People");
+    }
 
     /// Nobody is ever shown the token the system uses to route to them.
     ///

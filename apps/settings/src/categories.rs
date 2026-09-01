@@ -15,8 +15,9 @@ pub enum Section {
     Devices,
     /// Time & Date, Users, Region & Formats — the per-user system setup.
     System,
-    /// External Accounts, Permissions & Roles — the integration hubs other
-    /// apps and the collaboration model depend on.
+    /// External Accounts and device privacy — the integration and personal
+    /// security surfaces other apps depend on. Workspace roles deliberately
+    /// live with the workspace that owns them, not in this system app.
     Hubs,
     /// Updates, About — maintenance and identity.
     Maintenance,
@@ -367,7 +368,7 @@ impl Category {
             Category::Storage => "Storage",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
-            Category::Permissions => "Privacy & Security",
+            Category::Permissions => "Device Privacy & Security",
             Category::Updates => "Updates",
             Category::About => "About",
         }
@@ -393,7 +394,9 @@ impl Category {
             Category::Storage => "Apps, data, cache, and synced files",
             Category::ExternalAccounts => "Accounts shared with compatible installed apps",
             Category::RegionFormats => "Currency, date, time, and measurement units",
-            Category::Permissions => "Device security, privacy hardware, and workspace access",
+            Category::Permissions => {
+                "This device's privacy and security; workspace access is managed per workspace"
+            }
             Category::Updates => "Operating-system and firmware updates",
             Category::About => "Device identity and transfer",
         }
@@ -512,6 +515,19 @@ mod tests {
             assert!(seen.insert(*c), "duplicate category {c:?}");
         }
         assert_eq!(seen.len(), Category::ALL.len());
+    }
+
+    #[test]
+    fn device_privacy_category_does_not_claim_workspace_authority() {
+        assert_eq!(
+            Category::Permissions.label(),
+            "Device Privacy & Security",
+            "the navigation destination names its system-wide scope"
+        );
+        assert!(
+            Category::Permissions.subtitle().contains("per workspace"),
+            "the destination explains that workspace access belongs to each workspace"
+        );
     }
 
     #[test]
