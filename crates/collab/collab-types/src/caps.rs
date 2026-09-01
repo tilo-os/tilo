@@ -289,6 +289,9 @@ pub enum Scope {
     /// person, **is** that person's room membership — the same machinery as
     /// any other share, so there is no second sharing system.
     Room(String),
+    /// One stable collaborative-file record. Unlike [`Scope::FsPath`], this
+    /// authority follows renames and moves and can safely key replication.
+    FsRecord(String),
 }
 
 impl Scope {
@@ -307,40 +310,66 @@ impl Scope {
     /// artifact/action of `a`, `FsPath(p)` covers every path under `p`. A
     /// scope from a different enforcement point than the resource simply
     /// doesn't match — inert, never permissive.
+    #[allow(
+        clippy::unnested_or_patterns,
+        reason = "the `App`/`Artifact`/`Action` alternatives already share the `Scope::App(a)` \
+                  first component; they cannot nest further since each binds `b` out of a \
+                  different resource shape (a bare tuple field vs. an `Option`-wrapped struct \
+                  field vs. a plain struct field)"
+    )]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "several arms reduce to a bare `x == y` (app id, device id, resource kind, \
+                  resource instance), which looks like duplication to a body-shape check but \
+                  each compares a different domain under a different Scope/ResourceRef pairing; \
+                  merging them would erase which pairing licenses the match"
+    )]
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
             (Scope::Workspace, _) => true,
 
-            (Scope::App(a), ResourceRef::App(b))
-            | (Scope::App(a), ResourceRef::Artifact { app: Some(b), .. })
-            | (Scope::App(a), ResourceRef::Action { app: b, .. }) => a == b,
-            (Scope::App(_), _) => false,
+            (
+                Scope::App(a),
+                ResourceRef::App(b)
+                | ResourceRef::Artifact { app: Some(b), .. }
+                | ResourceRef::Action { app: b, .. },
+            ) => a == b,
 
             (Scope::ResourceType(k), ResourceRef::Artifact { kind, .. }) => k == kind,
-            (Scope::ResourceType(_), _) => false,
 
             (Scope::ResourceInstance(i), ResourceRef::Artifact { instance, .. }) => i == instance,
-            (Scope::ResourceInstance(_), _) => false,
 
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
-            (Scope::FsPath(_), _) => false,
 
             (Scope::Device(d), ResourceRef::Device(e)) => d == e,
-            (Scope::Device(_), _) => false,
 
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-            (Scope::NetHost(_), _) => false,
 
             (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
                 app == b && action == c
             }
-            (Scope::Action { .. }, _) => false,
 
             // Room membership is converted into an actor role by `Workspace`
             // before an action is checked. Direct scope matching remains narrow:
             // a room grant cannot masquerade as a filesystem/app/action grant.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
-            (Scope::Room(_), _) => false,
+            (Scope::FsRecord(r), ResourceRef::FsRecord(s)) => r == s,
+
+            // Every scope variant is paired with its own condition above; a
+            // resource shape that doesn't match the scope's own kind is never
+            // covered by it.
+            (
+                Scope::App(_)
+                | Scope::ResourceType(_)
+                | Scope::ResourceInstance(_)
+                | Scope::FsPath(_)
+                | Scope::Device(_)
+                | Scope::NetHost(_)
+                | Scope::Action { .. }
+                | Scope::Room(_)
+                | Scope::FsRecord(_),
+                _,
+            ) => false,
         }
     }
 }
@@ -409,6 +438,8 @@ pub enum ResourceRef {
     Action { app: String, action: String },
     /// A room, as the target of a membership capability.
     Room(String),
+    /// A stable collaborative-file record id.
+    FsRecord(String),
 }
 
 /// The resource context an op carries, used to match [`Scope`]s. Built by
@@ -801,7 +832,10 @@ pub fn role_base_applies(resource: &ResourceRef) -> bool {
         | ResourceRef::Artifact { .. }
         | ResourceRef::Action { .. }
         | ResourceRef::Room(_) => true,
-        ResourceRef::FsPath(_) | ResourceRef::Device(_) | ResourceRef::NetHost(_) => false,
+        ResourceRef::FsPath(_)
+        | ResourceRef::FsRecord(_)
+        | ResourceRef::Device(_)
+        | ResourceRef::NetHost(_) => false,
     }
 }
 

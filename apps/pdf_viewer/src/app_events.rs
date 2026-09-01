@@ -57,13 +57,15 @@ impl PdfApp {
             self.search_active = true;
             self.reflow();
         }
-        if !self.query.is_empty() {
+        self.search_input.set_focus(true);
+        if !self.query().is_empty() {
             self.recompute_matches();
         }
         self.dirty = true;
     }
 
     fn close_search(&mut self) {
+        self.search_input.set_focus(false);
         if self.search_active {
             self.search_active = false;
             self.matches.clear();
@@ -449,6 +451,9 @@ impl PdfApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
+                if self.search_active {
+                    self.drive_search_input(event, scale_factor, modifiers, state);
+                }
             }
 
             WindowEvent::MouseInput {
@@ -464,6 +469,9 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.search_active {
+                    self.drive_search_input(event, scale_factor, modifiers, state);
+                }
                 self.on_left_release(event, scale_factor, modifiers, state, handled);
             }
 
@@ -499,6 +507,14 @@ impl PdfApp {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 self.on_key(event, key_event, modifiers, scale_factor, state, handled);
+            }
+
+            WindowEvent::Ime(_) if self.search_active => {
+                self.drive_search_input(event, scale_factor, modifiers, state);
+                if self.search_input.take_dirty().is_some() {
+                    self.recompute_matches();
+                }
+                *handled = true;
             }
 
             _ => {}
@@ -719,7 +735,11 @@ impl PdfApp {
             return true;
         }
         if self.search_active && self.search_rect.contains(p) {
-            self.apply_search_strip(p);
+            if self.search_input.get_rect().contains(p) {
+                self.drive_search_input(event, scale_factor, modifiers, state);
+            } else {
+                self.apply_search_strip(p);
+            }
             *handled = true;
             return true;
         }
@@ -987,10 +1007,33 @@ impl PdfApp {
         *handled = true;
     }
 
-    /// Feed one raw winit event into the active inline-editor [`TextInput`].
-    /// The editor lives outside the taffy tree (drawn by hand into the
-    /// sidebar), so a throwaway leaf node satisfies the `Widget` signature; the
-    /// field is local-mode, so the passed document is never written.
+    /// Feed one raw event into a hand-positioned, local [`TextInput`]. A
+    /// throwaway leaf satisfies the `Widget` signature; local fields never
+    /// write the passed document.
+    fn drive_local_input(
+        input: &mut TextInput,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return;
+        };
+        input.handle_event(
+            event,
+            scale,
+            &modifiers,
+            state,
+            &automerge::ROOT,
+            &mut false,
+            &mut None,
+            node,
+            &taffy,
+        );
+    }
+
     fn drive_editor(
         &mut self,
         event: &WindowEvent,
@@ -999,23 +1042,7 @@ impl PdfApp {
         state: &mut AutoCommit,
     ) {
         if let Some(e) = self.editing.as_mut() {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let Ok(node) = taffy.new_leaf(Style::default()) else {
-                return;
-            };
-            let mut handled = false;
-            let mut ft: Option<NodeId> = None;
-            e.input.handle_event(
-                event,
-                scale,
-                &modifiers,
-                state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
-            );
+            Self::drive_local_input(&mut e.input, event, scale, modifiers, state);
         }
     }
 
@@ -1035,7 +1062,7 @@ impl PdfApp {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
-        if self.on_key_search(key_event, mods, ctrl, handled) {
+        if self.on_key_search(event, modifiers, ctrl, scale, state, handled) {
             return;
         }
         if self.on_key_ctrl_shortcuts(key_event, ctrl, handled) {
@@ -1046,7 +1073,7 @@ impl PdfApp {
 
     /// While an inline text field is focused it owns the keyboard, so tool
     /// hotkeys and page navigation don't fire mid-sentence. The field is a
-    /// shared TextInput: Escape cancels; every other key routes to the
+    /// shared `TextInput`: Escape cancels; every other key routes to the
     /// widget — caret motion, selection (shift+arrows), clipboard
     /// (Ctrl+C/V/X), and Enter (which submits → commit). Returns whether it
     /// consumed this key.
@@ -1079,42 +1106,51 @@ impl PdfApp {
 
     /// While the search strip is open it owns the keyboard. Returns whether
     /// it consumed this key.
+    fn drive_search_input(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) {
+        Self::drive_local_input(&mut self.search_input, event, scale, modifiers, state);
+    }
+
     fn on_key_search(
         &mut self,
-        key_event: &winit::event::KeyEvent,
-        mods: winit::keyboard::ModifiersState,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
         ctrl: bool,
+        scale: f64,
+        state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
         if !self.search_active {
             return false;
         }
+        let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = modifiers.state();
         match &key_event.logical_key {
             Key::Named(NamedKey::Escape) => self.close_search(),
             Key::Named(NamedKey::Enter) => {
                 self.step_match(if mods.shift_key() { -1 } else { 1 });
             }
-            Key::Named(NamedKey::Backspace) => {
-                self.query.pop();
-                self.recompute_matches();
-            }
-            Key::Named(NamedKey::Space) => {
-                self.query.push(' ');
-                self.recompute_matches();
-            }
             Key::Character(c) => {
                 if ctrl && c.as_str().eq_ignore_ascii_case("f") {
                     self.close_search();
-                } else if !ctrl {
-                    for ch in c.chars() {
-                        if !ch.is_control() {
-                            self.query.push(ch);
-                        }
-                    }
-                    self.recompute_matches();
+                } else {
+                    self.drive_search_input(event, scale, modifiers, state);
                 }
             }
-            _ => {}
+            _ => self.drive_search_input(event, scale, modifiers, state),
+        }
+        if self.search_input.take_dirty().is_some() {
+            self.recompute_matches();
         }
         *handled = true;
         true
@@ -1695,7 +1731,7 @@ mod event_tests {
         let theme = ui::theme::Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
         app.search_active = true;
-        app.query = "the".into();
+        app.search_input.set_text("the");
         app.recompute_matches();
         app.recompute_regions();
         for tab in [
@@ -1739,7 +1775,7 @@ mod event_tests {
         st: &mut ui::State,
         taffy: &TaffyTree<()>,
         node: NodeId,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         ev: &winit::event::WindowEvent,
     ) {
         use ui::Widget as _;
@@ -1748,7 +1784,7 @@ mod event_tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             &mut st.doc,
             &st.root,
             &mut handled,
@@ -1765,7 +1801,7 @@ mod event_tests {
         st: &mut ui::State,
         taffy: &TaffyTree<()>,
         node: NodeId,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         dev: winit::event::DeviceId,
     ) {
         use winit::dpi::PhysicalPosition;
@@ -1825,7 +1861,7 @@ mod event_tests {
         let mods = winit::event::Modifiers::default();
         let dev = dummy_device_id();
 
-        arm_highlight_tool_via_toolbar(&mut app, &mut st, &taffy, node, &mods, dev);
+        arm_highlight_tool_via_toolbar(&mut app, &mut st, &taffy, node, mods, dev);
 
         // Drag across page one to lay down a highlight.
         let origin = app.page_origins()[0];
@@ -1837,7 +1873,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(p0.0, p0.1),
@@ -1848,7 +1884,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
@@ -1860,7 +1896,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(p1.0, p1.1),
@@ -1871,7 +1907,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Released,
@@ -1919,6 +1955,86 @@ mod event_tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn find_focus_follows_open_and_close_shortcuts() {
+        let (mut app, mut st) = app();
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        let open = key_event(winit::keyboard::Key::Character("f".into()));
+        feed_event(&mut app, &mut st, &taffy, node, ctrl_mods(), &open);
+        assert!(app.search_active, "Ctrl+F opens the find strip");
+        assert!(app.search_input.is_focused(), "the query takes focus");
+
+        let close = key_event(winit::keyboard::Key::Named(
+            winit::keyboard::NamedKey::Escape,
+        ));
+        feed_event(
+            &mut app,
+            &mut st,
+            &taffy,
+            node,
+            winit::event::Modifiers::default(),
+            &close,
+        );
+        assert!(!app.search_active, "Escape closes the find strip");
+        assert!(!app.search_input.is_focused(), "closing releases focus");
+    }
+
+    #[test]
+    #[serial]
+    fn find_query_uses_shared_selection_and_cut_path() {
+        let (mut app, mut st) = app();
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.open_search();
+
+        for ch in ["s", "a", "n", "d"] {
+            let ev = key_event(winit::keyboard::Key::Character(ch.into()));
+            feed_event(
+                &mut app,
+                &mut st,
+                &taffy,
+                node,
+                winit::event::Modifiers::default(),
+                &ev,
+            );
+        }
+        assert_eq!(app.query(), "sand");
+
+        let select = key_event(winit::keyboard::Key::Character("a".into()));
+        feed_event(&mut app, &mut st, &taffy, node, ctrl_mods(), &select);
+        assert_eq!(
+            app.search_input.selection_range_public(),
+            Some((0, 4)),
+            "Ctrl+A selects the query rather than typing into it"
+        );
+
+        let cut = key_event(winit::keyboard::Key::Character("x".into()));
+        feed_event(&mut app, &mut st, &taffy, node, ctrl_mods(), &cut);
+        assert_eq!(app.query(), "", "Ctrl+X cuts the selected query");
+        assert_eq!(app.match_count(), 0, "derived matches refresh after cut");
+    }
+
+    #[test]
+    fn find_query_accepts_ime_commit_through_root_event_path() {
+        let (mut app, mut st) = app();
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.open_search();
+
+        let commit = WindowEvent::Ime(winit::event::Ime::Commit("東京".into()));
+        feed_event(
+            &mut app,
+            &mut st,
+            &taffy,
+            node,
+            winit::event::Modifiers::default(),
+            &commit,
+        );
+        assert_eq!(app.query(), "東京");
     }
 
     #[test]
@@ -2188,7 +2304,7 @@ mod event_tests {
 
         // Pre-arm a portal request so applying Open can't launch a real host
         // dialog during the test; the in-flight guard must preserve it.
-        let sentinel = crate::portal::inject_for_test(crate::portal::PortalOutcome::Cancelled);
+        let sentinel = ui::portal::inject_for_test(ui::portal::PortalOutcome::Cancelled);
         app.portal_rx = Some(sentinel);
         app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
         assert!(
@@ -2215,8 +2331,8 @@ mod event_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sample.pdf"
         ));
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path),
+        app.portal_rx = Some(ui::portal::inject_for_test(
+            ui::portal::PortalOutcome::Opened(path),
         ));
 
         // The per-frame sync drains the portal channel and loads the doc.
@@ -2241,8 +2357,8 @@ mod event_tests {
         let (mut app, mut st) = app(); // sample document already loaded
         let before = app.has_document;
         let name_before = app.doc_name.clone();
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Cancelled,
+        app.portal_rx = Some(ui::portal::inject_for_test(
+            ui::portal::PortalOutcome::Cancelled,
         ));
         app.sync(&mut st.doc, &st.root);
         assert_eq!(
@@ -2317,7 +2433,7 @@ mod event_tests {
         st: &mut ui::State,
         taffy: &TaffyTree<()>,
         node: NodeId,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         dev: winit::event::DeviceId,
     ) -> String {
         use winit::dpi::PhysicalPosition;
@@ -2386,7 +2502,7 @@ mod event_tests {
         let mods = winit::event::Modifiers::default();
         let dev = dummy_device_id();
 
-        let note_id = right_click_seeded_note(&mut app, &mut st, &taffy, node, &mods, dev);
+        let note_id = right_click_seeded_note(&mut app, &mut st, &taffy, node, mods, dev);
 
         // A draw pass captures the Delete item rect (exactly as it does live).
         let theme = ui::theme::Theme::dark();
@@ -2407,7 +2523,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(ic.0, ic.1),
@@ -2418,7 +2534,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,

@@ -1085,6 +1085,11 @@ impl WindowGroup {
     /// The two-bar resize grip on the group's trailing edge. The hit zone
     /// (`RESIZE_HANDLE_PX = 6`) is wider than the painted grip so the
     /// cursor catches it early.
+    #[allow(
+        clippy::similar_names,
+        reason = "cx/cy is the standard center-x/center-y coordinate naming convention; \
+                  distinguishing them further would reduce clarity"
+    )]
     fn draw_resize_grip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let grip_col = if self.hover_resize || self.resize_origin.is_some() {
             theme.tokens.colors.border_focus
@@ -1093,11 +1098,6 @@ impl WindowGroup {
         };
         let total_h = self.rect.height();
         let grip_h = (total_h * 0.25).clamp(24.0, 80.0);
-        #[allow(
-            clippy::similar_names,
-            reason = "cx/cy is the standard center-x/center-y coordinate naming convention; \
-                      distinguishing them further would reduce clarity"
-        )]
         let grip_cx = self.rect.x1 - 3.0;
         let grip_cy = self.rect.center().y;
         let bar = |dx: f64| {

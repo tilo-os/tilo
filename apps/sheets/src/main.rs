@@ -80,9 +80,12 @@ fn configure(app: &mut ui::App) {
     sheets::actions::register(app.action_registry_mut());
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new(APP_ID, sheets::app_root)
+        &LaunchSpec::new(APP_ID, sheets::app_root)
             .shot_handler(render_shot)
             .scenarios(SCENARIOS)
             .configure_app(configure),
@@ -96,6 +99,8 @@ pub fn main() {
 /// Returns an error if `--shots` was not given a path, or if
 /// `render_shot_to_png` fails to build the layout or write the file.
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
+
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
     let scenario = args.scenario.as_deref();
@@ -105,7 +110,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     // The scenario hook runs after the document is seeded (in
     // `render_shot_to_png`, post-`sync`), because opening a menu, starting an
     // edit, or driving a fill/paste operates on the live state.
-    type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
     let setup: Setup = match scenario {
         Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
         Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),
@@ -125,6 +129,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(format!("Sheets screenshot failed: {error}")))
 }
 
+/// One-shot hook run after `sync` seeds the demo document, before the first
+/// layout/draw pass — used to stage a `--shots` scenario's extra state.
+type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
+
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
@@ -135,7 +143,7 @@ fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),
     out: &std::path::Path,
-    setup: Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>,
+    setup: ShotSetup,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so

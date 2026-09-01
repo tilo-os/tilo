@@ -41,6 +41,26 @@
 //! (route to a host). [`dispatch`](executor::dispatch) honours it
 //! against an [`ActionTransport`](executor::ActionTransport), falling
 //! back to local execution when no host answers.
+//!
+//! ## Sharing this vocabulary with the compositor
+//!
+//! [`params`] is deliberately the *same* vocabulary the compositor's headless
+//! action API speaks — [`ParamType`], [`ActionParam`], [`ArgValue`], and the
+//! strict [`ActionArgs::bind`] — lifted into one definition rather than left to
+//! converge by accident. The wire spellings of `text` / `integer` / `boolean`
+//! and the bind semantics (unknown argument refused, first failure wins,
+//! nothing partial reaches an action) are unchanged from that surface, and the
+//! `const` constructors keep a `const PARAMS: &[ActionParam] = &[…]` compiling
+//! as written.
+//!
+//! Two deliberate supersets, both additive: [`ParamType::Number`], because the
+//! app-side arguments this replaces are overwhelmingly fractional and rounding
+//! them would discard the values they exist to carry; and
+//! [`ActionParam::choices`], which turns a prose list into something a caller
+//! can read and binding can enforce. The string fields are
+//! [`Cow<'static, str>`](std::borrow::Cow) rather than `&'static str` because an
+//! app builds its parameters per frame out of live document state — a `const`
+//! declaration is `Cow::Borrowed` and costs nothing.
 
 #![cfg_attr(
     test,
@@ -56,23 +76,32 @@
 )]
 
 pub mod action;
+pub mod context;
 pub mod door;
 pub mod envelope;
 pub mod executor;
+pub mod optimistic;
+pub mod params;
 pub mod registry;
 pub mod resource;
 
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+pub use context::{
+    ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
+};
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
-    dispatch, dispatch_by, replay,
+    apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
+    dispatch_with_context, replay,
 };
+pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
+pub use params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 pub use registry::ActionRegistry;
 pub use resource::{
-    ActionInput, ActionSpec, Collects, FlatAction, KEY_SEP, Resource, ResourceId, ResourceProvider,
-    flatten,
+    ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,
+    ResourceId, ResourceProvider, flatten,
 };
 
 #[cfg(test)]
@@ -301,6 +330,7 @@ mod tests {
             timestamp: 0,
             locus: ExecutionLocus::ClientLocal,
             actor: None,
+            context: None,
         };
         assert!(matches!(
             replay(&mut doc, &env, &reg),

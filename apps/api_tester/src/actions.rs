@@ -45,8 +45,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::ApiDoc;
@@ -405,13 +405,10 @@ fn split_kv(arg: &str) -> (String, String) {
 fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> ActionSpec {
     let label = label.into();
     ActionSpec::immediate(id, label.clone(), API_TESTER_ACTION_TYPE, action).unwrap_or_else(|_| {
-        ActionSpec {
-            id: id.to_string(),
-            label,
-            description: None,
-            locus: action.locus(),
-            input: ActionInput::Immediate(encode(action)),
-        }
+        // The fallible builder's fallback. `ActionSpec`'s fields are
+        // private now that it carries typed parameters, so construct it
+        // through the constructor that takes an already-encoded action.
+        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
     })
 }
 

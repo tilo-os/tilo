@@ -31,15 +31,37 @@ capacity when they are affected without creating an always-on third compile.
 ## Cache layers
 
 - sccache stores compiler outputs in the repository-scoped S3 prefix
-  `forgejo-runners/v1/`. This is the main cross-runner Rust cache.
-- The immutable Cargo target archive is a fallback for artifacts sccache cannot
-  represent. Only shard 1 writes a missing key, avoiding duplicate uploads.
+  `quickdesktop/v1/`. This is the main cross-runner Rust cache. The builder
+  workflow proves a cold write and a warm read in separate containers against
+  an isolated canary prefix whenever the image changes.
+- `actions/cache` stores only Cargo registry indexes, crate archives, and Git
+  checkouts. We deliberately do not archive `target/`: it is large, expensive
+  to compress and upload from every revision, and overlaps the compiler
+  objects already handled by sccache. Within one job, later Cargo steps reuse
+  the live target tree directly.
 - The OS image build uses a registry-backed BuildKit cache because its
   intermediate container layers are not compiler outputs.
 
-The layers solve different problems; replacing all three with a single cache
-would either omit non-compiler artifacts or upload entire target directories on
-every shard.
+The layers solve different problems; replacing them with a single target-tree
+archive would duplicate compiler storage and spend runner CPU compressing
+revision-specific linker outputs.
+
+## Build-profile reuse
+
+Required and nightly tests set both `CARGO_PROFILE_TEST_DEBUG=0` and
+`CARGO_PROFILE_DEV_DEBUG=0`. Cargo puts the built-in test and dev profiles in
+the same `target/debug` tree, but debuginfo is part of an artifact's
+fingerprint. Leaving dev at its default therefore made the all-target and
+example steps rebuild dependencies that nextest had just emitted, solely to
+add debugger data that CI never consumes.
+
+A controlled qdoc-pdf probe used fresh target directories and no compiler
+cache. After `cargo test --no-run`, building its examples took 3.35 seconds
+with matching zero-debuginfo profiles versus 54.47 seconds with Cargo's default
+dev debuginfo. A smaller collab-types test/check probe reduced the subsequent
+all-target check from 10.00 to 7.51 seconds. The workflows retain separate
+all-target and linked-example gates—the coverage is unchanged—while sharing
+compatible dependency artifacts between them.
 
 ## Measurements
 

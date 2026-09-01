@@ -24,14 +24,19 @@ if [ ! -x "$QOS_SHELL" ]; then
     exit 1
 fi
 
+# --host-desktop-session is the package-owned, distro-neutral declaration that
+# this is a session added to an existing Linux installation. It keeps device
+# identity material in this login's XDG data tree and selects the reduced
+# identity-only OOBE. Do not infer this from distro files or XDG desktop names:
+# neither says how this binary was installed.
+#
 # --backend drm: this is a real login session on a seat of its own, driving
 # KMS directly. The winit backend (the default) is for running nested inside
 # another compositor and would have nothing to attach to here.
 #
-# --firstboot: on the qOS image a systemd unit runs this once before the
-# session; a host has no such unit, so without it the user's config dirs and
-# signing identity are never created and every session logs "no qOS identity
-# found". It does the setup and then falls through into the compositor, and
-# `ensure_primary_identity` returns early when the record already exists, so
-# passing it on every start provisions once and is a no-op thereafter.
-exec "$QOS_SHELL" --firstboot --backend drm "$@"
+# --firstboot: on the qOS image a systemd unit creates the user's config
+# directories once before the session. A host has no such unit, so the wrapper
+# performs that idempotent preparation and then falls through to the
+# compositor. Identity creation itself stays interactive in trusted compositor
+# chrome; it is never minted silently by this wrapper.
+exec "$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@"

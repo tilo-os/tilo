@@ -3,6 +3,7 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::string_slice,
+    clippy::float_cmp,
     clippy::panic,
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
@@ -21,6 +22,12 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         modified: Some(Local.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap()),
         mime: mime.into(),
         sync_state: None,
+        content_hash: None,
+        record_id: None,
+        availability: None,
+        share: None,
+        history: None,
+        rich_metadata: None,
     }
 }
 
@@ -352,7 +359,7 @@ fn sidebar_highlights_active_shortcut() {
 fn sidebar_has_fixed_width_180() {
     // AUDIT.md S3: the sidebar's fixed width is 180 px. The constant must
     // stay at exactly 180 so visual parity with the iced original is kept.
-    assert_eq!(file_explorer::sidebar::SIDEBAR_WIDTH_PX, 180.0);
+    assert!((file_explorer::sidebar::SIDEBAR_WIDTH_PX - 180.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -445,6 +452,12 @@ fn list_build_yields_a_file_view() {
         modified: None,
         mime: String::new(),
         sync_state: None,
+        content_hash: None,
+        record_id: None,
+        availability: None,
+        share: None,
+        history: None,
+        rich_metadata: None,
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -488,6 +501,12 @@ fn grid_mode_uses_responsive_file_view() {
         modified: None,
         mime: String::new(),
         sync_state: None,
+        content_hash: None,
+        record_id: None,
+        availability: None,
+        share: None,
+        history: None,
+        rich_metadata: None,
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();
@@ -511,8 +530,8 @@ fn grid_mode_uses_responsive_file_view() {
 fn grid_cell_metrics_are_documented_values() {
     // Pins the default grid cell size so a regression in the grid builder is
     // caught (the grid derives its column count from these).
-    assert_eq!(file_explorer::views::grid_view::GRID_CELL_WIDTH, 112.0);
-    assert_eq!(file_explorer::views::grid_view::GRID_CELL_HEIGHT, 104.0);
+    assert!((file_explorer::views::grid_view::GRID_CELL_WIDTH - 112.0).abs() < f64::EPSILON);
+    assert!((file_explorer::views::grid_view::GRID_CELL_HEIGHT - 104.0).abs() < f64::EPSILON);
 }
 
 #[test]

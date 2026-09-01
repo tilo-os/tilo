@@ -794,7 +794,7 @@ impl Widget for NoteTreeView {
             state,
             path,
             handled,
-            focus_target,
+            focus_target.as_ref(),
             node_id,
             taffy,
         ) {
@@ -882,6 +882,91 @@ impl Widget for NoteTreeView {
         self.is_focused
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut children = Vec::with_capacity(self.flat_rows.len().saturating_add(1));
+        if self.new_page_btn_rect.area() > 0.0 {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New note")
+                    .with_description("Create a top-level note")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_key(0)
+                    .with_action_target("notes:new-page")
+                    .with_bounds(self.new_page_btn_rect),
+            );
+        }
+        let count = self.flat_rows.len();
+        for (index, row) in self.flat_rows.iter().enumerate() {
+            let Some(rect) = self.row_rects.get(index).copied() else {
+                break;
+            };
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            let mut state = AccessState::new()
+                .focusable(true)
+                .selected(self.selected == Some(row.id));
+            state.expanded = row.has_children.then(|| self.expanded.contains(&row.id));
+            children.push(
+                AccessNode::new(Role::TreeItem)
+                    .with_name(row.title.clone())
+                    .with_state(state)
+                    .with_position(index.saturating_add(1), count)
+                    .with_level(row.depth.saturating_add(1))
+                    .with_hashed_key(row.id)
+                    .with_action_target(format!("notes:page:{}", row.id))
+                    .with_bounds(rect),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Tree)
+                .with_name("Pages")
+                .with_state(AccessState::new().focusable(true).focused(self.is_focused))
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        let has_new_page = self.new_page_btn_rect.area() > 0.0;
+        if *index == 0 && has_new_page {
+            return Some(self.new_page_btn_rect);
+        }
+        // The new-note affordance is the first synthetic child whenever it
+        // has geometry. The visible rows follow in the same ordinal order as
+        // `accessibility`, so AT activation and pointer hit testing agree.
+        let row_index = if has_new_page {
+            index.saturating_sub(1)
+        } else {
+            *index
+        };
+        self.row_rects.get(row_index).copied()
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        self.is_focused = true;
+        let has_new_page = self.new_page_btn_rect.area() > 0.0;
+        let row_index = if has_new_page {
+            index.saturating_sub(1)
+        } else {
+            *index
+        };
+        if (has_new_page || *index > 0)
+            && let Some(row) = self.flat_rows.get(row_index)
+        {
+            self.selected = Some(row.id);
+        }
+        self.dirty = true;
+        true
+    }
+
     /// A latched drag (or an open context menu) wants to keep receiving
     /// pointer events even when the cursor leaves the sidebar rect, so the
     /// ghost keeps tracking and the drop still resolves.
@@ -899,7 +984,7 @@ impl Widget for NoteTreeView {
 }
 
 impl NoteTreeView {
-    /// The "PAGES" label + "+" new-page button header strip.
+    /// The "Pages" label + "+" new-page button header strip.
     fn draw_header(
         &self,
         scene: &mut Scene,
@@ -911,8 +996,8 @@ impl NoteTreeView {
         let header_text_y = self.rect.y0 + (HEADER_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
         text_renderer.draw_text(
             scene,
-            "PAGES",
-            ROW_TEXT_SIZE - 2.0,
+            "Pages",
+            ROW_TEXT_SIZE,
             tokens.colors.text_dim,
             transform * Affine::translate((self.rect.x0 + ROW_INSET_X, header_text_y)),
             Some(num::f32_of_f64(
@@ -1221,7 +1306,7 @@ impl NoteTreeView {
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        focus_target: &Option<NodeId>,
+        focus_target: Option<&NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
@@ -1236,7 +1321,7 @@ impl NoteTreeView {
                 ));
             }
             let mut menu_handled = false;
-            let mut ft = *focus_target;
+            let mut ft = focus_target.copied();
             self.menu.handle_event(
                 event,
                 scale_factor,
@@ -1790,5 +1875,35 @@ mod tests {
         tree.begin_rename(id, "Untitled");
         tree.cancel_rename();
         assert!(tree.take_events().is_empty());
+    }
+
+    #[test]
+    fn page_tree_semantics_follow_visible_rows_and_their_hit_rects() {
+        let mut ws = Workspace::new();
+        let root = ws.create_page(None);
+        ws.rename(root, "Project plan");
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&ws);
+        tree.new_page_btn_rect = Rect::new(160.0, 8.0, 186.0, 34.0);
+        tree.row_rects = vec![Rect::new(0.0, 42.0, 200.0, 72.0)];
+
+        let node = Widget::accessibility(&tree).expect("page tree is semantic");
+        assert_eq!(node.role, ui::a11y::Role::Tree);
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(
+            node.children[0].action_target.as_deref(),
+            Some("notes:new-page")
+        );
+        assert_eq!(node.children[1].name.as_deref(), Some("Project plan"));
+        assert_eq!(
+            Widget::synthetic_accessibility_rect(&tree, &[1]),
+            Some(tree.row_rects[0])
+        );
+        assert!(Widget::focus_synthetic_accessibility(&mut tree, &[1]));
+        assert_eq!(
+            tree.selected,
+            Some(root),
+            "AT focus selects the visible page"
+        );
     }
 }

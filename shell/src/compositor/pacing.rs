@@ -407,7 +407,7 @@ mod tests {
             Duration::from_nanos(1_000_000_000 / u64::from(MAX_REFRESH_HZ)),
             "a zero interval must clamp to the fastest supported rate"
         );
-        let frozen = FrameClock::new(Duration::from_hours(1), t0);
+        let frozen = FrameClock::new(Duration::from_secs(3600), t0);
         assert_eq!(
             frozen.interval(),
             Duration::from_nanos(1_000_000_000 / u64::from(MIN_REFRESH_HZ)),

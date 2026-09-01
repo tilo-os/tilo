@@ -183,7 +183,7 @@ fn room_names(tree: &WorkspaceTree) -> Vec<(RoomId, String)> {
 /// one is a guess.
 fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, String)]) -> String {
     let where_it_lives = if here.is_some_and(|h| record.is_in(h)) {
-        "In this room".to_string()
+        "In this workspace".to_string()
     } else {
         let named = record
             .rooms()
@@ -199,7 +199,7 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
             Some(name) => format!("In {name}"),
             // No workspace for this room (deleted, or minted on a peer):
             // say so rather than print a uuid.
-            None => "In another room".to_string(),
+            None => "In another workspace".to_string(),
         }
     };
     match record.id.file_path() {
@@ -457,7 +457,7 @@ mod tests {
                 .subtitle
                 .as_deref()
                 .unwrap_or_default()
-                .starts_with("In this room"),
+                .starts_with("In this workspace"),
             "got {:?}",
             out[0].subtitle
         );
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("In another room · /shared/minutes.odt")
+            Some("In another workspace · /shared/minutes.odt")
         );
     }
 
@@ -501,7 +501,7 @@ mod tests {
         activate(&chrome, reading_ws);
         assert_eq!(
             query(&provider, "book", &chrome)[0].subtitle.as_deref(),
-            Some("In this room · book")
+            Some("In this workspace · book")
         );
     }
 

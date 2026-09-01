@@ -1,28 +1,12 @@
-//! PDF — thin binary entry point. All logic lives in the library.
-//!
-//! Usage:
-//!   * `pdf_viewer [FILE.pdf]` — run the live winit event loop; opens FILE if
-//!     given, otherwise the empty state.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!     (headless screenshot).
-//!   * `--viewport WxH` — override the shot viewport (default 1280x800).
-//!   * `--sample` — use the bundled demonstration document (shots/testing;
-//!     seeds example markup).
+//! PDF — standard qOS application entry point.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    reason = "app-local arithmetic; see the note above"
+    reason = "app-local arithmetic"
 )]
 #![cfg_attr(
     test,
@@ -37,235 +21,70 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+const APP_ID: &str = "dev.qos.pdf-viewer";
 
-struct Args {
-    shots: Option<std::path::PathBuf>,
-    viewport: (u32, u32),
-    sample: bool,
-    /// Screenshot-only scenario selector (e.g. `edit-comment`).
-    scenario: Option<String>,
-    file: Option<std::path::PathBuf>,
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch's argument-aware root factory"
+)]
+fn build_widget(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let file = args.positionals().first().map(std::path::PathBuf::from);
+    let root = match args.scenario.as_deref() {
+        Some("edit-comment") => pdf_viewer::app_root_sample_editing(),
+        Some("selection-hud") => pdf_viewer::app_root_selection_hud(),
+        Some("page-bubble") => pdf_viewer::app_root_page_bubble(),
+        Some("search") => pdf_viewer::app_root_search(),
+        Some("sign") => pdf_viewer::app_root_sign(),
+        Some("reorder") => pdf_viewer::app_root_reorder_demo(file.as_deref()),
+        Some("import") => pdf_viewer::app_root_import_demo(file.as_deref()),
+        _ => file.as_deref().map_or_else(
+            || {
+                if args.has("--sample") {
+                    pdf_viewer::app_root_sample()
+                } else {
+                    pdf_viewer::app_root()
+                }
+            },
+            pdf_viewer::app_root_open,
+        ),
+    };
+    Ok(root)
 }
 
-/// # Errors
-///
-/// Only the `--shots` path can fail: it propagates a `taffy` layout error
-/// (`new_with_children` / `compute_layout_with_measure` in
-/// [`render_shot_to_png`]) if the widget tree it built cannot be laid out at
-/// the requested viewport.
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
-    let raw_args: Vec<String> = std::env::args().collect();
-    let args = parse_args(&raw_args);
-
-    if let Some(out) = &args.shots {
-        render_shot_to_png(build_widget(&args), args.viewport, out)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&raw_args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            build_widget(&args),
-            "dev.qos.pdf-viewer",
-        ));
-    }
-
-    // The package document is this room's *index* — which documents' markup
-    // this room holds. The markup itself lives one document per record, so
-    // opening a second PDF cannot touch the first one's annotations.
-    //
-    // A pre-records install may still have markup at the root of that index
-    // file. It is left where it is rather than migrated: it was keyed by page
-    // number with no record of which file it belonged to (which is the bug
-    // this replaces), so nothing can honestly say which document to attach it
-    // to. It costs a few kilobytes and destroys nothing.
-    let (room, autosave) = ui::persist::open("dev.qos.pdf-viewer");
-    let records = ui::RecordSet::open("dev.qos.pdf-viewer");
-    let mut app = ui::App::new(ui::State::new(), build_widget(&args))
+fn live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    // The package document is the record index; each PDF's markup lives in a
+    // separate record so annotations from two files cannot collide.
+    let (room, autosave) = ui::persist::open(APP_ID);
+    let records = ui::RecordSet::open(APP_ID);
+    let mut app = ui::App::new(ui::State::new(), build_widget(args)?)
         .with_autosave(autosave)
         .with_records(records, room.doc);
-    // Register the reader's actions so the shell's Ctrl+K palette can decode +
-    // replay the same markup actions the on-page affordances dispatch.
     pdf_viewer::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
 
-/// Pick the widget for the current invocation: an explicit file wins, then the
-/// `--sample` demonstration document, otherwise the empty state.
-fn build_widget(args: &Args) -> Box<dyn Widget> {
-    // Screenshot scenarios take precedence so they can also target a real file.
-    match args.scenario.as_deref() {
-        Some("edit-comment") => return pdf_viewer::app_root_sample_editing(),
-        Some("selection-hud") => return pdf_viewer::app_root_selection_hud(),
-        Some("page-bubble") => return pdf_viewer::app_root_page_bubble(),
-        Some("search") => return pdf_viewer::app_root_search(),
-        Some("sign") => return pdf_viewer::app_root_sign(),
-        Some("reorder") => return pdf_viewer::app_root_reorder_demo(args.file.as_deref()),
-        Some("import") => return pdf_viewer::app_root_import_demo(args.file.as_deref()),
-        _ => {}
-    }
-    if let Some(file) = &args.file {
-        pdf_viewer::app_root_open(file)
-    } else if args.sample {
-        pdf_viewer::app_root_sample()
-    } else {
-        pdf_viewer::app_root()
-    }
-}
-
-fn parse_args(args: &[String]) -> Args {
-    let mut out = Args {
-        shots: None,
-        viewport: DEFAULT_SHOTS_VIEWPORT,
-        sample: false,
-        scenario: None,
-        file: None,
-    };
-    let mut i = 1;
-    while i < args.len() {
-        let Some(arg) = args.get(i) else { break };
-        if arg == "--shots" {
-            out.shots = args.get(i + 1).map(std::path::PathBuf::from);
-            i += 2;
-        } else if let Some(rest) = arg.strip_prefix("--shots=") {
-            out.shots = Some(std::path::PathBuf::from(rest));
-            i += 1;
-        } else if arg == "--viewport" {
-            if let Some(v) = args.get(i + 1).and_then(|s| parse_viewport(s)) {
-                out.viewport = v;
-            }
-            i += 2;
-        } else if let Some(rest) = arg.strip_prefix("--viewport=") {
-            if let Some(v) = parse_viewport(rest) {
-                out.viewport = v;
-            }
-            i += 1;
-        } else if arg == "--sample" {
-            out.sample = true;
-            i += 1;
-        } else if arg == "--scenario" {
-            out.scenario = args.get(i + 1).cloned();
-            i += 2;
-        } else if let Some(rest) = arg.strip_prefix("--scenario=") {
-            out.scenario = Some(rest.to_string());
-            i += 1;
-        } else if !arg.starts_with("--") && out.file.is_none() {
-            out.file = Some(std::path::PathBuf::from(arg));
-            i += 1;
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
-
-fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s.split_once(['x', 'X', ','])?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-}
-
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
-fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    out: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome (and the shared selection HUD) can be proven across
-    // palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    // Draw until the per-frame raster budget's backlog drains so the captured
-    // still is the settled image. The live app pumps these follow-up frames via
-    // `needs_animation_frame`; a one-shot capture drains them here, otherwise a
-    // deferred page / rail thumbnail would be missing from the PNG.
-    let mut scene = Scene::new();
-    for _ in 0..32 {
-        scene = Scene::new();
-        widget.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-        );
-        if !widget.needs_animation_frame() {
-            break;
-        }
-    }
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("pdf_viewer: wrote shot to {}", out.display());
-    Ok(())
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new_with_args(APP_ID, build_widget)
+            .shot_root(build_widget)
+            .allowed_live_flags(&["--sample"])
+            .max_positionals(1)
+            .scenarios(&[
+                "edit-comment",
+                "selection-hud",
+                "page-bubble",
+                "search",
+                "sign",
+                "reorder",
+                "import",
+            ])
+            .live_handler(live),
+    );
 }

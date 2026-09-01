@@ -103,6 +103,11 @@ pub enum RevocationError {
 }
 
 /// Canonical digest a user identity signs to authorise this revocation.
+///
+/// # Errors
+///
+/// Returns [`RevocationError::Canonical`] if `entry` cannot be
+/// postcard-encoded (effectively unreachable for this crate's types).
 pub fn revocation_signing_digest(entry: &RevocationEntry) -> Result<[u8; 32], RevocationError> {
     signing_digest(REVOCATION_PREIMAGE_TAG, &entry.view()).map_err(Into::into)
 }

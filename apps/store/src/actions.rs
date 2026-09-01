@@ -268,7 +268,7 @@ pub fn spawn_plan(plan: &SpawnPlan) -> (i32, String) {
 pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("qos-store/0.1")
-        .timeout(Duration::from_mins(2))
+        .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let bytes = client

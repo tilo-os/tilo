@@ -44,19 +44,16 @@ fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let workspaces = root.get("workspaces")?.as_array()?;
     for ws in workspaces {
-        let strips = match ws.get("strips").and_then(|s| s.as_array()) {
-            Some(s) => s,
-            None => continue,
+        let Some(strips) = ws.get("strips").and_then(|s| s.as_array()) else {
+            continue;
         };
         for strip in strips {
-            let groups = match strip.get("window_groups").and_then(|g| g.as_array()) {
-                Some(g) => g,
-                None => continue,
+            let Some(groups) = strip.get("window_groups").and_then(|g| g.as_array()) else {
+                continue;
             };
             for group in groups {
-                let tabs = match group.get("tabs").and_then(|t| t.as_array()) {
-                    Some(t) => t,
-                    None => continue,
+                let Some(tabs) = group.get("tabs").and_then(|t| t.as_array()) else {
+                    continue;
                 };
                 for tab in tabs {
                     // Tab.tile is serialized as externally-tagged enum:
@@ -76,7 +73,9 @@ fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<
 
 /// Re-polls every 50ms until the closure yields `Some(true)` or `timeout`.
 fn poll_for(timeout: Duration, mut probe: impl FnMut() -> Option<bool>) -> bool {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         if matches!(probe(), Some(true)) {
             return true;
@@ -126,7 +125,9 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
         }
     });
 
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(8))
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(remaining.min(Duration::from_millis(500))) {
@@ -135,18 +136,21 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
                     return (child, name);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     let _ = child.kill();
+    let _ = child.wait();
     panic!("compositor never printed `nirios compositor listening on …` within 8s");
 }
 
 fn extract_socket_name(line: &str) -> Option<String> {
     // The contract is `nirios compositor listening on "wayland-N"`.
     let marker = "nirios compositor listening on ";
-    let rest = line.find(marker).map(|i| &line[i + marker.len()..])?;
+    let rest = line
+        .find(marker)
+        .and_then(|i| line.get(i.saturating_add(marker.len())..))?;
     // The OsString's Debug form on Linux is `"wayland-N"` — strip the
     // surrounding double-quotes.
     let trimmed = rest.trim();
@@ -274,7 +278,9 @@ fn round_trip_until_bound(
     state: &mut TestClient,
     timeout: Duration,
 ) {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     while (state.compositor.is_none() || state.wm_base.is_none()) && Instant::now() < deadline {
         let _ = conn.roundtrip();
         let _ = queue.dispatch_pending(state);

@@ -95,11 +95,13 @@ impl IdentityStore for DemoFileStore {
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
         atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
-        let mut cached = self
-            .cached
-            .lock()
-            .map_err(|err| IdentityFlowError::Io(io::Error::other(err.to_string())))?;
-        *cached = Some(record.clone());
+        {
+            let mut cached = self
+                .cached
+                .lock()
+                .map_err(|err| IdentityFlowError::Io(io::Error::other(err.to_string())))?;
+            *cached = Some(record.clone());
+        }
         eprintln!(
             "identity_flow_demo: wrote identity to {} (0600)",
             self.path.display()
@@ -162,6 +164,11 @@ pub fn run(args: &[String]) {
 /// Returns an error if any of the threshold-identity, record, or invite
 /// construction steps fail. Never happens with this hardcoded seed data,
 /// but each step is fallible in its real signature.
+#[allow(
+    clippy::similar_names,
+    reason = "sk/pk is the standard secret-key/public-key naming convention; \
+              distinguishing them further would reduce clarity"
+)]
 fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     let mut rng = OsRng;
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
@@ -179,17 +186,12 @@ fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     }
     flow.invite_mint
         .set_channel(ChannelId::new(), "engineering");
-    #[allow(
-        clippy::similar_names,
-        reason = "sk/pk is the standard secret-key/public-key naming convention; \
-                  distinguishing them further would reduce clarity"
-    )]
     let (owner_sk, owner_pk) = generate_keypair();
     // checked_add: SystemTime's Add<Duration> panics on overflow. One hour
     // from now never overflows; falling back to "now" keeps this a real
     // handled path rather than a panic if it somehow ever did.
     let expires_at = SystemTime::now()
-        .checked_add(std::time::Duration::from_hours(1))
+        .checked_add(std::time::Duration::from_secs(3600))
         .unwrap_or_else(SystemTime::now);
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),

@@ -35,9 +35,13 @@
 )]
 
 use std::collections::HashMap;
+use std::io::Read;
 
 use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
+
+const MAX_RECEIVED_SHARE_URI_BYTES: usize = 16 * 1024;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -100,6 +104,9 @@ fn named_actor(prefix: &str) -> Option<String> {
     }
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
 ///
 /// Returns an error if `--shots` mode fails to lay out or render the
@@ -160,19 +167,57 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let widget = FileExplorerWidget::new();
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            Box::new(widget),
-            "dev.qos.file-explorer",
-        ));
-    }
+    ui::launch::run(
+        &LaunchSpec::new_with_args("dev.qos.file-explorer", live_root)
+            .open_state(open_state)
+            .allowed_live_flags(&["--open-share-stdin"])
+            .max_positionals(1),
+    )?;
+    Ok(())
+}
 
-    let (mut state, autosave) = ui::persist::open("dev.qos.file-explorer");
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LaunchSpec::new_with_args"
+)]
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let received_share = read_received_share_stdin(&raw_args)
+        .map(|result| result.and_then(file_explorer::received_shares::admit_link));
+    let mut widget = FileExplorerWidget::new();
+    if received_share.is_none()
+        && let Some(path) = args
+            .positionals()
+            .first()
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_dir())
+    {
+        widget.navigate(path);
+    }
+    if let Some(result) = received_share {
+        match result {
+            Ok(status) => {
+                if let Some(mount) = status.mount {
+                    widget.navigate(std::path::PathBuf::from(mount.path));
+                    widget.set_external_status(if mount.running {
+                        file_explorer::i18n::t("files-received-file")
+                    } else {
+                        file_explorer::i18n::t("files-received-mount-starting")
+                    });
+                } else {
+                    widget.set_external_status(file_explorer::i18n::t("files-received-admitted"));
+                }
+            }
+            Err(error) => widget.set_external_status(error),
+        }
+    }
+    Ok(Box::new(widget))
+}
+
+/// Open persisted state while preserving the file manager's per-replica actor
+/// naming. The shared runner still owns autosave, headless driving, and exit.
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+    let (mut state, autosave) = ui::persist::open(app_id);
     // Two windows of the file manager are two authors of the same document
     // — an inline rename is native collaborative `Text` (see
     // `actions.rs`), so concurrent edits have to be attributable to tell
@@ -185,9 +230,37 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
-    app.run();
-    Ok(())
+    (state, autosave)
+}
+
+fn read_received_share_stdin(args: &[String]) -> Option<Result<String, String>> {
+    if !args.iter().any(|arg| arg == "--open-share-stdin") {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    if std::io::stdin()
+        .take((MAX_RECEIVED_SHARE_URI_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Some(Err(file_explorer::i18n::t(
+            "files-received-link-read-failed",
+        )));
+    }
+    if bytes.len() > MAX_RECEIVED_SHARE_URI_BYTES {
+        return Some(Err(file_explorer::i18n::t("files-received-link-too-large")));
+    }
+    let Ok(uri) = String::from_utf8(bytes) else {
+        return Some(Err(file_explorer::i18n::t(
+            "files-received-link-invalid-text",
+        )));
+    };
+    let uri = uri.trim_end_matches(['\r', '\n']);
+    Some(if uri.is_empty() {
+        Err(file_explorer::i18n::t("files-received-link-empty"))
+    } else {
+        Ok(uri.to_owned())
+    })
 }
 
 /// Seed a demo workspace directory whose files carry real `user.qos.sync`
@@ -640,6 +713,10 @@ fn apply_post_layout_scenario(
 /// applies any post-layout `scenario` (which needs the laid-out geometry —
 /// e.g. a mid-drag reorder or an open context menu) and finally composites the
 /// overlay layer so context menus appear in the shot.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the headless shot boundary owns one linear GPU setup-render-readback-write transaction"
+)]
 fn render_shot_to_png(
     mut widget: FileExplorerWidget,
     viewport: (u32, u32),
@@ -663,7 +740,7 @@ fn render_shot_to_png(
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let mut child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -694,6 +771,43 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Responsive children learn their actual width only during layout. Settle
+    // one structural reflow before capturing so narrow screenshots test the
+    // finished interface, not its first-frame breakpoint transition.
+    if widget.take_structure_dirty() {
+        taffy = TaffyTree::new();
+        node_map = HashMap::new();
+        widget.sync(&mut state.doc, &state.root);
+        child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )?;
+        let measure_map = node_map.clone();
+        let tr = &mut text_renderer;
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
+        widget.apply_layout(&taffy, child, Point::ORIGIN);
+    }
 
     // Post-layout scenarios need the laid-out geometry.
     apply_post_layout_scenario(&mut widget, scenario, (w, h), &mut state, child, &taffy);

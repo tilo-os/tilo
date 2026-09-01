@@ -8,6 +8,13 @@ pub const ACCENT_PRIMARY_IDX: usize = 5;
 /// One step darker than [`ACCENT_PRIMARY_IDX`].
 pub const ACCENT_HOVER_IDX: usize = 4;
 
+/// How far [`Colors::legible_fill`] may deepen a chip's fill toward black
+/// before it gives up and re-picks the label instead. At 35 % a mid-tone
+/// accent still reads as itself; past it the pale accents (Nord's frost,
+/// Gruvbox's yellow, Rosé Pine's rose) go muddy, and those are exactly the
+/// ones a dark label suits anyway.
+pub const MAX_CHIP_DEEPEN: f32 = 0.35;
+
 pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 
 /// Straight (non-premultiplied) 8-bit sRGB mix — the space the Themes app
@@ -201,11 +208,66 @@ pub struct Colors {
     pub text_tertiary: Color,
     pub border_standard: Color,
     pub border_focus: Color,
+
+    // --- state veneers ----------------------------------------------------
+    //
+    // The translucent washes widgets paint over whatever surface they sit on
+    // to signal hover / press / selection. They are **directional**: a veneer
+    // has to *lighten* a dark ground and *darken* a light one, otherwise it
+    // vanishes. Painting white over a light theme's `#FFFFFF` card is a
+    // no-op, which is how hover feedback silently disappeared in every light
+    // theme. [`Colors::themed`] therefore picks the polarity per theme; the
+    // three alpha tiers are chosen so the perceptual step (ΔL*) of each tier
+    // matches across light and dark, rather than the raw alpha matching.
+    /// The quietest veneer — a "barely there" hover wash or faint divider.
+    /// ≈ 5 % on a dark ground, ≈ 6 % on a light one.
+    pub overlay_subtle: Color,
+    /// The middle veneer — a settled hover, a selected row, a resting chip.
+    pub overlay_medium: Color,
+    /// The strongest veneer — pressed states and emphatic fills.
+    pub overlay_strong: Color,
+    /// Hairline structure that has to read against the local surface rather
+    /// than against the theme ground (a divider inside a tinted panel).
+    pub overlay_border_subtle: Color,
+    /// The more assertive hairline — an active tab's outline, a focused chip.
+    pub overlay_border_strong: Color,
+
+    /// Alias of [`Self::overlay_subtle`], kept because the whole app fleet
+    /// references it by this name. The value is no longer literally white —
+    /// it is whichever polarity the theme needs. Prefer the semantic name in
+    /// new code.
     pub surface_white_5: Color,
+    /// Alias of [`Self::overlay_medium`]. See [`Self::surface_white_5`].
     pub surface_white_10: Color,
+    /// Alias of [`Self::overlay_strong`]. See [`Self::surface_white_5`].
     pub surface_white_20: Color,
+    /// Alias of [`Self::overlay_border_subtle`]. See [`Self::surface_white_5`].
     pub border_white_10: Color,
+    /// Alias of [`Self::overlay_border_strong`]. See [`Self::surface_white_5`].
     pub border_white_20: Color,
+}
+
+/// The five state-veneer values for one theme, in tier order:
+/// `(subtle, medium, strong, border_subtle, border_strong)`.
+pub type OverlayTiers = (Color, Color, Color, Color, Color);
+
+/// The veneer tiers for a **dark** ground: white at 5 % / 10 % / 20 %.
+pub fn dark_overlays() -> OverlayTiers {
+    let w = |a: u8| Color::from_rgba8(255, 255, 255, a);
+    (w(13), w(26), w(51), w(26), w(51))
+}
+
+/// The veneer tiers for a **light** ground: black at ≈ 6 % / 12 % / 24 %.
+///
+/// The alphas are not the dark ones mirrored. Equal alpha does not buy equal
+/// visibility, because a veneer's perceptual step depends on where the ground
+/// sits on the lightness curve. These were solved for: black at 15 / 31 / 60
+/// reproduces the dark tiers' ΔL* (≈ 5 / 10.5 / 21) to within half a unit on
+/// the ground *and* card colour of every light theme qOS ships — see
+/// `light_overlays_match_the_dark_perceptual_step`.
+pub fn light_overlays() -> OverlayTiers {
+    let k = |a: u8| Color::from_rgba8(0, 0, 0, a);
+    (k(15), k(31), k(60), k(31), k(60))
 }
 
 /// Colours [`Colors::categorical`] cycles through before repeating. Six
@@ -391,7 +453,19 @@ impl Colors {
             Color::from_rgb8(12, 12, 14)
         };
 
-        let veneer = if p.dark { Color::WHITE } else { black };
+        // A state veneer must move the ground it lands on, so its polarity
+        // follows the theme rather than being fixed white.
+        let (
+            overlay_subtle,
+            overlay_medium,
+            overlay_strong,
+            border_overlay_subtle,
+            border_overlay_strong,
+        ) = if p.dark {
+            dark_overlays()
+        } else {
+            light_overlays()
+        };
 
         Self {
             neutral,
@@ -420,15 +494,39 @@ impl Colors {
             text_tertiary: p.text_tertiary,
             border_standard: p.border,
             border_focus: p.focus,
+            overlay_subtle,
+            overlay_medium,
+            overlay_strong,
+            overlay_border_subtle: border_overlay_subtle,
+            overlay_border_strong: border_overlay_strong,
             // White at every strength failed on light themes (white over
             // `raised` measured 1.01:1 — why filter chips lost their pill),
-            // so veneers use the contrasting extreme instead.
-            surface_white_5: with_a(veneer, 13),
-            surface_white_10: with_a(veneer, 26),
-            surface_white_20: with_a(veneer, 51),
-            border_white_10: with_a(veneer, 26),
-            border_white_20: with_a(veneer, 51),
+            // so the aliases carry the same directional tiers.
+            surface_white_5: overlay_subtle,
+            surface_white_10: overlay_medium,
+            surface_white_20: overlay_strong,
+            border_white_10: border_overlay_subtle,
+            border_white_20: border_overlay_strong,
         }
+    }
+
+    /// Replace the state-veneer tiers wholesale. Themes assembled outside
+    /// [`Self::themed`] — the high-contrast preset, which starts from the dark
+    /// tokens and overrides surfaces to pure black — use this so the veneers
+    /// stay coherent with the surfaces they will be painted onto, instead of
+    /// inheriting a polarity that was right for a different ground.
+    pub fn set_overlays(&mut self, tiers: OverlayTiers) {
+        let (subtle, medium, strong, border_subtle, border_strong) = tiers;
+        self.overlay_subtle = subtle;
+        self.overlay_medium = medium;
+        self.overlay_strong = strong;
+        self.overlay_border_subtle = border_subtle;
+        self.overlay_border_strong = border_strong;
+        self.surface_white_5 = subtle;
+        self.surface_white_10 = medium;
+        self.surface_white_20 = strong;
+        self.border_white_10 = border_subtle;
+        self.border_white_20 = border_strong;
     }
 
     /// Decided by measurement, not a `dark` flag: when the card is in the
@@ -710,6 +808,76 @@ impl Colors {
         }
     }
 
+    /// Pick a foreground colour that stays legible on `bg`.
+    ///
+    /// Returns `preferred` whenever it already clears WCAG AA for body text
+    /// (4.5:1) against `bg`, so a design's intended quiet tier survives
+    /// wherever it is actually readable. Where it does not — a dim label on a
+    /// mid-tone fill, a white label on a pale accent — this falls back to the
+    /// theme's primary text, and finally to plain white or black, whichever
+    /// wins. The last step cannot fail: one of the two always clears 4.5:1
+    /// against any colour, because their ratio to each other is 21:1.
+    ///
+    /// `bg` must be the colour that will actually be *seen*: composite any
+    /// translucent fill over its ground before passing it in.
+    pub fn readable_on(&self, bg: Color, preferred: Color) -> Color {
+        const AA_BODY: f64 = 4.5;
+        for candidate in [preferred, self.text_primary] {
+            if crate::a11y::contrast_ratio(candidate, bg) >= AA_BODY {
+                return candidate;
+            }
+        }
+        let white = Color::WHITE;
+        let black = Color::BLACK;
+        if crate::a11y::contrast_ratio(white, bg) >= crate::a11y::contrast_ratio(black, bg) {
+            white
+        } else {
+            black
+        }
+    }
+
+    /// Resolve a **filled chip** — an accent button, a danger button, the
+    /// selected segment of a control — into a `(fill, label)` pair whose
+    /// label clears WCAG AA (4.5:1) against the fill.
+    ///
+    /// A light label on a saturated fill is the fleet's design language, so
+    /// this preserves it wherever it can: if `preferred_label` already clears
+    /// AA the pair is returned untouched, and otherwise the **fill is deepened
+    /// toward black** until the label clears, rather than the label being
+    /// swapped. A slightly deeper accent still reads as the same component; a
+    /// black label on an accent chip reads as a different one.
+    ///
+    /// Deepening stops at [`MAX_CHIP_DEEPEN`]. Past that the fill has lost the
+    /// identity that made it the accent — Gruvbox's yellow needs 41 % to host
+    /// white and lands on mustard, Rosé Pine's rose lands on a muddy mauve —
+    /// and for those pale accents a dark label is both legible and the more
+    /// idiomatic look, so the fill is kept and the label re-picked via
+    /// [`Self::readable_on`].
+    ///
+    /// `fill` must be opaque: it is what the label will actually sit on.
+    pub fn legible_fill(&self, fill: Color, preferred_label: Color) -> (Color, Color) {
+        const AA_BODY: f64 = 4.5;
+        if crate::a11y::contrast_ratio(preferred_label, fill) >= AA_BODY {
+            return (fill, preferred_label);
+        }
+        let black = Color::BLACK;
+        // Walk in 1 % steps: the smallest deepening that clears the bar keeps
+        // the chip as close to the theme's own accent as legibility allows.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "MAX_CHIP_DEEPEN is a non-negative 0.0..=1.0 design token, so its percentage fits exactly in u8"
+        )]
+        let max_step = (MAX_CHIP_DEEPEN * 100.0).floor() as u8;
+        for step in 1..=max_step {
+            let deepened = mix8(fill, black, f32::from(step) / 100.0);
+            if crate::a11y::contrast_ratio(preferred_label, deepened) >= AA_BODY {
+                return (deepened, preferred_label);
+            }
+        }
+        (fill, self.readable_on(fill, preferred_label))
+    }
+
     /// The default dark palette: neutral graphite (deliberately *not* a
     /// blue-drenched slate) with a single restrained blue accent.
     pub fn dark() -> Self {
@@ -812,6 +980,12 @@ impl Colors {
             text_tertiary: Color::from_rgb8(100, 116, 139),
             border_standard: Color::from_rgb8(51, 65, 85),
             border_focus: Color::from_rgb8(99, 102, 241),
+            // A dark palette, so the veneers lighten.
+            overlay_subtle: Color::from_rgba8(255, 255, 255, 13),
+            overlay_medium: Color::from_rgba8(255, 255, 255, 26),
+            overlay_strong: Color::from_rgba8(255, 255, 255, 51),
+            overlay_border_subtle: Color::from_rgba8(255, 255, 255, 26),
+            overlay_border_strong: Color::from_rgba8(255, 255, 255, 51),
             surface_white_5: Color::from_rgba8(255, 255, 255, 13),
             surface_white_10: Color::from_rgba8(255, 255, 255, 26),
             surface_white_20: Color::from_rgba8(255, 255, 255, 51),
@@ -1114,5 +1288,410 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- state veneers ----------------------------------------------------
+
+    /// Straight-alpha composite of `fg` over an opaque `bg` — what the eye
+    /// actually receives when a translucent veneer is painted on a surface.
+    fn composite(fg: Color, bg: Color) -> Color {
+        let a = f32::from(fg.a()) / 255.0;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a weighted average of two u8 channels remains within 0..=255 before rounding"
+        )]
+        let ch = |f: u8, b: u8| (f32::from(f) * a + f32::from(b) * (1.0 - a)).round() as u8;
+        Color::from_rgb8(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
+    }
+
+    /// CIE L* (0..=100) — perceptual lightness, so veneer strength can be
+    /// compared across grounds of very different luminance.
+    fn lstar(c: Color) -> f64 {
+        let y = crate::a11y::relative_luminance(c);
+        if y > 0.008_856 {
+            116.0 * y.cbrt() - 16.0
+        } else {
+            903.3 * y
+        }
+    }
+
+    /// The alias fields must never drift from the semantic ones they name —
+    /// the fleet reads both, and a widget picking the stale pair would paint a
+    /// veneer of the wrong polarity.
+    #[test]
+    fn overlay_aliases_track_the_semantic_tokens_in_every_theme() {
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            assert_eq!(
+                rgba(c.surface_white_5),
+                rgba(c.overlay_subtle),
+                "{name} subtle"
+            );
+            assert_eq!(
+                rgba(c.surface_white_10),
+                rgba(c.overlay_medium),
+                "{name} medium"
+            );
+            assert_eq!(
+                rgba(c.surface_white_20),
+                rgba(c.overlay_strong),
+                "{name} strong"
+            );
+            assert_eq!(
+                rgba(c.border_white_10),
+                rgba(c.overlay_border_subtle),
+                "{name} border subtle"
+            );
+            assert_eq!(
+                rgba(c.border_white_20),
+                rgba(c.overlay_border_strong),
+                "{name} border strong"
+            );
+        }
+    }
+
+    /// The defect this token model exists to prevent: a veneer that does not
+    /// move the surface it is painted on. Light themes used to inherit white
+    /// veneers, so `surface_white_5` over the Light theme's `#FFFFFF` card was
+    /// a literal no-op (1.000:1) and hover feedback did not render at all.
+    ///
+    /// Checked on both grounds a veneer realistically lands on, in every
+    /// theme, so no polarity can regress unnoticed.
+    #[test]
+    fn state_veneers_move_every_ground_in_every_theme() {
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            for (ground_name, ground) in [("base", c.surfaces.base), ("raised", c.surfaces.raised)]
+            {
+                for (tier_name, tier, floor) in [
+                    ("subtle", c.overlay_subtle, 1.07),
+                    ("medium", c.overlay_medium, 1.17),
+                    ("strong", c.overlay_strong, 1.45),
+                    ("border_subtle", c.overlay_border_subtle, 1.17),
+                    ("border_strong", c.overlay_border_strong, 1.45),
+                ] {
+                    let seen = composite(tier, ground);
+                    let step = contrast_ratio(seen, ground);
+                    assert!(
+                        step >= floor,
+                        "{name}: {tier_name} veneer over {ground_name} is invisible \
+                         (step {step:.3}, need {floor}) — hover/press feedback would not render",
+                    );
+                }
+            }
+        }
+    }
+
+    /// A veneer has to push the ground *away* from itself: lighten a dark
+    /// surface, darken a light one. Asserted on lightness rather than on the
+    /// literal colour so a future theme is free to tint its veneers.
+    #[test]
+    fn veneer_polarity_follows_the_ground() {
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            let ground = c.surfaces.raised;
+            let ground_is_dark = lstar(ground) < 50.0;
+            for (tier_name, tier) in [
+                ("subtle", c.overlay_subtle),
+                ("medium", c.overlay_medium),
+                ("strong", c.overlay_strong),
+            ] {
+                let delta = lstar(composite(tier, ground)) - lstar(ground);
+                if ground_is_dark {
+                    assert!(
+                        delta > 0.0,
+                        "{name}: {tier_name} must lighten a dark ground (got {delta:.2})"
+                    );
+                } else {
+                    assert!(
+                        delta < 0.0,
+                        "{name}: {tier_name} must darken a light ground (got {delta:.2})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Equal alpha does not buy equal visibility on grounds at opposite ends
+    /// of the lightness curve, so the light tiers are solved for the *step*
+    /// the dark tiers produce, not mirrored from their alpha. This pins that
+    /// solve: every light theme's veneer lands within 2 L* of the dark target.
+    #[test]
+    fn light_overlays_match_the_dark_perceptual_step() {
+        let targets = [("subtle", 5.0), ("medium", 10.5), ("strong", 21.0)];
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            if lstar(c.surfaces.raised) < 50.0 {
+                continue; // dark ground — the reference, not the thing solved for
+            }
+            for (ground_name, ground) in [("base", c.surfaces.base), ("raised", c.surfaces.raised)]
+            {
+                let tiers = [c.overlay_subtle, c.overlay_medium, c.overlay_strong];
+                for ((tier_name, want), tier) in targets.iter().zip(tiers) {
+                    let got = lstar(ground) - lstar(composite(tier, ground));
+                    assert!(
+                        (got - want).abs() <= 2.0,
+                        "{name}/{ground_name}: {tier_name} step is {got:.2} L*, \
+                         dark themes get {want:.1} — the tiers are out of step",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The high-contrast preset re-solves its own tiers: it overrides its
+    /// surfaces to pure black *after* inheriting the dark tokens, and against
+    /// black the dark tiers collapse to a 1.08:1 step — invisible to exactly
+    /// the users this preset exists for. It must be markedly stronger than the
+    /// default dark theme's, while still hosting the theme's white text at AA.
+    #[test]
+    fn high_contrast_veneers_are_stronger_and_still_host_white_text() {
+        let hc = crate::theme::Theme::high_contrast();
+        let c = &hc.tokens.colors;
+        let dark = Colors::dark();
+        let ground = c.surfaces.raised;
+
+        for (tier_name, tier, dark_tier) in [
+            ("subtle", c.overlay_subtle, dark.overlay_subtle),
+            ("medium", c.overlay_medium, dark.overlay_medium),
+            ("strong", c.overlay_strong, dark.overlay_strong),
+        ] {
+            let seen = composite(tier, ground);
+            let step = contrast_ratio(seen, ground);
+            let inherited = contrast_ratio(composite(dark_tier, ground), ground);
+            assert!(
+                step > inherited * 1.4,
+                "{tier_name}: high contrast must not inherit the dark tier's step \
+                 ({step:.2} vs {inherited:.2})",
+            );
+            let on_top = contrast_ratio(c.text_primary, seen);
+            assert!(
+                on_top >= 4.5,
+                "{tier_name}: primary text must stay AA on the veneer (got {on_top:.2})",
+            );
+        }
+    }
+
+    // --- readable_on ------------------------------------------------------
+
+    #[test]
+    fn readable_on_keeps_a_preferred_colour_that_already_passes() {
+        let c = Colors::dark();
+        // Primary text on the card is 13.89:1 — nothing to correct.
+        let got = c.readable_on(c.surfaces.raised, c.text_primary);
+        assert_eq!(rgba(got), rgba(c.text_primary));
+    }
+
+    #[test]
+    fn readable_on_lifts_a_preferred_colour_that_fails() {
+        // The exact pairing the audit measured: the `neutral[3]` fill tier
+        // under a `text_dim` label. It clears AA in the dark default (4.69:1)
+        // and fails in light (4.26:1) — one theme's pass is what kept it in.
+        let light = Colors::light();
+        let fill = light.neutral[3];
+        let before = contrast_ratio(light.text_dim, fill);
+        assert!(
+            before < 4.5,
+            "precondition: the light pairing fails AA (got {before:.2})"
+        );
+
+        let after = contrast_ratio(light.readable_on(fill, light.text_dim), fill);
+        assert!(
+            after >= 4.5,
+            "the lifted label must clear AA (got {after:.2})"
+        );
+        assert!(after > before, "and must actually be an improvement");
+
+        // Dark already passed, so it is left exactly as designed — the fix
+        // must not repaint a theme that was already correct.
+        let dark = Colors::dark();
+        assert_eq!(
+            rgba(dark.readable_on(dark.neutral[3], dark.text_dim)),
+            rgba(dark.text_dim),
+            "dark's 4.69:1 pairing is untouched",
+        );
+    }
+
+    /// The fallback arm cannot fail: white and black are 21:1 apart, so at
+    /// least one of them clears AA against any colour whatsoever.
+    #[test]
+    fn readable_on_always_returns_an_aa_pairing() {
+        let c = Colors::light();
+        // A mid grey defeats text_dim *and* text_primary in some themes; walk
+        // the whole grey axis plus every theme's accent to be sure.
+        let mut probes: Vec<Color> = (0..=255)
+            .step_by(5)
+            .map(|v| Color::from_rgb8(v, v, v))
+            .collect();
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            probes.push(t.accent_primary);
+            probes.push(t.tokens.colors.surfaces.raised);
+        }
+        for bg in probes {
+            let fg = c.readable_on(bg, c.text_dim);
+            let r = contrast_ratio(fg, bg);
+            assert!(
+                r >= 4.5,
+                "readable_on returned a {r:.2}:1 pairing on {:?}",
+                rgb(bg)
+            );
+        }
+    }
+
+    // --- legible_fill -----------------------------------------------------
+
+    /// A filled chip must host its label at AA in every theme. White on the
+    /// raw accent fails in 11 of the 14 — 1.69:1 on Rosé Pine, 1.70:1 on
+    /// Gruvbox, 2.00:1 on Nord, and 3.17:1 on the shipped dark default.
+    #[test]
+    fn legible_fill_clears_aa_on_every_accent_and_danger() {
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            let c = &t.tokens.colors;
+            for (kind, raw) in [
+                ("accent", t.accent_primary),
+                ("accent_hover", t.accent_hover),
+                ("danger", c.semantic.danger),
+            ] {
+                let (fill, label) = c.legible_fill(raw, Color::WHITE);
+                let r = contrast_ratio(label, fill);
+                assert!(r >= 4.5, "{name}/{kind}: chip label is {r:.2}:1, below AA");
+            }
+        }
+    }
+
+    /// Deepening is the preferred repair because it keeps the chip reading as
+    /// the same component. Assert it is actually what happens for a mid-tone
+    /// accent, and that the deepened fill stays recognisably the theme's hue.
+    #[test]
+    fn legible_fill_deepens_rather_than_repainting_the_label() {
+        let t = crate::theme::Theme::dark();
+        let c = &t.tokens.colors;
+        let raw = t.accent_primary;
+        let (fill, label) = c.legible_fill(raw, Color::WHITE);
+
+        assert_eq!(rgba(label), rgba(Color::WHITE), "the white label is kept");
+        assert_ne!(rgba(fill), rgba(raw), "the fill is deepened to earn it");
+        assert!(
+            crate::a11y::relative_luminance(fill) < crate::a11y::relative_luminance(raw),
+            "deepening means darker",
+        );
+        assert!(
+            fill.b() > fill.g() && fill.g() > fill.r(),
+            "still the theme's blue"
+        );
+    }
+
+    /// A pale accent cannot be deepened into a white-label chip without going
+    /// muddy, so those keep their fill and take a dark label instead. Gruvbox's
+    /// yellow is the canonical case: 41 % deepening would be needed, past the
+    /// cap, and a black-on-yellow chip is the idiomatic look anyway.
+    #[test]
+    fn legible_fill_keeps_pale_accents_and_repaints_their_label() {
+        let t = crate::theme::Theme::named("Gruvbox").unwrap();
+        let c = &t.tokens.colors;
+        let raw = t.accent_primary;
+        let (fill, label) = c.legible_fill(raw, Color::WHITE);
+
+        assert_eq!(rgba(fill), rgba(raw), "the yellow is left alone");
+        assert_ne!(rgba(label), rgba(Color::WHITE), "the label is what moves");
+        assert!(contrast_ratio(label, fill) >= 4.5);
+    }
+
+    /// Where white already clears AA the pair is returned untouched, so a
+    /// theme designed correctly is not repainted.
+    #[test]
+    fn legible_fill_is_inert_where_the_pairing_already_passes() {
+        let t = crate::theme::Theme::light();
+        let c = &t.tokens.colors;
+        let raw = t.accent_primary;
+        assert!(contrast_ratio(Color::WHITE, raw) >= 4.5, "precondition");
+        let (fill, label) = c.legible_fill(raw, Color::WHITE);
+        assert_eq!(rgba(fill), rgba(raw));
+        assert_eq!(rgba(label), rgba(Color::WHITE));
+    }
+
+    // --- the permission-denied scrim --------------------------------------
+
+    /// The scrim is one const shared by every theme, which looks like the
+    /// defect the overlay tiers had — and measured against a widget's
+    /// *background* it reads that way: black over the High Contrast preset's
+    /// pure-black card is a literal 1.00:1.
+    ///
+    /// That is the wrong surface. The scrim is painted over the widget after
+    /// it has drawn itself, so it lands on the border, label and knob too, and
+    /// those are what carry "you cannot act on this". Measured there it is
+    /// strongest exactly where the background reading said it was absent: High
+    /// Contrast drops white content from 21.00:1 to 9.90:1.
+    ///
+    /// So this pins the property that actually matters — a denied control's
+    /// content loses contrast against its own body in every theme — rather
+    /// than a polarity the scrim does not need. Making it directional would
+    /// invert the meaning on dark themes, where a lightening scrim would leave
+    /// a disabled control brighter than an enabled one.
+    #[test]
+    fn the_denied_scrim_mutes_a_control_in_every_theme() {
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            let c = &t.tokens.colors;
+            // The two bodies a control realistically has: a neutral card under
+            // primary text, and an accent fill under a white label.
+            // The accent case must be measured on the pair a widget actually
+            // paints — `legible_fill` may have deepened the fill and/or
+            // re-picked the label — not on the raw accent.
+            let (accent_fill, accent_label) = c.legible_fill(t.accent_primary, Color::WHITE);
+            for (kind, body, content) in [
+                ("neutral", c.surfaces.raised, c.text_primary),
+                ("accent", accent_fill, accent_label),
+            ] {
+                let before = contrast_ratio(content, body);
+                let after = contrast_ratio(
+                    composite(PERMISSION_DENIED_SCRIM, content),
+                    composite(PERMISSION_DENIED_SCRIM, body),
+                );
+                assert!(
+                    after < before / 1.08,
+                    "{name}/{kind}: the scrim must cost the content contrast \
+                     ({before:.2} -> {after:.2})",
+                );
+                // …and the control must visibly move, not merely lose ratio.
+                // Either half can carry that: a light label darkens under the
+                // scrim, while a chip that took a dark label instead keeps its
+                // label put and shifts its fill. Requiring the content
+                // specifically would be asserting one repair strategy.
+                let moved =
+                    |x: Color| (lstar(x) - lstar(composite(PERMISSION_DENIED_SCRIM, x))).abs();
+                let shift = moved(content).max(moved(body));
+                assert!(
+                    shift >= 3.0,
+                    "{name}/{kind}: the denied control must visibly shift (got {shift:.1} L*)",
+                );
+            }
+        }
+    }
+
+    /// Accent-filled controls are the weakest case by construction: the scrim
+    /// darkens fill and label together, so their ratio is largely preserved.
+    /// Pinned so that if it ever degrades to "no signal at all" a test says so
+    /// — the shots show it still reads today, but only just.
+    #[test]
+    fn the_denied_scrim_is_weakest_on_accent_fills() {
+        let mut worst = f64::INFINITY;
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            let (fill, label) = t.tokens.colors.legible_fill(t.accent_primary, Color::WHITE);
+            let before = contrast_ratio(label, fill);
+            let after = contrast_ratio(
+                composite(PERMISSION_DENIED_SCRIM, label),
+                composite(PERMISSION_DENIED_SCRIM, fill),
+            );
+            worst = worst.min(before / after);
+        }
+        assert!(
+            worst > 1.08,
+            "an accent chip must still mute (worst drop x{worst:.2})"
+        );
     }
 }

@@ -50,7 +50,13 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 // references its own module path absolutely as `crate::collab_capnp`
 // — must be included at the crate root with that exact name (the
 // same pattern capnp's own samples use).
-#[allow(clippy::all)]
+#[allow(
+    clippy::all,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    reason = "generated Cap'n Proto bindings do not follow repository lint policy"
+)]
 #[allow(unused)]
 #[allow(dead_code)]
 pub mod collab_capnp {
@@ -63,10 +69,55 @@ pub use collab_capnp::action_stream::Client as ActionStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
-pub use collab_capnp::cursor_stream::Client as CursorStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
+
+/// Version tag distinguishing a certified join presentation from invalid
+/// identity bytes.
+pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"qos-collab-certified-join-v1\0";
+
+/// Peer-verifiable proof that an enrolled device joined one workspace.
+/// `device_certificate` is the JSON form supplied by `runtime-identity`; the
+/// proof is an Ed25519 device-key signature over
+/// `runtime_identity::collaboration_join_signing_bytes(workspace_id)`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertifiedJoinIdentity {
+    pub workspace_id: String,
+    pub device_certificate: Vec<u8>,
+    pub proof: Vec<u8>,
+}
+
+impl CertifiedJoinIdentity {
+    /// Encode with the reserved version prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns postcard's serialization error if the presentation cannot be
+    /// encoded.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        let encoded = postcard::to_stdvec(self)?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(CERTIFIED_JOIN_PREFIX);
+        bytes.extend_from_slice(&encoded);
+        Ok(bytes)
+    }
+
+    /// Decode a certified presentation. `Ok(None)` means the bytes do not
+    /// carry the certified prefix and must be rejected by the broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns postcard's deserialization error for malformed certified
+    /// payloads.
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
+        let Some(encoded) = bytes.strip_prefix(CERTIFIED_JOIN_PREFIX) else {
+            return Ok(None);
+        };
+        postcard::from_bytes(encoded).map(Some)
+    }
+}
 
 /// Try to dial the qOS collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
@@ -122,7 +173,8 @@ impl CollabClient {
     }
 
     /// Join a channel while announcing the participant's display handle.
-    /// Empty handles retain the broker's room/local-identity fallback.
+    /// Empty handles omit the optional display label; authenticated identity
+    /// still comes from the certified join presentation.
     ///
     /// # Errors
     ///
@@ -168,36 +220,6 @@ impl ChannelHandle {
     pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_request();
         req.get().set_op(op);
-        req.send().promise.await?;
-        Ok(())
-    }
-
-    /// LEGACY — publish an unsigned full-document snapshot, for apps not yet
-    /// provisioned with a signing identity (removed once the whole fleet is
-    /// provisioned). Prefer [`Self::send`] with a signed op.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn send_unsigned_snapshot(&self, data: &[u8]) -> Result<(), NotAvailable> {
-        let mut req = self.inner.send_unsigned_snapshot_request();
-        req.get().set_data(data);
-        req.send().promise.await?;
-        Ok(())
-    }
-
-    /// LEGACY — publish an unsigned incremental Automerge change
-    /// blob. Same transitional contract as
-    /// [`Self::send_unsigned_snapshot`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn send_unsigned_incremental(&self, data: &[u8]) -> Result<(), NotAvailable> {
-        let mut req = self.inner.send_unsigned_incremental_request();
-        req.get().set_data(data);
         req.send().promise.await?;
         Ok(())
     }
@@ -487,43 +509,6 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Fetch a page of previously-validated signed ops with `seq <
-    /// before_seq`. See [`ScrollbackBatch`] for the response shape.
-    ///
-    /// LEGACY — doesn't carry an artifact id (the broker keys the read on
-    /// `ArtifactId::default()`). Prefer [`Self::fetch_scrollback_for`] when
-    /// a specific artifact is available.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn fetch_scrollback(
-        &self,
-        before_seq: u64,
-        max: u32,
-    ) -> Result<ScrollbackBatch, NotAvailable> {
-        let mut req = self.inner.fetch_scrollback_request();
-        {
-            let mut b = req.get();
-            b.set_before_seq(before_seq);
-            b.set_max(max);
-        }
-        let reply = req.send().promise.await?;
-        let batch = reply.get()?.get_batch()?;
-        let ops_reader = batch.get_ops()?;
-        let mut ops = Vec::with_capacity(ops_reader.len() as usize);
-        for i in 0..ops_reader.len() {
-            ops.push(ops_reader.get(i)?.to_vec());
-        }
-        Ok(ScrollbackBatch {
-            ops,
-            earliest_seq: batch.get_earliest_seq(),
-            latest_seq: batch.get_latest_seq(),
-            done: batch.get_done(),
-        })
-    }
-
     /// Fetch a page of previously-validated signed ops on a specific
     /// artifact. `artifact_id` is the 16-byte little-endian encoding
     /// of the artifact uuid used by `collab-types`.
@@ -561,31 +546,13 @@ impl ChannelHandle {
     }
 }
 
-/// What an [`OpEvent`]'s bytes are.
-///
-/// Three kinds of frame share the op stream and are not interchangeable:
-/// a delta applies on top of the document the reader holds, a whole
-/// document merges into it, a signed envelope decodes before either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OpKind {
-    /// `op` is a postcard-encoded `SignedOp`.
-    #[default]
-    Signed,
-    /// `op` is a raw Automerge change delta.
-    UnsignedIncremental,
-    /// `op` is a whole Automerge document.
-    UnsignedSnapshot,
-}
-
-/// A single op as delivered by [`OpStream::read`]. `kind` says what `op`
-/// is; `from_user_id` is the broker's attribution string for the author
-/// — duplicated on the RPC so non-Rust clients can route by author
-/// without decoding the payload.
+/// A signed op as delivered by [`OpStream::read`]. `from_user_id` is the
+/// broker's attribution string for the author—duplicated on the RPC so
+/// non-Rust clients can route by author without decoding the envelope.
 #[derive(Debug, Clone)]
 pub struct OpEvent {
     pub op: Vec<u8>,
     pub from_user_id: String,
-    pub kind: OpKind,
 }
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
@@ -613,20 +580,13 @@ impl OpStream {
             .to_str()
             .map_err(|e| capnp::Error::failed(format!("invalid utf8 from_user_id: {e}")))?
             .to_owned();
-        // An unrecognised ordinal comes from a newer broker naming a kind
-        // this build has no handler for. Reading it as `Signed` would hand
-        // raw bytes to the envelope decoder; leaving it unmapped and letting
-        // the caller ignore it is the honest direction.
-        let kind = match r.get_kind() {
-            Ok(collab_capnp::OpKind::Signed) | Err(_) => OpKind::Signed,
-            Ok(collab_capnp::OpKind::UnsignedIncremental) => OpKind::UnsignedIncremental,
-            Ok(collab_capnp::OpKind::UnsignedSnapshot) => OpKind::UnsignedSnapshot,
-        };
-        Ok(OpEvent {
-            op,
-            from_user_id,
-            kind,
-        })
+        if !matches!(r.get_kind(), Ok(collab_capnp::OpKind::Signed)) {
+            return Err(NotAvailable::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "collaboration stream carried a retired unsigned frame",
+            )));
+        }
+        Ok(OpEvent { op, from_user_id })
     }
 }
 
@@ -910,6 +870,30 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish a transient range the local participant just inserted.
+    /// Unlike a selection, receivers render this as a fading event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn publish_typing(
+        &self,
+        key_bytes: &[u8],
+        start: u64,
+        end: u64,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_typing_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_start(start);
+            b.set_end(end);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish "the local user has arrived at the keyed object".
     ///
     /// # Errors
@@ -936,23 +920,6 @@ impl PresenceHandle {
         Ok(())
     }
 
-    /// LEGACY — subscribe to only remote-cursor updates. Kept so
-    /// clients built against schema v1 keep compiling; new code
-    /// uses [`Self::subscribe_all`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn subscribe_remote_cursors(&self) -> Result<CursorStream, NotAvailable> {
-        let req = self.inner.subscribe_remote_cursors_request();
-        let reply = req.send().promise.await?;
-        let stream = reply.get()?.get_stream()?;
-        Ok(CursorStream {
-            inner: Rc::new(stream),
-        })
-    }
-
     /// Subscribe to every kind of remote presence update in one
     /// stream. Each event carries the full [`PresencePayload`]
     /// union; clients discriminate on payload variant.
@@ -967,45 +934,6 @@ impl PresenceHandle {
         let stream = reply.get()?.get_stream()?;
         Ok(PresenceStream {
             inner: Rc::new(stream),
-        })
-    }
-}
-
-/// A single remote-cursor update.
-#[derive(Debug, Clone)]
-pub struct CursorUpdate {
-    pub user_id: String,
-    pub x: f32,
-    pub y: f32,
-}
-
-/// Client-pulled remote-cursor stream.
-#[derive(Clone)]
-pub struct CursorStream {
-    inner: Rc<CursorStreamClient>,
-}
-
-impl CursorStream {
-    /// Pull the next remote-cursor update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or the reply carries a `user_id` that isn't
-    /// valid UTF-8.
-    pub async fn read(&self) -> Result<CursorUpdate, NotAvailable> {
-        let req = self.inner.read_request();
-        let reply = req.send().promise.await?;
-        let r = reply.get()?;
-        let user_id = r
-            .get_user_id()?
-            .to_str()
-            .map_err(|e| capnp::Error::failed(format!("invalid utf8 user_id: {e}")))?
-            .to_owned();
-        Ok(CursorUpdate {
-            user_id,
-            x: r.get_x(),
-            y: r.get_y(),
         })
     }
 }
@@ -1033,6 +961,10 @@ pub enum PresencePayload {
         pos: u64,
     },
     Selection {
+        start: u64,
+        end: u64,
+    },
+    Typing {
         start: u64,
         end: u64,
     },
@@ -1102,6 +1034,10 @@ fn decode_presence_payload(
             start: r.get_start(),
             end: r.get_end(),
         },
+        W::Typing(r) => PresencePayload::Typing {
+            start: r.get_start(),
+            end: r.get_end(),
+        },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })
@@ -1133,6 +1069,10 @@ pub struct Collaborator {
 pub struct ChannelContext {
     pub collaborators: Vec<Collaborator>,
     pub permissions: Vec<String>,
+    /// `Some` only for a session-local Follow control frame. The inner
+    /// `None` means stop following; ordinary context snapshots keep this
+    /// field at `None` and replace roster/permissions as before.
+    pub follow_changed: Option<Option<String>>,
 }
 
 /// Client-pulled channel-context stream.
@@ -1187,15 +1127,23 @@ impl ContextStream {
                     .to_owned(),
             );
         }
+        let follow_changed = ctx.get_follow_changed().then(|| {
+            ctx.get_follow_target()
+                .ok()
+                .and_then(|target| target.to_str().ok())
+                .filter(|target| !target.is_empty())
+                .map(str::to_owned)
+        });
         Ok(ChannelContext {
             collaborators,
             permissions,
+            follow_changed,
         })
     }
 }
 
 /// A page of previously-validated signed ops returned by
-/// [`ChannelHandle::fetch_scrollback`].
+/// [`ChannelHandle::fetch_scrollback_for`].
 #[derive(Debug, Clone)]
 pub struct ScrollbackBatch {
     /// Postcard-encoded `SignedOp` blobs in ascending `seq` order.
@@ -1215,6 +1163,32 @@ pub struct ScrollbackBatch {
 /// reach below the idiomatic wrappers (server impls, tests).
 pub mod raw {
     pub use super::collab_capnp::*;
+}
+
+#[cfg(test)]
+mod certified_join_tests {
+    use super::*;
+
+    #[test]
+    fn certified_join_round_trips_and_prefixed_garbage_never_downgrades() {
+        let identity = CertifiedJoinIdentity {
+            workspace_id: "workspace-a".into(),
+            device_certificate: vec![1, 2, 3],
+            proof: vec![4; 64],
+        };
+        let encoded = identity.encode().expect("encode");
+        assert_eq!(
+            CertifiedJoinIdentity::decode(&encoded).expect("decode"),
+            Some(identity)
+        );
+        assert_eq!(
+            CertifiedJoinIdentity::decode(b"uncertified identity").expect("uncertified bytes"),
+            None
+        );
+        let mut malformed = CERTIFIED_JOIN_PREFIX.to_vec();
+        malformed.extend_from_slice(b"not postcard");
+        assert!(CertifiedJoinIdentity::decode(&malformed).is_err());
+    }
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
             ws.name
         );
         assert!(
-            t.active_strip.get(&ws.id).is_some(),
+            t.active_strip.contains_key(&ws.id),
             "missing active_strip for {:?}",
             ws.name
         );
@@ -49,8 +49,8 @@ fn window_width_clamp() {
     assert_eq!(WindowWidth::Fraction(5).permille(), 150);
     assert_eq!(WindowWidth::Fraction(9999).permille(), 1000);
     // And the resolved pixels track the display, which is the point.
-    assert_eq!(WindowWidth::Fraction(9999).resolve(1600.0), 1600.0);
-    assert_eq!(WindowWidth::Fraction(9999).resolve(3840.0), 3840.0);
+    assert!((WindowWidth::Fraction(9999).resolve(1600.0) - 1600.0).abs() <= f64::EPSILON);
+    assert!((WindowWidth::Fraction(9999).resolve(3840.0) - 3840.0).abs() <= f64::EPSILON);
 }
 
 /// A workspace persisted by the pixel model still loads, its widths coming
@@ -71,8 +71,8 @@ fn legacy_pixel_widths_migrate_to_the_share_they_represented() {
         WindowWidth::Fraction(500),
         "a persisted 600 px width is half the strip, whatever the display",
     );
-    assert_eq!(g.width.resolve(1600.0), 800.0);
-    assert_eq!(g.width.resolve(3840.0), 1920.0);
+    assert!((g.width.resolve(1600.0) - 800.0).abs() <= f64::EPSILON);
+    assert!((g.width.resolve(3840.0) - 1920.0).abs() <= f64::EPSILON);
 }
 
 /// The current shape round-trips through the persisted JSON unchanged.

@@ -149,6 +149,7 @@ pub struct PowerPane {
     prefs: PowerPrefs,
     last_prefs: PowerPrefs,
     needs_seed: bool,
+    commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -207,6 +208,7 @@ impl PowerPane {
             prefs: SystemPrefs::load().power,
             last_prefs: PowerPrefs::default(),
             needs_seed: true,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -240,6 +242,7 @@ impl PowerPane {
             prefs,
             last_prefs: prefs,
             needs_seed: true,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -780,6 +783,7 @@ impl Widget for PowerPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        let was_handled = *handled;
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -796,6 +800,7 @@ impl Widget for PowerPane {
                 taffy,
             );
         }
+        self.commit_context_pending |= !was_handled && *handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -812,6 +817,20 @@ impl Widget for PowerPane {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .into_iter()
             .collect()
+    }
+
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| content.needs_commit());
+        crate::panes::preference_commit_context(
+            pending,
+            "power",
+            "Power",
+            "Change power preferences",
+        )
     }
 
     fn name(&self) -> &'static str {

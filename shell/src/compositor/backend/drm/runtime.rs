@@ -460,14 +460,23 @@ impl DrmDispatchState {
             })
             .collect();
         for index in 0..self.live.len() {
-            if let Some(target) = config
-                .outputs
-                .get(&self.live[index].connector_name)
+            let Some(target) = self
+                .live
+                .get(index)
+                .and_then(|entry| config.outputs.get(&entry.connector_name))
                 .and_then(|c| c.mirror_of.as_deref())
-                && let Some(target_index) =
-                    self.live.iter().position(|l| l.connector_name == target)
-            {
-                positions[index] = positions[target_index];
+            else {
+                continue;
+            };
+            let Some(target_index) = self.live.iter().position(|l| l.connector_name == target)
+            else {
+                continue;
+            };
+            let Some(&target_position) = positions.get(target_index) else {
+                continue;
+            };
+            if let Some(position) = positions.get_mut(index) {
+                *position = target_position;
             }
         }
         // KMS accepts negative logical coordinates, but the renderer's
@@ -1978,6 +1987,10 @@ where
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic output geometry fixtures use exactly representable values"
+)]
 mod tests {
     use super::*;
     use crate::compositor::backend::drm::devices::ModeInfo;

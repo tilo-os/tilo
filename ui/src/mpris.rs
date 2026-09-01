@@ -226,12 +226,12 @@ impl MprisHandle {
         if !snap.should_republish(&self.last) {
             return;
         }
-        self.last = snap.clone();
         #[cfg(feature = "mpris")]
         if let Some(tx) = &self.publish_tx {
             // Unbounded send is sync + non-blocking; a dead worker just drops it.
-            let _ = tx.send(snap);
+            let _ = tx.send(snap.clone());
         }
+        self.last = snap;
     }
 }
 
@@ -264,6 +264,13 @@ pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
 #[cfg(feature = "mpris")]
 mod imp {
+    #![allow(
+        clippy::used_underscore_binding,
+        reason = "zbus's #[interface] macro re-binds set_position's _track_id and open_uri's \
+                  _uri by their literal names in generated dispatch code that lands in this \
+                  module but outside the annotated impl/fn, so neither an impl- nor fn-level \
+                  allow reaches it; the method bodies never read either parameter"
+    )]
     use std::collections::HashMap;
     use std::sync::mpsc::{Receiver, Sender};
 
@@ -689,6 +696,11 @@ mod tests {
         const GUID: &str = "0123456789abcdef0123456789abcdef";
 
         let (cmd_tx, cmd_rx) = channel::<MprisCommand>();
+        // `mpsc::Receiver` isn't `Sync`, so a plain `&Receiver` held across
+        // an `.await` in `assert_commands_forwarded` makes that future
+        // `!Send`; a `Mutex` around it is `Sync` and fixes that with no
+        // behaviour change (this test never contends the lock).
+        let cmd_rx = std::sync::Mutex::new(cmd_rx);
         let snap = PlayerSnapshot {
             status: PlaybackStatus::Playing,
             track_id: "yt:abc123".into(),
@@ -775,7 +787,7 @@ mod tests {
     #[cfg(feature = "mpris")]
     async fn assert_commands_forwarded(
         player_proxy: &zbus::Proxy<'_>,
-        cmd_rx: &std::sync::mpsc::Receiver<MprisCommand>,
+        cmd_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<MprisCommand>>,
     ) {
         player_proxy
             .call_method("Pause", &())
@@ -791,7 +803,13 @@ mod tests {
             .expect("Play call");
         let mut got = Vec::new();
         for _ in 0..3 {
-            got.push(cmd_rx.recv().expect("command delivered"));
+            got.push(
+                cmd_rx
+                    .lock()
+                    .expect("test-local mutex is never poisoned")
+                    .recv()
+                    .expect("command delivered"),
+            );
         }
         assert_eq!(
             got,

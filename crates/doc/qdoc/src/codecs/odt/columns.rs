@@ -26,10 +26,7 @@ pub(super) fn import_page_layout_columns(styles_xml: &[u8], doc: &mut DocMut) {
 fn parse_columns(styles_xml: &[u8]) -> Option<(u32, Option<f64>)> {
     let s = std::str::from_utf8(styles_xml).ok()?;
     let mut reader = Reader::from_str(s);
-    loop {
-        let Ok(ev) = reader.read_event() else {
-            return None;
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"style:columns" => {
                 let count = e
@@ -51,6 +48,7 @@ fn parse_columns(styles_xml: &[u8]) -> Option<(u32, Option<f64>)> {
             _ => {}
         }
     }
+    None
 }
 
 /// px → an ODF length string (`"…cm"`); ODF column gaps are conventionally cm, while px is the model's unit (96 px/in, 2.54 cm/in).
@@ -228,10 +226,7 @@ fn strip_columns(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut reader = Reader::from_str(inner);
     let mut skip_depth = 0usize;
-    loop {
-        let Ok(pos) = usize::try_from(reader.buffer_position()) else {
-            break;
-        };
+    while let Ok(pos) = usize::try_from(reader.buffer_position()) {
         let Ok(ev) = reader.read_event() else {
             break;
         };

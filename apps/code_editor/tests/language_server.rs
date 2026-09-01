@@ -65,7 +65,7 @@ use code_editor::model::Language;
 /// rust-analyzer has to run `cargo metadata` and build a crate graph before it
 /// says anything. On a one-file crate that is seconds; the ceiling is generous
 /// so a loaded machine reports the real failure rather than a timeout.
-const BUDGET: Duration = Duration::from_mins(3);
+const BUDGET: Duration = Duration::from_secs(180);
 
 /// A minimal but genuine Cargo project containing one deliberate error.
 ///

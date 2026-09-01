@@ -39,7 +39,7 @@ const MAX_HANDLE_LEN: usize = 64;
 /// actually is, and the local process knows who the user is, so both call
 /// [`AuthorDirectory::register`]. Everything else falls through the
 /// handle-decode and then the unknown-participant path.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthorDirectory {
     by_actor: HashMap<String, HistoryAuthor>,
 }
@@ -368,7 +368,7 @@ mod tests {
             display_name,
             avatar_color,
             std::time::SystemTime::UNIX_EPOCH
-                .checked_add(std::time::Duration::from_mins(29_750_000))
+                .checked_add(std::time::Duration::from_secs(1_785_000_000))
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
         )
         .expect("a single-device identity is persistable");

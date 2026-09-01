@@ -71,7 +71,7 @@ impl Capture {
     ///
     /// # Errors
     ///
-    /// Returns an error if GStreamer fails to initialize, the pipeline fails
+    /// Returns an error if `GStreamer` fails to initialize, the pipeline fails
     /// to build or is missing its appsink, or the pipeline fails to
     /// transition to the `Playing` state.
     pub fn open(device: &str, width: u32, height: u32) -> Result<Self> {
@@ -106,8 +106,7 @@ impl Capture {
                         width: info.width(),
                         height: info.height(),
                     };
-                    let sender = tx.lock().map_err(|_| gst::FlowError::Error)?;
-                    let _ = sender.send(frame);
+                    let _ = tx.lock().map_err(|_| gst::FlowError::Error)?.send(frame);
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .build(),

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDisplayName</key><string>qOS Imager</string>
+  <key>CFBundleExecutable</key><string>qos-imager</string>
+  <key>CFBundleIdentifier</key><string>dev.qos.imager</string>
+  <key>CFBundleName</key><string>qOS Imager</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHumanReadableCopyright</key><string>qOS contributors</string>
+</dict></plist>
+

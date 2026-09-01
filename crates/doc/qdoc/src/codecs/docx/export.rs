@@ -56,6 +56,11 @@ const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone
 /// Which fixed-name parts a preserved `.docx` already declared, so export only injects a
 /// content-type override / relationship for parts it's newly adding.
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent 'was this fixed-name part already present' flag, \
+              set by name in copy_preserved_parts, never positionally"
+)]
 struct PartFlags {
     had_content_types: bool,
     had_root_rels: bool,
@@ -107,6 +112,11 @@ fn copy_preserved_parts(
 }
 
 /// Which optional parts this export is newly wiring up (synthesised but not already declared).
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent 'is this optional part newly wired up' flag, \
+              set by name where it's decided, never positionally"
+)]
 struct Wireups {
     has_lists: bool,
     has_styles: bool,
@@ -1228,15 +1238,11 @@ impl ImageExport {
 
 /// Sniff an image's extension + media type from its magic bytes.
 fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        ("png", "image/png")
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        ("jpg", "image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("gif", "image/gif")
-    } else {
-        ("bin", "application/octet-stream")
-    }
+    crate::export::detect_image_media(bytes)
+        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
+        .map_or(("bin", "application/octet-stream"), |media| {
+            (media.extension, media.mime)
+        })
 }
 
 /// The model `anchor` value of an image block (default `inline`).
@@ -2573,12 +2579,9 @@ mod tests {
         assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
     }
 
-    #[test]
-    fn footnote_and_endnote_roundtrip_through_docx() {
-        use crate::document::MarkValue;
-        use crate::schema::MARK_NOTE_REF;
-        // A footnote + an endnote built from scratch: export must write both note parts + refs
-        // + content-types/rels, re-importing the same markers/notes/kinds.
+    /// Builds the footnote+endnote fixture and exports it to `.docx` bytes
+    /// (part of [`footnote_and_endnote_roundtrip_through_docx`]).
+    fn export_footnote_endnote_fixture() -> Vec<u8> {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "see ref");
@@ -2594,8 +2597,14 @@ mod tests {
         let eb = d.insert_note_block(&endnote_id, None, "paragraph").unwrap();
         d.splice_note_text(&endnote_id, &eb, 0, 0, "an endnote");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
-        let cont = DocxContainer::read(&exported).unwrap();
+        DocxCodec.export(d.as_ref()).unwrap()
+    }
+
+    /// Asserts the exported `.docx` carries both note parts, their refs, and
+    /// the content-types/rels registrations (part of
+    /// [`footnote_and_endnote_roundtrip_through_docx`]).
+    fn assert_footnote_endnote_docx_xml(exported: &[u8]) {
+        let cont = DocxContainer::read(exported).unwrap();
         let ftn = std::str::from_utf8(
             cont.get("word/footnotes.xml")
                 .expect("footnotes.xml written"),
@@ -2624,9 +2633,17 @@ mod tests {
             rels.contains(r#"Target="footnotes.xml""#) && rels.contains(r#"Target="endnotes.xml""#),
             "note rels registered: {rels}"
         );
+    }
+
+    /// Re-imports the exported `.docx`, asserting the ref marker and both
+    /// note bodies/kinds survive (part of
+    /// [`footnote_and_endnote_roundtrip_through_docx`]). Returns the
+    /// re-imported document for the caller's second round-trip check.
+    fn assert_footnote_endnote_reimport(exported: &[u8]) -> Document {
+        use crate::schema::MARK_NOTE_REF;
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        DocxCodec.import(exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0]
@@ -2659,6 +2676,18 @@ mod tests {
             .find(|n| n.kind == "endnote")
             .expect("endnote present");
         assert_eq!(end_note.blocks[0].text, "an endnote");
+
+        d2
+    }
+
+    #[test]
+    fn footnote_and_endnote_roundtrip_through_docx() {
+        // A footnote + an endnote built from scratch: export must write both note parts + refs
+        // + content-types/rels, re-importing the same markers/notes/kinds.
+        let exported = export_footnote_endnote_fixture();
+        assert_footnote_endnote_docx_xml(&exported);
+
+        let d2 = assert_footnote_endnote_reimport(&exported);
 
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();

@@ -10,6 +10,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+type BoolChangeCallback = Box<dyn FnMut(bool)>;
+
 /// `is_hovered`, `is_checked`, `is_focused` and `enabled` are four
 /// independent state axes (pointer, CRDT-synced value, keyboard focus,
 /// build-time enablement), each set/read by name — not positional bool
@@ -33,6 +35,12 @@ pub struct Toggle {
     /// Spoken name for a label-less toggle (e.g. an icon-only switch);
     /// unset falls back to a sibling label from the tree builder.
     accessible_name: Option<String>,
+    /// Typed process-local model mirrored in both directions during the
+    /// ordinary widget sync/event lifecycle.
+    local_state: Option<crate::local_state::LocalBinding<bool>>,
+    /// Observes user intent without owning model synchronization.
+    on_change: Option<BoolChangeCallback>,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Toggle {
@@ -49,6 +57,72 @@ impl Toggle {
             enabled: true,
             id_override: None,
             accessible_name: None,
+            local_state: None,
+            on_change: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
+        }
+    }
+
+    /// Create a true two-way binding to typed process-local boolean state.
+    ///
+    /// Pointer, keyboard, and accessibility activation update `state`;
+    /// mutations through any clone of `state` update this switch on the next
+    /// synchronization pass. Use [`Self::on_change`] only to observe user
+    /// changes, not to keep the model in sync.
+    pub fn from_state(state: &crate::LocalState<bool>) -> Self {
+        let (checked, binding) = crate::local_state::LocalBinding::new(state);
+        Self {
+            is_checked: checked,
+            local_state: Some(binding),
+            ..Self::new("toggle", "")
+        }
+    }
+
+    /// Observe changes produced by user interaction.
+    ///
+    /// Model synchronization and [`Self::set_checked`] do not invoke this
+    /// callback, so validation or action dispatch cannot mistake a model
+    /// refresh for new user intent.
+    #[must_use]
+    pub fn on_change(mut self, callback: impl FnMut(bool) + 'static) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self
+    }
+
+    /// Return the value currently presented by this switch.
+    pub fn is_checked(&self) -> bool {
+        self.is_checked
+    }
+
+    /// Replace the presented value and publish it to a bound local model.
+    ///
+    /// This is a programmatic model mutation and does not invoke
+    /// [`Self::on_change`]. Document-bound controls should mutate their
+    /// Automerge path instead and let [`Widget::sync`] adopt the result.
+    pub fn set_checked(&mut self, checked: bool) {
+        self.is_checked = checked;
+        self.publish_local_state();
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.is_checked);
+        }
+    }
+
+    fn commit_user_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let checked = !self.is_checked;
+        if self.local_state.is_none() {
+            let _ = state.put(
+                root,
+                self.on_toggle_path.as_str(),
+                automerge::ScalarValue::Boolean(checked),
+            );
+        }
+        self.is_checked = checked;
+        self.publish_local_state();
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(checked);
         }
     }
 
@@ -299,7 +373,21 @@ impl Toggle {
 }
 
 impl Widget for Toggle {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(binding) = &mut self.local_state {
+            if let Some(checked) = binding.poll() {
+                self.is_checked = checked;
+            }
+            return;
+        }
         if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
             && let Value::Scalar(s) = val
             && let automerge::ScalarValue::Boolean(b) = s.as_ref()
@@ -316,8 +404,8 @@ impl Widget for Toggle {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(44.0),
-                height: Dimension::length(24.0),
+                width: Dimension::length(44.0_f32.max(self.interaction.minimum_target())),
+                height: Dimension::length(self.interaction.minimum_target()),
             },
             ..Default::default()
         });
@@ -343,9 +431,10 @@ impl Widget for Toggle {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        let visual = Rect::from_center_size(self.rect.center(), (44.0, 24.0));
         let disabled = !self.enabled;
         if disabled {
-            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
+            let clip = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -362,7 +451,7 @@ impl Widget for Toggle {
         let (track_color, knob_color, stroke_color, stroke_w) =
             toggle_face_colors(theme, self.is_checked, interact);
 
-        let track_shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
+        let track_shape = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -381,11 +470,11 @@ impl Widget for Toggle {
 
         let knob_radius = 10.0;
         let knob_x = if self.is_checked {
-            self.rect.x1 - knob_radius - 2.0
+            visual.x1 - knob_radius - 2.0
         } else {
-            self.rect.x0 + knob_radius + 2.0
+            visual.x0 + knob_radius + 2.0
         };
-        let knob_y = self.rect.y0 + self.rect.height() / 2.0;
+        let knob_y = visual.y0 + visual.height() / 2.0;
 
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
         scene.fill(
@@ -432,15 +521,7 @@ impl Widget for Toggle {
             } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *handled = true;
                 *focus_target = Some(node_id);
-                let new_val = !self.is_checked;
-                let _ = state.put(
-                    root,
-                    self.on_toggle_path.as_str(),
-                    automerge::ScalarValue::Boolean(new_val),
-                );
-                // Set now, not on next sync: focus narration triggered by
-                // this same click must not speak the pre-click state.
-                self.is_checked = new_val;
+                self.commit_user_toggle(state, root);
             }
             _ => {}
         }
@@ -485,13 +566,7 @@ impl Widget for Toggle {
         }
         match action {
             Action::ToggleCheck | Action::Activate => {
-                let new_val = !self.is_checked;
-                let _ = state.put(
-                    path,
-                    self.on_toggle_path.as_str(),
-                    automerge::ScalarValue::Boolean(new_val),
-                );
-                self.is_checked = new_val;
+                self.commit_user_toggle(state, path);
                 true
             }
             _ => false,
@@ -670,6 +745,48 @@ mod tests {
         assert!(
             crate::a11y::contrast_ratio(knob, track)
                 >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+        );
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_toggles() {
+        use crate::a11y::Action;
+
+        let state = crate::LocalState::new(false);
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut first = Toggle::from_state(&state)
+            .on_change(move |checked| captured.borrow_mut().push(checked));
+        let mut second = Toggle::from_state(&state);
+        let mut document = AutoCommit::new();
+
+        state.set(true);
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert!(first.is_checked());
+        assert!(second.is_checked());
+        assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &Action::Activate,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert!(!state.get(), "user activation publishes typed state");
+        assert_eq!(&*changes.borrow(), &[false]);
+
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert!(!second.is_checked(), "sibling follows the shared model");
+
+        second.set_checked(true);
+        assert!(state.get(), "programmatic mutation publishes typed state");
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        assert!(first.is_checked());
+        assert_eq!(
+            &*changes.borrow(),
+            &[false],
+            "programmatic mutation does not invoke the user callback"
         );
     }
 

@@ -16,6 +16,14 @@
 //! (`Option<Vec<PathBuf>>`) becomes a `uris` array, with `None` treated
 //! as `response=1` (cancelled). On `Deny`, returns response=1 with an empty results dict.
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus method signatures below require unused positional parameters (handle, \
+              parent_window, ...); zbus's #[interface] macro deserialises them into these named \
+              parameters and forwards them by identifier into its generated dispatcher, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -63,6 +71,10 @@ impl FileChooserBackend {
 #[interface(name = "org.freedesktop.impl.portal.FileChooser")]
 impl FileChooserBackend {
     /// `OpenFile` — request one or more existing files.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature"
+    )]
     async fn open_file(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -87,6 +99,10 @@ impl FileChooserBackend {
     }
 
     /// `SaveFile` — request a destination for one new file.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature"
+    )]
     async fn save_file(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -111,6 +127,10 @@ impl FileChooserBackend {
     }
 
     /// `SaveFiles` — request a folder + multiple destination filenames.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature"
+    )]
     async fn save_files(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -151,14 +171,9 @@ impl FileChooserBackend {
         let caller = opts.caller.clone();
         let save = opts.save;
         let rx = self.ctx.file_picker.request_with(opts);
-        let picked = match rx.await {
-            Ok(p) => p,
-            Err(_) => {
-                // Spawner dropped the reply — treat as cancel, the same defensive
-                // posture as `flow::resolve`'s "channel-closed-without-reply ≡ deny": a request nobody answered is not an approved one.
-                None
-            }
-        };
+        // Spawner dropped the reply — treat as cancel, the same defensive
+        // posture as `flow::resolve`'s "channel-closed-without-reply ≡ deny": a request nobody answered is not an approved one.
+        let picked = rx.await.unwrap_or_default();
         let Some(paths) = picked.filter(|p| !p.is_empty()) else {
             return (1, HashMap::new());
         };
@@ -169,7 +184,7 @@ impl FileChooserBackend {
         for path in &paths {
             self.ctx.grants.insert(
                 &caller,
-                Capability::Filesystem {
+                &Capability::Filesystem {
                     path: path.clone(),
                     mode: mode.clone(),
                     scope: GRANT_SESSION,
@@ -244,10 +259,8 @@ pub(super) fn paths_to_open_response(
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
     }
-    if save {
-        if let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
-            results.insert("writable".to_string(), w);
-        }
+    if save && let Ok(w) = OwnedValue::try_from(Value::Bool(true)) {
+        results.insert("writable".to_string(), w);
     }
     (0, results)
 }
@@ -413,11 +426,17 @@ mod tests {
         assert!(!seen[0].2);
     }
 
-    /// A grant on `"/"` would cover the launcher's whole `--ro-bind-try <p>
-    /// <p>` subtree, read-only mounting the entire host filesystem at the
-    /// app's next launch — so this asserts the grant names only the picked
-    /// path, on the production path (`pick_and_grant`), against the real grant store.
+    /// A grant on `"/"` would cover the launcher's whole
+    /// `--ro-bind-try <p> <p>` subtree, read-only mounting the entire host
+    /// filesystem at the app's next launch — so this asserts the grant
+    /// names only the picked path, on the production path
+    /// (`pick_and_grant`), against the real grant store.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure below needs through the \
+                  block's final `.collect()` — already dropped at the earliest possible point"
+    )]
     fn the_grant_names_the_picked_path_and_never_the_filesystem_root() {
         use crate::shell::state::Capability;
 
@@ -453,20 +472,21 @@ mod tests {
 
         // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
         let tree = store.tree_handle();
-        let guard = tree.read();
-        let ws = guard
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws_id)
-            .expect("workspace");
-        let fs_paths: Vec<PathBuf> = ws
-            .app_capabilities(&caller.app_id)
-            .into_iter()
-            .filter_map(|c| match Capability::from_capability(c) {
-                Some(Capability::Filesystem { path, .. }) => Some(path),
-                _ => None,
-            })
-            .collect();
+        let fs_paths: Vec<PathBuf> = {
+            let guard = tree.read();
+            let ws = guard
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .expect("workspace");
+            ws.app_capabilities(&caller.app_id)
+                .into_iter()
+                .filter_map(|c| match Capability::from_capability(c) {
+                    Some(Capability::Filesystem { path, .. }) => Some(path),
+                    _ => None,
+                })
+                .collect()
+        };
 
         assert!(
             fs_paths.contains(&picked),
@@ -479,6 +499,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure below needs through the \
+                  block's final `.count()` — already dropped at the earliest possible point"
+    )]
     fn a_cancelled_dialog_grants_nothing() {
         use crate::shell::state::Capability;
 
@@ -510,22 +535,23 @@ mod tests {
         assert_eq!(code, 1, "a cancelled dialog is response=1");
 
         let tree = store.tree_handle();
-        let guard = tree.read();
-        let ws = guard
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws_id)
-            .expect("workspace");
-        let granted_fs = ws
-            .app_capabilities(&caller.app_id)
-            .into_iter()
-            .filter(|c| {
-                matches!(
-                    Capability::from_capability(c),
-                    Some(Capability::Filesystem { .. })
-                )
-            })
-            .count();
+        let granted_fs = {
+            let guard = tree.read();
+            let ws = guard
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .expect("workspace");
+            ws.app_capabilities(&caller.app_id)
+                .into_iter()
+                .filter(|c| {
+                    matches!(
+                        Capability::from_capability(c),
+                        Some(Capability::Filesystem { .. })
+                    )
+                })
+                .count()
+        };
         assert_eq!(
             granted_fs, 0,
             "declining the dialog must not hand the app any filesystem access"
@@ -564,6 +590,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure below needs through the \
+                  block's final `.any()` — already dropped at the earliest possible point"
+    )]
     fn a_save_grant_is_writable_and_an_open_grant_is_not() {
         use crate::shell::state::Capability;
 
@@ -602,20 +633,23 @@ mod tests {
             assert_eq!(code, 0);
 
             let tree = store.tree_handle();
-            let guard = tree.read();
-            let ws = guard
-                .workspaces
-                .iter()
-                .find(|w| w.id == ws_id)
-                .expect("workspace");
-            let writable = ws
-                .app_capabilities(&caller.app_id)
-                .into_iter()
-                .filter_map(|c| match Capability::from_capability(c) {
-                    Some(Capability::Filesystem { path, mode, .. }) if path == picked => Some(mode),
-                    _ => None,
-                })
-                .any(|m| matches!(m, FsMode::ReadWrite));
+            let writable = {
+                let guard = tree.read();
+                let ws = guard
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .expect("workspace");
+                ws.app_capabilities(&caller.app_id)
+                    .into_iter()
+                    .filter_map(|c| match Capability::from_capability(c) {
+                        Some(Capability::Filesystem { path, mode, .. }) if path == picked => {
+                            Some(mode)
+                        }
+                        _ => None,
+                    })
+                    .any(|m| matches!(m, FsMode::ReadWrite))
+            };
             assert_eq!(
                 writable, expect_write,
                 "save={save}: an Open must not hand out write access, and a \

@@ -155,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
             pubkey,
             can_add_new,
             note,
-        } => cmd_add_publisher(&storage, pubkey, can_add_new, note),
+        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
     }
@@ -220,7 +220,7 @@ fn cmd_init(
 /// `Cmd::AddPublisher` — add or replace one allowlist row.
 fn cmd_add_publisher(
     storage: &Storage,
-    pubkey: String,
+    pubkey: &str,
     can_add_new: bool,
     note: String,
 ) -> anyhow::Result<()> {
@@ -228,7 +228,7 @@ fn cmd_add_publisher(
         .load_allowlist()
         .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
     let replaced = allow.upsert(PublisherRow {
-        pubkey_hex: pubkey.clone(),
+        pubkey_hex: pubkey.to_string(),
         can_add_new,
         note,
     });

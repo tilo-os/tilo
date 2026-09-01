@@ -145,7 +145,7 @@ fn shared_flatpak_session_rolls_up_vaapi() {
         hdr: None,
     };
     let session =
-        SharedFlatpakSession::start(0xBBBB, "org.gimp.GIMP", 42, 640, 480, cfg).expect("session");
+        SharedFlatpakSession::start(0xBBBB, "org.gimp.GIMP", 42, 640, 480, &cfg).expect("session");
     let (chosen_probe, _) = probe(Codec::H264, Some(EncoderChoice::Vaapi));
     assert_eq!(chosen_probe, EncoderKind::VaApi);
     assert_eq!(session.chosen_encoder(), EncoderKind::VaApi);

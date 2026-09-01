@@ -16,7 +16,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
+use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
 use shell::shell::notes_app::{BODY_KEY, NotesApp};
 use shell::shell::sidebar_wheel::SidebarWheel;
 use shell::shell::sidebar_wheel_chrome::SidebarWheelChrome;
@@ -203,10 +203,9 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
 }
 
 #[test]
-fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
-    // With no roster on the active workspace the top bar falls back to the
-    // tree-level one (mirroring `SidebarWheelChrome::sync_from_tree`) —
-    // without it, demo trees that only set `tree.collaborators` render empty.
+fn topbar_does_not_leak_tree_collaborators_into_an_empty_workspace() {
+    // The active workspace roster is authoritative. A tree-level roster may
+    // describe people elsewhere, but must not create phantom room presence.
     let mut tree = WorkspaceTree::bootstrap_default();
     let active_id = tree.active;
     let active_ws = tree
@@ -218,14 +217,13 @@ fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
     tree.collaborators = vec![Collaborator::new("a", "Ada")];
 
     let top = TopBarChrome::from_tree(&tree);
-    assert_eq!(top.collaborator_initials(), &['A']);
+    assert!(top.collaborator_initials().is_empty());
     assert_eq!(top.collaborator_overflow(), 0);
 }
 
 #[test]
-fn sidebar_active_card_inherits_tree_collaborator_count() {
-    // The fallback only fires when the active workspace has no roster of its
-    // own; clear every workspace so the precondition is stated, not borrowed.
+fn sidebar_active_card_uses_only_its_workspace_roster() {
+    // A global roster must never be copied onto the active room card.
     let mut tree = WorkspaceTree::bootstrap_default();
     for ws in &mut tree.workspaces {
         ws.collaborators.clear();
@@ -241,13 +239,12 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
         Collaborator::new("e", "Eli"),
     ];
     let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.active_collaborator_count(), 5);
+    assert_eq!(wheel.active_collaborator_count(), 0);
 }
 
 #[test]
 fn sidebar_cards_read_per_workspace_collaborator_rosters() {
-    // Each workspace's own `collaborators` populates its card, with a
-    // tree-level fallback only on the active card.
+    // Each workspace's own `collaborators` populates its card.
     let mut tree = WorkspaceTree::bootstrap_default();
     let w1_id = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
@@ -270,9 +267,8 @@ fn sidebar_cards_read_per_workspace_collaborator_rosters() {
 }
 
 #[test]
-fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
-    // The fallback applies only to the *active* card — otherwise every card
-    // would show the same phantom roster.
+fn sidebar_cards_without_workspace_rosters_show_zero_dots() {
+    // Neither active nor inactive cards borrow the global roster.
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
@@ -283,7 +279,7 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     tree.active = w0;
 
     let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.card_collab_count(0), 2);
+    assert_eq!(wheel.card_collab_count(0), 0);
     assert_eq!(wheel.card_collab_count(1), 0);
 }
 
@@ -354,9 +350,8 @@ fn notes_app_roundtrips_through_crdt() {
     b.sync(&mut doc, &tile);
     // `NotesApp::text` is private, so the read-through is proved by an insert
     // growing the CRDT from the attached state, not the widget's own buffer.
-    let body = match doc.get(&tile, BODY_KEY).unwrap().unwrap() {
-        (Value::Object(ObjType::Text), id) => id,
-        _ => panic!("expected Text body"),
+    let (Value::Object(ObjType::Text), body) = doc.get(&tile, BODY_KEY).unwrap().unwrap() else {
+        panic!("expected Text body");
     };
     let text = doc.text(&body).expect("read body");
     assert_eq!(text, "hello");
@@ -413,9 +408,9 @@ fn editor_app_persists_edits_through_crdt() {
 
     let mut a = EditorApp::with_seed("let x = 1;\n");
     a.sync(&mut doc, &tile);
-    let body = match doc.get(&tile, EDITOR_BODY_KEY).unwrap().unwrap() {
-        (Value::Object(ObjType::Text), id) => id,
-        _ => panic!("expected Text body under editor_body"),
+    let (Value::Object(ObjType::Text), body) = doc.get(&tile, EDITOR_BODY_KEY).unwrap().unwrap()
+    else {
+        panic!("expected Text body under editor_body");
     };
     assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
 
@@ -530,7 +525,7 @@ fn an_editor_body_has_no_peer_caret_without_peers() {
     let mut tree = WorkspaceTree::bootstrap_demo();
     let editor_tab = {
         let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-        let id = group.tabs[0].id ^ 0xEd;
+        let id = group.tabs[0].id ^ 0xed;
         group.tabs.push(shell::shell::state::Tab {
             id,
             title: "Editor".into(),
@@ -655,65 +650,11 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
 #[test]
 fn overview_button_click_toggles_overview_overlay() {
     use automerge::AutoCommit;
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
-    use ui::theme::Theme;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Point};
+    use taffy::NodeId;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
-    let tree = WorkspaceTree::bootstrap_default();
-    let chrome = ChromeState::new(tree.clone());
-    assert!(
-        !chrome.borrow().overlays.overview,
-        "precondition: overview starts closed"
-    );
-
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-    let viewport = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    taffy
-        .compute_layout_with_measure(
-            viewport,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("compute_layout");
-    bar.apply_layout(&taffy, node, Point::ORIGIN);
-
-    // Draw once to populate `overview_btn_rect`.
-    let mut scene = Scene::new();
-    let mut tr = TextRenderer::new();
-    let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-    let btn = bar.overview_btn_rect();
-    assert!(
-        btn.area() > 0.0,
-        "draw should have populated overview_btn_rect"
-    );
-    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
+    let (mut bar, chrome, taffy, node, hit) = topbar_with_overview_btn_hit();
 
     // The widget tracks the cursor itself, because winit delivers MouseInput
     // without a position.
@@ -783,6 +724,80 @@ fn overview_button_click_toggles_overview_overlay() {
     );
 }
 
+/// Builds a `TopBarChrome` over a fresh bootstrap tree, lays it out at a
+/// fixed 1600x900 viewport and draws once so `overview_btn_rect` is
+/// populated, returning the pieces a caller needs to dispatch a synthetic
+/// click plus the button's screen-space centre. Split out of
+/// [`overview_button_click_toggles_overview_overlay`] to keep it under the
+/// line limit.
+fn topbar_with_overview_btn_hit() -> (
+    TopBarChrome,
+    Chrome,
+    taffy::TaffyTree<()>,
+    taffy::NodeId,
+    vello::kurbo::Point,
+) {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree.clone());
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "precondition: overview starts closed"
+    );
+
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+    let viewport = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1600.0),
+                    height: Dimension::length(900.0),
+                },
+                ..Default::default()
+            },
+            &[node],
+        )
+        .unwrap();
+    taffy
+        .compute_layout_with_measure(
+            viewport,
+            Size {
+                width: AvailableSpace::Definite(1600.0),
+                height: AvailableSpace::Definite(900.0),
+            },
+            |_, _, _, _, _| taffy::Size::ZERO,
+        )
+        .expect("compute_layout");
+    bar.apply_layout(&taffy, node, Point::ORIGIN);
+
+    // Draw once to populate `overview_btn_rect`.
+    let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
+    let presence = PresenceCtx::default();
+    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    let btn = bar.overview_btn_rect();
+    assert!(
+        btn.area() > 0.0,
+        "draw should have populated overview_btn_rect"
+    );
+    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
+
+    (bar, chrome, taffy, node, hit)
+}
+
 /// Drives the **full** `build_nirios_root` tree, where routing via
 /// `ShellOverlayHost::handle_event` once failed to reach `TopBarChrome`.
 /// The button rect comes from a throwaway sibling `TopBarChrome` in the
@@ -797,67 +812,17 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     use ui::theme::Theme;
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, MouseButton, WindowEvent};
 
     const W: f32 = 1600.0;
     const H: f32 = 900.0;
 
     let tree = WorkspaceTree::bootstrap_default();
-
-    // Sibling probe, drawn once so its overview_btn_rect gives click coords.
-    let probe_chrome = ChromeState::new(tree.clone());
-    let mut probe = TopBarChrome::from_tree(&tree).with_chrome(probe_chrome);
-    let theme = Theme::dark();
-    let mut probe_taffy: TaffyTree<()> = TaffyTree::new();
-    let mut probe_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let pnode = probe.build_layout(&mut probe_taffy, &theme, &mut probe_map);
-    let pvp = probe_taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[pnode],
-        )
-        .unwrap();
-    probe_taffy
-        .compute_layout_with_measure(
-            pvp,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("probe compute_layout");
-    // The real tree's outer Container + foreground Column are both
-    // `with_no_padding`, so the topbar lands flush at y=0/x=0 — zero offset.
-    let topbar_offset = 0.0_f64;
-    probe.apply_layout(
-        &probe_taffy,
-        pnode,
-        Point::new(topbar_offset, topbar_offset),
-    );
-    let mut probe_scene = Scene::new();
-    let mut probe_tr = TextRenderer::new();
-    let probe_presence = PresenceCtx::default();
-    probe.draw(
-        &mut probe_scene,
-        Affine::IDENTITY,
-        &mut probe_tr,
-        &theme,
-        &probe_presence,
-    );
-    let btn = probe.overview_btn_rect();
-    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
+    let hit = probe_overview_btn_hit(&tree, W, H);
 
     let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
 
+    let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
@@ -903,6 +868,113 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     let modifiers = winit::event::Modifiers::default();
     let mut focus: Option<NodeId> = None;
 
+    click_full_root(
+        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
+    );
+    assert!(
+        chrome.borrow().overlays.overview,
+        "click on overview button via full root must open the overview overlay"
+    );
+
+    // A second click must close it wherever the handler lives —
+    // `ShellOverlayHost` currently swallows any click while `flags.overview`
+    // is set, so only the end effect matters.
+    click_full_root(
+        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
+    );
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "second click on the overview button must close the overview overlay"
+    );
+}
+
+/// Draws a throwaway sibling `TopBarChrome` at a `w`x`h` viewport, purely to
+/// read back `overview_btn_rect` — topbar geometry is DPI/width-driven, so
+/// the rect matches the one inside the full `build_nirios_root` tree at the
+/// same viewport. Split out of
+/// [`full_root_click_toggles_overview_via_topbar_button`] to keep it under
+/// the line limit.
+fn probe_overview_btn_hit(tree: &WorkspaceTree, w: f32, h: f32) -> vello::kurbo::Point {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+
+    let probe_chrome = ChromeState::new(tree.clone());
+    let mut probe = TopBarChrome::from_tree(tree).with_chrome(probe_chrome);
+    let theme = Theme::dark();
+    let mut probe_taffy: TaffyTree<()> = TaffyTree::new();
+    let mut probe_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let pnode = probe.build_layout(&mut probe_taffy, &theme, &mut probe_map);
+    let pvp = probe_taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w),
+                    height: Dimension::length(h),
+                },
+                ..Default::default()
+            },
+            &[pnode],
+        )
+        .unwrap();
+    probe_taffy
+        .compute_layout_with_measure(
+            pvp,
+            Size {
+                width: AvailableSpace::Definite(w),
+                height: AvailableSpace::Definite(h),
+            },
+            |_, _, _, _, _| taffy::Size::ZERO,
+        )
+        .expect("probe compute_layout");
+    // The real tree's outer Container + foreground Column are both
+    // `with_no_padding`, so the topbar lands flush at y=0/x=0 — zero offset.
+    let topbar_offset = 0.0_f64;
+    probe.apply_layout(
+        &probe_taffy,
+        pnode,
+        Point::new(topbar_offset, topbar_offset),
+    );
+    let mut probe_scene = Scene::new();
+    let mut probe_tr = TextRenderer::new();
+    let probe_presence = PresenceCtx::default();
+    probe.draw(
+        &mut probe_scene,
+        Affine::IDENTITY,
+        &mut probe_tr,
+        &theme,
+        &probe_presence,
+    );
+    let btn = probe.overview_btn_rect();
+    Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1))
+}
+
+/// One cursor-move + left-press at `hit`, mirroring how a real click event
+/// pair reaches the widget tree. Split out of
+/// [`full_root_click_toggles_overview_via_topbar_button`] to keep it under
+/// the line limit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors Widget::handle_event's own parameter list, forwarded verbatim from the \
+              test harness"
+)]
+fn click_full_root(
+    root: &mut Box<dyn Widget>,
+    taffy: &taffy::TaffyTree<()>,
+    root_node: taffy::NodeId,
+    state: &mut automerge::AutoCommit,
+    root_path: &automerge::ObjId,
+    focus: &mut Option<taffy::NodeId>,
+    modifiers: winit::event::Modifiers,
+    hit: vello::kurbo::Point,
+) {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
     let cm = WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(hit.x, hit.y),
@@ -912,12 +984,12 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         &cm,
         1.0,
         &modifiers,
-        &mut state,
-        &root_path,
+        state,
+        root_path,
         &mut handled,
-        &mut focus,
+        focus,
         root_node,
-        &taffy,
+        taffy,
     );
 
     let mi = WindowEvent::MouseInput {
@@ -930,49 +1002,12 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         &mi,
         1.0,
         &modifiers,
-        &mut state,
-        &root_path,
+        state,
+        root_path,
         &mut handled,
-        &mut focus,
+        focus,
         root_node,
-        &taffy,
-    );
-
-    assert!(
-        chrome.borrow().overlays.overview,
-        "click on overview button via full root must open the overview overlay"
-    );
-
-    // A second click must close it wherever the handler lives —
-    // `ShellOverlayHost` currently swallows any click while `flags.overview`
-    // is set, so only the end effect matters.
-    let mut handled = false;
-    root.handle_event(
-        &cm,
-        1.0,
-        &modifiers,
-        &mut state,
-        &root_path,
-        &mut handled,
-        &mut focus,
-        root_node,
-        &taffy,
-    );
-    let mut handled = false;
-    root.handle_event(
-        &mi,
-        1.0,
-        &modifiers,
-        &mut state,
-        &root_path,
-        &mut handled,
-        &mut focus,
-        root_node,
-        &taffy,
-    );
-    assert!(
-        !chrome.borrow().overlays.overview,
-        "second click on the overview button must close the overview overlay"
+        taffy,
     );
 }
 

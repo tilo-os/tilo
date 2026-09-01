@@ -1451,6 +1451,12 @@ impl TubeApp {
     }
 
     fn persist(&self, state: &mut AutoCommit, root: &ObjId) {
+        // `STATE_KEY` is a presentation cache: it snapshots fetched catalogue
+        // data, playback position, and transient UI state so Tube can reopen
+        // quickly. It is deliberately not assigned an `ActionContext`; doing
+        // so would misrepresent worker refreshes and playback ticks as user
+        // actions. User-authored Tube operations are recorded separately by
+        // `TubeAction` at their dispatch boundary.
         if let Ok(json) = serde_json::to_string(&self.model) {
             let _ = state.put(root, STATE_KEY, json);
         }
@@ -1960,6 +1966,7 @@ impl Widget for TubeApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::Category;
@@ -2554,10 +2561,11 @@ mod tests {
         use std::time::Duration;
         // A fetcher that blocks briefly so a load is deterministically in
         // flight (pending ≥ 1) when we poll.
-        let store = ui::ImageStore::new(Arc::new(|_: &str| {
+        let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
             std::thread::sleep(Duration::from_millis(200));
             None
-        }));
+        });
+        let store = ui::ImageStore::new(&fetcher);
         let _ = store.get("http://x/a.png");
         assert!(store.pending() >= 1, "a load is in flight");
 

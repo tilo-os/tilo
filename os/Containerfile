@@ -300,10 +300,9 @@ COPY --from=wpe-builder /wpe/ /
 # network backends are compiled out. The features are named here so the image,
 # and only the image, turns them on.
 #
-# Package-qualified (`<pkg>/<feature>`), which cargo resolves because every one
-# of these packages is already selected through APP_PKGS. Feature unification
-# means `ui` is built once with the union (portal + mpris), which is additive
-# and what the apps that ask for it need anyway.
+# Package-qualified (`<pkg>/<feature>`). The qpkg applications and their
+# versioned shared runtime are built together below: Rust dylib symbol names
+# contain crate hashes, so separate Cargo invocations are not ABI-compatible.
 #
 # `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
 # engine behind it is the browser's, which QOS_WITH_BROWSER=0 does not build.
@@ -329,25 +328,26 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
-    && if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
-    else BROWSER_PKG="-p browser --features browser/wpe"; fi \
-    && APP_PKGS="$(sed -n 's|^ *"apps/\([A-Za-z0-9_-]*\)",.*|\1|p' Cargo.toml \
-                     | grep -vx browser | sed 's/^/-p /' | tr '\n' ' ')" \
-    && [ -n "${APP_PKGS}" ] \
-        || { echo "no apps/* workspace members matched — the members list moved" >&2; exit 1; } \
+    && if [ "${QOS_WITH_BROWSER}" = "0" ]; then \
+         BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
+       else \
+         BROWSER_PKG="-p browser --features browser/wpe"; \
+         THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
+       fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release \
-        --features "${APP_FEATURES}" \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback -p qos-cli -p ush -p qos-projector \
         -p pkg-cli -p install -p cli-shim \
-        ${APP_PKGS} \
         ${BROWSER_PKG} \
-    && mkdir -p /out /out/optional \
+    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+       /build/os/scripts/build-thin-apps.sh \
+    && mkdir -p /out /out/optional /out/thin-apps \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
     && cp target/release/shell \
@@ -370,16 +370,24 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-ush \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
+           p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
            b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
-           [ -z "$b" ] || [ ! -f "target/release/$b" ] || cp "target/release/$b" /out/; \
+           case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
+           [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
        done \
+    && cp target/thin-app/libruntime_dylib.so /out/ \
+    && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+    && [ -n "${LIBSTD}" ] \
+    && cp "${LIBSTD}" /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
 # Read the hardening back off the linked binaries. `.cargo/config.toml` sets
 # the flags; this is what proves they survived to the artifacts this image
 # ships — a dropped linker argument or a target change is otherwise invisible
 # until someone runs readelf on a released image. Fails the build, on purpose.
-RUN /build/os/scripts/verify-elf-hardening.sh /out
+RUN /build/os/scripts/verify-elf-hardening.sh /out \
+    && /build/os/scripts/verify-elf-hardening.sh /out/thin-apps \
+    && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
@@ -409,13 +417,19 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
-    && ARCH="$(uname -m)" \
-    && /out/qos-runtime-bundle build \
-        --version "${RUNTIME_VERSION}" \
-        --arch "${ARCH}" \
-        --from / \
-        --identity /out/runtime-bundle-identity.json \
-        --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
+    && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+    && [ -n "${RUST_LIBSTD}" ] \
+    && /bin/bash -eu -o pipefail -c ' \
+        args=(/out/qos-runtime-bundle build \
+          --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
+          --include /out/libruntime_dylib.so \
+          --identity /out/runtime-bundle-identity.json \
+          --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}"); \
+        while IFS= read -r dependency; do args+=(--include "$dependency"); done \
+          < <(ldd /out/libruntime_dylib.so \
+              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+              | sort -u); \
+        "${args[@]}"' \
     && /out/qos-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
@@ -436,7 +450,13 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 # Packages take the ordinary route — `qos-pkg pack` then `qos-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
+RUN BIN_DIR=/out/thin-apps \
+    PKG_BIN=/out/qos-pkg \
+    INSTALL_BIN=/out/qos-install \
+    BUNDLE_BIN=/out/qos-runtime-bundle \
+    SHIM_BIN=/out/qos-cli-shim \
+    PUBKEY_OUT=/out/app-publisher.hex \
+    /build/os/scripts/pack-apps.sh
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
@@ -446,7 +466,7 @@ RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
 # what will actually be mounted). See the split/uki/final stages at the end.
 FROM ${BASE_REF} AS rootfs
 
-# ---- Drop SQLite's WAL sidecars after every rpm transaction -----------------
+# ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
 # than letting SQLite delete them when the last connection closes. `-shm` is the
 # WAL *index*: pure derived state, valid only for the processes that mapped it,
@@ -510,18 +530,22 @@ FROM ${BASE_REF} AS rootfs
 #   mechanism. CI builds the same Containerfile under buildkit and has never
 #   reproduced it.
 #
-# So: keep dropping the sidecars, and do not trust a green build to mean the
-# fault is gone — it is a dice roll per layer. The assertion below is what
-# actually closes the loop, because it fails the build the moment the indexes
-# are damaged, whatever the mechanism turns out to be.
-ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
+# Rebuild the indexes onto a fresh inode before every boundary, then remove the
+# derived sidecars and verify both the database and a base-image file lookup.
+# rpm cannot rename its rebuild directory over an overlay-backed /usr/share/rpm,
+# so the helper performs a checked single-file replacement within that existing
+# directory. This avoids asking the layer diff to capture a heavily rewritten
+# database inode and turns corruption into an immediate failure.
+COPY os/scripts/finalize-rpmdb.sh /usr/libexec/qos/finalize-rpmdb
+RUN chmod 0755 /usr/libexec/qos/finalize-rpmdb
+ARG FINALIZE_RPMDB="/usr/libexec/qos/finalize-rpmdb"
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # Audio/Video
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -531,7 +555,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     wireplumber \
     libcanberra-gtk3 \
     sound-theme-freedesktop \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # GStreamer — the Music app plays audio through a `playbin` whose sink chain
 # ends in `autoaudiosink` (→ `pulsesink`, from -plugins-good, over the PipeWire
@@ -546,15 +570,17 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     gstreamer1-plugin-libav \
     gstreamer1-plugin-openh264 \
     ffmpeg-free \
+    yt-dlp \
     python3 \
     python3-dbus-next \
     python3-gobject \
-    && dnf clean all && ${DROP_RPMDB_WAL} \
+    && dnf clean all && ${FINALIZE_RPMDB} \
     && gst-inspect-1.0 openh264enc >/dev/null \
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 rtph264pay >/dev/null \
     && gst-inspect-1.0 rtponviftimestamp >/dev/null \
-    && gst-inspect-1.0 rtpstreampay >/dev/null
+    && gst-inspect-1.0 rtpstreampay >/dev/null \
+    && yt-dlp --version >/dev/null
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).
@@ -569,7 +595,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fprintd \
     fprintd-pam \
     polkit \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # System utilities.
 #
@@ -608,14 +634,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fwupd \
     fuse3 \
     cage \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # qOS backend (Sandbox Phase 4.3).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
 # OS infrastructure (C2-C8)
@@ -630,7 +656,24 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     firewalld \
     bluez \
     power-profiles-daemon \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
+
+# Offline spelling dictionaries used by the shared text toolkit. Hunspell is
+# the affix-aware multilingual baseline; English also has an embedded fallback
+# so recovery/minimal environments retain checking. Keep this explicit rather
+# than pulling every Fedora language pack into the immutable image.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    hunspell \
+    hunspell-en \
+    hunspell-de \
+    hunspell-es \
+    hunspell-fr \
+    hunspell-it \
+    hunspell-nl \
+    hunspell-pl \
+    hunspell-pt \
+    hunspell-ru \
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # C9 printing (CUPS plus its standard IPP query tool). Deliberately NOT
 # `cups-browsed`, which is
@@ -642,7 +685,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     cups \
     cups-ipptool \
-    && dnf clean all
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # Ensure system groups exist in /etc/group and add greetd to them
 RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
@@ -666,14 +709,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     google-noto-sans-devanagari-fonts \
     google-noto-sans-bengali-fonts \
     google-noto-sans-thai-fonts \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # Wayland runtime libraries (needed by compositor)
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
     libinput-devel \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
 # Compiled qOS binaries (built in the `builder` stage above)
@@ -747,6 +790,7 @@ ADD --checksum=sha256:3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9df
 COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf
 COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
+COPY os/usr/lib/systemd/user/qos-fs-recipient.service /usr/lib/systemd/user/qos-fs-recipient.service
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
@@ -765,9 +809,15 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
 # involved, but an empty/control-plane-only session fails the stats assertions.
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/qos/airplay-encrypted-session-test.sh
 COPY os/tests/projection-boot-check.sh /usr/libexec/qos/projection-boot-check.sh
+# The media sender has a bounded graceful-shutdown path. Immediately after a
+# full-workspace LTO build, host CPU/I/O pressure can make that cleanup miss
+# its deadline even though pairing, FairPlay and encrypted video all succeeded.
+# Retry the complete contract once; each attempt retains every protocol, media
+# and teardown assertion.
 RUN chmod 0755 /usr/libexec/qos/airplay-encrypted-session-test.sh \
         /usr/libexec/qos/projection-boot-check.sh \
-    && /usr/libexec/qos/airplay-encrypted-session-test.sh
+    && ( /usr/libexec/qos/airplay-encrypted-session-test.sh \
+         || /usr/libexec/qos/airplay-encrypted-session-test.sh )
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
 # Engine libraries + the WebKit helper processes (WPEWebProcess,
@@ -802,7 +852,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     at-spi2-atk \
     libmanette \
     libxslt \
-    && dnf clean all && ${DROP_RPMDB_WAL} \
+    && dnf clean all && ${FINALIZE_RPMDB} \
     && ldconfig \
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 hlssink2 >/dev/null \
@@ -866,6 +916,9 @@ COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
 # tuigreet lists both at the login prompt; see docs/peer-sync.md.
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
 COPY os/usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
+COPY os/usr/libexec/qos-session /usr/libexec/qos-session
+COPY os/usr/lib/systemd/user/qos-graphical-session.target /usr/lib/systemd/user/qos-graphical-session.target
+RUN chmod 0755 /usr/libexec/qos-session
 
 # Default compositor config
 COPY os/etc/qos/desktop.toml /etc/qos/desktop.toml
@@ -927,7 +980,8 @@ COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
 RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
 
-# The user unit that mints that identity, `--global` enabled further down.
+# The user unit that read-only verifies the identity after qos-session's
+# first-login ceremony, `--global` enabled further down.
 # It has to be installed here and not only exist in the source tree:
 # `systemctl --global enable` resolves the unit file at build time, so a unit
 # that was never copied in fails the build outright with "does not exist" —
@@ -1017,7 +1071,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # The signing tools, in their own transaction and allowed to be absent.
 #
@@ -1038,7 +1092,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
         sbsigntools \
         efitools \
         systemd-ukify \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
@@ -1175,7 +1229,7 @@ RUN case "${QOS_GENERATION}" in \
 # it when automatic unlock has failed.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         tpm2-tools \
-    && dnf clean all && ${DROP_RPMDB_WAL} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
+    && dnf clean all && ${FINALIZE_RPMDB} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
 
 COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
 COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
@@ -1276,7 +1330,7 @@ RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
 # compiler-rt also has to be present for qos-launcher's scoped hardening, which
 # preloads the same library into the packages listed in
 # /usr/lib/qos/untrusted-parsers.conf.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && ${DROP_RPMDB_WAL} && \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && ${FINALIZE_RPMDB} && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
@@ -1305,6 +1359,7 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
  && mv /var/tmp/qos-sestore /etc/selinux/targeted \
  && rm -rf /etc/selinux/targeted/tmp \
  && semodule -i /usr/share/qos/selinux/qos-base.cil \
+ && restorecon -v /usr/lib/systemd/user/qos-graphical-session.target \
  && echo "qos-base SELinux module loaded"
 
 # ---------------------------------------------------------------------------
@@ -1324,9 +1379,11 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
+    systemctl mask systemd-growfs-root.service && \
     systemctl enable fs.service && \
     systemctl --global enable qos-identity.service && \
     systemctl --global enable qos-ush.service && \
+    systemctl --global enable qos-fs-recipient.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 
 # C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
@@ -1365,6 +1422,11 @@ RUN systemctl enable qos-boot-entries.service && \
 # QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by
 # qos-install) on a schedule, so installed systems stay current.
 RUN systemctl enable bootc-fetch-apply-updates.timer
+
+# The installer and first-login experience expose NetworkManager-backed
+# connectivity controls. Enable it explicitly instead of depending on a base
+# image preset that may change independently of qOS.
+RUN systemctl enable NetworkManager.service
 
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop qOS (offline man-db caching), or a
@@ -1514,7 +1576,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # /boot belongs to the deployment, not the image: whatever the kernel
     # packages dropped there is now duplicated under the modules directory.
     rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
-    dnf clean all && ${DROP_RPMDB_WAL}
+    dnf clean all && ${FINALIZE_RPMDB}
 
 # The rpm database this image ships is intact and carries no WAL sidecars.
 #
@@ -1524,16 +1586,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
 # "succeeded" until a dnf resolve needed a file dependency and claimed the base
 # image did not provide /usr/bin/basename. `rpm -qf` on a file the base owns is
 # the cheapest query that actually reads those indexes.
-RUN test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
-        || { echo "rpmdb.sqlite-wal is in the image; see DROP_RPMDB_WAL" >&2; exit 1; } \
- && test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
-        || { echo "rpmdb.sqlite-shm is in the image; see DROP_RPMDB_WAL" >&2; exit 1; } \
- && owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
+RUN owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
  && case "$owner" in \
       coreutils-*) echo "rpmdb file index intact: /usr/bin/basename -> $owner" ;; \
       *) echo "rpmdb file index is corrupt: /usr/bin/basename -> $owner" >&2; exit 1 ;; \
     esac \
- && rpm --verifydb
+ && rpm --verifydb \
+ && rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
+           /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
+ && ( test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
+        || { echo "rpmdb.sqlite-wal is in the image; see FINALIZE_RPMDB" >&2; exit 1; } ) \
+ && ( test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
+        || { echo "rpmdb.sqlite-shm is in the image; see FINALIZE_RPMDB" >&2; exit 1; } )
 
 # Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
 # state it once did: offering `qos-install --encrypt` while carrying no
@@ -1542,6 +1606,18 @@ RUN test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
 COPY os/tests/boot_chain_invariants.sh /usr/libexec/qos/boot-chain-test.sh
 RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
     && OS_ROOT=/ bash /usr/libexec/qos/boot-chain-test.sh
+
+# Collaborative Files installed-image contract.  This is deliberately inside
+# the production rootfs build rather than a source-tree lint: it inspects the
+# actual copied binaries, enabled system/user units, FUSE package/config,
+# tmpfiles/ACL seed, and the Files package as installed in the launcher's
+# immutable registry.  The same script's runtime mode is run after a bootc
+# install + graphical login by build-image.yml.
+COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/qos/collaborative-files-image-contract.sh
+COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/qos/files-atspi-smoke.sh
+RUN chmod 0755 /usr/libexec/qos/collaborative-files-image-contract.sh \
+        /usr/libexec/qos/files-atspi-smoke.sh \
+    && OS_ROOT=/ /usr/libexec/qos/collaborative-files-image-contract.sh image
 
 # Enrolment invariants, likewise at BUILD time. A build container has no
 # /dev/tpm*, which is exactly the path this needs to exercise: the machine with

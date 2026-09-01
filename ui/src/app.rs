@@ -27,6 +27,9 @@ pub enum UserEvent {
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
+    /// Synchronize and redraw after typed state was changed by a worker.
+    /// Created automatically by [`crate::LocalStateWriter`].
+    Wake,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     AccessKit(accesskit_winit::WindowEvent),
 }
@@ -241,6 +244,9 @@ pub struct App {
     last_theme_store_check: Instant,
     modifiers: winit::event::Modifiers,
 
+    interaction: crate::interaction::InteractionEnvironment,
+    platform: crate::platform::PlatformConventions,
+
     nav_gestures: crate::gesture::NavGestureRecognizer,
 
     // Stable state for Undo/Redo tracking
@@ -408,6 +414,8 @@ impl App {
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             last_theme_store_check: Instant::now(),
             modifiers: winit::event::Modifiers::default(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
+            platform: crate::platform::PlatformConventions::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager,
@@ -1047,6 +1055,39 @@ impl App {
         self.structure_dirty = true;
     }
 
+    /// Override the host-detected input environment. Useful for platform
+    /// shells and deterministic tests; normal apps do not need to call it.
+    pub fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction == environment {
+            return;
+        }
+        self.interaction = environment;
+        self.root_widget.set_interaction_environment(environment);
+        self.layout_dirty = true;
+    }
+
+    pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
+        self.interaction
+    }
+
+    /// Override platform HIG conventions for a native shell or deterministic
+    /// cross-platform test. Ordinary apps use the host default.
+    pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        if self.platform == conventions {
+            return;
+        }
+        self.platform = conventions;
+        self.root_widget.set_platform_conventions(conventions);
+        self.layout_dirty = true;
+    }
+
+    pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
+        self.platform
+    }
+
     pub fn high_contrast(&self) -> bool {
         self.a11y.high_contrast
     }
@@ -1390,6 +1431,9 @@ impl App {
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
+        if !self.interaction.supports_hover() {
+            return None;
+        }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
         for &w_ptr in self.node_map.values() {
             // SAFETY: identical invariant to `resolve_cursor` — `node_map`
@@ -1534,7 +1578,7 @@ impl App {
                 crate::diag!("[app] broadcast doc delta {}B", delta.len());
             }
             self.collab_manager
-                .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
+                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
         }
     }
 
@@ -1649,6 +1693,30 @@ impl App {
         }
     }
 
+    fn apply_signed_document_envelope(&mut self, envelope: &collab_types::SignedOp) {
+        let applied = match collab_types::DocumentMutation::decode(&envelope.payload) {
+            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
+                if let Ok(mut incoming) = State::load(&data) {
+                    let _ = self.state.doc.merge(&mut incoming.doc);
+                    true
+                } else {
+                    false
+                }
+            }
+            Ok(collab_types::DocumentMutation::Incremental(data)) => {
+                self.state.load_incremental(&data).is_ok()
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
+                false
+            }
+        };
+        if applied {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+    }
+
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
@@ -1660,6 +1728,10 @@ impl App {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
                 }
+                CollabEvent::FollowChanged { peer_id } => match peer_id {
+                    Some(peer_id) => self.follow(peer_id),
+                    None => self.unfollow(),
+                },
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
                         cursor.x = x;
@@ -1682,42 +1754,17 @@ impl App {
                 } => {
                     self.apply_collab_action_arrived(&type_id, &payload, &from_user_id);
                 }
-                CollabEvent::CRDTUpdate { data } => {
-                    // MERGE rather than replace — replacing clobbers our own
-                    // concurrent edits.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!("[app] recv CRDTUpdate {}B", data.len());
-                    }
-                    if let Ok(mut incoming) = State::load(&data) {
-                        let _ = self.state.doc.merge(&mut incoming.doc);
-                        self.needs_sync = true;
-                        // A remote change can grow the widget tree, so force
-                        // a relayout — else a stale layout indexes out of
-                        // bounds.
-                        self.layout_dirty = true;
-                    }
-                }
-                CollabEvent::CRDTIncremental { data } => {
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!("[app] recv CRDTIncremental {}B", data.len());
-                    }
-                    let _ = self.state.load_incremental(&data);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
-                }
-                CollabEvent::SignedCRDTIncremental { envelope, .. } => {
+                CollabEvent::Document { envelope, .. } => {
                     // The broker already validated the envelope (signature +
                     // role table + replay defence); the toolkit trusts it.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                         crate::diag!(
-                            "[app] recv SignedCRDTIncremental from {} ({}B payload)",
+                            "[app] recv document from {} ({}B payload)",
                             "<peer>",
                             envelope.payload.len()
                         );
                     }
-                    let _ = self.state.load_incremental(&envelope.payload);
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
+                    self.apply_signed_document_envelope(&envelope);
                 }
                 CollabEvent::ScrollbackBatch {
                     artifact: _,
@@ -1725,15 +1772,13 @@ impl App {
                     exhausted: _,
                 } => {
                     // Broker pre-validated each envelope, trusted the same
-                    // way as `SignedCRDTIncremental`.
+                    // way as a live document mutation.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                         crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
-                        let _ = self.state.load_incremental(&envelope.payload);
+                        self.apply_signed_document_envelope(&envelope);
                     }
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
                 }
             }
         }
@@ -1811,22 +1856,13 @@ impl App {
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);
             }
-            CollabEvent::CRDTIncremental { data } => {
-                let _ = self.state.load_incremental(&data);
-                self.needs_sync = true;
+            CollabEvent::Document { envelope, .. } => {
+                self.apply_signed_document_envelope(&envelope);
             }
-            CollabEvent::CRDTUpdate { data } => {
-                // MERGE (not replace) — see the production handler in
-                // `run`'s about_to_wait loop for the rationale.
-                if let Ok(mut incoming) = crate::state::State::load(&data) {
-                    let _ = self.state.doc.merge(&mut incoming.doc);
-                    self.needs_sync = true;
-                }
-            }
-            CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                let _ = self.state.load_incremental(&envelope.payload);
-                self.needs_sync = true;
-            }
+            CollabEvent::FollowChanged { peer_id } => match peer_id {
+                Some(peer_id) => self.follow(peer_id),
+                None => self.unfollow(),
+            },
             _ => {}
         }
     }
@@ -1956,7 +1992,7 @@ impl App {
                     crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
                 }
                 self.collab_manager
-                    .send(crate::collaboration::CollabRequest::SyncCRDT { data });
+                    .send(crate::collaboration::CollabRequest::DocumentSnapshot { data });
             }
         }
     }
@@ -1988,10 +2024,12 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let changed = self.state.commit_action_authored(
+        let context = self.root_widget.take_commit_context();
+        let changed = self.state.commit_action_authored_with_context(
             self.last_stable_focus_idx,
             self.last_stable_metadata.clone(),
             Some(self.local_author.clone()),
+            context,
         );
         self.last_stable_focus_idx = self
             .focused_node
@@ -2301,28 +2339,50 @@ impl App {
         )
     }
 
-    /// `target` is a `taffy::NodeId` encoded as `taffy_id + 1`, `0` reserved
-    /// for the synthetic window root (see [`crate::accesskit_bridge`]). Gives
-    /// the widget first refusal via
-    /// [`Widget::perform_action`](crate::widget::Widget::perform_action); if
-    /// it declines, `Action::Focus` moves keyboard focus and any other verb
-    /// returns click coordinates for the caller to inject.
+    /// Resolves both retained AccessKit nodes and synthetic semantic children
+    /// (virtual rows/cells) to their owning widget. The widget gets first
+    /// refusal; synthetic children additionally carry an opaque stable target
+    /// produced by that widget. If a retained widget declines, `Action::Focus`
+    /// moves keyboard focus and activation returns click coordinates.
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
-        let raw = target.0;
-        if raw == 0 {
-            return None;
-        }
-        let taffy_id = NodeId::from(raw.saturating_sub(1));
+        use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
+
+        let resolved = resolve_node_id(self.root_widget.as_ref(), &self.node_map, target)?;
+        let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
+            A11yTarget::Root => return None,
+            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
+            A11yTarget::Synthetic {
+                owner,
+                key_path,
+                ordinal_path,
+                semantic_target,
+            } => (owner, key_path, ordinal_path, semantic_target, true),
+        };
         let &w_ptr = self.node_map.get(&taffy_id)?;
 
-        let handled =
-            unsafe { (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root) };
+        let handled = unsafe {
+            if let Some(semantic_target) = semantic_target.as_deref() {
+                (*w_ptr).perform_semantic_action(
+                    semantic_target,
+                    action,
+                    &mut self.state.doc,
+                    &self.state.root,
+                )
+            } else if synthetic {
+                (*w_ptr).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
+            } else {
+                (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
+            }
+        };
         if handled {
+            if matches!(action, Action::Focus) {
+                self.set_focused_node(Some(taffy_id));
+            }
             self.needs_sync = true;
             self.layout_dirty = true;
             return None;
@@ -2330,11 +2390,19 @@ impl App {
 
         match action {
             Action::Focus => {
+                if synthetic && !ordinal_path.is_empty() {
+                    unsafe { (*w_ptr).focus_synthetic_accessibility(&ordinal_path) };
+                }
                 self.set_focused_node(Some(taffy_id));
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                let rect = unsafe { (*w_ptr).get_rect() };
+                let rect = if synthetic {
+                    unsafe { (*w_ptr).synthetic_accessibility_rect(&ordinal_path) }
+                        .unwrap_or_else(|| unsafe { (*w_ptr).get_rect() })
+                } else {
+                    unsafe { (*w_ptr).get_rect() }
+                };
                 let c = rect.center();
                 Some((c.x, c.y))
             }
@@ -2392,10 +2460,36 @@ impl App {
                 self.dispatch_encoded_semantic(encoded)
             }
             SemanticActionKind::Verb(verb) => {
-                let Some(taffy_raw) = self.semantic_tree.node(id).and_then(|n| n.widget_taffy_id)
+                let Some((taffy_raw, semantic_target)) =
+                    self.semantic_tree.node(id).and_then(|n| {
+                        n.widget_taffy_id
+                            .map(|taffy| (taffy, n.semantic_target.clone()))
+                    })
                 else {
                     return Ok(false);
                 };
+                if let Some(semantic_target) = semantic_target {
+                    let taffy_id = NodeId::from(taffy_raw);
+                    let Some(&widget) = self.node_map.get(&taffy_id) else {
+                        return Ok(false);
+                    };
+                    let handled = unsafe {
+                        (*widget).perform_semantic_action(
+                            &semantic_target,
+                            &verb,
+                            &mut self.state.doc,
+                            &self.state.root,
+                        )
+                    };
+                    if handled {
+                        if matches!(verb, crate::a11y::Action::Focus) {
+                            self.set_focused_node(Some(taffy_id));
+                        }
+                        self.needs_sync = true;
+                        self.layout_dirty = true;
+                    }
+                    return Ok(handled);
+                }
                 let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
                 // A `Some((x, y))` result means the widget self-activates only
                 // via a pointer click, needing the windowed input path; we
@@ -2696,6 +2790,7 @@ impl App {
     {
         let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
         let proxy = event_loop.create_proxy();
+        let _state_wake = crate::local_state::install_event_loop_proxy(proxy.clone());
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
@@ -2716,6 +2811,8 @@ impl App {
             last_primary_frame_presented: 0,
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
+            touch_pointer: crate::interaction::TouchPointerEmulator::default(),
+            dispatching_touch_pointer: false,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
@@ -2938,6 +3035,12 @@ struct AppHandler {
     /// its compositor-frozen final frame until one primary app frame with the
     /// reattached widget is reported Presented.
     floating_destination_present_frames: std::collections::HashMap<String, Option<u64>>,
+    /// Maps one-finger taps onto the existing pointer event contract so every
+    /// standard and app-local control gets touch without bespoke branches.
+    touch_pointer: crate::interaction::TouchPointerEmulator,
+    /// Synthetic mouse events must retain touch modality rather than making
+    /// the host immediately classify them as a fine pointer.
+    dispatching_touch_pointer: bool,
 }
 
 struct NativeFloatingWindow {
@@ -2987,6 +3090,7 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
+    app.root_widget.native_view_frame_start();
     app.root_widget.draw_with_presence(
         scene,
         transform,
@@ -3857,6 +3961,13 @@ impl AppHandler {
         app.record_tick();
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        // Drain model notifications and advance update-driven widgets before
+        // synchronization. A worker's `Wake` event reaches this pass without
+        // requiring the app to own a proxy or poll inside its model.
+        if app.root_widget.update(&mut app.state.doc, &app.state.root) {
+            app.needs_sync = true;
+            app.layout_dirty = true;
+        }
         if app.needs_sync {
             app.root_widget.sync(&mut app.state.doc, &app.state.root);
             app.needs_sync = false;
@@ -3878,6 +3989,10 @@ impl AppHandler {
         let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
         if app.structure_dirty {
             app.rebuild_structure();
+        }
+        if structure_rebuilt {
+            app.root_widget
+                .mount_native_views(&crate::widget::NativeViewHost::live(window, app.platform));
         }
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
@@ -4030,6 +4145,30 @@ impl AppHandler {
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
         let event = other;
         let app = &mut self.app;
+        let detected_interaction = if self.dispatching_touch_pointer {
+            None
+        } else {
+            match &event {
+                WindowEvent::Touch(_) => Some(crate::interaction::InteractionEnvironment::TOUCH),
+                WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. } => {
+                    Some(crate::interaction::InteractionEnvironment::POINTER)
+                }
+                WindowEvent::KeyboardInput {
+                    event:
+                        winit::event::KeyEvent {
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                    ..
+                } => Some(app.interaction.with_keyboard_modality()),
+                _ => None,
+            }
+        };
+        if let Some(environment) = detected_interaction {
+            app.set_interaction_environment(environment);
+        }
         let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
         // RUST_LOG=ui::app=debug: pointer-move spam is intentionally
         // not throttled here — when the bug is "no clicks work", you
@@ -4087,7 +4226,10 @@ impl AppHandler {
 
         let mut handled = false;
         let mut focus_target = None;
-        let mut is_undo_redo = false;
+        // A synthesized hover-clear may be handled by a control, but it is
+        // presentation state and must not create an empty undo boundary.
+        let mut is_undo_redo =
+            self.dispatching_touch_pointer && matches!(event, WindowEvent::CursorMoved { .. });
         let mut floating_pointer_needs_redraw = false;
 
         // The palette owns the keyboard while open; Ctrl+K itself is
@@ -4103,7 +4245,7 @@ impl AppHandler {
                     },
                     ..
                 } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app.modifiers.state().control_key()
+                    && app.platform.command_modifier_down(app.modifiers.state())
             );
             if !is_ctrl_k
                 && matches!(event, WindowEvent::KeyboardInput { .. })
@@ -4159,7 +4301,7 @@ impl AppHandler {
         }
 
         if !handled
-            && app.modifiers.state().control_key()
+            && app.platform.command_modifier_down(app.modifiers.state())
             && let WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -4171,56 +4313,49 @@ impl AppHandler {
             } = event
         {
             let shift = app.modifiers.state().shift_key();
-            // Otherwise round-tripping undo/redo loses caret
-            // position.
-            let current_meta = app.root_widget.get_state();
-            let current_focus_idx = app
-                .focused_node
-                .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-            match c.as_str() {
-                // winit delivers Ctrl+Shift+Z as character "Z"
-                // with shift held, so check the modifier, not
-                // the capital-letter cue.
-                "z" | "Z" if shift => {
-                    if let Some(e) =
-                        app.state
-                            .redo_as(Some(&app.local_author), current_focus_idx, current_meta)
-                    {
-                        app.apply_undo_entry(e);
+            let history_request = crate::undo::shortcut(c, true, shift);
+            if let Some(request) = history_request {
+                if app.root_widget.handle_local_undo_request(request) {
+                    app.needs_sync = true;
+                    window.request_redraw();
+                } else {
+                    // Otherwise round-tripping document undo/redo loses caret
+                    // position.
+                    let current_meta = app.root_widget.get_state();
+                    let current_focus_idx = app
+                        .focused_node
+                        .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
+                    let entry = match request {
+                        crate::undo::UndoRequest::Undo => app.state.undo_as(
+                            Some(&app.local_author),
+                            current_focus_idx,
+                            current_meta,
+                        ),
+                        crate::undo::UndoRequest::Redo => app.state.redo_as(
+                            Some(&app.local_author),
+                            current_focus_idx,
+                            current_meta,
+                        ),
+                    };
+                    if let Some(entry) = entry {
+                        app.apply_undo_entry(entry);
                     }
-                    is_undo_redo = true;
-                    handled = true;
                 }
-                "z" | "Z" => {
-                    if let Some(e) =
-                        app.state
-                            .undo_as(Some(&app.local_author), current_focus_idx, current_meta)
-                    {
-                        app.apply_undo_entry(e);
+                is_undo_redo = true;
+                handled = true;
+            } else {
+                match c.as_str() {
+                    // A second Ctrl+K closes the palette.
+                    "k" | "K" => {
+                        if app.action_palette.is_some() {
+                            app.close_action_palette();
+                        } else {
+                            app.open_action_palette();
+                        }
+                        handled = true;
                     }
-                    is_undo_redo = true;
-                    handled = true;
+                    _ => {}
                 }
-                "y" | "Y" => {
-                    if let Some(e) =
-                        app.state
-                            .redo_as(Some(&app.local_author), current_focus_idx, current_meta)
-                    {
-                        app.apply_undo_entry(e);
-                    }
-                    is_undo_redo = true;
-                    handled = true;
-                }
-                // A second Ctrl+K closes the palette.
-                "k" | "K" => {
-                    if app.action_palette.is_some() {
-                        app.close_action_palette();
-                    } else {
-                        app.open_action_palette();
-                    }
-                    handled = true;
-                }
-                _ => {}
             }
         }
 
@@ -4269,7 +4404,7 @@ impl AppHandler {
         }
 
         // Two-finger swipe / edge pull; delivered via `on_nav_gesture`.
-        if !handled {
+        if !handled && !self.dispatching_touch_pointer {
             use crate::gesture::GesturePhase;
             let map_phase = |p: winit::event::TouchPhase| match p {
                 winit::event::TouchPhase::Started => GesturePhase::Begin,
@@ -4426,7 +4561,7 @@ impl AppHandler {
             } = event
         {
             use crate::a11y::Action;
-            let ctrl = app.modifiers.state().control_key();
+            let ctrl = app.platform.command_modifier_down(app.modifiers.state());
             let shift = app.modifiers.state().shift_key();
             // (action to repeat, how many times)
             let (action, times) = match named {
@@ -4556,6 +4691,7 @@ impl AppHandler {
                 ..
             } | WindowEvent::MouseWheel { .. }
                 | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
                 | WindowEvent::CursorLeft { .. }
         ) && app.tooltip_host.dismiss()
         {
@@ -4617,6 +4753,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.root_widget
                     .on_external_event(&payload, &mut app.state.doc, &app.state.root);
                 app.needs_sync = true;
+                window.request_redraw();
+            }
+            UserEvent::Wake => {
+                self.app.needs_sync = true;
                 window.request_redraw();
             }
             UserEvent::AccessKit(ak_event) => {
@@ -4724,6 +4864,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             &window,
             self.a11y_proxy.clone(),
         ));
+        self.app
+            .root_widget
+            .mount_native_views(&crate::widget::NativeViewHost::live(
+                &window,
+                self.app.platform,
+            ));
         window.set_visible(true);
 
         self.app.layout_dirty = true;
@@ -4741,6 +4887,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.app.autosave_flush();
+        self.app.root_widget.unmount_native_views();
         for surface in &mut self.floating_windows {
             if let Some(mut render) = surface.render.take() {
                 render.shutdown_and_join();
@@ -4806,6 +4953,41 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(&window, &event);
         }
+        if let WindowEvent::Touch(touch) = &event {
+            self.app
+                .set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+            let pointer_events = self.touch_pointer.events(touch);
+            self.dispatching_touch_pointer = true;
+            for pointer_event in pointer_events {
+                let pointer_event = match pointer_event {
+                    crate::interaction::TouchPointerEvent::Move(position) => {
+                        WindowEvent::CursorMoved {
+                            device_id: touch.device_id,
+                            position,
+                        }
+                    }
+                    crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
+                        device_id: touch.device_id,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                    crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
+                        device_id: touch.device_id,
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                    },
+                    crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
+                        WindowEvent::MouseWheel {
+                            device_id: touch.device_id,
+                            delta: winit::event::MouseScrollDelta::PixelDelta(delta),
+                            phase,
+                        }
+                    }
+                };
+                self.handle_other_window_event(&window, pointer_event);
+            }
+            self.dispatching_touch_pointer = false;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_size) => {
@@ -4817,6 +4999,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The render path reads `window.scale_factor()` each frame,
                 // so we just need to invalidate layout and redraw.
+                self.app
+                    .root_widget
+                    .mount_native_views(&crate::widget::NativeViewHost::live(
+                        &window,
+                        self.app.platform,
+                    ));
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
@@ -4943,6 +5131,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        let scheduled_deadline = app.root_widget.next_wake_deadline();
+        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
+        if scheduled_due {
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
         let tooltip_pending = app.tooltip_host.needs_frame();
@@ -4976,21 +5171,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .floating_windows
             .iter()
             .any(|surface| !surface.suspended && !surface.adopted);
-        if app.collab_manager.is_connected()
+        let fast_pump = app.collab_manager.is_connected()
             || needs_frame
             || tooltip_pending
             || typing_active
             || awaiting_floating_pixels
-        {
-            // `Instant::checked_add` is the non-panicking form; 16ms from now can only
-            // fail to represent right at the end of time, in which case waking
-            // immediately is a harmless fallback.
-            let next_tick = Instant::now()
-                .checked_add(Duration::from_millis(16))
-                .unwrap_or_else(Instant::now);
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
-        } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            || scheduled_due;
+        match (fast_pump, scheduled_deadline) {
+            (true, _) => {
+                // `checked_add` is non-panicking at the end of Instant's range.
+                let next_tick = Instant::now()
+                    .checked_add(Duration::from_millis(16))
+                    .unwrap_or_else(Instant::now);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
+            }
+            (false, Some(deadline)) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+            (false, None) => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
@@ -5137,6 +5335,7 @@ mod window_title_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // These tests assert exact values assigned without computation.
 mod pointer_broadcast_tests {
     use super::*;
 
@@ -5280,7 +5479,7 @@ mod pointer_broadcast_tests {
     }
 
     #[test]
-    fn crdt_update_merges_not_replaces() {
+    fn document_snapshot_merges_not_replaces() {
         use automerge::transaction::Transactable;
         use automerge::{ObjType, ROOT, ReadDoc};
         let mut base = automerge::AutoCommit::new();
@@ -5306,7 +5505,18 @@ mod pointer_broadcast_tests {
         peer.put(&pm, "b", 20).unwrap();
         let incoming = peer.save();
 
-        app.apply_collab_event_for_test(CollabEvent::CRDTUpdate { data: incoming });
+        let envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(incoming)
+                .encode()
+                .unwrap(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            0,
+        );
+        app.apply_signed_document_envelope(&envelope);
 
         // A replace would drop "a".
         let doc = &mut app.state_mut_for_test().doc;
@@ -6339,6 +6549,7 @@ mod focus_trap_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Exact preference values are part of the test contract.
 mod low_vision_tests {
     use super::*;
     use crate::a11y::contrast_ratio;
@@ -7027,6 +7238,7 @@ impl crate::view::FreezeThaw for App {
 // `broadcast_view_presence` through the presence sink, and
 // `apply_collab_event_for_test` through `apply_remote_presence`.
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Serialized presence fields are expected to round-trip exactly.
 mod view_presence_tests {
     use super::*;
     use crate::PresenceCtx;
@@ -7552,5 +7764,191 @@ mod semantic_tree_app_tests {
             via_a11y, via_affordance,
             "both paths produce the same result"
         );
+    }
+
+    #[test]
+    fn virtual_tree_rows_dispatch_through_platform_and_semantic_routes() {
+        let root = crate::widget::TreeNode::branch(
+            1,
+            "Root",
+            (),
+            vec![crate::widget::TreeNode::leaf(2, "Child", ())],
+        );
+        let mut app = App::new(
+            State::new(),
+            Box::new(
+                crate::widget::TreeView::new(root)
+                    .with_id("items-tree")
+                    .with_expanded([1]),
+            ),
+        );
+        app.init_layout();
+
+        app.refresh_semantic_tree();
+        let child = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
+            })
+            .map(|node| node.id.clone())
+            .expect("semantic child row");
+        assert!(
+            app.invoke_semantic_action(&child, "activate", None)
+                .expect("semantic row activation")
+        );
+        app.refresh_semantic_tree();
+        assert!(
+            app.semantic_tree()
+                .node(&child)
+                .is_some_and(|node| node.state.selected)
+        );
+
+        let update = app.build_a11y_tree_update(1.0);
+        assert_eq!(
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+                .count(),
+            2
+        );
+        let root_row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(id, node)| {
+                assert!(node.supports_action(accesskit::Action::Collapse));
+                *id
+            })
+            .expect("virtual root row");
+        let route = crate::accesskit_bridge::resolve_node_id(
+            app.root_widget.as_ref(),
+            &app.node_map,
+            root_row,
+        )
+        .expect("root row route");
+        assert!(matches!(
+            route,
+            crate::accesskit_bridge::A11yTarget::Synthetic {
+                semantic_target: Some(ref target),
+                ..
+            } if target == "node:1"
+        ));
+        assert_eq!(
+            app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
+            None
+        );
+        app.refresh_semantic_tree();
+        let root_semantics = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
+            })
+            .expect("root semantics after collapse");
+        assert_eq!(root_semantics.state.expanded, Some(false));
+
+        let collapsed = app.build_a11y_tree_update(1.0);
+        let rows = collapsed
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "collapsing removes the child row");
+        assert!(rows[0].1.supports_action(accesskit::Action::Expand));
+    }
+
+    #[test]
+    fn retained_tree_delegate_is_nested_once_and_keeps_its_own_action() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let root = crate::widget::TreeNode::leaf(7, "Item", ());
+        let tree = crate::widget::TreeView::new(root).with_row_delegate(move |_, id, _| {
+            let button_id = format!("action-{id}");
+            let captured = std::rc::Rc::clone(&captured);
+            Box::new(
+                crate::widget::Button::new(&button_id, "Action", None).on_click(move || {
+                    captured.set(captured.get().saturating_add(1));
+                }),
+            )
+        });
+        let mut app = App::new(State::new(), Box::new(tree));
+        app.init_layout();
+
+        let update = app.build_a11y_tree_update(1.0);
+        let buttons = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == accesskit::Role::Button)
+            .collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 1, "delegate is not announced twice");
+        let button_id = buttons[0].0;
+        let row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(_, node)| node)
+            .expect("tree item");
+        assert_eq!(row.children(), &[button_id]);
+        assert!(
+            row.bounds().is_some(),
+            "platform row keeps viewport geometry"
+        );
+        assert_eq!(
+            app.dispatch_a11y_action(button_id, &crate::a11y::Action::Activate),
+            None
+        );
+        assert_eq!(presses.get(), 1);
+
+        app.refresh_semantic_tree();
+        let semantic_buttons = app
+            .semantic_tree()
+            .iter()
+            .filter(|node| node.role == crate::a11y::Role::Button)
+            .collect::<Vec<_>>();
+        assert_eq!(semantic_buttons.len(), 1);
+        let semantic_row = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.role == crate::a11y::Role::TreeItem)
+            .expect("semantic tree item");
+        assert!(semantic_row.children.contains(&semantic_buttons[0].id));
+        assert!(
+            semantic_row.bounds.is_some(),
+            "inspection row keeps viewport geometry"
+        );
+        assert!(
+            !semantic_row.state.selected,
+            "button activation does not select row"
+        );
+    }
+
+    #[test]
+    fn synthetic_drawn_control_dispatches_through_retained_semantic_tree() {
+        let changed = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let captured = std::rc::Rc::clone(&changed);
+        let group = crate::widget::ToggleGroup::new(
+            vec![
+                crate::widget::toggle_group::Segment::new("Light"),
+                crate::widget::toggle_group::Segment::new("Dark"),
+            ],
+            0,
+        )
+        .on_change(move |index| captured.set(index));
+        let mut app = App::new(State::new(), Box::new(group));
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let dark = app
+            .semantic_tree()
+            .find_by_name("Dark")
+            .map(|node| node.id.clone())
+            .expect("synthetic Dark segment");
+
+        assert!(
+            app.invoke_semantic_action(&dark, "activate", None)
+                .expect("semantic dispatch")
+        );
+        assert_eq!(changed.get(), 1);
     }
 }

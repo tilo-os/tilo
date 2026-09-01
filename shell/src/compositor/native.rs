@@ -6,11 +6,13 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
+use rand_core::{OsRng, RngCore};
 
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
@@ -1098,7 +1100,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         // Through the tree's entry point, not `grant_as` directly, so this answers
         // with the same authority the rest of the compositor grants under.
         let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
-            format!("{user} may not administer this room, so nothing was granted")
+            format!("{user} may not administer this workspace, so nothing was granted")
         })?;
         // Nothing past this point touches the tree.
         drop(tree);
@@ -1128,7 +1130,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let may = ws.may_administer(&user);
         if !may {
             return Err(format!(
-                "{user} may not administer this room, so nothing was revoked"
+                "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
         let removed = ws.revoke_as(&user, id);
@@ -1494,12 +1496,19 @@ fn apply_modifier_mask(ctx: &mut TestControlCtx, mask: ModifiersState) {
 
 /// Offer `event` to the focused Wayland client; returns `true` when it was
 /// consumed and must not also reach the chrome.
+fn client_input_allowed(fb: &FrameBuilder) -> bool {
+    !fb.host().onboarding_active()
+}
+
 fn to_client(
     state: &mut Option<&mut State>,
     fb: &mut FrameBuilder,
     event: &WindowEvent,
     modifiers: Modifiers,
 ) -> bool {
+    if !client_input_allowed(fb) {
+        return false;
+    }
     match state {
         Some(st) => client_input::route_input(st, fb, event, &modifiers),
         None => false,
@@ -2265,6 +2274,97 @@ fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
+/// Sequence for same-directory workspace-salt claim files. The final file is
+/// published with a hard link, so concurrent sessions can never replace the
+/// salt another session already used to mint durable object ids.
+static WORKSPACE_SALT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn read_workspace_salt(path: &Path) -> std::io::Result<u16> {
+    let bytes = std::fs::read(path)?;
+    let bytes: [u8; 2] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "workspace peer salt must contain exactly two bytes",
+        )
+    })?;
+    let salt = u16::from_be_bytes(bytes);
+    if salt == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "workspace peer salt must be non-zero",
+        ));
+    }
+    Ok(salt)
+}
+
+/// Load the namespace salt used for durable workspace object ids, creating a
+/// non-secret random one without creating or advertising a transport identity.
+/// Existing installations retain the salt derived from their existing device
+/// key on first migration.
+pub(super) fn load_or_create_workspace_salt(
+    state_path: &Path,
+    peer_key_path: &Path,
+) -> std::io::Result<u16> {
+    let parent = state_path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let path = parent.join("workspace-peer-salt");
+    if path.try_exists()? {
+        return read_workspace_salt(&path);
+    }
+
+    let salt = if peer_key_path.try_exists()? {
+        let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
+        crate::network::behaviour::peer_salt_from_keypair(&key).max(1)
+    } else {
+        let mut bytes = [0_u8; 2];
+        OsRng.fill_bytes(&mut bytes);
+        u16::from_be_bytes(bytes).max(1)
+    };
+
+    for _ in 0..16 {
+        let sequence = WORKSPACE_SALT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".workspace-peer-salt-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = file
+            .write_all(&salt.to_be_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        let claim = std::fs::hard_link(&temporary, &path);
+        let _ = std::fs::remove_file(&temporary);
+        match claim {
+            Ok(()) => {
+                std::fs::File::open(parent)?.sync_all()?;
+                return Ok(salt);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return read_workspace_salt(&path);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a workspace-salt claim file",
+    ))
+}
+
 /// Load this machine's desktop state and bring it up to the invariants
 /// later stages assume: a persist path, a durable room identity per
 /// workspace, and an owner per room — an unowned room has no administrators.
@@ -2292,14 +2392,24 @@ fn load_session_tree(
     // unsalted — identical on every machine, so two such peers joining one
     // room would collide. Re-seeding afterwards didn't help: it fixes ids minted *next*, not ones already in the tree.
     let mut peer_sync_possible = enable_peer_sync;
-    if enable_peer_sync {
-        match crate::network::behaviour::load_or_create_keypair(
-            &crate::shell::network::peer_key_path(),
-        ) {
+    let peer_key_path = crate::shell::network::peer_key_path();
+    match load_or_create_workspace_salt(&path, &peer_key_path) {
+        Ok(salt) => {
+            crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
+            tracing::info!("workspace id salt set to 0x{:04x}", salt);
+        }
+        Err(error) => {
+            peer_sync_possible = false;
+            tracing::error!(
+                %error,
+                "workspace id salt unavailable; peer sync stays off rather than using an unstable id namespace"
+            );
+        }
+    }
+    if peer_sync_possible {
+        match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
             Ok(kp) => {
-                let salt = crate::network::behaviour::peer_salt_from_keypair(&kp);
-                crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
-                tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+                tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
             }
             Err(e) => {
                 peer_sync_possible = false;
@@ -2386,7 +2496,12 @@ fn spawn_session_collab_broker(
     }
 
     let peer_sync_owned = peer_sync.cloned();
-    match crate::shell::collab_broker::spawn_native(capnp_path.clone(), &peer_sync_owned) {
+    let membership = chrome.borrow().tree_handle();
+    match crate::shell::collab_broker::spawn_native(
+        capnp_path.clone(),
+        &peer_sync_owned,
+        membership,
+    ) {
         Ok(handle) => {
             tracing::info!(
                 "collab: typed broker listening on {} — peer_sync={}",
@@ -2674,6 +2789,12 @@ fn bind_and_publish_wayland_socket() -> (
               inspection (backend construction, the wayland socket bind+publish) is factored out \
               into `build_backend`/`bind_and_publish_wayland_socket` below"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "rooms and here below are each fully chained from the workspace tree read guard; \
+              nothing to drop earlier without cloning the tree data out for no real gain, and \
+              the block already ends right after both are computed"
+)]
 pub fn run() -> ! {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
@@ -2716,7 +2837,45 @@ pub fn run() -> ! {
         (0, 0) => (1600, 900),
         size => size,
     };
-    let enable_peer_sync = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let peer_sync_requested = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let identity_store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "cannot resolve the user identity directory; refusing to start an identity-less desktop"
+            );
+            std::process::exit(1);
+        }
+    };
+    let onboarding_identity_dir =
+        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store) {
+            if let Some(identity_dir) = identity_store
+                .path()
+                .parent()
+                .map(std::path::Path::to_path_buf)
+            {
+                Some(identity_dir)
+            } else {
+                tracing::error!(
+                    path = %identity_store.path().display(),
+                    "identity path has no parent; refusing to start an identity-less desktop"
+                );
+                std::process::exit(1);
+            }
+        } else {
+            None
+        };
+    // A first-login compositor may allocate a non-secret workspace id
+    // namespace, but it must not create or advertise a transport identity
+    // before the person has completed the identity ceremony. Peer sync starts
+    // on the next session, after the certified device chain exists.
+    let enable_peer_sync = peer_sync_requested && onboarding_identity_dir.is_none();
+    if peer_sync_requested && !enable_peer_sync {
+        tracing::info!(
+            "peer-sync: deferred until the next session while first-login identity setup is active"
+        );
+    }
 
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
     // identity, owner and capability list all have to survive a restart.
@@ -2727,6 +2886,19 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    // A fresh machine has no display server before `shell`, so first-login
+    // cannot be a standalone winit app or a pre-graphical user unit. Host the
+    // ceremony in trusted compositor chrome and withhold every desktop
+    // affordance until it has produced a real identity.
+    if let Some(identity_dir) = onboarding_identity_dir {
+        if crate::compositor::parse_install_mode_from_args()
+            == crate::compositor::InstallMode::HostDesktop
+        {
+            frame_builder.enable_host_desktop_onboarding(identity_dir);
+        } else {
+            frame_builder.enable_onboarding(identity_dir);
+        }
+    }
     frame_builder.enable_configured_theme();
     let mut capture_executor = CaptureExecutor::default();
     let floating_surface_service = match FloatingSurfaceService::start() {
@@ -2777,13 +2949,51 @@ pub fn run() -> ! {
                         match req {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
                             }
-                            PeerSyncRequest::IssueInviteFor(name) => {
-                                bridge_net.issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name)
-                            }
+                            PeerSyncRequest::IssueInviteFor { name, role } => bridge_net
+                                .issue_invite_named_with_role(
+                                    active,
+                                    INVITE_EXPIRY_SECONDS,
+                                    &name,
+                                    role,
+                                )
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
-                                .map(|room| room.to_string()),
+                                .map(|room| room.to_string())
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::ListPendingInvitations => {
+                                let room = bridge_tree
+                                    .read()
+                                    .active_workspace()
+                                    .map(|workspace| workspace.room)
+                                    .ok_or_else(|| "no active workspace".to_string())?;
+                                Ok(crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                                    bridge_net
+                                        .pending_invitations(room)
+                                        .into_iter()
+                                        .map(|invite| crate::shell::overlay_host::PendingInvitationSummary {
+                                            id: invite.id,
+                                            name: invite.name,
+                                            role: invite.role,
+                                            expiry_unix_seconds: invite.expiry_unix_seconds,
+                                        })
+                                        .collect(),
+                                ))
+                            }
+                            PeerSyncRequest::ResendInvitation(id) => bridge_net
+                                .resend_invitation(&id)
+                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                            PeerSyncRequest::CancelInvitation(id) => {
+                                if bridge_net.cancel_invitation(&id) {
+                                    Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                                        "canceled".into(),
+                                    ))
+                                } else {
+                                    Err("invitation is no longer pending".into())
+                                }
+                            }
                         }
                     }));
                 Some(net)
@@ -2805,6 +3015,14 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+    if let Some(broker) = collab_broker.as_ref() {
+        let dispatcher = broker.follow_dispatcher();
+        frame_builder
+            .host_mut()
+            .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+                dispatcher.set(&room.to_string(), peer_id);
+            }));
+    }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
@@ -3328,12 +3546,13 @@ pub fn run() -> ! {
                         }
                         // Offer the event to the focused Wayland client first. `route_input`
                         // returns `false` for anything the shell owns, so only client-bound events skip the chrome dispatch below.
-                        let to_client = client_input::route_input(
-                            &mut state,
-                            &mut frame_builder,
-                            wev,
-                            &test_control_ctx.modifiers,
-                        );
+                        let to_client = client_input_allowed(&frame_builder)
+                            && client_input::route_input(
+                                &mut state,
+                                &mut frame_builder,
+                                wev,
+                                &test_control_ctx.modifiers,
+                            );
                         if !to_client {
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             frame_builder.dispatch_event(
@@ -3360,7 +3579,7 @@ pub fn run() -> ! {
                 BackendEvent::ShellGesture(action) => {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
-                    if !session.is_locked() {
+                    if !session.is_locked() && client_input_allowed(&frame_builder) {
                         for t in session.note_activity(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
@@ -3370,14 +3589,14 @@ pub fn run() -> ! {
                 }
                 BackendEvent::Gesture(gesture) => {
                     // A one- or two-finger gesture: the focused client's.
-                    if !session.is_locked() {
+                    if !session.is_locked() && client_input_allowed(&frame_builder) {
                         state.forward_client_gesture(gesture);
                     }
                 }
                 BackendEvent::Touch(touch) => {
                     // The same finger also arrives as pointer events (backend emits both),
                     // driving shell chrome; this half is `wl_touch` for real multi-touch clients.
-                    if !session.is_locked() {
+                    if !session.is_locked() && client_input_allowed(&frame_builder) {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
                         state.forward_client_touch(touch, target);
                     }
@@ -3396,12 +3615,13 @@ pub fn run() -> ! {
         {
             for pressed in [true, false] {
                 let event = switch_action_event(action, pressed);
-                let to_client = client_input::route_input(
-                    &mut state,
-                    &mut frame_builder,
-                    &event,
-                    &test_control_ctx.modifiers,
-                );
+                let to_client = client_input_allowed(&frame_builder)
+                    && client_input::route_input(
+                        &mut state,
+                        &mut frame_builder,
+                        &event,
+                        &test_control_ctx.modifiers,
+                    );
                 if !to_client {
                     frame_builder.dispatch_event(
                         &event,
@@ -3679,12 +3899,6 @@ pub fn run() -> ! {
             // The pointer as the input state knows it — "nowhere", not the origin, for
             // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
             relay.set_cursor_position(state.client_input.pointer_position());
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "rooms and here are each fully chained from tree; nothing to drop \
-                          earlier without cloning the tree data out for no real gain, and the \
-                          block already ends right after both are computed"
-            )]
             let (rooms, here) = {
                 // Clone the tree handle and drop the `ChromeState` borrow before
                 // locking the tree — nothing here needs the RefCell guard itself.
@@ -4202,12 +4416,72 @@ fn spawn_auto_brightness_worker() {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic control-path geometry fixtures use exactly representable values"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn fresh_workspace_salt_does_not_create_a_transport_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_path = dir.path().join("config/state.json");
+        let peer_key_path = dir.path().join("system/device-key");
+
+        let first = load_or_create_workspace_salt(&state_path, &peer_key_path)
+            .expect("create workspace salt");
+        let second = load_or_create_workspace_salt(&state_path, &peer_key_path)
+            .expect("reload workspace salt");
+
+        assert_ne!(first, 0);
+        assert_eq!(first, second);
+        assert!(
+            !peer_key_path.exists(),
+            "allocating an object-id namespace must not mint a network identity"
+        );
+    }
+
+    #[test]
+    fn existing_transport_identity_keeps_its_historical_workspace_salt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_path = dir.path().join("config/state.json");
+        let peer_key_path = dir.path().join("system/device-key");
+        let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
+            .expect("create existing transport identity");
+        let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
+
+        let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
+            .expect("migrate historical salt");
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            read_workspace_salt(
+                &state_path
+                    .parent()
+                    .expect("fixture state path has a parent")
+                    .join("workspace-peer-salt"),
+            )
+            .expect("read persisted salt"),
+            expected
+        );
+    }
+
+    #[test]
+    fn onboarding_blocks_every_client_input_route() {
+        let mut fb = FrameBuilder::new((800, 600));
+        assert!(client_input_allowed(&fb));
+        fb.enable_onboarding(std::path::PathBuf::from("/tmp/qos-onboarding-test"));
+        assert!(fb.host().onboarding_active());
+        assert!(
+            !client_input_allowed(&fb),
+            "trusted first-login chrome must own input before any Wayland client"
+        );
+    }
 
     /// The compositor binds the socket the launcher dials. Assert across both
     /// production paths, not either one's idea of the path: bind with the
@@ -5032,7 +5306,9 @@ fn apply_shell_gesture(
         GestureAction::SwitchWorkspace(dir) => {
             st.switch_workspace(dir);
         }
-        GestureAction::StepAlongStrip(_) => unreachable!("handled above"),
+        // Handled (and returned on) above; a panic here would take down the
+        // whole session for a gesture that already did its job.
+        GestureAction::StepAlongStrip(_) => {}
         GestureAction::ShowOverview => {
             if !st.overlays.overview {
                 st.overlays.overview = true;

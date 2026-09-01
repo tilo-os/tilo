@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "terminal"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 automerge.workspace = true
 serde_json.workspace = true
@@ -25,7 +29,6 @@ ush = { path = "../../crates/runtime/ush" }
 libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true
-tracing-subscriber.workspace = true
 unicode-width = "0.2.2"
 crossbeam-channel = "0.5.15"
 vello.workspace = true

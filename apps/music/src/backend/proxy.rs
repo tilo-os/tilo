@@ -379,8 +379,7 @@ mod tests {
         };
         assert!(
             stream.url.contains("local=true"),
-            "resolved a proxied URL: {}",
-            stream.url
+            "resolved a proxied URL without the required local=true flag"
         );
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))

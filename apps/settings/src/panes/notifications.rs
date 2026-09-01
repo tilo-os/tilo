@@ -251,7 +251,12 @@ impl NotificationsPane {
     /// separate side effect driven by the resulting document state — never part
     /// of an action.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch(state, SETTINGS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
     }
 
     /// Reconcile one boolean setting between its widget scratch key and its
@@ -1102,20 +1107,34 @@ mod tests {
         );
         pane.sync(&mut state.doc, &state.root);
 
-        // The host drains the pane's captured bracket and records one boundary.
-        let before = pane
-            .take_committed_action()
-            .expect("the dispatch captured heads");
-        state.record_committed_action(before, None, None);
+        // The host's own recorder drains the pane's captured bracket and records
+        // the boundary. Going through it rather than pushing an entry by hand is
+        // the point: attribution happens in there, and undo is author-scoped.
+        // The node map is empty because the pane is the root widget here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn ui::widget::Widget = &mut pane;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched flip"
+        );
         assert_eq!(
             NotificationsPane::read_bool(&state.doc, &state.root, DND_KEY),
             Some(true),
             "the action set DND on"
         );
         assert!(pane.prefs().do_not_disturb);
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
         );
         assert!(
             pane.take_committed_action().is_none(),
@@ -1123,7 +1142,9 @@ mod tests {
         );
 
         // Ctrl+Z reverts precisely the setting.
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert_eq!(
             NotificationsPane::read_bool(&state.doc, &state.root, DND_KEY),
             Some(false),

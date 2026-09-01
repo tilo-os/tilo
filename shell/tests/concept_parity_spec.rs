@@ -108,10 +108,9 @@ fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
     Some(match tag {
         DrawTag::COLOR => 1,
         DrawTag::IMAGE => 3,
-        DrawTag::LINEAR_GRADIENT => 5,
-        DrawTag::SWEEP_GRADIENT => 5,
+        // Gradients and blur-rect coincide at 5 words; RADIAL_GRADIENT is the outlier at 7.
+        DrawTag::LINEAR_GRADIENT | DrawTag::SWEEP_GRADIENT | DrawTag::BLUR_RECT => 5,
         DrawTag::RADIAL_GRADIENT => 7,
-        DrawTag::BLUR_RECT => 5,
         DrawTag::BEGIN_CLIP => 2,
         DrawTag::END_CLIP => 0,
         _ => return None,
@@ -144,9 +143,22 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
             let a = ((packed >> 24) & 0xff) as u8;
             out.push((r, g, b, a));
         }
-        data_cursor += words;
+        data_cursor = data_cursor.saturating_add(words);
     }
     out
+}
+
+/// A colour channel scaled by an alpha-wash factor in `0.0..=1.0` (a
+/// premultiplied-alpha approximation), rounded back to `u8`. `wash` is
+/// always a small literal fraction here, so `channel * wash` never leaves
+/// `0.0..=255.0`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "channel is u8 (0..=255) and wash is a 0.0..=1.0 literal, so the product always fits u8"
+)]
+fn washed_channel(channel: u8, wash: f32) -> u8 {
+    (f32::from(channel) * wash).round() as u8
 }
 
 /// True if any of `colors` is within `tol` per rgb channel of `target`.
@@ -766,9 +778,9 @@ fn quick_settings_renders_settings_privacy_history_and_power_actions() {
     let danger = theme.tokens.colors.semantic.danger.to_rgba8();
     let wash = 0.20_f32;
     let premul = (
-        (f32::from(danger.r) * wash).round() as u8,
-        (f32::from(danger.g) * wash).round() as u8,
-        (f32::from(danger.b) * wash).round() as u8,
+        washed_channel(danger.r, wash),
+        washed_channel(danger.g, wash),
+        washed_channel(danger.b, wash),
     );
     let has_danger_wash = contains_color_close(&fills, (danger.r, danger.g, danger.b), 4)
         || contains_color_close(&fills, premul, 4);
@@ -1076,6 +1088,8 @@ fn topbar_system_monitor_ram_label_takes_the_themes_info_colour() {
 /// always draws it. Renders with no cursor, then at y=200.
 #[test]
 fn maximized_chrome_hides_when_cursor_below_y_80() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{Modifiers, WindowEvent};
     let theme = Theme::dark();
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
@@ -1139,8 +1153,6 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     let fills_no_cursor = collect_solid_colors(&scene_no_cursor).len();
 
     // y=200 is well below the y<=80 reveal band; chrome should still hide.
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{Modifiers, WindowEvent};
     let cursor_event = WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(480.0, 200.0),
@@ -1241,9 +1253,9 @@ fn topbar_system_monitor_sparkline_takes_the_cpu_metric_colour() {
     let cpu = theme.tokens.colors.semantic.success.to_rgba8();
     let a = 0.30_f32;
     let premul = (
-        (f32::from(cpu.r) * a).round() as u8,
-        (f32::from(cpu.g) * a).round() as u8,
-        (f32::from(cpu.b) * a).round() as u8,
+        washed_channel(cpu.r, a),
+        washed_channel(cpu.g, a),
+        washed_channel(cpu.b, a),
     );
 
     assert!(
@@ -1512,6 +1524,54 @@ fn topbar_right_cluster_paints_nobody_when_the_workspace_is_empty() {
     );
 }
 
+/// Lay `chrome` out at the topbar's fixed 1280x48 viewport, draw it, and
+/// collect the scene's solid fills. Split out of
+/// [`two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar`] to keep
+/// that test short.
+fn layout_topbar_and_collect_fills(
+    chrome: &mut TopBarChrome,
+    presence: &PresenceCtx,
+) -> Vec<(u8, u8, u8, u8)> {
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
+    collect_solid_colors(&scene)
+}
+
 /// Two real peers, wire to painted avatars, through the production path
 /// only: an empty first-boot tree fed the exact `InboundPresence` records
 /// the network hands the compositor. Don't seed `ws.collaborators` directly
@@ -1592,44 +1652,7 @@ fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
         "two peers is two chips and no overflow"
     );
 
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1280.0),
-                    height: Dimension::length(48.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1280.0),
-                height: AvailableSpace::Definite(48.0),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    chrome.apply_layout(&taffy, child, Point::ORIGIN);
-    let mut scene = Scene::new();
-    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    let fills = collect_solid_colors(&scene);
+    let fills = layout_topbar_and_collect_fills(&mut chrome, &presence);
 
     let colors = chrome.collaborator_colors();
     assert_eq!(colors.len(), 2, "one colour per painted chip");
@@ -1649,8 +1672,8 @@ fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
 }
 
 /// The cluster renders through the shared `ui::Avatar`: 5 peers -> 3 chips
-/// + a "+2" overflow, each chip in its own cursor hue rather than one flat
-/// accent. Asserts all three hues plus non-empty glyph runs.
+/// plus a "+2" overflow, each chip in its own cursor hue rather than one
+/// flat accent. Asserts all three hues plus non-empty glyph runs.
 #[test]
 fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
@@ -1667,8 +1690,8 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     let mut tree = WorkspaceTree {
         workspaces: vec![ws],
         active: ws_id,
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -2058,7 +2081,7 @@ fn draw_data_word_table_accounts_for_the_whole_stream() {
                 tag.0
             )
         });
-        walked += words;
+        walked = walked.saturating_add(words);
     }
     assert_eq!(
         walked,

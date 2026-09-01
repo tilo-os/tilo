@@ -903,38 +903,147 @@ impl ComposeWindow {
         shift: bool,
         ctrl: bool,
     ) -> (bool, ComposeAction) {
-        use winit::event::KeyEvent as WKeyEvent;
-        use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
         // The inline prompt captures keys while open: Esc cancels it (not the
         // window), Enter confirms, everything else edits the field.
         if self.prompt.is_some() {
-            if let WindowEvent::KeyboardInput {
-                event:
-                    WKeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-            {
-                match logical_key {
-                    WKey::Named(WNamedKey::Escape) => {
-                        self.prompt = None;
-                        self.dirty = true;
-                        return (true, ComposeAction::None);
-                    }
-                    WKey::Named(WNamedKey::Enter) => {
-                        self.confirm_prompt();
-                        return (true, ComposeAction::None);
-                    }
-                    _ => {}
+            return self.handle_prompt_key(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+            );
+        }
+        // Escape closes.
+        if Self::is_escape_press(event) {
+            self.close();
+            return (true, ComposeAction::Close);
+        }
+        // Body editor.
+        if matches!(self.focus, Field::Body) {
+            self.handle_body_key(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+                shift,
+                ctrl,
+            );
+            return (true, ComposeAction::None);
+        }
+        // Header input.
+        self.handle_header_key(event, scale_factor, modifiers, state, path, node_id, taffy);
+        // Always consume keyboard while open (modal).
+        (true, ComposeAction::None)
+    }
+
+    /// Keys while the inline prompt bar is open: Esc cancels it, Enter
+    /// confirms, everything else edits the prompt's field. Part of
+    /// [`Self::handle_keyboard_input`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a direct pass-through of handle_keyboard_input's own event-forwarding parameters"
+    )]
+    fn handle_prompt_key(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) -> (bool, ComposeAction) {
+        use winit::event::KeyEvent as WKeyEvent;
+        use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
+        if let WindowEvent::KeyboardInput {
+            event:
+                WKeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            match logical_key {
+                WKey::Named(WNamedKey::Escape) => {
+                    self.prompt = None;
+                    self.dirty = true;
+                    return (true, ComposeAction::None);
                 }
+                WKey::Named(WNamedKey::Enter) => {
+                    self.confirm_prompt();
+                    return (true, ComposeAction::None);
+                }
+                _ => {}
             }
-            let mut h = false;
-            let mut ft: Option<taffy::NodeId> = None;
-            if let Some(p) = self.prompt.as_mut() {
-                p.input.handle_event(
+        }
+        let mut h = false;
+        let mut ft: Option<taffy::NodeId> = None;
+        if let Some(p) = self.prompt.as_mut() {
+            p.input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                &mut h,
+                &mut ft,
+                node_id,
+                taffy,
+            );
+        }
+        self.dirty = true;
+        (true, ComposeAction::None)
+    }
+
+    fn is_escape_press(event: &WindowEvent) -> bool {
+        matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        )
+    }
+
+    /// Route a key to the HTML editor or the plain-text body input,
+    /// depending on the active compose format. Part of
+    /// [`Self::handle_keyboard_input`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a direct pass-through of handle_keyboard_input's own event-forwarding parameters"
+    )]
+    fn handle_body_key(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+        shift: bool,
+        ctrl: bool,
+    ) {
+        match self.format {
+            ComposeFormat::Html => {
+                self.editor.on_key(event, shift, ctrl);
+            }
+            ComposeFormat::Text => {
+                let mut h = false;
+                let mut ft: Option<taffy::NodeId> = None;
+                self.plain_body.handle_event(
                     event,
                     scale_factor,
                     &modifiers,
@@ -946,49 +1055,26 @@ impl ComposeWindow {
                     taffy,
                 );
             }
-            self.dirty = true;
-            return (true, ComposeAction::None);
         }
-        // Escape closes.
-        if let WindowEvent::KeyboardInput {
-            event:
-                winit::event::KeyEvent {
-                    logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            self.close();
-            return (true, ComposeAction::Close);
-        }
-        // Body editor.
-        if matches!(self.focus, Field::Body) {
-            match self.format {
-                ComposeFormat::Html => {
-                    self.editor.on_key(event, shift, ctrl);
-                }
-                ComposeFormat::Text => {
-                    let mut h = false;
-                    let mut ft: Option<taffy::NodeId> = None;
-                    self.plain_body.handle_event(
-                        event,
-                        scale_factor,
-                        &modifiers,
-                        state,
-                        path,
-                        &mut h,
-                        &mut ft,
-                        node_id,
-                        taffy,
-                    );
-                }
-            }
-            self.dirty = true;
-            return (true, ComposeAction::None);
-        }
-        // Header input.
+        self.dirty = true;
+    }
+
+    /// Forward a key to whichever header field (To/Cc/Bcc/Subject) has focus.
+    /// Part of [`Self::handle_keyboard_input`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a direct pass-through of handle_keyboard_input's own event-forwarding parameters"
+    )]
+    fn handle_header_key(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
@@ -1005,8 +1091,6 @@ impl ComposeWindow {
             );
         }
         self.dirty = true;
-        // Always consume keyboard while open (modal).
-        (true, ComposeAction::None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1062,7 +1146,7 @@ impl ComposeWindow {
                     path,
                     node_id,
                     taffy,
-                )
+                );
             }
             ComposeHit::Body => self.dispatch_body_press(
                 pt,
@@ -1350,7 +1434,7 @@ impl ComposeWindow {
     /// Cc/Bcc-toggle + Attach chip buttons, and the formatting toolbar when
     /// in HTML mode. Part of [`Self::draw`].
     fn draw_header_fields(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

@@ -15,10 +15,15 @@ use crate::{App, State, Theme};
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 type RootFactory = fn() -> Box<dyn Widget>;
+type ArgsRootFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type ConfigureApp = fn(&mut App);
+type OpenState = fn(&'static str) -> (State, crate::persist::Autosave);
+type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::Autosave);
+type LiveHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
+type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
@@ -30,6 +35,7 @@ pub struct LaunchArgs {
     pub headless: Option<headless::Spec>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
+    positionals: Vec<String>,
 }
 
 impl LaunchArgs {
@@ -45,18 +51,34 @@ impl LaunchArgs {
             .find(|(name, _)| name == option)
             .map(|(_, value)| value.as_str())
     }
+
+    /// Positional launch arguments accepted by the specification, in order.
+    pub fn positionals(&self) -> &[String] {
+        &self.positionals
+    }
 }
 
 /// Configuration for an app using the standard lifecycle.
 pub struct LaunchSpec {
     app_id: &'static str,
-    live_root: RootFactory,
-    shot_root: ShotFactory,
+    live_root: Option<RootFactory>,
+    live_root_with_args: Option<ArgsRootFactory>,
+    /// `None` reuses the live root, so ordinary apps do not register the same
+    /// factory twice just to render a screenshot.
+    shot_root: Option<ShotFactory>,
     shot_handler: Option<ShotHandler>,
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
+    live_handler: Option<LiveHandler>,
+    command_handler: Option<CommandHandler>,
+    headless_enabled: bool,
+    open_state: OpenState,
+    open_state_with_args: Option<OpenStateWithArgs>,
     allowed_flags: &'static [&'static str],
     allowed_options: &'static [&'static str],
+    allowed_live_flags: &'static [&'static str],
+    allowed_live_options: &'static [&'static str],
+    max_positionals: usize,
     scenarios: &'static [&'static str],
 }
 
@@ -64,20 +86,63 @@ impl LaunchSpec {
     pub fn new(app_id: &'static str, live_root: RootFactory) -> Self {
         Self {
             app_id,
-            live_root,
-            shot_root: |_| Err(LaunchError::ShotsUnsupported),
+            live_root: Some(live_root),
+            live_root_with_args: None,
+            shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
+            live_handler: None,
+            command_handler: None,
+            headless_enabled: true,
+            open_state: crate::persist::open,
+            open_state_with_args: None,
             allowed_flags: &[],
             allowed_options: &[],
+            allowed_live_flags: &[],
+            allowed_live_options: &[],
+            max_positionals: 0,
             scenarios: &[],
         }
     }
 
+    /// Construct a specification whose live/headless root is fallible and
+    /// depends on validated arguments.
+    pub fn new_with_args(app_id: &'static str, live_root: ArgsRootFactory) -> Self {
+        Self {
+            app_id,
+            live_root: None,
+            live_root_with_args: Some(live_root),
+            shot_root: None,
+            shot_handler: None,
+            shot_viewport: |_| DEFAULT_VIEWPORT,
+            configure_app: None,
+            live_handler: None,
+            command_handler: None,
+            headless_enabled: true,
+            open_state: crate::persist::open,
+            open_state_with_args: None,
+            allowed_flags: &[],
+            allowed_options: &[],
+            allowed_live_flags: &[],
+            allowed_live_options: &[],
+            max_positionals: 0,
+            scenarios: &[],
+        }
+    }
+
+    /// Build the live/headless root from validated arguments. The callback may
+    /// fail before a window is opened, which keeps fallible document/session
+    /// initialization inside normal CLI error reporting.
+    #[must_use]
+    pub fn live_root_with_args(mut self, factory: ArgsRootFactory) -> Self {
+        self.live_root_with_args = Some(factory);
+        self
+    }
+
     #[must_use]
     pub fn shot_root(mut self, factory: ShotFactory) -> Self {
-        self.shot_root = factory;
+        self.shot_root = Some(factory);
         self
     }
 
@@ -104,6 +169,57 @@ impl LaunchSpec {
         self
     }
 
+    /// Delegate windowed startup after standard argument parsing and after the
+    /// screenshot/headless modes have been dispatched. This is for apps whose
+    /// live [`App`] needs non-capturable setup such as an event-loop proxy or a
+    /// coordinated file-backed state/root pair. Prefer [`Self::configure_app`]
+    /// when ordinary `App::run` is sufficient.
+    #[must_use]
+    pub fn live_handler(mut self, handler: LiveHandler) -> Self {
+        self.live_handler = Some(handler);
+        self
+    }
+
+    /// Handle an app-specific, non-windowed command after argument validation.
+    /// Return `true` when the command was handled and launch should stop.
+    ///
+    /// This keeps developer utilities such as fixture generation and benchmark
+    /// drivers in the standard parser without making them part of the normal
+    /// screenshot or live-window lifecycle.
+    #[must_use]
+    pub fn command_handler(mut self, handler: CommandHandler) -> Self {
+        self.command_handler = Some(handler);
+        self
+    }
+
+    /// Reject headless input driving for apps whose widgets have privileged
+    /// side effects, such as an on-screen keyboard that injects keystrokes into
+    /// another application.
+    #[must_use]
+    pub fn disable_headless(mut self) -> Self {
+        self.headless_enabled = false;
+        self
+    }
+
+    /// Override how the live app opens its persisted state. This is primarily
+    /// for apps importing an older on-disk document through
+    /// [`crate::persist::open_migrating`]; the runner still owns autosave and
+    /// the live event loop.
+    #[must_use]
+    pub fn open_state(mut self, open: OpenState) -> Self {
+        self.open_state = open;
+        self.open_state_with_args = None;
+        self
+    }
+
+    /// Open live state using validated launch arguments. Useful when opening a
+    /// document must seed the persisted CRDT before the root's first sync.
+    #[must_use]
+    pub fn open_state_with_args(mut self, open: OpenStateWithArgs) -> Self {
+        self.open_state_with_args = Some(open);
+        self
+    }
+
     /// Allow app-specific boolean flags. Value-taking common options belong
     /// in `LaunchArgs`; specialized CLIs should use the lower-level APIs.
     #[must_use]
@@ -119,6 +235,46 @@ impl LaunchSpec {
     pub fn allowed_options(mut self, options: &'static [&'static str]) -> Self {
         self.allowed_options = options;
         self
+    }
+
+    /// Allow boolean flags in live/headless mode as well as screenshot mode.
+    #[must_use]
+    pub fn allowed_live_flags(mut self, flags: &'static [&'static str]) -> Self {
+        self.allowed_live_flags = flags;
+        self
+    }
+
+    /// Allow value-taking options in live/headless mode as well as screenshots.
+    #[must_use]
+    pub fn allowed_live_options(mut self, options: &'static [&'static str]) -> Self {
+        self.allowed_live_options = options;
+        self
+    }
+
+    /// Accept at most `max` positional document/session arguments.
+    #[must_use]
+    pub fn max_positionals(mut self, max: usize) -> Self {
+        self.max_positionals = max;
+        self
+    }
+
+    fn live_root(&self, args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        if let Some(factory) = self.live_root_with_args {
+            return factory(args);
+        }
+        self.live_root.map_or_else(
+            || {
+                Err(LaunchError::Operation(
+                    "launch specification has no live root".into(),
+                ))
+            },
+            |factory| Ok(factory()),
+        )
+    }
+
+    fn screenshot_root(&self, args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        self.shot_root
+            .map_or_else(|| self.live_root(args), |factory| factory(args))
     }
 
     /// Declare every accepted screenshot scenario. With no declaration,
@@ -139,6 +295,7 @@ pub enum LaunchError {
     ConflictingModes,
     ShotsOnly(String),
     ShotsUnsupported,
+    HeadlessUnsupported,
     Scenario(String),
     Operation(String),
 }
@@ -158,6 +315,9 @@ impl fmt::Display for LaunchError {
             }
             Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
+            Self::HeadlessUnsupported => {
+                write!(f, "this application does not support --headless-drive")
+            }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
         }
     }
@@ -184,8 +344,8 @@ impl LaunchError {
               is the documented contract, not an incidental exit deep in \
               library code"
 )]
-pub fn run_or_exit(spec: LaunchSpec) {
-    if let Err(error) = run(&spec) {
+pub fn run_or_exit(spec: &LaunchSpec) {
+    if let Err(error) = run(spec) {
         eprintln!("error: {error}");
         std::process::exit(error.exit_code());
     }
@@ -198,9 +358,8 @@ pub fn run_or_exit(spec: LaunchSpec) {
 /// Returns a [`LaunchError`] if argument parsing fails (an unknown flag, a
 /// missing or malformed value, a duplicate flag, `--shots` combined with
 /// `--headless-drive`, a shots-only flag used outside `--shots`, or an
-/// undeclared `--scenario`), if the app has no [`LaunchSpec::shot_root`] /
-/// [`LaunchSpec::shot_handler`] and `--shots` was requested, or if the
-/// app's own shot factory or shot handler returns one.
+/// undeclared `--scenario`), or if the app's root factory, shot factory, or
+/// shot handler returns one.
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
@@ -215,15 +374,28 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
               hand a status back to"
 )]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
-    let args = parse_args(raw_args, spec.allowed_flags, spec.allowed_options)?;
+    let args = parse_args_extended(
+        raw_args,
+        spec.allowed_flags,
+        spec.allowed_options,
+        spec.allowed_live_flags,
+        spec.allowed_live_options,
+        spec.max_positionals,
+    )?;
     validate_spec_args(&args, spec)?;
+
+    if let Some(handler) = spec.command_handler
+        && handler(&args)?
+    {
+        return Ok(());
+    }
 
     if let Some(out) = &args.shots {
         if let Some(handler) = spec.shot_handler {
             handler(&args)?;
             return Ok(());
         }
-        let root = (spec.shot_root)(&args)?;
+        let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
         let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme());
         harness.render_png(out);
@@ -231,12 +403,19 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return Ok(());
     }
 
-    if let Some(headless) = args.headless {
-        std::process::exit(headless::run(&headless, (spec.live_root)(), spec.app_id));
+    if let Some(headless) = &args.headless {
+        std::process::exit(headless::run(headless, spec.live_root(&args)?, spec.app_id));
     }
 
-    let (state, autosave) = crate::persist::open(spec.app_id);
-    let mut app = App::new(state, (spec.live_root)()).with_autosave(autosave);
+    if let Some(handler) = spec.live_handler {
+        return handler(&args);
+    }
+
+    let (state, autosave) = spec.open_state_with_args.map_or_else(
+        || (spec.open_state)(spec.app_id),
+        |open| open(spec.app_id, &args),
+    );
+    let mut app = App::new(state, spec.live_root(&args)?).with_autosave(autosave);
     if let Some(configure) = spec.configure_app {
         configure(&mut app);
     }
@@ -245,6 +424,9 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if args.headless.is_some() && !spec.headless_enabled {
+        return Err(LaunchError::HeadlessUnsupported);
+    }
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
     {
@@ -268,10 +450,22 @@ fn shot_theme() -> Theme {
     }
 }
 
+#[cfg(test)]
 fn parse_args(
     args: &[String],
     allowed_flags: &[&str],
     allowed_options: &[&str],
+) -> Result<LaunchArgs, LaunchError> {
+    parse_args_extended(args, allowed_flags, allowed_options, &[], &[], 0)
+}
+
+fn parse_args_extended(
+    args: &[String],
+    allowed_flags: &[&str],
+    allowed_options: &[&str],
+    allowed_live_flags: &[&str],
+    allowed_live_options: &[&str],
+    max_positionals: usize,
 ) -> Result<LaunchArgs, LaunchError> {
     let mut parsed = LaunchArgs {
         shots: None,
@@ -280,6 +474,7 @@ fn parse_args(
         headless: None,
         extras: Vec::new(),
         values: Vec::new(),
+        positionals: Vec::new(),
     };
     let mut index: usize = 1;
     while let Some(arg) = args.get(index) {
@@ -306,18 +501,26 @@ fn parse_args(
                     .map_err(|error| LaunchError::Scenario(format!("{flag}: {error}")))?;
                 set_once(&mut parsed.headless, value, flag)?;
             }
-            extra if allowed_flags.contains(&extra) && inline.is_none() => {
+            extra
+                if (allowed_flags.contains(&extra) || allowed_live_flags.contains(&extra))
+                    && inline.is_none() =>
+            {
                 if parsed.extras.iter().any(|found| found == extra) {
                     return Err(LaunchError::Duplicate(extra.to_owned()));
                 }
                 parsed.extras.push(extra.to_owned());
             }
-            extra if allowed_options.contains(&extra) => {
+            extra if allowed_options.contains(&extra) || allowed_live_options.contains(&extra) => {
                 if parsed.values.iter().any(|(found, _)| found == extra) {
                     return Err(LaunchError::Duplicate(extra.to_owned()));
                 }
                 let value = take_value(args, &mut index, extra, inline)?;
                 parsed.values.push((extra.to_owned(), value.to_owned()));
+            }
+            positional
+                if !positional.starts_with('-') && parsed.positionals.len() < max_positionals =>
+            {
+                parsed.positionals.push(positional.to_owned());
             }
             _ => return Err(LaunchError::UnknownArgument(arg.clone())),
         }
@@ -333,10 +536,18 @@ fn parse_args(
         if parsed.scenario.is_some() {
             return Err(LaunchError::ShotsOnly("--scenario".to_owned()));
         }
-        if let Some(extra) = parsed.extras.first() {
+        if let Some(extra) = parsed
+            .extras
+            .iter()
+            .find(|extra| !allowed_live_flags.contains(&extra.as_str()))
+        {
             return Err(LaunchError::ShotsOnly(extra.clone()));
         }
-        if let Some((option, _)) = parsed.values.first() {
+        if let Some((option, _)) = parsed
+            .values
+            .iter()
+            .find(|(option, _)| !allowed_live_options.contains(&option.as_str()))
+        {
             return Err(LaunchError::ShotsOnly(option.clone()));
         }
     }
@@ -387,6 +598,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static CUSTOM_SHOT_RAN: AtomicBool = AtomicBool::new(false);
+    static CUSTOM_LIVE_RAN: AtomicBool = AtomicBool::new(false);
+    static CUSTOM_COMMAND_RAN: AtomicBool = AtomicBool::new(false);
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -473,6 +686,32 @@ mod tests {
         Box::new(crate::widget::Button::new("test", "Test", None))
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by LaunchSpec::command_handler"
+    )]
+    fn custom_command(_: &LaunchArgs) -> Result<bool, LaunchError> {
+        CUSTOM_COMMAND_RAN.store(true, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    #[test]
+    fn app_command_can_finish_before_window_startup() {
+        CUSTOM_COMMAND_RAN.store(false, Ordering::SeqCst);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .allowed_live_flags(&["--utility"])
+            .command_handler(custom_command);
+        run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
+        assert!(CUSTOM_COMMAND_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn privileged_app_can_reject_headless_driving() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).disable_headless();
+        let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
+        assert_eq!(result, Err(LaunchError::HeadlessUnsupported));
+    }
+
     #[test]
     fn scenarios_must_be_declared_by_the_app() {
         let args = parse_args(
@@ -488,6 +727,16 @@ mod tests {
         ));
         let declared = LaunchSpec::new("dev.qos.test", dummy_root).scenarios(&["wide"]);
         validate_spec_args(&args, &declared).unwrap();
+    }
+
+    #[test]
+    fn ordinary_launch_spec_reuses_live_root_for_screenshots() {
+        let args = parse_args(&strings(&["app", "--shots=/tmp/ordinary.png"]), &[], &[]).unwrap();
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root);
+        let root = spec
+            .screenshot_root(&args)
+            .expect("default screenshot root");
+        assert_eq!(root.name(), "Button");
     }
 
     #[test]
@@ -522,6 +771,56 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn live_options_and_positionals_are_validated_then_exposed() {
+        let parsed = parse_args_extended(
+            &strings(&["app", "--open=notes.qdoc", "workspace"]),
+            &[],
+            &[],
+            &[],
+            &["--open"],
+            1,
+        )
+        .unwrap();
+        assert_eq!(parsed.value("--open"), Some("notes.qdoc"));
+        assert_eq!(parsed.positionals(), &["workspace"]);
+
+        assert!(matches!(
+            parse_args_extended(
+                &strings(&["app", "one", "two"]),
+                &[],
+                &[],
+                &[],
+                &[],
+                1,
+            ),
+            Err(LaunchError::UnknownArgument(argument)) if argument == "two"
+        ));
+    }
+
+    fn fallible_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        Err(LaunchError::Operation(format!(
+            "cannot open {}",
+            args.positionals().first().map_or("nothing", String::as_str)
+        )))
+    }
+
+    #[test]
+    fn argument_aware_root_propagates_initialization_failure() {
+        let args =
+            parse_args_extended(&strings(&["app", "broken.qdoc"]), &[], &[], &[], &[], 1).unwrap();
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .live_root_with_args(fallible_root)
+            .max_positionals(1);
+        match spec.live_root(&args) {
+            Err(error) => assert_eq!(
+                error,
+                LaunchError::Operation("cannot open broken.qdoc".into())
+            ),
+            Ok(_) => panic!("fallible root unexpectedly succeeded"),
+        }
+    }
+
     fn custom_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         if args.shots.as_deref() != Some(std::path::Path::new("/tmp/custom.png")) {
             return Err(LaunchError::Operation("wrong shot path".into()));
@@ -533,9 +832,50 @@ mod tests {
     #[test]
     fn custom_shot_pipeline_uses_standard_mode_dispatch() {
         CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).shot_handler(custom_shot);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .shot_handler(custom_shot)
+            .live_handler(unexpected_live);
         run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
         assert!(CUSTOM_SHOT_RAN.load(Ordering::SeqCst));
+    }
+
+    fn unexpected_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
+        Err(LaunchError::Operation(
+            "screenshot dispatch reached the live handler".into(),
+        ))
+    }
+
+    fn custom_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+        if !args.positionals().is_empty() {
+            return Err(LaunchError::Operation("unexpected positional".into()));
+        }
+        CUSTOM_LIVE_RAN.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[test]
+    fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
+        CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
+        run_with_args(&spec, &strings(&["app"])).unwrap();
+        assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
+    }
+
+    fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {
+        crate::persist::open(app_id)
+    }
+
+    #[test]
+    fn app_can_replace_only_the_persistence_loader() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).open_state(custom_open_state);
+        assert!(std::ptr::fn_addr_eq(
+            spec.open_state,
+            custom_open_state as OpenState
+        ));
+        assert!(
+            spec.live_root
+                .is_some_and(|root| std::ptr::fn_addr_eq(root, dummy_root as RootFactory))
+        );
     }
 
     #[test]

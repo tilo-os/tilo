@@ -61,7 +61,19 @@ enum JobKind {
         category: FileCategory,
     },
     Encoded {
-        png: Vec<u8>,
+        /// Reading a filesystem xattr may cross a FUSE boundary and the daemon
+        /// may need to obtain a tiny projected preview from a peer. Keep that
+        /// operation on the worker just like decoding; calling it while a
+        /// client paints would turn scrolling into network I/O.
+        load: Box<dyn FnOnce() -> Option<Vec<u8>> + Send + 'static>,
+    },
+    EncodedOrFile {
+        /// Prefer host-generated metadata, but generate from an already-local
+        /// file when the host has no preview. Both branches stay off the
+        /// requesting/render thread.
+        load: Box<dyn FnOnce() -> Option<Vec<u8>> + Send + 'static>,
+        path: PathBuf,
+        category: FileCategory,
     },
 }
 
@@ -151,26 +163,28 @@ impl ThumbnailService {
         &self,
         key: ThumbKey,
         category: FileCategory,
-        png: impl FnOnce() -> Option<Vec<u8>>,
+        png: impl FnOnce() -> Option<Vec<u8>> + Send + 'static,
     ) -> ThumbState {
-        // Warm slot?
-        if let Some(state) = self.peek(&key) {
-            return state;
-        }
-        match png() {
-            Some(bytes) => self.request(key, category, move || JobKind::Encoded { png: bytes }),
-            None => ThumbState::Badge(category),
-        }
+        self.request(key, category, move || JobKind::Encoded {
+            load: Box::new(png),
+        })
     }
 
-    /// Current state of `key` without scheduling anything.
-    fn peek(&self, key: &ThumbKey) -> Option<ThumbState> {
-        let slots = self
-            .shared
-            .slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        slots.get(key).map(slot_to_state)
+    /// Adopt a host-provided PNG, falling back to generating a preview from a
+    /// file whose content is already local. The metadata read, fallback read,
+    /// decode, and cache write all execute on the worker pool.
+    pub fn request_encoded_or_file(
+        &self,
+        key: ThumbKey,
+        category: FileCategory,
+        path: PathBuf,
+        png: impl FnOnce() -> Option<Vec<u8>> + Send + 'static,
+    ) -> ThumbState {
+        self.request(key, category, move || JobKind::EncodedOrFile {
+            load: Box::new(png),
+            path,
+            category,
+        })
     }
 
     fn request(
@@ -249,42 +263,67 @@ fn worker_loop(rx: &Arc<Mutex<Receiver<Job>>>, shared: &Arc<Shared>) {
             };
             j
         };
-        let slot = run_job(&shared.cache, &job);
+        let key = job.key;
+        let slot = run_job(&shared.cache, job);
         shared
             .slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(job.key, slot);
+            .insert(key, slot);
         shared.pending.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-fn run_job(cache: &ThumbCache, job: &Job) -> Slot {
+fn run_job(cache: &ThumbCache, job: Job) -> Slot {
     // A prior session (or a peer, via content-addressing) may already hold it.
     if let Some(png) = cache.get(&job.key)
         && let Some(thumb) = generate::decode_png(&png)
     {
         return Slot::Ready(Arc::new(thumb));
     }
-    match &job.kind {
+    match job.kind {
         JobKind::File { path, category } => {
-            match generate::generate(&Source::Path(path), *category, job.edge) {
+            match generate::generate(&Source::Path(&path), category, job.edge) {
                 Some(thumb) => {
                     if let Some(png) = generate::encode_png(&thumb) {
                         cache.put(&job.key, png);
                     }
                     Slot::Ready(Arc::new(thumb))
                 }
-                None => Slot::Badge(*category),
+                None => Slot::Badge(category),
             }
         }
-        JobKind::Encoded { png } => match generate::decode_png(png) {
-            Some(thumb) => {
-                cache.put(&job.key, png.clone());
-                Slot::Ready(Arc::new(thumb))
-            }
+        JobKind::Encoded { load } => match load() {
+            Some(png) => match generate::decode_png(&png) {
+                Some(thumb) => {
+                    cache.put(&job.key, png);
+                    Slot::Ready(Arc::new(thumb))
+                }
+                None => Slot::Badge(job.category),
+            },
             None => Slot::Badge(job.category),
         },
+        JobKind::EncodedOrFile {
+            load,
+            path,
+            category,
+        } => {
+            if let Some(png) = load()
+                && let Some(thumb) = generate::decode_png(&png)
+            {
+                cache.put(&job.key, png);
+                return Slot::Ready(Arc::new(thumb));
+            }
+            match generate::generate(&Source::Path(&path), category, job.edge) {
+                Some(thumb) => {
+                    if let Some(png) = generate::encode_png(&thumb) {
+                        cache.put(&job.key, png);
+                    }
+                    Slot::Ready(Arc::new(thumb))
+                }
+                None => Slot::Badge(category),
+            }
+        }
     }
 }
 
@@ -376,5 +415,33 @@ mod tests {
             state.ready().is_some(),
             "host-provided thumbnail is adopted"
         );
+    }
+
+    #[test]
+    fn encoded_thumbnail_loader_never_runs_on_the_requesting_thread() {
+        let (_dir, svc) = service();
+        let key = ThumbKey::of_hash([8u8; 32], 128);
+        let caller = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        assert!(matches!(
+            svc.request_encoded(key, FileCategory::Image, move || {
+                tx.send(std::thread::current().id()).unwrap();
+                None
+            }),
+            ThumbState::Loading
+        ));
+        let worker = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_ne!(
+            caller, worker,
+            "a FUSE/xattr lookup from draw must be dispatched to a thumbnail worker"
+        );
+        svc.block_until_idle(Duration::from_secs(2));
+        assert!(matches!(
+            svc.request_encoded(key, FileCategory::Image, || {
+                panic!("the settled badge must not reload the xattr")
+            }),
+            ThumbState::Badge(FileCategory::Image)
+        ));
     }
 }

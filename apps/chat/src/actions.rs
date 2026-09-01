@@ -245,6 +245,92 @@ pub enum ChatAction {
     },
 }
 
+/// Durable, browseable history metadata for a Chat mutation.
+pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
+    let mut context = qos_actions::ActionContext::for_action("org.qos.Chat", "Chat", action);
+    let (label, channel, resource_id, kind) = match action {
+        ChatAction::SendMessage { channel, id, .. } => {
+            ("Send message", channel, id, "chat.message")
+        }
+        ChatAction::EditMessage { channel, id, .. } => {
+            ("Edit message", channel, id, "chat.message")
+        }
+        ChatAction::DeleteMessage { channel, id } => {
+            ("Delete message", channel, id, "chat.message")
+        }
+        ChatAction::AddReaction { channel, msg, .. } => {
+            ("Add reaction", channel, msg, "chat.message")
+        }
+        ChatAction::RemoveReaction { channel, msg, .. } => {
+            ("Remove reaction", channel, msg, "chat.message")
+        }
+        ChatAction::PinMessage {
+            channel,
+            msg,
+            pinned,
+        } => (
+            if *pinned {
+                "Pin message"
+            } else {
+                "Unpin message"
+            },
+            channel,
+            msg,
+            "chat.message",
+        ),
+        ChatAction::SetAgentWork { channel, msg, .. } => {
+            ("Update agent work", channel, msg, "chat.message")
+        }
+        ChatAction::CreateChannel { id, .. } => ("Create channel", id, id, "chat.channel"),
+        ChatAction::RenameChannel { id, .. } => ("Rename channel", id, id, "chat.channel"),
+        ChatAction::DeleteChannel { id } => ("Delete channel", id, id, "chat.channel"),
+        ChatAction::ArchiveChannel { id, archived } => (
+            if *archived {
+                "Archive channel"
+            } else {
+                "Unarchive channel"
+            },
+            id,
+            id,
+            "chat.channel",
+        ),
+        ChatAction::MarkRead { channel, .. } => {
+            ("Mark channel read", channel, channel, "chat.channel")
+        }
+        ChatAction::JoinCall { channel, .. } => ("Join call", channel, channel, "chat.call"),
+        ChatAction::LeaveCall { channel, .. } => ("Leave call", channel, channel, "chat.call"),
+        ChatAction::SetCallState { channel, .. } => {
+            ("Update call state", channel, channel, "chat.call")
+        }
+        ChatAction::SetScreenShare {
+            channel, sharing, ..
+        } => (
+            if *sharing {
+                "Start presenting"
+            } else {
+                "Stop presenting"
+            },
+            channel,
+            channel,
+            "chat.call",
+        ),
+        ChatAction::SetCallTicket { channel, .. } => {
+            ("Update call connection", channel, channel, "chat.call")
+        }
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("{kind}:{resource_id}"),
+        kind: kind.to_string(),
+        label: if kind == "chat.message" {
+            "Message".to_string()
+        } else {
+            channel.clone()
+        },
+    });
+    context
+}
+
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // Each helper matches only its own category's variants (a `_ => {}`
@@ -1426,5 +1512,17 @@ mod tests {
             from_spec.payload, from_builder.payload,
             "pin message is one source of truth"
         );
+    }
+
+    #[test]
+    fn message_action_history_targets_the_message() {
+        let context = history_context(&ChatAction::DeleteMessage {
+            channel: "launch".into(),
+            id: "msg-9".into(),
+        });
+        assert_eq!(context.action_label, "Delete message");
+        let resource = context.resource.expect("message resource");
+        assert_eq!(resource.id, "chat.message:msg-9");
+        assert_eq!(resource.kind, "chat.message");
     }
 }

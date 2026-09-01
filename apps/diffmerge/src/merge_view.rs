@@ -25,7 +25,7 @@ use ui::widget::Widget;
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
 use crate::highlight;
-use crate::model::{MergeModel, Resolution};
+use crate::model::{MergeHunk, MergeModel, Resolution};
 
 const ROW_H: f64 = 19.0;
 const HEADER_H: f64 = 30.0;
@@ -200,7 +200,11 @@ impl MergeView {
                 }
             }
         };
-        let hunk = changes[next_pos];
+        // `next_pos` is derived from `pos` (a valid index into `changes`) via
+        // `min`/`saturating_sub`, so it always stays in bounds.
+        let Some(&hunk) = changes.get(next_pos) else {
+            return false;
+        };
         self.active_hunk = Some(hunk);
         self.scroll_hunk_into_view(hunk);
         self.dirty = true;
@@ -256,92 +260,22 @@ impl MergeView {
             y += height;
         }
     }
-}
 
-impl Widget for MergeView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        if self.pending_seed {
-            // Fresh inputs: seed the provisional merged output (a projection of
-            // the external inputs, not a replayable action) and drop any stale
-            // per-hunk resolutions whose indices no longer correspond.
-            MergeDoc::clear_resolutions(state);
-            MergeDoc::set_merged(state, &self.model.merged_text());
-            self.pending_seed = false;
-            return;
-        }
-        // Seed once for a late joiner that has no buffer yet.
-        if !MergeDoc::has_merged(state) {
-            MergeDoc::set_merged(state, &self.model.merged_text());
-        }
-        // Reconcile chip state from resolutions recorded by (possibly remote)
-        // actions, so a reload or a peer shows the same take-a-side selections.
-        // The merged `Text` itself stays authoritative — the actions already
-        // wrote it — so this only tints the in-memory hunks.
-        for (hunk, choice) in MergeDoc::resolutions(state) {
-            if let (Some(h), Some(c)) = (
-                self.model.hunks.get_mut(hunk),
-                HunkChoice::from_str(&choice),
-            ) && h.is_change
-            {
-                let res = c.to_resolution();
-                if h.resolution != res {
-                    h.resolution = res;
-                    self.dirty = true;
-                }
-            }
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        self.recompute_spans();
-    }
-
-    fn draw(
-        &mut self,
+    /// Column headers (base / ours / theirs) above the source band.
+    fn draw_column_headers(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
-        self.action_hits.clear();
         let c = &theme.tokens.colors;
         let r = self.rect;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
-
-        let col_w = (r.width()) / 3.0;
+        let col_w = r.width() / 3.0;
         let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + HEADER_H);
         let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + HEADER_H);
         let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + HEADER_H);
 
-        // Column headers (base / ours / theirs).
         draw_header(
             scene,
             transform,
@@ -369,11 +303,15 @@ impl Widget for MergeView {
             &self.theirs_label,
             c.semantic.info,
         );
+    }
 
-        // Vertical separators across the source band.
+    /// Vertical separators between the three source columns.
+    fn draw_band_separators(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        let col_w = r.width() / 3.0;
         let band_top = r.y0 + HEADER_H;
-        let band_h = self.source_band_height();
-        let band_bot = band_top + band_h;
+        let band_bot = band_top + self.source_band_height();
         for k in 1..3 {
             let x = r.x0 + f64::from(k) * col_w;
             scene.stroke(
@@ -384,19 +322,182 @@ impl Widget for MergeView {
                 &Line::new(Point::new(x, band_top), Point::new(x, band_bot)),
             );
         }
+    }
 
-        // --- Source band, clipped + scrolled ---
-        let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &band_clip,
+    /// Draw every hunk row in the source band: side tints, the active-hunk
+    /// ring, the three code columns and (for change hunks) the resolution
+    /// chips. Populates `self.action_hits` for the next click hit-test.
+    /// Hunk tint per side plus the active-hunk highlight ring (part of
+    /// [`Self::draw_hunks`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    fn draw_hunk_tint(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        r: Rect,
+        col_w: f64,
+        y: f64,
+        block_h: f64,
+        h: &MergeHunk,
+        is_active: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        // Hunk tint per side.
+        let (ours_tint, theirs_tint) = match h.resolution {
+            Resolution::Unchanged => (None, None),
+            Resolution::Conflict => (
+                Some(with_alpha(c.semantic.danger, 34)),
+                Some(with_alpha(c.semantic.danger, 34)),
+            ),
+            Resolution::Ours | Resolution::TookOurs => {
+                (Some(with_alpha(c.semantic.success, 40)), None)
+            }
+            Resolution::Theirs | Resolution::TookTheirs => {
+                (None, Some(with_alpha(c.semantic.info, 40)))
+            }
+            Resolution::TookBoth => (
+                Some(with_alpha(c.semantic.success, 36)),
+                Some(with_alpha(c.semantic.info, 36)),
+            ),
+        };
+
+        if let Some(t) = ours_tint {
+            let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
+            scene.fill(Fill::NonZero, transform, t, None, &rect);
+        }
+        if let Some(t) = theirs_tint {
+            let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
+            scene.fill(Fill::NonZero, transform, t, None, &rect);
+        }
+
+        // Active hunk highlight ring.
+        if is_active && h.is_change {
+            let ring = RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
+            scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
+        }
+    }
+
+    /// The resolution status label + take-ours/theirs/both chips for a
+    /// change hunk (part of [`Self::draw_hunks`]). `action_hits` is passed
+    /// explicitly (rather than through `&mut self`) so the caller can keep
+    /// its own `&self.model.hunks` borrow alive across the call.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "r is the hunk rect, y/h are its position/height, c is the theme's colour \
+                  set, and w is a chip's measured width — conventional short names for this \
+                  draw step"
+    )]
+    fn draw_hunk_action_chips(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        col_w: f64,
+        y: f64,
+        block_h: f64,
+        hi: usize,
+        h: &MergeHunk,
+        action_hits: &mut Vec<ActionHit>,
+    ) {
+        let c = &theme.tokens.colors;
+        let ay = y + block_h + 2.0;
+        // Chip hues track the theme so a palette / high-contrast swap
+        // keeps the resolution controls coherent: ours = success (green),
+        // theirs = info (blue), both = the neutral dim tone — mirroring
+        // the status label's own `ColorClass` mapping.
+        let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
+            &[
+                ("Take ours", HunkChoice::Ours, c.semantic.success),
+                ("Take theirs", HunkChoice::Theirs, c.semantic.info),
+                ("Take both", HunkChoice::Both, c.text_dim),
+            ]
+        } else {
+            // Auto-resolved — still allow flipping.
+            &[
+                ("Ours", HunkChoice::Ours, c.semantic.success),
+                ("Theirs", HunkChoice::Theirs, c.semantic.info),
+                ("Both", HunkChoice::Both, c.text_dim),
+            ]
+        };
+        // Status label on the left.
+        let status = resolution_label(h.resolution);
+        tr.draw_text(
+            scene,
+            status.0,
+            11.5,
+            status.1.color(c),
+            transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
+            None,
         );
 
+        let mut cx = r.x0 + 2.0 * col_w + PAD_X;
+        for (label, choice, col) in chips {
+            let w = label.len() as f64 * 7.2 + 16.0;
+            let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
+            let selected = chip_is_selected(h.resolution, *choice);
+            let bg = if selected {
+                with_alpha(*col, 220)
+            } else {
+                with_alpha(*col, 50)
+            };
+            let rr = RoundedRect::from_rect(chip, 5.0);
+            scene.fill(Fill::NonZero, transform, bg, None, &rr);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                with_alpha(*col, 160),
+                None,
+                &rr,
+            );
+            let text_col = if selected {
+                Color::from_rgb8(10, 14, 22)
+            } else {
+                *col
+            };
+            tr.draw_text(
+                scene,
+                label,
+                11.5,
+                text_col,
+                transform * Affine::translate((cx + 8.0, ay + 4.0)),
+                None,
+            );
+            action_hits.push(ActionHit {
+                rect: chip,
+                hunk: hi,
+                choice: *choice,
+            });
+            cx += w + 6.0;
+        }
+    }
+
+    fn draw_hunks(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let r = self.rect;
+        let col_w = r.width() / 3.0;
+        let band_top = r.y0 + HEADER_H;
+        let band_bot = band_top + self.source_band_height();
+
         for (hi, h) in self.model.hunks.iter().enumerate() {
-            let (top, _bot) = self.hunk_spans[hi];
+            // `hunk_spans` is rebuilt one-for-one with `model.hunks` in
+            // `recompute_spans`; skip drawing rather than panic if that ever
+            // drifts out of sync.
+            let Some(&(top, _bot)) = self.hunk_spans.get(hi) else {
+                continue;
+            };
             let y = band_top + top - self.scroll_y;
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
             let block_h = rows as f64 * ROW_H;
@@ -406,52 +507,20 @@ impl Widget for MergeView {
                 continue;
             }
 
-            // Hunk tint per side.
-            let (ours_tint, theirs_tint) = match h.resolution {
-                Resolution::Unchanged => (None, None),
-                Resolution::Conflict => (
-                    Some(with_alpha(c.semantic.danger, 34)),
-                    Some(with_alpha(c.semantic.danger, 34)),
-                ),
-                Resolution::Ours | Resolution::TookOurs => {
-                    (Some(with_alpha(c.semantic.success, 40)), None)
-                }
-                Resolution::Theirs | Resolution::TookTheirs => {
-                    (None, Some(with_alpha(c.semantic.info, 40)))
-                }
-                Resolution::TookBoth => (
-                    Some(with_alpha(c.semantic.success, 36)),
-                    Some(with_alpha(c.semantic.info, 36)),
-                ),
-            };
-
-            if let Some(t) = ours_tint {
-                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
-            }
-            if let Some(t) = theirs_tint {
-                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
-            }
-
-            // Active hunk highlight ring.
-            if Some(hi) == self.active_hunk && h.is_change {
-                let ring =
-                    RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
-                scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
-            }
-
-            // Lines for each column.
-            draw_lines(
+            Self::draw_hunk_tint(
                 scene,
                 transform,
-                tr,
                 theme,
-                r.x0 + PAD_X,
+                r,
+                col_w,
                 y,
-                &h.base,
-                col_w - 2.0 * PAD_X,
+                block_h,
+                h,
+                Some(hi) == self.active_hunk,
             );
+
+            // Lines for each column.
+            draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
             draw_lines(
                 scene,
                 transform,
@@ -460,7 +529,6 @@ impl Widget for MergeView {
                 r.x0 + col_w + PAD_X,
                 y,
                 &h.ours,
-                col_w - 2.0 * PAD_X,
             );
             draw_lines(
                 scene,
@@ -470,95 +538,37 @@ impl Widget for MergeView {
                 r.x0 + 2.0 * col_w + PAD_X,
                 y,
                 &h.theirs,
-                col_w - 2.0 * PAD_X,
             );
 
             // Action chips for change hunks.
             if h.is_change {
-                let ay = y + block_h + 2.0;
-                // Chip hues track the theme so a palette / high-contrast swap
-                // keeps the resolution controls coherent: ours = success (green),
-                // theirs = info (blue), both = the neutral dim tone — mirroring
-                // the status label's own `ColorClass` mapping.
-                let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
-                    &[
-                        ("Take ours", HunkChoice::Ours, c.semantic.success),
-                        ("Take theirs", HunkChoice::Theirs, c.semantic.info),
-                        ("Take both", HunkChoice::Both, c.text_dim),
-                    ]
-                } else {
-                    // Auto-resolved — still allow flipping.
-                    &[
-                        ("Ours", HunkChoice::Ours, c.semantic.success),
-                        ("Theirs", HunkChoice::Theirs, c.semantic.info),
-                        ("Both", HunkChoice::Both, c.text_dim),
-                    ]
-                };
-                // Status label on the left.
-                let status = resolution_label(h.resolution);
-                tr.draw_text(
+                Self::draw_hunk_action_chips(
                     scene,
-                    status.0,
-                    11.5,
-                    status.1.color(c),
-                    transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
-                    None,
+                    transform,
+                    tr,
+                    theme,
+                    r,
+                    col_w,
+                    y,
+                    block_h,
+                    hi,
+                    h,
+                    &mut self.action_hits,
                 );
-
-                let mut cx = r.x0 + 2.0 * col_w + PAD_X;
-                for (label, choice, col) in chips {
-                    let w = label.len() as f64 * 7.2 + 16.0;
-                    let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
-                    let selected = chip_is_selected(h.resolution, *choice);
-                    let bg = if selected {
-                        with_alpha(*col, 220)
-                    } else {
-                        with_alpha(*col, 50)
-                    };
-                    let rr = RoundedRect::from_rect(chip, 5.0);
-                    scene.fill(Fill::NonZero, transform, bg, None, &rr);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        with_alpha(*col, 160),
-                        None,
-                        &rr,
-                    );
-                    let text_col = if selected {
-                        Color::from_rgb8(10, 14, 22)
-                    } else {
-                        *col
-                    };
-                    tr.draw_text(
-                        scene,
-                        label,
-                        11.5,
-                        text_col,
-                        transform * Affine::translate((cx + 8.0, ay + 4.0)),
-                        None,
-                    );
-                    self.action_hits.push(ActionHit {
-                        rect: chip,
-                        hunk: hi,
-                        choice: *choice,
-                    });
-                    cx += w + 6.0;
-                }
             }
         }
+    }
 
-        scene.pop_layer();
-
-        // Divider between source band and merged band.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_focus,
-            None,
-            &Line::new(Point::new(r.x0, band_bot), Point::new(r.x1, band_bot)),
-        );
-
-        // --- Merged result band ---
+    /// The merged-result band: header (with conflict count) and the scrolled
+    /// merged buffer body.
+    fn draw_merged_band(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
         let merged = self.merged_band_rect();
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &merged);
         // Merged header.
@@ -618,7 +628,117 @@ impl Widget for MergeView {
             draw_code_segments(scene, transform, tr, theme, merged_body.x0 + 44.0, ly, line);
         }
         scene.pop_layer();
+    }
+}
 
+impl Widget for MergeView {
+    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        if self.pending_seed {
+            // Fresh inputs: seed the provisional merged output (a projection of
+            // the external inputs, not a replayable action) and drop any stale
+            // per-hunk resolutions whose indices no longer correspond.
+            MergeDoc::clear_resolutions(state);
+            MergeDoc::set_merged(state, &self.model.merged_text());
+            self.pending_seed = false;
+            return;
+        }
+        // Seed once for a late joiner that has no buffer yet.
+        if !MergeDoc::has_merged(state) {
+            MergeDoc::set_merged(state, &self.model.merged_text());
+        }
+        // Reconcile chip state from resolutions recorded by (possibly remote)
+        // actions, so a reload or a peer shows the same take-a-side selections.
+        // The merged `Text` itself stays authoritative — the actions already
+        // wrote it — so this only tints the in-memory hunks.
+        for (hunk, choice) in MergeDoc::resolutions(state) {
+            if let (Some(h), Some(c)) = (
+                self.model.hunks.get_mut(hunk),
+                HunkChoice::from_tag(&choice),
+            ) && h.is_change
+            {
+                let res = c.to_resolution();
+                if h.resolution != res {
+                    h.resolution = res;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+        self.recompute_spans();
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.action_hits.clear();
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
+
+        self.draw_column_headers(scene, transform, tr, theme);
+        self.draw_band_separators(scene, transform, theme);
+
+        let band_top = r.y0 + HEADER_H;
+        let band_bot = band_top + self.source_band_height();
+        let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &band_clip,
+        );
+        self.draw_hunks(scene, transform, tr, theme);
+        scene.pop_layer();
+
+        // Divider between source band and merged band.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_focus,
+            None,
+            &Line::new(Point::new(r.x0, band_bot), Point::new(r.x1, band_bot)),
+        );
+
+        self.draw_merged_band(scene, transform, tr, theme);
         self.dirty = false;
     }
 
@@ -766,7 +886,6 @@ fn draw_lines(
     x0: f64,
     y0: f64,
     lines: &[String],
-    _max_w: f64,
 ) {
     for (i, line) in lines.iter().enumerate() {
         let y = y0 + i as f64 * ROW_H;

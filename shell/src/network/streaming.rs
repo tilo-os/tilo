@@ -157,11 +157,11 @@ impl ShareRegistry {
 
     /// Mark every share read-only — the registry side of the kill switch. Returns how many shares lost write access.
     pub fn revoke_all_input(&mut self) -> usize {
-        let mut revoked = 0;
+        let mut revoked: usize = 0;
         for share in self.shares.values_mut() {
             if !share.read_only {
                 share.read_only = true;
-                revoked += 1;
+                revoked = revoked.saturating_add(1);
             }
         }
         revoked
@@ -217,9 +217,8 @@ where
     if !throttle.should_encode(now) {
         return EncodeTickOutcome::Throttled;
     }
-    let rgba = match fetch_frame() {
-        Some(bytes) => bytes,
-        None => return EncodeTickOutcome::NoFrame,
+    let Some(rgba) = fetch_frame() else {
+        return EncodeTickOutcome::NoFrame;
     };
     match encoder.encode(&rgba) {
         Ok(nalus) => {
@@ -248,6 +247,10 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact streaming transform fixtures are the behavior under test"
+)]
 mod tests {
     use super::*;
     use crate::network::streaming::test_support::RecordingSink;
@@ -354,8 +357,8 @@ mod tests {
         let mut input = Vec::with_capacity((W * H * 4) as usize);
         for y in 0..H {
             for x in 0..W {
-                input.push(((x * 255) / W) as u8);
-                input.push(((y * 255) / H) as u8);
+                input.push(u8::try_from(x.saturating_mul(255).saturating_div(W)).unwrap_or(255));
+                input.push(u8::try_from(y.saturating_mul(255).saturating_div(H)).unwrap_or(255));
                 input.push(0x80);
                 input.push(0xFF);
             }
@@ -403,7 +406,9 @@ mod tests {
         let orig_rgb = strip_alpha(&input);
         let rgba = match &frame.pixels {
             crate::network::decoder::DecodedPixels::Rgba8(b) => b,
-            other => panic!("H.264 decoder returned non-RGBA pixels: {other:?}"),
+            other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
+                panic!("H.264 decoder returned non-RGBA pixels: {other:?}")
+            }
         };
         let decoded_rgb = strip_alpha(rgba);
         // PSNR inlined so this test stays self-contained without re-exporting `encoder::tests::psnr`.
@@ -412,7 +417,7 @@ mod tests {
             .zip(&decoded_rgb)
             .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
             .sum::<f64>()
-            / orig_rgb.len() as f64;
+            / f64::from(u32::try_from(orig_rgb.len()).unwrap_or(u32::MAX));
         let psnr = if mse == 0.0 {
             f64::INFINITY
         } else {
@@ -696,7 +701,9 @@ mod tests {
         {
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             assert!(
-                kb.pressed_keys().iter().any(|k| u32::from(*k) == kc as u32),
+                kb.pressed_keys()
+                    .iter()
+                    .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
                 "keycode did not reach the seat keyboard",
             );
         }
@@ -706,7 +713,9 @@ mod tests {
         });
         let kb = state.seat.get_keyboard().expect("keyboard on seat");
         assert!(
-            !kb.pressed_keys().iter().any(|k| u32::from(*k) == kc as u32),
+            !kb.pressed_keys()
+                .iter()
+                .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
             "release must clear the pressed key",
         );
     }

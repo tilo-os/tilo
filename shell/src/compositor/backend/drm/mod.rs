@@ -328,94 +328,110 @@ fn paint_scanouts(
     };
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
     for e in scanouts.iter_mut() {
-        let (px, py) = e.position;
-        let (physical_w, physical_h) = e.scanout.size();
-        let logical_size = outputs
-            .iter()
-            .find(|output| output.id == e.id)
-            .map_or((physical_w, physical_h), |output| output.size);
-        // Widths/heights come from the connector's mode; clamp rather than
-        // wrap on the (unreachable in practice) case of a driver-reported
-        // extent past `i32::MAX`.
-        let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
-        let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
-        let right = px.saturating_add(width_i32);
-        let bottom = py.saturating_add(height_i32);
-        // Software-cursor fallback only: draw the cursor (output-local
-        // coords) on the output it's over. The hardware cursor plane, when
-        // active, ignores this and is driven from the input path via
-        // `CursorPlanes`.
-        let local_cursor = if pointer.0 >= f64::from(px)
-            && pointer.0 < f64::from(right)
-            && pointer.1 >= f64::from(py)
-            && pointer.1 < f64::from(bottom)
-        {
-            // Sub-pixel pointer position intentionally truncates to a pixel
-            // coordinate (a hardware cursor plane snaps to a whole pixel
-            // anyway); bounded to on-screen extents, well within `i32`.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
-            )]
-            let (local_x, local_y) = (
-                (pointer.0 - f64::from(px)) as i32,
-                (pointer.1 - f64::from(py)) as i32,
-            );
-            let (x, y) = scanout::logical_to_physical_point(
-                local_x,
-                local_y,
-                logical_size.0,
-                logical_size.1,
-                e.transform,
-            );
-            Some((f64::from(x), f64::from(y)))
-        } else {
-            None
-        };
-        let sx = usize::try_from(px.max(0)).unwrap_or(0);
-        let sy = usize::try_from(py.max(0)).unwrap_or(0);
-        let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
-            if let Some(transform) = &e.color_transform {
-                copy_rgba_subrect(
-                    SubrectSource {
-                        src_rgba: rgba,
-                        src_w: cw,
-                        src_h: ch,
-                        src_x: sx,
-                        src_y: sy,
-                    },
-                    logical_size.0 as usize,
-                    logical_size.1 as usize,
-                    &mut e.color_buffer,
-                );
-                transform.apply(&mut e.color_buffer);
-                (
-                    &e.color_buffer,
-                    logical_size.0 as usize,
-                    logical_size.1 as usize,
-                    0,
-                    0,
-                )
-            } else {
-                (rgba, cw, ch, sx, sy)
-            };
-        e.scanout.present_no_drain(local_cursor, |dst, pitch| {
-            swizzle_subrect_rgba_to_xrgb8888_transformed(
-                SubrectSource {
-                    src_rgba: source,
-                    src_w: source_w,
-                    src_h: source_h,
-                    src_x: source_x,
-                    src_y: source_y,
-                },
-                dst,
-                pitch,
-                physical_w as usize,
-                physical_h as usize,
-                e.transform,
-            );
-        });
+        paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
     }
+}
+
+/// Body of [`paint_scanouts`]'s per-scanout multi-output loop, split out to
+/// keep that function short. Computes the software-cursor position and the
+/// (possibly colour-transformed) sub-rect for `e`, then presents it —
+/// unchanged from the inline version, so the present call still lands at
+/// exactly the same point in the per-output iteration.
+fn paint_one_scanout(
+    e: &mut ScanoutEntry,
+    outputs: &[Output],
+    rgba: &[u8],
+    cw: usize,
+    ch: usize,
+    pointer: (f64, f64),
+) {
+    let (px, py) = e.position;
+    let (physical_w, physical_h) = e.scanout.size();
+    let logical_size = outputs
+        .iter()
+        .find(|output| output.id == e.id)
+        .map_or((physical_w, physical_h), |output| output.size);
+    // Widths/heights come from the connector's mode; clamp rather than
+    // wrap on the (unreachable in practice) case of a driver-reported
+    // extent past `i32::MAX`.
+    let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
+    let right = px.saturating_add(width_i32);
+    let bottom = py.saturating_add(height_i32);
+    // Software-cursor fallback only: draw the cursor (output-local
+    // coords) on the output it's over. The hardware cursor plane, when
+    // active, ignores this and is driven from the input path via
+    // `CursorPlanes`.
+    let local_cursor = if pointer.0 >= f64::from(px)
+        && pointer.0 < f64::from(right)
+        && pointer.1 >= f64::from(py)
+        && pointer.1 < f64::from(bottom)
+    {
+        // Sub-pixel pointer position intentionally truncates to a pixel
+        // coordinate (a hardware cursor plane snaps to a whole pixel
+        // anyway); bounded to on-screen extents, well within `i32`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
+        )]
+        let (local_x, local_y) = (
+            (pointer.0 - f64::from(px)) as i32,
+            (pointer.1 - f64::from(py)) as i32,
+        );
+        let (x, y) = scanout::logical_to_physical_point(
+            local_x,
+            local_y,
+            logical_size.0,
+            logical_size.1,
+            e.transform,
+        );
+        Some((f64::from(x), f64::from(y)))
+    } else {
+        None
+    };
+    let sx = usize::try_from(px.max(0)).unwrap_or(0);
+    let sy = usize::try_from(py.max(0)).unwrap_or(0);
+    let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
+        if let Some(transform) = &e.color_transform {
+            copy_rgba_subrect(
+                SubrectSource {
+                    src_rgba: rgba,
+                    src_w: cw,
+                    src_h: ch,
+                    src_x: sx,
+                    src_y: sy,
+                },
+                logical_size.0 as usize,
+                logical_size.1 as usize,
+                &mut e.color_buffer,
+            );
+            transform.apply(&mut e.color_buffer);
+            (
+                &e.color_buffer,
+                logical_size.0 as usize,
+                logical_size.1 as usize,
+                0,
+                0,
+            )
+        } else {
+            (rgba, cw, ch, sx, sy)
+        };
+    e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+        swizzle_subrect_rgba_to_xrgb8888_transformed(
+            SubrectSource {
+                src_rgba: source,
+                src_w: source_w,
+                src_h: source_h,
+                src_x: source_x,
+                src_y: source_y,
+            },
+            dst,
+            pitch,
+            physical_w as usize,
+            physical_h as usize,
+            e.transform,
+        );
+    });
 }
 
 impl Presenter for DrmPresenter {

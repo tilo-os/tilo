@@ -2,6 +2,7 @@
 
 use crate::process::{run, run_capture};
 use std::sync::OnceLock;
+use zeroize::Zeroizing;
 
 pub const HOTSPOT_PROFILE: &str = "qOS Hotspot";
 
@@ -486,7 +487,7 @@ pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
         if password.chars().any(|c| matches!(c, '\n' | '\r')) {
             return Err("Wi-Fi password contains an invalid line break".into());
         }
-        let input = format!("{password}\n");
+        let input = Zeroizing::new(format!("{password}\n"));
         crate::process::run_with_input(
             "nmcli",
             &["--ask", "--wait", "30", "device", "wifi", "connect", ssid],

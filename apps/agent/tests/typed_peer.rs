@@ -22,8 +22,56 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+use ed25519_dalek::{Signer as _, SigningKey};
 use qos_agent::wire::Link;
-use ui::collaboration::{CollabEvent, CollabRequest};
+use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation};
+
+const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
+const ROOT_KEY: [u8; 32] = [91; 32];
+
+pub const fn room() -> uuid::Uuid {
+    TEST_ROOM
+}
+
+fn device_key(handle: &str) -> SigningKey {
+    let mut seed = [0_u8; 32];
+    for (index, byte) in handle.bytes().enumerate() {
+        seed[index % 32] ^= byte;
+    }
+    seed[31] ^= 0xA5;
+    SigningKey::from_bytes(&seed)
+}
+
+/// # Panics
+///
+/// Panics if the deterministic test certificate or presentation cannot encode.
+pub fn endpoint_identity(handle: &str) -> CertifiedEndpointIdentity {
+    let root = SigningKey::from_bytes(&ROOT_KEY);
+    let device = device_key(handle);
+    let mut certificate = qos_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: handle.to_owned(),
+        capabilities: qos_user_identity::DeviceCapabilities::primary(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    qos_user_identity::sign_device_cert(&mut certificate, &root).expect("root signs test device");
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: TEST_ROOM.to_string(),
+        device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
+        proof: device
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                &TEST_ROOM.to_string(),
+            ))
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()
+    .expect("certified join encodes");
+    CertifiedEndpointIdentity::new(presentation, device)
+}
 
 pub struct TypedPeer {
     link: Option<Link>,
@@ -60,6 +108,7 @@ impl TypedPeer {
             *cluster_id,
             record.clone(),
             handle.clone(),
+            Some(endpoint_identity(handle.as_deref().unwrap_or(app_id))),
         )?);
         Ok(())
     }
@@ -115,10 +164,36 @@ pub fn recv(peer: &mut TypedPeer) -> Option<CollabEvent> {
         .expect("receive from typed collaboration service")
 }
 
+pub fn document_mutation(event: &CollabEvent) -> Option<DocumentMutation> {
+    event.document_mutation()?.ok()
+}
+
 /// # Panics
 ///
 /// Panics if the typed collaboration service cannot bind `path`.
 pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
-    shell::shell::collab_broker::spawn_native(path.to_path_buf(), &None)
-        .expect("bind the typed collaboration service")
+    let root = SigningKey::from_bytes(&ROOT_KEY);
+    let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        unreachable!("person key creates a person principal")
+    };
+    let mut workspace = shell::shell::state::Workspace::test_default(
+        shell::shell::state::WorkspaceId(1),
+        "Agent integration room",
+    );
+    workspace.room = shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap();
+    workspace.set_owner(principal);
+    let mut tree = shell::shell::state::WorkspaceTree::default();
+    tree.workspaces.push(workspace);
+    let trusted_devices = ["quinten", "Scribe", "files"]
+        .map(|handle| device_key(handle).verifying_key().to_bytes())
+        .into_iter()
+        .collect();
+    shell::shell::collab_broker::spawn_native_harness(
+        path.to_path_buf(),
+        tree.shared(),
+        trusted_devices,
+    )
+    .expect("bind the typed collaboration service")
 }

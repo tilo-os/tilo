@@ -3,15 +3,15 @@
 //! A signing identity appears on a qOS machine the first time someone
 //! logs in; this module is the ceremony that puts a name and a
 //! consequence on it, rather than letting it appear silently. Three
-//! short screens, one real decision: what the identity is and signs
-//! for; **that there is no recovery**, acknowledged explicitly; and
+//! short screens, one real decision: what the identity enables;
+//! **that there is no recovery**, acknowledged explicitly; and
 //! where the key ended up, with its fingerprint.
 //!
 //! qOS mints a personal Ed25519 root plus a distinct device key certified
 //! by that root, with no escrow or recovery phrase. `threshold-identity`
 //! implements share-based recovery but isn't wired into this path, so the
-//! only true thing to tell a user is that losing every local or copied root
-//! record loses the identity. The copy in
+//! only true thing to tell a user is that losing every local key and encrypted
+//! portable backup loses the identity. The copy in
 //! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// Where the ceremony currently is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// What an identity is and what it signs for.
+    /// What an identity is and what it enables.
     Intro,
     /// Import an existing identity record instead of minting a new one.
     Connect,
@@ -36,15 +36,16 @@ pub enum Screen {
 }
 
 /// Title and body for the first screen.
-pub const INTRO_TITLE: &str = "This device is about to create your identity";
-pub const INTRO_BODY: &str = "qOS signs your work with a key that belongs to you. \
-     Collaborators use it to tell that an edit in a shared document really came from you, \
-     and peers use it to recognise this device when you share a workspace with them.";
+pub const INTRO_TITLE: &str = "Create your local qOS identity";
+pub const INTRO_BODY: &str = "qOS will create a cryptographic identity that belongs to you, \
+     then certify a separate key for this device. qOS uses that chain for collaboration and \
+     peer invitations. Individual app edits are not all cryptographically signed yet.";
 
-/// The specific things the identity does, so "what it signs for" is concrete rather than a vague reassurance.
+/// The specific things the identity does today, without promising that every
+/// application operation already carries a signature.
 pub const INTRO_POINTS: &[&str] = &[
-    "It signs the changes you make in shared documents, so your edits are attributable to you.",
-    "It identifies this device to people you share a workspace with.",
+    "It gives qOS collaboration features a stable identity for you.",
+    "It certifies this device so peers can recognise it during sharing.",
     "It is created here, on this machine. Nothing is uploaded and no server holds a copy.",
     "It is not an account and has no password — there is nothing to log in to.",
 ];
@@ -60,16 +61,16 @@ pub const NO_RECOVERY_TITLE: &str =
 pub const NO_RECOVERY_POINTS: &[&str] = &[
     "There is no recovery service. qOS has no backup code, no recovery phrase, and no \
      support desk that can recreate your key.",
-    "Setup creates a personal root record in your home and a separate certified device key \
-     in the protected system identity directory. Both remain on this machine.",
-    "If this device is lost or wiped and you kept no copy of the personal root record, the \
+    "Setup protects your personal root key in this login's key store and creates a separate, \
+     certified key for this device. Neither is uploaded.",
+    "If this device is lost or wiped and you kept no encrypted portable backup, the \
      identity cannot be rebuilt. Not by you, and not by anyone else.",
     "With no backup you would start again with a new identity and rejoin shared workspaces \
-     as a new participant. Work you already signed stays signed and stays yours; you just \
-     cannot sign anything new with the old key.",
-    "Copying the personal root record somewhere safe is the only backup that exists today. \
-     Anyone who has a copy can sign as you and certify devices, so treat it like a key to \
-     your house.",
+     as a new participant. Existing workspace data remains, but the old identity cannot be \
+     used or proved by you again.",
+    "Setup can save an encrypted portable backup after creating the key. Keep that file and \
+     its passphrase separately; together they can sign as you and certify devices, so treat \
+     them like a key to your house.",
 ];
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
@@ -77,8 +78,8 @@ pub const ACKNOWLEDGEMENT: &str =
     "I understand that losing this device without a backup means losing this identity.";
 
 pub const DONE_TITLE: &str = "Your identity is ready";
-pub const DONE_BODY: &str = "This is the fingerprint others will see. You never have to type it — \
-     it is here so you can recognise it later.";
+pub const DONE_BODY: &str = "This fingerprint identifies your local cryptographic root. qOS can \
+     present it in collaboration flows that support verification; you do not need to type it.";
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,6 +149,14 @@ impl Onboarding {
     pub fn begin_connect(&mut self) {
         if self.screen == Screen::Intro {
             self.screen = Screen::Connect;
+        }
+    }
+
+    /// Return to the choice screen before any identity exists.
+    pub fn back(&mut self) {
+        if matches!(self.screen, Screen::Connect | Screen::NoRecovery) {
+            self.screen = Screen::Intro;
+            self.acknowledged = false;
         }
     }
 
@@ -222,20 +231,49 @@ impl Error for OnboardingError {}
 /// Delegates to [`crate::firstboot::ensure_collaboration_identity`] so the
 /// human root, certified device key, and Iroh endpoint identity are created
 /// as one idempotent ceremony.
+///
+/// # Errors
+///
+/// Returns an error if minting the collaboration identity fails, or if one
+/// already exists but its fingerprint can't be read back.
 pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
     let identity_paths = crate::firstboot::collaboration_identity_paths();
-    mint_into_with_paths(identity_dir, &identity_paths)
+    mint_into_with_paths(identity_dir, &identity_paths, false)
+}
+
+/// Mint for qDesktop running on a pre-existing Linux distribution.
+///
+/// This is the only path that associates a fresh identity with the current
+/// Unix account's passwd display name.
+///
+/// # Errors
+///
+/// Returns an error if the compatibility identity ceremony cannot create or
+/// read back the collaboration identity.
+pub fn mint_into_for_legacy_linux_host(
+    identity_dir: &Path,
+) -> Result<MintedIdentity, OnboardingError> {
+    let identity_paths = crate::firstboot::collaboration_identity_paths();
+    mint_into_with_paths(identity_dir, &identity_paths, true)
 }
 
 fn mint_into_with_paths(
     identity_dir: &Path,
     identity_paths: &qos_user_identity::IdentityPaths,
+    legacy_linux_host: bool,
 ) -> Result<MintedIdentity, OnboardingError> {
-    use crate::firstboot::{ProvisionOutcome, ensure_collaboration_identity};
+    use crate::firstboot::{
+        ProvisionOutcome, ensure_collaboration_identity,
+        ensure_collaboration_identity_for_legacy_linux_host,
+    };
     let path = identity_dir.join("primary.json");
-    match ensure_collaboration_identity(identity_dir, identity_paths)
-        .map_err(|e| OnboardingError::Mint(e.to_string()))?
-    {
+    let outcome = if legacy_linux_host {
+        ensure_collaboration_identity_for_legacy_linux_host(identity_dir, identity_paths)
+    } else {
+        ensure_collaboration_identity(identity_dir, identity_paths)
+    }
+    .map_err(|e| OnboardingError::Mint(e.to_string()))?;
+    match outcome {
         ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
             fingerprint: pubkey_hex,
             path,
@@ -262,11 +300,13 @@ fn read_fingerprint(path: &Path) -> Result<String, String> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xF) as usize] as char);
+        // `b >> 4` and `b & 0xF` are both always in 0..16, so these never miss;
+        // `.get()` documents that rather than indexing directly.
+        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
+        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
     }
     out
 }
@@ -297,6 +337,20 @@ mod tests {
         o.set_acknowledged(true);
         o.set_acknowledged(false);
         assert!(!o.can_create());
+    }
+
+    #[test]
+    fn back_returns_to_the_choice_without_carrying_acknowledgement() {
+        let mut o = Onboarding::new();
+        o.begin();
+        o.set_acknowledged(true);
+        o.back();
+        assert_eq!(o.screen(), Screen::Intro);
+        assert!(!o.acknowledged());
+
+        o.begin_connect();
+        o.back();
+        assert_eq!(o.screen(), Screen::Intro);
     }
 
     /// A UI bug must not be able to mint behind the user's back.
@@ -335,8 +389,8 @@ mod tests {
     ///
     /// qOS mints a root and certified device key with no escrow or recovery phrase.
     /// `threshold-identity` implements share-based recovery but is
-    /// deliberately not wired into this path, so any language here about
-    /// restoring/recovering/backing up would be false — if recovery is ever wired up, this test and the copy change together.
+    /// deliberately not wired into this path. A user-held encrypted export is
+    /// a backup, but it is not escrow and cannot help without its passphrase.
     #[test]
     fn copy_does_not_promise_recovery() {
         let all = NO_RECOVERY_POINTS.join(" ").to_lowercase();
@@ -390,6 +444,14 @@ mod tests {
     }
 
     #[test]
+    fn identity_copy_does_not_overstate_per_edit_signing() {
+        let copy = format!("{} {}", INTRO_BODY, INTRO_POINTS.join(" ")).to_lowercase();
+        assert!(copy.contains("not all cryptographically signed"));
+        assert!(!copy.contains("signs the changes you make"));
+        assert!(!copy.contains("edit in a shared document really came from you"));
+    }
+
+    #[test]
     fn minting_writes_a_readable_record_and_reports_its_fingerprint() {
         let dir = std::env::temp_dir().join(format!(
             "qos-onboarding-{}-{}",
@@ -399,12 +461,12 @@ mod tests {
                 .map_or(0, |d| d.as_nanos())
         ));
         let system = qos_user_identity::IdentityPaths::under(dir.join("system"));
-        let minted = mint_into_with_paths(&dir, &system).expect("mint");
+        let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
         assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
         assert!(minted.path.exists());
 
         // Minting again reports the same key rather than a fresh one.
-        let again = mint_into_with_paths(&dir, &system).expect("second mint is idempotent");
+        let again = mint_into_with_paths(&dir, &system, false).expect("second mint is idempotent");
         assert_eq!(again.fingerprint, minted.fingerprint);
 
         let _ = std::fs::remove_dir_all(&dir);

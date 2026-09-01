@@ -58,12 +58,16 @@ pub mod channel;
 pub mod compaction;
 pub mod crypto;
 pub mod event;
+pub mod file_invite;
+pub mod files;
 pub mod identity;
 pub mod invite;
 pub mod op;
 pub mod peer;
+pub mod recipient_control;
 pub mod redaction;
 pub mod role;
+pub mod share_control;
 pub mod space;
 pub mod validator;
 
@@ -89,16 +93,51 @@ pub use crypto::{
     verify_op,
 };
 pub use event::{ChannelEvent, RoleAttestation};
+pub use file_invite::{
+    BearerFileInvite, FILE_INVITE_DOMAIN_TAG, FILE_INVITE_LINK_PREFIX, FileInviteError,
+    FileInviteSpec, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
+    mint_bearer_file_invite, mint_file_invite,
+};
+pub use files::{
+    CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ConflictResolution, ConflictStatus,
+    ConflictStrategy, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
+    FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_VERSION, FileActor,
+    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperationV1,
+    FileMutationParticipantRoleV1, FileMutationParticipantV1, FileMutationTransactionError,
+    FileMutationTransactionManifestV1, FileMutationTransactionV1, FileNameV1, FileNodeKind,
+    FilePropertiesV1, FileProvenance, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
+    HISTORY_CONTROL_VERSION, HistoryControlOperationV1, HistoryControlRequestV1, IndexStatus,
+    MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES, MAX_TRANSACTION_PARTICIPANTS, PreviewStatus,
+    PreviewVariant, prefer_conflict_resolution,
+};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
-pub use op::{EncryptionMetadata, SignedOp};
+pub use op::{
+    DocumentMutation, DocumentMutationError, EncryptionMetadata, SignedOp, document_artifact_id,
+    document_attestation_id,
+};
 pub use peer::{PeerPresence, PeerPresencePayload};
+pub use recipient_control::{
+    MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
+    MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,
+    RECIPIENT_CONTROL_VERSION, RecipientControlErrorCode, RecipientControlOperationV1,
+    RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
+    RecipientFailureCodeV1, RecipientFailureV1, RecipientMountStatusV1, RecipientSubscriptionKeyV1,
+    RecipientSubscriptionStatusV1,
+};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpClass, Role, role_permits};
+pub use share_control::{
+    MAX_SHARE_CONTROL_FRAME_BYTES, NamedGrantMetadataV1, NamedShareDeliveryStateV1,
+    SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1,
+    ShareControlResponseV1, ShareControlResultV1,
+};
 pub use space::{Space, SpaceId};
-pub use validator::{ChannelState, ValidationError, validate_inbound_op};
+pub use validator::{
+    ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
+};

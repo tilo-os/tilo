@@ -36,6 +36,7 @@
     )
 )]
 
+use qdoc::export::{BlockKind, ExportBlock, detect_image_media, walk_blocks};
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot};
 use std::fmt;
@@ -167,16 +168,13 @@ fn collect_images(snap: &DocSnapshot) -> Vec<ImageItem> {
 }
 
 fn collect_images_in(blocks: &[BlockView], snap: &DocSnapshot, items: &mut Vec<ImageItem>) {
-    for b in blocks {
+    for b in walk_blocks(blocks) {
         if let Some(item) = image_item_for(b, snap, items.len()) {
             // Skip blobs already packaged (reused images are embedded once);
             // package the rest with a sniffed media-type.
             if !items.iter().any(|it| it.blob_hash == item.blob_hash) {
                 items.push(item);
             }
-        }
-        if !b.children.is_empty() {
-            collect_images_in(&b.children, snap, items);
         }
     }
 }
@@ -185,41 +183,25 @@ fn collect_images_in(blocks: &[BlockView], snap: &DocSnapshot, items: &mut Vec<I
 /// present, using `existing_count` to number the resource. `None` for
 /// non-image blocks or missing blobs.
 fn image_item_for(b: &BlockView, snap: &DocSnapshot, existing_count: usize) -> Option<ImageItem> {
-    if b.kind != "image" {
+    if ExportBlock::new(b).kind() != BlockKind::Image {
         return None;
     }
     let AttrVal::Str(hash) = b.attrs.get("blob")? else {
         return None;
     };
     let bytes = snap.blobs.get(hash)?;
-    let (media_type, ext) = image_media_type(bytes);
+    let media = detect_image_media(bytes).unwrap_or(qdoc::export::ImageMedia {
+        extension: "png",
+        mime: "image/png",
+    });
     let n = existing_count.saturating_add(1);
     Some(ImageItem {
         id: format!("img-{n}"),
-        href: format!("images/img-{n}.{ext}"),
-        media_type,
+        href: format!("images/img-{n}.{}", media.extension),
+        media_type: media.mime,
         bytes: bytes.clone(),
         blob_hash: hash.clone(),
     })
-}
-
-/// Sniff image magic numbers → `(media-type, extension)`. Mirrors
-/// `qdoc-html`'s sniff but also yields the packaged extension; unknown
-/// bytes default to PNG.
-fn image_media_type(bytes: &[u8]) -> (&'static str, &'static str) {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        ("image/png", "png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        ("image/jpeg", "jpg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("image/gif", "gif")
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        ("image/webp", "webp")
-    } else if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
-        ("image/svg+xml", "svg")
-    } else {
-        ("image/png", "png")
-    }
 }
 
 // ---- chapters ---------------------------------------------------------------
@@ -277,11 +259,11 @@ fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
         let mut anchored: Vec<(String, &BlockView)> = Vec::new();
         let mut hcount = 0usize;
         for b in &blocks {
-            if b.kind == "heading" {
+            if ExportBlock::new(b).kind() == BlockKind::Heading {
                 hcount = hcount.saturating_add(1);
                 let frag = format!("h{hcount}");
                 headings.push(Heading {
-                    level: heading_level(b),
+                    level: ExportBlock::new(b).heading_level(),
                     text: b.text.clone(),
                     frag: frag.clone(),
                 });
@@ -317,16 +299,8 @@ fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
 }
 
 fn is_h1(b: &BlockView) -> bool {
-    b.kind == "heading" && heading_level(b) == 1
-}
-
-fn heading_level(b: &BlockView) -> u8 {
-    match b.attrs.get("level") {
-        // Clamped to 1..=6 first, so the conversion to `u8` always succeeds;
-        // `unwrap_or(1)` is unreachable defensive code, not a real fallback.
-        Some(AttrVal::Int(n)) => u8::try_from((*n).clamp(1, 6)).unwrap_or(1),
-        _ => 1,
-    }
+    let block = ExportBlock::new(b);
+    block.kind() == BlockKind::Heading && block.heading_level() == 1
 }
 
 /// Render one chapter as a complete XHTML document. Block markup comes
@@ -551,9 +525,9 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
             .first()
             .map_or("chapter-1.xhtml", |c| c.href.as_str());
         list.push_str("  <ol>\n");
-        let _ = write!(
+        let _ = writeln!(
             list,
-            "    <li><a href=\"{}\">{}</a></li>\n",
+            "    <li><a href=\"{}\">{}</a></li>",
             escape_xml_attr(href),
             escape_xml_text(&title)
         );
@@ -704,39 +678,39 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
     let mut metadata = String::new();
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <dc:identifier id=\"book-id\">{}</dc:identifier>\n",
+        "    <dc:identifier id=\"book-id\">{}</dc:identifier>",
         escape_xml_text(&identifier)
     );
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <dc:title>{}</dc:title>\n",
+        "    <dc:title>{}</dc:title>",
         escape_xml_text(&title)
     );
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <dc:language>{}</dc:language>\n",
+        "    <dc:language>{}</dc:language>",
         escape_xml_text(&language)
     );
     if let Some(a) = &author {
-        let _ = write!(
+        let _ = writeln!(
             metadata,
-            "    <dc:creator>{}</dc:creator>\n",
+            "    <dc:creator>{}</dc:creator>",
             escape_xml_text(a)
         );
     }
     if let Some(subject) = snap.properties.get("subject") {
-        let _ = write!(
+        let _ = writeln!(
             metadata,
-            "    <dc:subject>{}</dc:subject>\n",
+            "    <dc:subject>{}</dc:subject>",
             escape_xml_text(subject)
         );
     }
     // EPUB 3 requires a dcterms:modified meta.
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <meta property=\"dcterms:modified\">{}</meta>\n",
+        "    <meta property=\"dcterms:modified\">{}</meta>",
         escape_xml_text(&normalize_modified(&modified))
     );
 
@@ -746,17 +720,17 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n",
     );
     for ch in chapters {
-        let _ = write!(
+        let _ = writeln!(
             manifest,
-            "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>\n",
+            "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>",
             escape_xml_attr(&ch.id),
             escape_xml_attr(&ch.href)
         );
     }
     for img in images {
-        let _ = write!(
+        let _ = writeln!(
             manifest,
-            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>\n",
+            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>",
             escape_xml_attr(&img.id),
             escape_xml_attr(&img.href),
             img.media_type
@@ -766,9 +740,9 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
     // Spine: chapters in order.
     let mut spine = String::new();
     for ch in chapters {
-        let _ = write!(
+        let _ = writeln!(
             spine,
-            "    <itemref idref=\"{}\"/>\n",
+            "    <itemref idref=\"{}\"/>",
             escape_xml_attr(&ch.id)
         );
     }

@@ -778,6 +778,10 @@ impl Graph3dScreen {
     /// All surfaces share one z-normalisation so their relative heights are
     /// preserved (a taller surface really sits above a lower one) and one merged
     /// painter's-algorithm sort so overlapping sheets occlude each other.
+    #[allow(
+        clippy::similar_names,
+        reason = "zmin/zmax/zmid are the standard min/max/midpoint trio for one axis's range"
+    )]
     fn ensure_surfaces(&mut self, model: &CalcModel) {
         let key = SurfaceKey::build(model, self.canvas);
         if self.surface_cache.key.as_ref() == Some(&key) {

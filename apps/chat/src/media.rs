@@ -565,7 +565,7 @@ mod live {
                     .first()
                     .map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
             };
-            tokio::time::timeout(std::time::Duration::from_mins(2), flow)
+            tokio::time::timeout(std::time::Duration::from_secs(120), flow)
                 .await
                 .ok()
                 .flatten()

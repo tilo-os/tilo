@@ -66,6 +66,11 @@ impl CustomThemeSpec {
 }
 
 fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
+    )]
     let channel = |x: u8, y: u8| {
         (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
             .round()
@@ -248,13 +253,13 @@ impl Theme {
 
     /// Typography/spacing/motion tokens come from the matching (dark or
     /// light) base; the colour set is expanded by [`Colors::themed`].
-    fn from_palette(name: &str, spec: PaletteSpec) -> Self {
+    fn from_palette(name: &str, spec: &PaletteSpec) -> Self {
         let mut t = if spec.dark {
             Tokens::dark()
         } else {
             Tokens::light()
         };
-        t.colors = crate::tokens::Colors::themed(&spec);
+        t.colors = crate::tokens::Colors::themed(spec);
         Self::from_tokens(name, t)
     }
 
@@ -268,7 +273,7 @@ impl Theme {
         let text_tertiary = mix_rgb(spec.text_dim, spec.surface_base, 0.40);
         let mut theme = Self::from_palette(
             &spec.name,
-            PaletteSpec {
+            &PaletteSpec {
                 dark: spec.dark_base,
                 base: rgb(spec.surface_base),
                 raised: rgb(spec.surface_raised),
@@ -310,7 +315,7 @@ impl Theme {
     pub fn dracula() -> Self {
         Self::from_palette(
             "Dracula",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x28, 0x2A, 0x36), // background
                 raised: Color::from_rgb8(0x34, 0x37, 0x46),
@@ -334,7 +339,7 @@ impl Theme {
     pub fn nord() -> Self {
         Self::from_palette(
             "Nord",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x2E, 0x34, 0x40), // nord0
                 raised: Color::from_rgb8(0x3B, 0x42, 0x52), // nord1
@@ -358,7 +363,7 @@ impl Theme {
     pub fn gruvbox() -> Self {
         let mut t = Self::from_palette(
             "Gruvbox",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x28, 0x28, 0x28), // bg0
                 raised: Color::from_rgb8(0x3C, 0x38, 0x36), // bg1
@@ -389,7 +394,7 @@ impl Theme {
     pub fn gruvbox_light() -> Self {
         let mut t = Self::from_palette(
             "Gruvbox Light",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: false,
                 base: Color::from_rgb8(0xFB, 0xF1, 0xC7), // bg0
                 raised: Color::from_rgb8(0xF9, 0xF5, 0xD7), // bg0_hard
@@ -419,7 +424,7 @@ impl Theme {
     pub fn catppuccin_mocha() -> Self {
         Self::from_palette(
             "Catppuccin Mocha",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x1E, 0x1E, 0x2E), // base
                 raised: Color::from_rgb8(0x31, 0x32, 0x44), // surface0
@@ -443,7 +448,7 @@ impl Theme {
     pub fn catppuccin_latte() -> Self {
         Self::from_palette(
             "Catppuccin Latte",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: false,
                 base: Color::from_rgb8(0xEF, 0xF1, 0xF5), // base
                 raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
@@ -467,7 +472,7 @@ impl Theme {
     pub fn solarized() -> Self {
         let mut t = Self::from_palette(
             "Solarized",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x00, 0x2B, 0x36), // base03
                 raised: Color::from_rgb8(0x07, 0x36, 0x42), // base02
@@ -497,7 +502,7 @@ impl Theme {
     pub fn oled() -> Self {
         Self::from_palette(
             "OLED",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x00, 0x00, 0x00), // true black
                 raised: Color::from_rgb8(0x0C, 0x0C, 0x0F),
@@ -523,7 +528,7 @@ impl Theme {
     pub fn warm_light() -> Self {
         Self::from_palette(
             "Beige",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: false,
                 base: Color::from_rgb8(0xF3, 0xEE, 0xE3), // warm paper
                 raised: Color::from_rgb8(0xFB, 0xF7, 0xEF),
@@ -547,7 +552,7 @@ impl Theme {
     pub fn rose_pine() -> Self {
         Self::from_palette(
             "Rosé Pine",
-            PaletteSpec {
+            &PaletteSpec {
                 dark: true,
                 base: Color::from_rgb8(0x19, 0x17, 0x24), // base
                 raised: Color::from_rgb8(0x1F, 0x1D, 0x2E), // surface
@@ -629,6 +634,17 @@ impl Theme {
         c.border_standard = Color::WHITE;
         c.border_focus = Color::from_rgb8(255, 255, 0); // high-visibility yellow
 
+        // State veneers, re-solved for this preset. The dark tiers this theme
+        // starts from assume a ground around #16171B; against pure black they
+        // collapse to a 1.08:1 step, which is exactly the feedback a low-vision
+        // user cannot see. These alphas trade the "barely there" intent for a
+        // visible one — a 1.7:1 / 2.5:1 / 4.1:1 step off black — while staying
+        // under the point where the theme's white text would drop below AA on
+        // top of them (the strongest tier still measures 5.1:1 for white).
+        // The two hairline tiers go brighter still: nothing hosts text on them.
+        let w = |a: u8| Color::from_rgba8(255, 255, 255, a);
+        c.set_overlays((w(51), w(77), w(110), w(153), w(217)));
+
         // Distinct from the yellow focus ring, and keeps the white
         // checkmark/knob it backs readable on top.
         c.accent.stops[ACCENT_PRIMARY_IDX] = Color::from_rgb8(0, 153, 255);
@@ -643,11 +659,36 @@ impl Theme {
         Self::from_tokens("High Contrast", t)
     }
 
+    /// Every theme qOS ships, by the name [`Theme::named`] resolves.
+    ///
+    /// Exists so a check can be run against *all* of them rather than against
+    /// whichever two someone remembered. A colour defect that only shows up in
+    /// one polarity — a veneer that lightens when it needed to darken, a label
+    /// pinned to white against an accent that turned out pale — survives any
+    /// test that only looks at the default dark theme. Adding a preset without
+    /// adding it here will fail [`Theme::named`]'s round-trip test.
+    pub const ALL: [&'static str; 14] = [
+        "Dark",
+        "Light",
+        "qOS Blue",
+        "Catppuccin Mocha",
+        "Catppuccin Latte",
+        "Dracula",
+        "Nord",
+        "Gruvbox",
+        "Gruvbox Light",
+        "Solarized",
+        "OLED",
+        "Beige",
+        "Rosé Pine",
+        "High Contrast",
+    ];
+
     /// Accepts the exact display name as well as loose forms —
     /// case-insensitive, spaces / hyphens / underscores ignored
     /// (`"gruvbox-light"`, `"catppuccinmocha"`) — so the same lookup serves
     /// the settings picker, the persisted preference, and the `--shots`
-    /// theme override.
+    /// theme override. Returns `None` for an unknown name.
     pub fn named(name: &str) -> Option<Self> {
         let key: String = name
             .chars()
@@ -1002,6 +1043,11 @@ mod tests {
             let edge = t.window_edge();
             // What the eye receives where the hairline meets the desktop.
             let a = f32::from(edge.a()) / 255.0;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
+            )]
             let ch = |o: u8, g: u8| {
                 (f32::from(o) * a + f32::from(g) * (1.0 - a))
                     .round()

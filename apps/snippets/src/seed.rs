@@ -33,7 +33,7 @@ struct SeedSnippet<'a> {
     uses: u32,
 }
 
-fn mk(seed: SeedSnippet<'_>) -> Snippet {
+fn mk(seed: &SeedSnippet<'_>) -> Snippet {
     let mut s = Snippet::blank(seed.folder);
     s.title = seed.title.to_string();
     s.language = seed.language;
@@ -51,7 +51,7 @@ fn mk(seed: SeedSnippet<'_>) -> Snippet {
 
 fn ops_snippets() -> Vec<Snippet> {
     vec![
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Restart deployment",
             language: Language::Shell,
             folder: "Ops",
@@ -62,7 +62,7 @@ fn ops_snippets() -> Vec<Snippet> {
             favorite: true,
             uses: 12,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Tail container logs",
             language: Language::Shell,
             folder: "Ops",
@@ -72,7 +72,7 @@ fn ops_snippets() -> Vec<Snippet> {
             favorite: false,
             uses: 5,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Bash strict mode",
             language: Language::Shell,
             folder: "Ops",
@@ -89,7 +89,7 @@ fn ops_snippets() -> Vec<Snippet> {
 
 fn git_snippets() -> Vec<Snippet> {
     vec![
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Amend last commit",
             language: Language::Git,
             folder: "Git",
@@ -99,7 +99,7 @@ fn git_snippets() -> Vec<Snippet> {
             favorite: true,
             uses: 21,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Interactive rebase",
             language: Language::Git,
             folder: "Git",
@@ -110,7 +110,7 @@ fn git_snippets() -> Vec<Snippet> {
             favorite: false,
             uses: 8,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Wipe a branch back to remote",
             language: Language::Git,
             folder: "Git",
@@ -121,7 +121,7 @@ fn git_snippets() -> Vec<Snippet> {
             favorite: false,
             uses: 2,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Pretty git log",
             language: Language::Git,
             folder: "Git",
@@ -136,7 +136,7 @@ fn git_snippets() -> Vec<Snippet> {
 
 fn database_snippets() -> Vec<Snippet> {
     vec![
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Find recent users",
             language: Language::Sql,
             folder: "Database",
@@ -150,7 +150,7 @@ fn database_snippets() -> Vec<Snippet> {
             favorite: true,
             uses: 17,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Add a non-null column",
             language: Language::Sql,
             folder: "Database",
@@ -166,7 +166,7 @@ fn database_snippets() -> Vec<Snippet> {
 
 fn rust_snippets() -> Vec<Snippet> {
     vec![
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Result-returning main",
             language: Language::Rust,
             folder: "Rust",
@@ -180,7 +180,7 @@ fn rust_snippets() -> Vec<Snippet> {
             favorite: true,
             uses: 9,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Derive the usual traits",
             language: Language::Rust,
             folder: "Rust",
@@ -198,7 +198,7 @@ fn rust_snippets() -> Vec<Snippet> {
 
 fn container_snippets() -> Vec<Snippet> {
     vec![
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Multi-stage Rust build",
             language: Language::Dockerfile,
             folder: "Containers",
@@ -215,7 +215,7 @@ fn container_snippets() -> Vec<Snippet> {
             favorite: false,
             uses: 4,
         }),
-        mk(SeedSnippet {
+        mk(&SeedSnippet {
             title: "Compose service block",
             language: Language::Yaml,
             folder: "Containers",
@@ -236,7 +236,7 @@ fn container_snippets() -> Vec<Snippet> {
 }
 
 fn writing_snippets() -> Vec<Snippet> {
-    vec![mk(SeedSnippet {
+    vec![mk(&SeedSnippet {
         title: "Meeting note",
         language: Language::Markdown,
         folder: "Writing",

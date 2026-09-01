@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{TextInput, TextInputKind, Widget};
 
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -87,9 +87,11 @@ impl Default for FindBar {
         Self {
             open: false,
             query: TextInput::local()
+                .with_kind(TextInputKind::Search)
                 .with_id("word_processor_find")
                 .with_font_size(13.0),
             replacement: TextInput::local()
+                .with_kind(TextInputKind::Search)
                 .with_id("word_processor_replace")
                 .with_font_size(13.0),
             on_replace: false,
@@ -188,7 +190,7 @@ impl FindBar {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -210,7 +212,7 @@ impl FindBar {
                     input,
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -282,7 +284,7 @@ impl FindBar {
             input,
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -418,7 +420,7 @@ impl FindBar {
             let mut start = 0;
             while start + needle.len() <= haystack.len() {
                 let end = start + needle.len();
-                if haystack[start..end] == needle[..]
+                if haystack.get(start..end) == Some(&needle[..])
                     && (!self.options.whole_word || is_word_match(&raw, start, end))
                 {
                     self.matches.push((block.id.clone(), start, end));
@@ -456,6 +458,7 @@ impl FindBar {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -712,7 +715,7 @@ mod tests {
         let effect = bar.handle_event(
             event,
             1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &automerge::ROOT,
             &mut handled,

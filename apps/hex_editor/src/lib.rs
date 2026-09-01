@@ -43,7 +43,6 @@ pub mod app;
 pub mod doc;
 pub mod inspector;
 pub mod model;
-pub mod portal;
 pub mod sample;
 pub mod search;
 pub mod view;

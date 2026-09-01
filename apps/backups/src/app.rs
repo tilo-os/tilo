@@ -27,9 +27,12 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::{
+    Button, ButtonFace, SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
+};
 use ui::{card_column_width, card_columns};
 
 use crate::actions::{self, BACKUPS_ACTION_TYPE};
@@ -213,10 +216,12 @@ impl BackupsApp {
         delta: i64,
     ) {
         let cur = BackupsDoc::retention(doc, root, field);
-        self.actions.dispatch(
+        let action = actions::bump_retention_action(field, cur, delta);
+        self.actions.dispatch_with_context(
             doc,
             BACKUPS_ACTION_TYPE,
-            &actions::bump_retention_action(field, cur, delta),
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Backups", "Backups", &action),
         );
     }
 
@@ -755,16 +760,21 @@ impl BackupsApp {
         // Main column: the drawer's resolved content rect (inset by the docked
         // rail, or full width in overlay). A small gap keeps it off a docked rail.
         let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
-        let cr = self.drawer.content_rect();
-        let main = Rect::new(cr.x0 + docked_gap, content.y0, content.x1, content.y1);
+        let drawer_rect = self.drawer.content_rect();
+        let main = Rect::new(
+            drawer_rect.x0 + docked_gap,
+            content.y0,
+            content.x1,
+            content.y1,
+        );
 
         // Summary stat tiles — reflow from four abreast down to a 2×2 grid so
         // they never crush at narrow widths.
         let cols = card_columns(main.width(), 156.0, 12.0).clamp(1, 4);
         let rows = 4usize.div_ceil(cols);
         let tile_h = 82.0;
-        let tiles_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
-        let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tiles_h);
+        let tile_block_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
+        let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tile_block_h);
         self.draw_summary_tiles(scene, t, tr, theme, tiles, cols);
 
         // Timeline header.
@@ -863,8 +873,11 @@ impl BackupsApp {
         let all_sel = self.ui.sel_source.is_none();
         self.draw_source_row(scene, t, tr, theme, rail, &mut y, None, all_sel);
         for i in 0..self.catalog.sources.len() {
-            let sel = self.ui.sel_source.as_deref() == Some(self.catalog.sources[i].id.as_str());
-            let src = self.catalog.sources[i].clone();
+            let Some(src) = self.catalog.sources.get(i) else {
+                continue;
+            };
+            let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
+            let src = src.clone();
             self.draw_source_row_real(scene, t, tr, theme, rail, &mut y, &src, sel);
         }
 
@@ -891,7 +904,9 @@ impl BackupsApp {
         );
         y += 22.0;
         for i in 0..self.catalog.destinations.len() {
-            let d = self.catalog.destinations[i].clone();
+            let Some(d) = self.catalog.destinations.get(i).cloned() else {
+                continue;
+            };
             self.draw_dest_compact(scene, t, tr, theme, rail, &mut y, &d);
         }
         scene.pop_layer();
@@ -1058,6 +1073,10 @@ impl BackupsApp {
     }
 
     #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/h/c/d are the standard graphics convention: transform, position, row height, colour tokens, and this row's Destination"
+    )]
     fn draw_dest_compact(
         &mut self,
         scene: &mut Scene,
@@ -1167,9 +1186,9 @@ impl BackupsApp {
         ];
         for (i, (label, value, accent)) in tiles.iter().enumerate() {
             let col = i % cols;
-            let rowi = i / cols;
+            let tile_row = i / cols;
             let x0 = region.x0 + col as f64 * (tile_w + gap);
-            let y0 = region.y0 + rowi as f64 * (tile_h + gap);
+            let y0 = region.y0 + tile_row as f64 * (tile_h + gap);
             let tile = Rect::new(x0, y0, x0 + tile_w, y0 + tile_h);
             paint::card(scene, t, tile, 12.0, c.surfaces.raised, c.border_white_10);
             // accent ticker on the left edge
@@ -1399,11 +1418,17 @@ impl BackupsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        det: Rect,
+        detail_rect: Rect,
         s: &Snapshot,
     ) {
         let c = &theme.tokens.colors;
-        paint::fill_rrect(scene, t, det, 10.0, c.neutral[0].with_alpha_factor(0.5));
+        paint::fill_rrect(
+            scene,
+            t,
+            detail_rect,
+            10.0,
+            c.neutral[0].with_alpha_factor(0.5),
+        );
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
         let dest_kind = dest.map_or("", |found| found.kind.label());
@@ -1414,8 +1439,8 @@ impl BackupsApp {
             &format!("Stored on {dest_name}  ·  {dest_kind}"),
             12.0,
             c.text_dim,
-            det.x0 + 16.0,
-            det.y0 + 12.0,
+            detail_rect.x0 + 16.0,
+            detail_rect.y0 + 12.0,
         );
         let enc = if dest.is_some_and(|found| found.encrypted) {
             "encrypted"
@@ -1434,8 +1459,8 @@ impl BackupsApp {
             ),
             11.5,
             c.text_dim,
-            det.x0 + 16.0,
-            det.y0 + 33.0,
+            detail_rect.x0 + 16.0,
+            detail_rect.y0 + 33.0,
         );
 
         // Action buttons, right-aligned.
@@ -1448,9 +1473,9 @@ impl BackupsApp {
                 c.semantic.danger.with_alpha_factor(0.18),
             ),
         ];
-        let mut btn_x = det.x1 - 12.0;
+        let mut btn_x = detail_rect.x1 - 12.0;
         let btn_h = 32.0;
-        let btn_y = det.y0 + (det.height() - btn_h) / 2.0;
+        let btn_y = detail_rect.y0 + (detail_rect.height() - btn_h) / 2.0;
         for (label, hit, fill) in btns.iter().rev() {
             let (label_w, _) = tr.measure(label, 12.5, None);
             let btn_w = f64::from(label_w) + 28.0;
@@ -1504,7 +1529,9 @@ impl BackupsApp {
         let mut y = content.y0 + 50.0;
         let card_h = if narrow { 104.0 } else { 96.0 };
         for i in 0..self.catalog.sources.len() {
-            let src = self.catalog.sources[i].clone();
+            let Some(src) = self.catalog.sources.get(i).cloned() else {
+                continue;
+            };
             self.draw_source_card(scene, t, tr, theme, content, y, card_h, narrow, &src);
             y += card_h + 12.0;
         }
@@ -2032,7 +2059,9 @@ impl BackupsApp {
         let row_gap = 16.0;
         let mut rows_used = 1usize;
         for i in 0..n {
-            let d = self.catalog.destinations[i].clone();
+            let Some(d) = self.catalog.destinations.get(i).cloned() else {
+                continue;
+            };
             let col = i % cols;
             let row = i / cols;
             rows_used = row + 1;
@@ -2629,7 +2658,9 @@ impl BackupsApp {
     ) {
         let vals = [p.hourly, p.daily, p.weekly, p.monthly];
         for (i, field) in PolicyField::ALL.iter().enumerate() {
-            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, vals[i]);
+            // `vals` and `PolicyField::ALL` both have exactly 4 entries.
+            let value = vals.get(i).copied().unwrap_or(0);
+            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, value);
         }
     }
 
@@ -2815,6 +2846,10 @@ impl BackupsApp {
         );
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/c/p/n/r/k are the standard graphics convention: transform, colour tokens, the RetentionPolicy, dot count, dot radius, and the dot loop index"
+    )]
     fn draw_retention_ruler(
         scene: &mut Scene,
         t: Affine,
@@ -3314,54 +3349,38 @@ impl BackupsApp {
         theme: &Theme,
         m: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let by = m.y1 - 56.0;
         let bh = 38.0;
         let confirm = Rect::new(m.x1 - 24.0 - 170.0, by, m.x1 - 24.0, by + bh);
-        let hovered = self.hover == Some(Hit::RestoreConfirm);
-        paint::fill_rrect(
+        Button::paint(
             scene,
             t,
-            confirm,
-            9.0,
-            if hovered {
-                theme.accent_hover
-            } else {
-                theme.accent_primary
-            },
-        );
-        paint::text_center(
-            scene,
             tr,
-            t,
-            "Restore selected",
-            14.0,
-            c.text_primary,
-            confirm.x0,
-            confirm.x1,
-            by + (bh - 14.0) / 2.0,
+            theme,
+            &ButtonFace::new(confirm, "Restore selected")
+                .primary()
+                .radius(9.0)
+                .weight(TextWeight::Regular)
+                .hovered(self.hover == Some(Hit::RestoreConfirm)),
         );
         self.hits.push((confirm, Hit::RestoreConfirm));
 
         let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + bh);
-        paint::fill_rrect(scene, t, cancel, 9.0, c.surfaces.raised);
-        paint::stroke_rrect(scene, t, cancel, 9.0, c.border_white_10, 1.0);
-        paint::text_center(
+        Button::paint(
             scene,
-            tr,
             t,
-            "Cancel",
-            14.0,
-            c.text_dim,
-            cancel.x0,
-            cancel.x1,
-            by + (bh - 14.0) / 2.0,
+            tr,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(9.0)
+                .weight(TextWeight::Regular)
+                .hovered(self.hover == Some(Hit::RestoreCancel)),
         );
         self.hits.push((cancel, Hit::RestoreCancel));
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some((msg, when)) = self.toast.clone() else {
+        let Some((msg, when)) = self.toast.as_ref() else {
             return;
         };
         let age = when.elapsed().as_secs_f64();
@@ -3369,57 +3388,28 @@ impl BackupsApp {
             self.toast = None;
             return;
         }
-        let c = &theme.tokens.colors;
         let alpha = if age > 2.5 {
             (1.0 - (age - 2.5)) as f32
         } else {
             1.0
         };
-        let (tw, _) = tr.measure(&msg, 13.0, None);
-        let w = f64::from(tw) + 56.0;
-        let toast = Rect::new(
-            self.rect.center().x - w / 2.0,
-            self.rect.y1 - 56.0,
-            self.rect.center().x + w / 2.0,
-            self.rect.y1 - 20.0,
-        );
-        paint::fill_rrect(
+        paint_transient(
             scene,
             t,
-            toast,
-            10.0,
-            c.neutral[0].with_alpha_factor(0.92 * alpha),
-        );
-        paint::stroke_rrect(
-            scene,
-            t,
-            toast,
-            10.0,
-            theme.accent_primary.with_alpha_factor(0.6 * alpha),
-            1.0,
-        );
-        paint::dot(
-            scene,
-            t,
-            Point::new(toast.x0 + 22.0, toast.center().y),
-            4.0,
-            c.semantic.success.with_alpha_factor(alpha),
-        );
-        paint::text_vc(
-            scene,
             tr,
-            t,
-            &msg,
-            13.0,
-            c.text_primary.with_alpha_factor(alpha),
-            toast.x0 + 36.0,
-            toast.y0,
-            toast.height(),
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Success).alpha(alpha),
         );
     }
 
     // ---- little vector icons -------------------------------------------
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/r/k/a are the standard graphics convention: transform, position, radius, loop index, angle"
+    )]
     fn draw_source_icon(
         scene: &mut Scene,
         t: Affine,
@@ -3679,7 +3669,10 @@ impl BackupsApp {
             .unwrap_or(0) as i32;
         let n = View::ALL.len() as i32;
         let next = ((idx + dir) % n + n) % n;
-        BackupsDoc::set_view(doc, root, View::ALL[next as usize]);
+        // `next` is always in `0..n` by construction of the double-modulo above.
+        if let Some(&view) = View::ALL.get(next as usize) {
+            BackupsDoc::set_view(doc, root, view);
+        }
         self.load_cache(doc, root);
     }
 
@@ -3703,7 +3696,10 @@ impl BackupsApp {
                 }
             }
         };
-        let id = snaps[next].id.clone();
+        let Some(snap) = snaps.get(next) else {
+            return;
+        };
+        let id = snap.id.clone();
         BackupsDoc::set_selected_snapshot(doc, root, Some(&id));
         self.load_cache(doc, root);
     }
@@ -3767,6 +3763,7 @@ impl Widget for BackupsApp {
     ) -> NodeId {
         // `new_leaf` only fails on tree-internal bookkeeping errors, never on
         // caller input; there is none to report here.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3784,7 +3781,9 @@ impl Widget for BackupsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // `node` was created by `build_layout` in this same tree, so a lookup
         // miss would mean the frame cycle called these out of order.
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3950,9 +3949,11 @@ impl BackupsApp {
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 if self.ui.view == View::Schedules {
-                    let f = PolicyField::ALL[self.policy_focus];
-                    self.bump_retention(doc, root, f, -1);
-                    self.load_cache(doc, root);
+                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                        self.bump_retention(doc, root, f, -1);
+                        self.load_cache(doc, root);
+                    }
                 } else {
                     self.cycle_view(-1, doc, root);
                 }
@@ -3960,9 +3961,11 @@ impl BackupsApp {
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if self.ui.view == View::Schedules {
-                    let f = PolicyField::ALL[self.policy_focus];
-                    self.bump_retention(doc, root, f, 1);
-                    self.load_cache(doc, root);
+                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                        self.bump_retention(doc, root, f, 1);
+                        self.load_cache(doc, root);
+                    }
                 } else {
                     self.cycle_view(1, doc, root);
                 }
@@ -3976,43 +3979,61 @@ impl BackupsApp {
                     *handled = true;
                 }
             }
-            Key::Character(s) => match s.as_str() {
-                "1" => {
-                    BackupsDoc::set_view(doc, root, View::Timeline);
+            Key::Character(s) => self.handle_character_key(s, doc, root, handled),
+            _ => {}
+        }
+    }
+
+    /// The character-key half of [`Self::handle_key`], split out to keep
+    /// that dispatcher under the line limit. Same arms, same order.
+    fn handle_character_key(
+        &mut self,
+        s: &str,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        match s {
+            "1" => {
+                BackupsDoc::set_view(doc, root, View::Timeline);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "2" => {
+                BackupsDoc::set_view(doc, root, View::Sources);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "3" => {
+                BackupsDoc::set_view(doc, root, View::Destinations);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "4" => {
+                BackupsDoc::set_view(doc, root, View::Schedules);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "n" | "N" => {
+                self.start_job();
+                *handled = true;
+            }
+            "+" | "=" if self.ui.view == View::Schedules => {
+                // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                    self.bump_retention(doc, root, f, 1);
                     self.load_cache(doc, root);
-                    *handled = true;
                 }
-                "2" => {
-                    BackupsDoc::set_view(doc, root, View::Sources);
+                *handled = true;
+            }
+            "-" | "_" if self.ui.view == View::Schedules => {
+                // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                    self.bump_retention(doc, root, f, -1);
                     self.load_cache(doc, root);
-                    *handled = true;
                 }
-                "3" => {
-                    BackupsDoc::set_view(doc, root, View::Destinations);
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-                "4" => {
-                    BackupsDoc::set_view(doc, root, View::Schedules);
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-                "n" | "N" => {
-                    self.start_job();
-                    *handled = true;
-                }
-                "+" | "=" if self.ui.view == View::Schedules => {
-                    self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-                "-" | "_" if self.ui.view == View::Schedules => {
-                    self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-                _ => {}
-            },
+                *handled = true;
+            }
             _ => {}
         }
     }
@@ -4147,6 +4168,14 @@ mod tests {
             self.click(c);
         }
 
+        fn key(&mut self, key: &Key) {
+            let mut handled = false;
+            self.app
+                .handle_key(key, &mut self.state.doc, &self.state.root, &mut handled);
+            assert!(handled, "the restore keyboard action was handled");
+            self.draw();
+        }
+
         fn view(&self) -> View {
             BackupsDoc::view(&self.state.doc, &self.state.root)
         }
@@ -4194,6 +4223,51 @@ mod tests {
             f.has_hit(|h| matches!(h, Hit::FileRow(_))),
             "the restore browser lists the snapshot's indexed files"
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these rectangles are assembled from exact integer-valued constants"
+    )]
+    fn restore_footer_buttons_keep_layout_and_dispatch_policy() {
+        let mut f = Frame::demo();
+        f.click_hit(|h| matches!(h, Hit::Restore));
+
+        let confirm = f.rect_of(|h| matches!(h, Hit::RestoreConfirm));
+        let cancel = f.rect_of(|h| matches!(h, Hit::RestoreCancel));
+        assert_eq!(confirm.width(), 170.0);
+        assert_eq!(cancel.width(), 110.0);
+        assert_eq!(confirm.height(), 38.0);
+        assert_eq!(confirm.y0, cancel.y0);
+        assert_eq!(confirm.x0 - cancel.x1, 12.0);
+
+        f.click_hit(|h| matches!(h, Hit::RestoreCancel));
+        assert!(
+            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "Cancel closes without starting a restore"
+        );
+        assert!(f.app.toast.is_none());
+
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        f.click_hit(|h| matches!(h, Hit::RestoreConfirm));
+        assert!(
+            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "Restore selected closes the modal"
+        );
+        assert_eq!(
+            f.app.toast.as_ref().map(|(message, _)| message.as_str()),
+            Some("Restore started in the background")
+        );
+    }
+
+    #[test]
+    fn escape_still_cancels_the_restore_modal() {
+        let mut f = Frame::demo();
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        f.key(&Key::Named(NamedKey::Escape));
+        assert!(!BackupsDoc::restore_open(&f.state.doc, &f.state.root));
+        assert!(!f.has_hit(|hit| matches!(hit, Hit::RestoreConfirm | Hit::RestoreCancel)));
     }
 
     #[test]

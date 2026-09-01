@@ -191,7 +191,7 @@ fn player_app_pulls_a_real_decoded_frame_onto_its_surface() {
 
     // Drive the real app entry path: open the file, then pump `sync` (the live
     // event loop's per-frame call) until a decoded picture lands on the surface.
-    let mut app = PlayerApp::new().with_open_path(sample.clone());
+    let mut app = PlayerApp::new().with_open_path(&sample);
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
 
