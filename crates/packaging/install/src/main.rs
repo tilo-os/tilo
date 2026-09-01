@@ -53,6 +53,12 @@ struct Cli {
 /// Trust-related flags shared by `install` and `run`.
 #[derive(Debug, Args, Clone, Default)]
 struct TrustFlags {
+    /// Require the parsed qpkg package-id/root to equal this 64-character hex hash.
+    #[arg(long)]
+    require_package_root: Option<String>,
+    /// Require the qpkg's embedded publisher to equal this 64-character hex key.
+    #[arg(long)]
+    require_publisher: Option<String>,
     /// Refuse to proceed unless signed by this trusted attestor id.
     #[arg(long)]
     require_attestor: Option<String>,
@@ -66,6 +72,7 @@ struct TrustFlags {
 #[derive(Debug, Subcommand)]
 enum Cmd {
     /// Install a .qpkg into the local store. Verifies signature first.
+    #[command(alias = "add")]
     Install {
         /// Path to the .qpkg file.
         qpkg: PathBuf,
@@ -301,6 +308,18 @@ enum Error {
         "policy refused: --require-attestor {required:?} and package is self-signed (use --allow-self-signed to override)"
     )]
     RequireAttestorWithoutAttestation { required: String },
+    #[error("policy refused: --require-publisher is not a 64-character Ed25519 key: {0}")]
+    InvalidRequiredPublisher(String),
+    #[error(
+        "policy refused: package publisher ed25519:{found} does not match --require-publisher {required}"
+    )]
+    PublisherMismatch { required: String, found: String },
+    #[error("policy refused: --require-package-root is not a 64-character BLAKE3 hash: {0}")]
+    InvalidRequiredPackageRoot(String),
+    #[error(
+        "policy refused: package root {found} does not match --require-package-root {required}"
+    )]
+    PackageRootMismatch { required: String, found: String },
     #[error("qpkg parse: {0}")]
     Parse(String),
     #[error("refusing to install: {0}")]
@@ -479,6 +498,49 @@ fn save_registry(reg: &Registry) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validate registry-pinned identity before applying the user's broader
+/// attestor policy. Returns the publisher key set for `verify_with_trust`.
+fn validate_registry_constraints(
+    pkg_id: PackageId,
+    store: &MemoryBlobStore,
+    trust: &TrustFlags,
+) -> Result<Vec<[u8; 32]>, Error> {
+    if let Some(required) = trust.require_package_root.as_deref() {
+        let decoded =
+            hex::decode(required).map_err(|e| Error::InvalidRequiredPackageRoot(e.to_string()))?;
+        if decoded.len() != 32 {
+            return Err(Error::InvalidRequiredPackageRoot(format!(
+                "decoded to {} bytes",
+                decoded.len()
+            )));
+        }
+        let found = hex_of(pkg_id.as_bytes());
+        if !required.eq_ignore_ascii_case(&found) {
+            return Err(Error::PackageRootMismatch {
+                required: required.to_ascii_lowercase(),
+                found,
+            });
+        }
+    }
+    let Some(hex_key) = trust.require_publisher.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let decoded =
+        hex::decode(hex_key).map_err(|e| Error::InvalidRequiredPublisher(e.to_string()))?;
+    let required: [u8; 32] = decoded.try_into().map_err(|bytes: Vec<u8>| {
+        Error::InvalidRequiredPublisher(format!("decoded to {} bytes", bytes.len()))
+    })?;
+    let found = extract_publisher_key(&pkg_id, store)
+        .ok_or_else(|| Error::Verify("signed root has no publisher key".to_string()))?;
+    if found != required {
+        return Err(Error::PublisherMismatch {
+            required: hex_of(&required),
+            found: hex_of(&found),
+        });
+    }
+    Ok(vec![required])
+}
+
 /// Verify `pkg_id` against trust config under the caller's `TrustFlags`
 /// policy; returns the manifest and attestor id (empty if self-signed).
 fn verify_and_gate(
@@ -488,7 +550,14 @@ fn verify_and_gate(
 ) -> Result<(pkg::Manifest, String, String), Error> {
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
-    let outcome = verify_with_trust(pkg_id, store, &[], attestors.as_slice(), &revocation);
+    let required_publishers = validate_registry_constraints(pkg_id, store, trust)?;
+    let outcome = verify_with_trust(
+        pkg_id,
+        store,
+        &required_publishers,
+        attestors.as_slice(),
+        &revocation,
+    );
     match outcome {
         Verification::AttestedBy { attestor, manifest } => {
             if let Some(required) = &trust.require_attestor
@@ -1475,6 +1544,25 @@ fn run(
         .iter()
         .find(|e| e.id == pkg_id)
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
+
+    if let Some(required) = trust.require_package_root.as_deref() {
+        decode_hex_32(required).map_err(Error::InvalidRequiredPackageRoot)?;
+        if !required.eq_ignore_ascii_case(&entry.package_id_hex) {
+            return Err(Error::PackageRootMismatch {
+                required: required.to_ascii_lowercase(),
+                found: entry.package_id_hex.clone(),
+            });
+        }
+    }
+    if let Some(required) = trust.require_publisher.as_deref() {
+        decode_hex_32(required).map_err(Error::InvalidRequiredPublisher)?;
+        if !required.eq_ignore_ascii_case(&entry.publisher_key_hex) {
+            return Err(Error::PublisherMismatch {
+                required: required.to_ascii_lowercase(),
+                found: entry.publisher_key_hex.clone(),
+            });
+        }
+    }
 
     // Re-check trust policy at launch — revocation may postdate install;
     // --require-attestor is honoured against the recorded attested-by field.

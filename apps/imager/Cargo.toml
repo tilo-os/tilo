@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "imager"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # The qOS ACTION model: the imager's guided-customization install profile (the
 # only user-authored config in the shared document) is exported as replayable
