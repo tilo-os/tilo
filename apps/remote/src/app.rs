@@ -518,14 +518,7 @@ impl RemoteApp {
                 // would push the remote selection into the local clipboard.
             }
             Action::Disconnect => {
-                // Dropping the live session closes the transport (the worker
-                // thread sees its channel close and disconnects).
-                self.live = None;
-                self.fb_image = None;
-                self.fb_canvas = None;
-                self.session_for = None;
-                self.fullscreen = false;
-                self.screen = Screen::List;
+                self.disconnect_session();
             }
             Action::PickQosDevice(i) => {
                 if let Some(d) = self.qos_devices.get(i) {
@@ -622,6 +615,17 @@ impl RemoteApp {
             }
         }
         self.screen = Screen::Session { id };
+    }
+
+    fn disconnect_session(&mut self) {
+        // Dropping the live session closes the transport (the worker thread
+        // sees its channel close and disconnects).
+        self.live = None;
+        self.fb_image = None;
+        self.fb_canvas = None;
+        self.session_for = None;
+        self.fullscreen = false;
+        self.screen = Screen::List;
     }
 
     /// Build the real transport for a connection from its kind + auth and
@@ -1124,7 +1128,18 @@ impl Widget for RemoteApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        if let Some(id) = self.session_for
+            && let Some(connection) = self.workspace.get(id)
+        {
+            let can_send_text = matches!(
+                &self.live,
+                Some(LiveSession::Ssh(session))
+                    if session.status() == SessionStatus::Connected
+            );
+            resources.push(crate::actions::session_resource(connection, can_send_text));
+        }
+        resources
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -1142,25 +1157,43 @@ impl Widget for RemoteApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect
-            || type_id != crate::actions::REMOTE_CONNECT_OPERATION_TYPE
-        {
+        if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
         }
-        let encoded_id = std::str::from_utf8(payload)
-            .map_err(|_| "connection id payload is not UTF-8".to_string())?;
-        let Some(encoded_id) = encoded_id
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-        else {
-            return Err("connection id payload is not a JSON string".to_string());
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
         };
-        let id = uuid::Uuid::parse_str(encoded_id)
-            .map_err(|_| "invalid Remote connection id".to_string())?;
-        if self.workspace.get(id).is_none() {
-            return Err("saved connection no longer exists".to_string());
+        match operation {
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".to_string());
+                }
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::Disconnect { connection_id } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                self.disconnect_session();
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input(text.into_bytes());
+                        self.dirty = true;
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".to_string()),
+                }
+            }
         }
-        self.open_session(id);
         Ok(true)
     }
 
