@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -19,6 +19,81 @@ pub const CAPSULE_SCHEMA_VERSION: u16 = 1;
 const SANDBOX_FILES_ROOT: &str = "/run/qos/files";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Why a managed executable exists in capsule state. Installer control rows
+/// remain visible when setup failed or produced no discoverable shortcut, but
+/// can never be launched through the ordinary Open action.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramKind {
+    #[default]
+    Application,
+    InstallerControl,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallerKind {
+    Exe,
+    Msi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallationStatus {
+    Installing,
+    Installed,
+    NeedsAttention,
+    Failed,
+    Uninstalling,
+    Uninstalled,
+}
+
+/// Durable install journal. The source path never enters state: only the hash
+/// of the bytes received over SCM_RIGHTS and a managed prefix-relative copy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InstallationRecord {
+    pub source_name: String,
+    pub display_name: String,
+    pub sha256: String,
+    pub kind: InstallerKind,
+    pub installer_relative_path: PathBuf,
+    pub status: InstallationStatus,
+    #[serde(default)]
+    pub last_exit_code: Option<i32>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub uninstaller_relative_path: Option<PathBuf>,
+}
+
+impl InstallationRecord {
+    fn validate(&self) -> Result<(), CapsuleError> {
+        if self.source_name.is_empty()
+            || self.source_name.len() > 255
+            || self.source_name.chars().any(char::is_control)
+            || self.display_name.trim().is_empty()
+            || self.display_name.len() > 255
+            || self.display_name.chars().any(char::is_control)
+            || self.sha256.len() != 64
+            || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CapsuleError::InvalidInstallation);
+        }
+        validate_relative_installer(&self.installer_relative_path, self.kind)?;
+        if let Some(uninstaller) = &self.uninstaller_relative_path {
+            validate_relative_executable(uninstaller)?;
+        }
+        if self
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.len() > 2_048 || error.chars().any(char::is_control))
+        {
+            return Err(CapsuleError::InvalidInstallation);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CapsuleProgram {
     /// Stable opaque identifier used by qOS search and launch actions.
@@ -30,6 +105,13 @@ pub struct CapsuleProgram {
     /// clients select this program by opaque ID and cannot replace this query.
     #[serde(default)]
     pub query: ApplicationQuery,
+    #[serde(default)]
+    pub kind: ProgramKind,
+    /// Fixed Windows arguments captured by the trusted importer. They are
+    /// argv entries, never a command string. Normal discovered apps use none;
+    /// MSI setup uses the allow-listed `/i C:\\...` shape.
+    #[serde(default)]
+    pub arguments: Vec<String>,
 }
 
 impl CapsuleProgram {
@@ -38,7 +120,17 @@ impl CapsuleProgram {
         if self.display_name.trim().is_empty() || self.display_name.chars().any(char::is_control) {
             return Err(CapsuleError::InvalidProgramName);
         }
-        validate_relative_executable(&self.prefix_relative_executable)
+        validate_relative_executable(&self.prefix_relative_executable)?;
+        if self.arguments.len() > 16
+            || self.arguments.iter().any(|argument| {
+                argument.is_empty()
+                    || argument.len() > 1_024
+                    || argument.chars().any(char::is_control)
+            })
+        {
+            return Err(CapsuleError::InvalidArguments);
+        }
+        Ok(())
     }
 }
 
@@ -52,6 +144,8 @@ pub struct CapsuleState {
     pub security_profile: SecurityProfileRef,
     #[serde(default)]
     pub programs: BTreeMap<String, CapsuleProgram>,
+    #[serde(default)]
+    pub installation: Option<InstallationRecord>,
 }
 
 impl CapsuleState {
@@ -68,6 +162,9 @@ impl CapsuleState {
             if id != &program.id {
                 return Err(CapsuleError::ProgramKeyMismatch);
             }
+        }
+        if let Some(installation) = &self.installation {
+            installation.validate()?;
         }
         Ok(())
     }
@@ -174,6 +271,30 @@ impl CapsuleStore {
         Ok(programs)
     }
 
+    /// Enumerate capsule states that carry a durable install journal.
+    pub fn installations(&self) -> Result<Vec<CapsuleState>, CapsuleError> {
+        let capsules = match Self::open_child_dir(self.root_fd.as_ref(), "capsules", false) {
+            Ok(capsules) => capsules,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut ids = fs::read_dir(fd_path(&capsules))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect::<Vec<_>>();
+        ids.sort();
+        let mut states = Vec::new();
+        for id in ids {
+            validate_id("capsule id", &id)?;
+            if let Some(state) = self.load(&id)?
+                && state.installation.is_some()
+            {
+                states.push(state);
+            }
+        }
+        Ok(states)
+    }
+
     /// Creates a capsule on first use. A recipe change is never silently
     /// applied to an existing prefix; management UI must explicitly migrate
     /// or duplicate it so rollback remains possible.
@@ -202,6 +323,7 @@ impl CapsuleStore {
             settings: plan.settings.clone(),
             security_profile: plan.security_profile.clone(),
             programs: BTreeMap::new(),
+            installation: None,
         };
         state.validate()?;
         self.prepare_managed_paths(&state.id)?;
@@ -221,6 +343,185 @@ impl CapsuleStore {
         state.programs.insert(program.id.clone(), program);
         self.save(&state)?;
         Ok(state)
+    }
+
+    /// Copy a validated installer into the capsule through descriptor-anchored
+    /// directories. `expected_sha256` binds the later setup process to the
+    /// exact bytes that were inspected even if the selected portal document
+    /// changes between inspection and copy.
+    pub(crate) fn copy_installer(
+        &self,
+        capsule_id: &str,
+        source: &mut File,
+        expected_sha256: &str,
+        kind: InstallerKind,
+        max_bytes: u64,
+    ) -> Result<PathBuf, CapsuleError> {
+        validate_id("capsule id", capsule_id)?;
+        if expected_sha256.len() != 64
+            || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CapsuleError::InvalidInstallation);
+        }
+        let capsule = self.capsule_directory(capsule_id, false)?;
+        let data = Self::open_child_dir(&capsule, "data", false)?;
+        let prefix = Self::open_child_dir(&data, "prefix", false)?;
+        let drive_c = Self::open_child_dir(&prefix, "drive_c", true)?;
+        let installers = Self::open_child_dir(&drive_c, "qos-installers", true)?;
+        let extension = match kind {
+            InstallerKind::Exe => "exe",
+            InstallerKind::Msi => "msi",
+        };
+        let name = format!("{expected_sha256}.{extension}");
+        let temporary = format!(
+            ".{name}.{}.tmp",
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut destination = create_regular_exclusive(&installers, &temporary, 0o600)?;
+        source.rewind()?;
+        let mut digest = Sha256::new();
+        let mut copied = 0_u64;
+        let mut buffer = [0_u8; 128 * 1024];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(u64::try_from(read).map_err(|_| CapsuleError::InstallerTooLarge)?)
+                .ok_or(CapsuleError::InstallerTooLarge)?;
+            if copied > max_bytes {
+                let _ = unlink_at(&installers, &temporary);
+                return Err(CapsuleError::InstallerTooLarge);
+            }
+            digest.update(&buffer[..read]);
+            destination.write_all(&buffer[..read])?;
+        }
+        let actual = hex_lower(digest.finalize());
+        if actual != expected_sha256 {
+            let _ = unlink_at(&installers, &temporary);
+            return Err(CapsuleError::InstallerChanged);
+        }
+        destination.sync_all()?;
+        rename_at(&installers, &temporary, &installers, &name)?;
+        let _ = installers.sync_all();
+        Ok(PathBuf::from("drive_c/qos-installers").join(name))
+    }
+
+    /// Find user-facing PE executables after setup without following symlinks
+    /// or trusting generated command strings. The scan is intentionally
+    /// bounded; a hostile installer cannot turn refresh into unbounded work.
+    pub(crate) fn discover_programs(
+        &self,
+        capsule_id: &str,
+        query: &ApplicationQuery,
+    ) -> Result<(Vec<CapsuleProgram>, Option<PathBuf>), CapsuleError> {
+        const MAX_ENTRIES: usize = 20_000;
+        const MAX_PROGRAMS: usize = 64;
+        const MAX_DEPTH: usize = 10;
+        let paths = self.open_launch_paths(capsule_id)?;
+        let prefix_root = paths.prefix_source();
+        let mut pending = vec![(prefix_root.join("drive_c"), 0_usize)];
+        let mut examined = 0_usize;
+        let mut candidates = Vec::new();
+        let mut uninstaller = None;
+        while let Some((directory, depth)) = pending.pop() {
+            if depth > MAX_DEPTH || examined >= MAX_ENTRIES {
+                continue;
+            }
+            let entries = match fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                if examined >= MAX_ENTRIES {
+                    break;
+                }
+                examined += 1;
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                if file_type.is_dir() {
+                    pending.push((entry.path(), depth.saturating_add(1)));
+                    continue;
+                }
+                let entry_path = entry.path();
+                if !file_type.is_file()
+                    || !entry_path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+                {
+                    continue;
+                }
+                let Ok(relative) = entry_path.strip_prefix(&prefix_root).map(Path::to_path_buf)
+                else {
+                    continue;
+                };
+                let stem = entry_path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default();
+                let lower = stem.to_ascii_lowercase();
+                if lower.starts_with("unins") || lower.contains("uninstall") {
+                    if uninstaller.is_none() {
+                        uninstaller = Some(relative);
+                    }
+                    continue;
+                }
+                let relative_lower = relative.to_string_lossy().to_ascii_lowercase();
+                let installed_location = relative_lower.contains("program files")
+                    || (relative_lower.contains("appdata") && relative_lower.contains("local"));
+                if !installed_location
+                    || relative_lower.contains("qos-installers")
+                    || relative_lower.starts_with("drive_c/windows/")
+                    || is_helper_executable(&lower)
+                    || candidates.len() >= MAX_PROGRAMS
+                {
+                    continue;
+                }
+                let id = program_id_from_relative(&relative);
+                let mut program_query = query.clone();
+                program_query.executable = entry_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string);
+                program_query.executable_sha256 = None;
+                program_query.installer_sha256 = None;
+                candidates.push(CapsuleProgram {
+                    id,
+                    display_name: executable_display_name(stem),
+                    prefix_relative_executable: relative,
+                    query: program_query,
+                    kind: ProgramKind::Application,
+                    arguments: Vec::new(),
+                });
+            }
+        }
+        candidates.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        candidates.dedup_by(|left, right| {
+            left.prefix_relative_executable == right.prefix_relative_executable
+        });
+        Ok((candidates, uninstaller))
+    }
+
+    /// Atomically remove a capsule from the live namespace before recursive
+    /// deletion. A crash leaves only a non-launchable trash entry, never a
+    /// half-deleted live application.
+    pub(crate) fn retire_capsule(&self, capsule_id: &str) -> Result<(), CapsuleError> {
+        validate_id("capsule id", capsule_id)?;
+        let capsules = Self::open_child_dir(self.root_fd.as_ref(), "capsules", false)?;
+        let trash = Self::open_child_dir(self.root_fd.as_ref(), "trash", true)?;
+        let retired = format!(
+            "{capsule_id}-{}",
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        rename_at(&capsules, capsule_id, &trash, &retired)?;
+        let _ = capsules.sync_all();
+        let _ = trash.sync_all();
+        fs::remove_dir_all(fd_path(&trash).join(retired))?;
+        let _ = trash.sync_all();
+        Ok(())
     }
 
     pub fn save(&self, state: &CapsuleState) -> Result<(), CapsuleError> {
@@ -428,6 +729,66 @@ fn open_regular_nofollow(parent: &File, component: &str) -> Result<File, std::io
     Ok(file)
 }
 
+fn create_regular_exclusive(
+    parent: &File,
+    component: &str,
+    mode: u32,
+) -> Result<File, std::io::Error> {
+    let component = std::ffi::CString::new(component)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file name"))?;
+    // SAFETY: the descriptor names a retained directory and `component` is a
+    // single NUL-free file name generated by the service.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            component.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            mode,
+        )
+    };
+    file_from_fd_io(fd)
+}
+
+fn rename_at(
+    source_parent: &File,
+    source: &str,
+    destination_parent: &File,
+    destination: &str,
+) -> Result<(), std::io::Error> {
+    let source = std::ffi::CString::new(source)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid source"))?;
+    let destination = std::ffi::CString::new(destination).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid destination")
+    })?;
+    // SAFETY: both descriptors name retained directories and the component
+    // strings remain alive for the syscall.
+    let result = unsafe {
+        libc::renameat(
+            source_parent.as_raw_fd(),
+            source.as_ptr(),
+            destination_parent.as_raw_fd(),
+            destination.as_ptr(),
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn unlink_at(parent: &File, component: &str) -> Result<(), std::io::Error> {
+    let component = std::ffi::CString::new(component)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file name"))?;
+    // SAFETY: `parent` names a retained directory and `component` is valid.
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), component.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn file_from_fd(fd: i32) -> Result<File, CapsuleError> {
     file_from_fd_io(fd).map_err(Into::into)
 }
@@ -500,6 +861,48 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
+fn program_id_from_relative(relative: &Path) -> String {
+    let digest = Sha256::digest(relative.as_os_str().as_encoded_bytes());
+    format!("app-{}", hex_lower(digest.iter().take(12).copied()))
+}
+
+fn executable_display_name(stem: &str) -> String {
+    let words = stem
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut characters = word.chars();
+            characters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(characters).collect()
+            })
+        })
+        .collect::<Vec<_>>();
+    let display = words.join(" ");
+    if display.is_empty() {
+        "Windows application".to_string()
+    } else {
+        display
+    }
+}
+
+fn is_helper_executable(lower_stem: &str) -> bool {
+    [
+        "crash",
+        "report",
+        "update",
+        "updater",
+        "setup",
+        "install",
+        "helper",
+        "service",
+        "redist",
+        "vc_redist",
+        "dxsetup",
+    ]
+    .iter()
+    .any(|word| lower_stem == *word || lower_stem.ends_with(word))
+}
+
 pub(crate) fn validate_id(label: &'static str, value: &str) -> Result<(), CapsuleError> {
     if value.is_empty()
         || value.len() > 128
@@ -532,6 +935,29 @@ fn validate_relative_executable(path: &Path) -> Result<(), CapsuleError> {
     Ok(())
 }
 
+fn validate_relative_installer(path: &Path, kind: InstallerKind) -> Result<(), CapsuleError> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(CapsuleError::InvalidInstallation);
+    }
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    let expected = match kind {
+        InstallerKind::Exe => "exe",
+        InstallerKind::Msi => "msi",
+    };
+    if !extension.is_some_and(|extension| extension.eq_ignore_ascii_case(expected)) {
+        return Err(CapsuleError::InvalidInstallation);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum CapsuleError {
     #[error("capsule store root must be an absolute, non-root daemon path")]
@@ -546,6 +972,14 @@ pub enum CapsuleError {
     InvalidProgramName,
     #[error("program executable must be a relative .exe path inside the prefix")]
     InvalidExecutable,
+    #[error("program arguments are empty, oversized, or contain controls")]
+    InvalidArguments,
+    #[error("installation journal is invalid")]
+    InvalidInstallation,
+    #[error("installer exceeds the bounded import limit")]
+    InstallerTooLarge,
+    #[error("the selected installer changed while it was being imported")]
+    InstallerChanged,
     #[error("program map key does not match its stable id")]
     ProgramKeyMismatch,
     #[error("capsule state file contains a different identity")]
@@ -609,6 +1043,8 @@ mod tests {
             display_name: "Bad".to_string(),
             prefix_relative_executable: PathBuf::from("../host.exe"),
             query: ApplicationQuery::default(),
+            kind: ProgramKind::Application,
+            arguments: Vec::new(),
         };
         assert!(matches!(
             program.validate(),
