@@ -39,6 +39,7 @@ pub const FIRST_DAY_KEY: &str = "region.first_day";
 pub struct RegionPane {
     settings: RegionSettings,
     needs_seed: bool,
+    commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -60,6 +61,7 @@ impl RegionPane {
         Self {
             settings,
             needs_seed: true,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -314,6 +316,7 @@ impl Widget for RegionPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        let was_handled = *handled;
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -330,6 +333,7 @@ impl Widget for RegionPane {
                 taffy,
             );
         }
+        self.commit_context_pending |= !was_handled && *handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -349,18 +353,17 @@ impl Widget for RegionPane {
     }
 
     fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
-        self.composed
-            .as_ref()
-            .is_some_and(|content| content.needs_commit())
-            .then(|| {
-                ui::qos_actions::ActionContext::for_resource(
-                    "Change region preferences",
-                    "settings.region",
-                    "settings.preference-pane",
-                    "Region & formats",
-                )
-                .with_app("org.qos.Settings", "Settings")
-            })
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| content.needs_commit());
+        crate::panes::preference_commit_context(
+            pending,
+            "region",
+            "Region & formats",
+            "Change region preferences",
+        )
     }
 
     fn name(&self) -> &'static str {
