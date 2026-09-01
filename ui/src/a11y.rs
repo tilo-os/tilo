@@ -93,6 +93,11 @@ pub enum Role {
 /// State is **derived, never stored**: a widget computes it from its
 /// existing fields at `accessibility()` time, so it can never drift from
 /// what `draw` paints.
+#[must_use]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this mirrors independent ARIA/AccessKit state flags; combining them into an enum would prevent valid simultaneous states"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessState {
     pub focused: bool,
@@ -189,7 +194,7 @@ pub enum Action {
     Collapse,
     /// Text field, spin button.
     SetValue(String),
-    /// Extended-grapheme indices into the accessible TextRun, matching
+    /// Extended-grapheme indices into the accessible `TextRun`, matching
     /// AccessKit's selectable-character model rather than Unicode scalars.
     SetSelection {
         /// Where the selection started.
@@ -216,6 +221,7 @@ pub enum Politeness {
 /// `name`/`description` must already be **FTL-resolved** strings (via
 /// [`i18n!`](crate::i18n)), not translation keys, since AccessKit/AT-SPI
 /// consume final text.
+#[must_use]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessNode {
     pub role: Role,
@@ -225,7 +231,7 @@ pub struct AccessNode {
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
     /// Direction-preserving UTF-8 byte endpoints for editable text. The
-    /// AccessKit bridge converts these to grapheme indices in a TextRun.
+    /// AccessKit bridge converts these to grapheme indices in a `TextRun`.
     pub text_selection: Option<AccessibleTextSelection>,
     pub state: AccessState,
     /// The `App` watches its spoken text each frame and announces changes at

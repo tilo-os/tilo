@@ -8,6 +8,12 @@
 //! becomes "drive a second, parallel implementation of the app" — which is the
 //! failure this whole surface exists to prevent.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "integration-test setup and assertions"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
@@ -333,7 +339,10 @@ fn a_value_outside_the_declared_choices_is_refused() {
         }) => {
             assert_eq!(name, "filter");
             assert_eq!(value, "sephia");
-            let expected: Vec<String> = FILTERS.iter().map(|s| s.to_string()).collect();
+            let expected: Vec<String> = FILTERS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             assert_eq!(allowed, expected);
         }
         other => panic!("expected a choice refusal, got {other}"),
@@ -514,7 +523,7 @@ fn a_typed_spec_is_still_invokable_from_the_palettes_single_field() {
     // human sees what the machine was told.
     match &resolve(&resources, &key).unwrap().input {
         ActionInput::Prompted { prompt, .. } => {
-            assert_eq!(prompt, "Opacity from 0 (invisible) to 1 (opaque).")
+            assert_eq!(prompt, "Opacity from 0 (invisible) to 1 (opaque).");
         }
         ActionInput::Immediate(_) => panic!("expected a prompted palette entry, got an immediate"),
     }

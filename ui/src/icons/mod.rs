@@ -141,24 +141,28 @@ pub const LUCIDE_DEFAULT_STROKE_PX: f64 = 1.5;
 /// this module are unit-tested to parse into non-empty bez paths, so a
 /// panic here flags a bad hand-edit rather than a runtime bug.
 fn path_from_d(d: &str) -> BezPath {
+    #[allow(
+        clippy::expect_used,
+        reason = "all embedded Lucide path literals are compile-time data covered by parsing tests"
+    )]
     BezPath::from_svg(d).expect("lucide path literal must parse")
 }
 
 /// Build the stroked outline of a lucide `<rect>`, with optional corner radius.
-fn rect_path(x: f64, y: f64, w: f64, h: f64, rx: f64) -> BezPath {
-    let rect = Rect::new(x, y, x + w, y + h);
-    if rx > 0.0 {
-        RoundedRect::from_rect(rect, rx)
+fn rect_path(left: f64, top: f64, width: f64, height: f64, radius: f64) -> BezPath {
+    let rect = Rect::new(left, top, left + width, top + height);
+    if radius > 0.0 {
+        RoundedRect::from_rect(rect, radius)
             .path_elements(0.1)
             .collect()
     } else {
-        let mut p = BezPath::new();
-        p.move_to(Point::new(rect.x0, rect.y0));
-        p.line_to(Point::new(rect.x1, rect.y0));
-        p.line_to(Point::new(rect.x1, rect.y1));
-        p.line_to(Point::new(rect.x0, rect.y1));
-        p.close_path();
-        p
+        let mut path = BezPath::new();
+        path.move_to(Point::new(rect.x0, rect.y0));
+        path.line_to(Point::new(rect.x1, rect.y0));
+        path.line_to(Point::new(rect.x1, rect.y1));
+        path.line_to(Point::new(rect.x0, rect.y1));
+        path.close_path();
+        path
     }
 }
 
@@ -178,6 +182,10 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
 /// The strokable subpaths for `icon` in the lucide 24×24 viewBox.
 /// `pub(crate)` so unit tests can poke at the raw shapes without
 /// duplicating the data table; widgets call [`draw_icon`] instead.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive Lucide icon-to-static-path table is intentionally kept in one match"
+)]
 pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
     match icon {
         Icon::LayoutGrid => vec![
@@ -699,6 +707,10 @@ impl Icon {
     /// for glyphs that read as filled when "on" (starred, a selected pin).
     /// Only closed sub-paths fill meaningfully; `Star` and similar
     /// single-loop glyphs are authored closed for exactly this.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+    )]
     pub fn draw_filled(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
         let size = rect.size();
         let min = size.width.min(size.height);
@@ -738,6 +750,10 @@ impl Icon {
 /// 2 px on a 24-unit viewBox, trimmed here to 1.5 px by default
 /// ([`LUCIDE_DEFAULT_STROKE_PX`]); it's divided by the icon's scale
 /// before handing to vello so stroke width stays consistent across sizes.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+)]
 pub fn draw_icon(
     scene: &mut Scene,
     transform: Affine,
@@ -776,6 +792,10 @@ pub fn draw_icon(
 /// `color_for` receives the subpath index in the order
 /// [`icon_subpaths`] returns them (for [`Icon::Wifi`]: base dot, outer
 /// arc, middle arc, inner arc).
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+)]
 pub fn draw_icon_layered(
     scene: &mut Scene,
     transform: Affine,
