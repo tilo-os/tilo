@@ -438,6 +438,12 @@ impl AppActionBroker {
         self.state.published_surfaces()
     }
 
+    /// Invoke one published application action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the surface or action is unavailable or dispatch
+    /// to its application connection fails.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -531,6 +537,11 @@ impl BrokerHandle {
 
     /// Direct one invocation to the exact application connection that
     /// published the addressed operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action broker, surface, or action is
+    /// unavailable or dispatch to its application connection fails.
     pub fn invoke_published_action(
         &self,
         peer_id: u64,

@@ -129,7 +129,7 @@ pub(crate) struct FloatingToplevel {
     /// later detach can resume without renderer or identity churn.
     pub suspended: bool,
     /// True only after the first commit carrying pixels. Constructing an
-    /// xdg_toplevel alone is not a visible ownership transfer.
+    /// `xdg_toplevel` alone is not a visible ownership transfer.
     pub presented: bool,
 }
 
@@ -554,7 +554,7 @@ impl State {
             suspended: pending.suspended,
             presented: false,
         };
-        self.floating_toplevels.push(surface.clone());
+        self.floating_toplevels.push(surface);
         true
     }
 

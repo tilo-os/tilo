@@ -360,14 +360,10 @@ mod tests {
         );
     }
 
-    /// The honest steady state: the terminal fabricates no action or resource
-    /// surface. Exercised on the live widget *after* real interaction — program
-    /// output, a keystroke, and a stray click — `Widget::resources` is empty
-    /// (nothing to publish to Ctrl+K) and no action-host undo boundary is recorded
-    /// (`take_committed_action` is `None`). Both are toolkit defaults, because no
-    /// action is ever dispatched and no `ui::ActionHost` is embedded.
+    /// The terminal publishes its session effects to Ctrl+K without recording a
+    /// document action or undo boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_ctrl_k_effects_without_recording_a_document_action() {
         let (mut widget, _rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.init_crdt(&mut doc, &ROOT);
@@ -377,10 +373,16 @@ mod tests {
         send(&mut widget, &mut doc, &char_event("x"));
         send(&mut widget, &mut doc, &left_press());
 
-        assert!(
-            Widget::resources(&widget, &doc).is_empty(),
-            "the terminal publishes no Ctrl+K resource tree — its only doc state is the live screen",
-        );
+        let resources = Widget::resources(&widget, &doc);
+        assert_eq!(resources.len(), 1, "one terminal-session root");
+        let terminal = &resources[0];
+        assert_eq!(terminal.kind, "terminal.session");
+        let actions: Vec<&str> = terminal
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(actions, ["send", "interrupt", "clear"]);
         assert!(
             widget.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

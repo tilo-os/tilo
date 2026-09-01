@@ -194,12 +194,10 @@ fn app_owned_source_region(
     authenticated_app_id: &str,
     app_size: vello::kurbo::Size,
 ) -> Option<Rect> {
-    let (app_id, region) = match source {
-        ui::floating_surface::FloatingSource::AppRegion { app_id, region }
-        | ui::floating_surface::FloatingSource::AppElement { app_id, region, .. } => {
-            (app_id, region)
-        }
-        _ => return None,
+    let (ui::floating_surface::FloatingSource::AppRegion { app_id, region }
+    | ui::floating_surface::FloatingSource::AppElement { app_id, region, .. }) = source
+    else {
+        return None;
     };
     let bounds = Rect::from_origin_size(vello::kurbo::Point::ZERO, app_size);
     let visible = region.intersect(bounds);
@@ -229,6 +227,9 @@ fn app_owned_transfer_region(
     (decorated.area() > 0.0).then_some(decorated)
 }
 
+// Coordinates have already been clamped to the u32-sized pixel buffer. The
+// float-to-integer conversion intentionally rounds outward to retain edges.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn frozen_transfer_frame(
     surface_id: u64,
     source: Rect,
@@ -295,10 +296,14 @@ fn frozen_floating_return_frame(
     })
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
+// This is the ordered protocol event pump; its branches share authentication
+// and handoff state that is clearer when kept in a single state-machine tick.
+#[allow(clippy::too_many_lines)]
 fn pump_floating_surface_service(
     service: &FloatingSurfaceService,
     state: &mut State,
@@ -542,7 +547,7 @@ fn pump_floating_surface_service(
                         );
                     }
                     (Err(error), _) | (_, Err(error)) => {
-                        tracing::warn!(%error, %app_id, "floating geometry rejected")
+                        tracing::warn!(%error, %app_id, "floating geometry rejected");
                     }
                 },
                 ui::floating_surface::FloatingSurfaceClientMessage::SourceCleared { id } => {
@@ -610,6 +615,7 @@ fn pump_floating_surface_service(
     changed
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     let mut offset = vello::kurbo::Vec2::ZERO;
     let reachable = 64.0;
@@ -626,6 +632,7 @@ fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     rect + offset
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn clamp_external_floating_geometry(
     window_rect: Rect,
     content_rect: Rect,
@@ -663,15 +670,18 @@ fn floating_output_rects(outputs: &[Output], fallback_size: (u32, u32)) -> Vec<R
 }
 
 fn floating_desktop_bounds(outputs: &[Output], fallback_size: (u32, u32)) -> Rect {
-    let mut rects = floating_output_rects(outputs, fallback_size).into_iter();
-    let first = rects.next().expect("floating output fallback is non-empty");
-    rects.fold(first, |bounds, rect| bounds.union(rect))
+    let rects = floating_output_rects(outputs, fallback_size);
+    let Some((first, rest)) = rects.split_first() else {
+        return Rect::new(0.0, 0.0, 1.0, 1.0);
+    };
+    rest.iter().fold(*first, |bounds, rect| bounds.union(*rect))
 }
 
 /// Preserve free movement across touching displays while preventing a float
 /// from becoming stranded in a hole inside the desktop's bounding box. A
 /// reachable 64×64 patch on any real output is enough; otherwise the nearest
 /// output receives the same clamp used at the outside desktop edge.
+#[allow(clippy::arithmetic_side_effects)]
 fn clamp_external_floating_geometry_to_outputs(
     window_rect: Rect,
     content_rect: Rect,
@@ -706,6 +716,7 @@ fn clamp_external_floating_geometry_to_outputs(
     clamp_external_floating_geometry(window_rect, content_rect, target)
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn rehome_native_floating_surfaces(
     state: &mut State,
     outputs: &[Output],

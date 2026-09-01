@@ -111,7 +111,7 @@ pub enum ProvisioningError {
     /// Stream creation failed mid-handshake — usually a format rejection by the daemon.
     #[error("pipewire stream setup failed: {0}")]
     StreamSetup(String),
-    /// The compositor has no real PipeWire producer wired in. Production uses
+    /// The compositor has no real `PipeWire` producer wired in. Production uses
     /// this error instead of returning a synthetic node that no client can
     /// consume; the mock provisioner is reserved for tests.
     #[error("screen capture is unavailable: {0}")]

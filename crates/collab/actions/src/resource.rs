@@ -273,6 +273,10 @@ impl ActionSpec {
     }
 
     /// An immediate effect or view operation owned by the application.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Encode`] if `payload` fails to serialize.
     pub fn operation<T>(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -283,7 +287,7 @@ impl ActionSpec {
     where
         T: serde::Serialize,
     {
-        debug_assert!(kind != OperationKind::Document);
+        debug_assert_ne!(kind, OperationKind::Document);
         let encoded = EncodedAction::encode_operation(type_id, payload)?;
         let for_build = encoded.clone();
         Ok(Self {
@@ -307,7 +311,7 @@ impl ActionSpec {
         kind: OperationKind,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        debug_assert!(kind != OperationKind::Document);
+        debug_assert_ne!(kind, OperationKind::Document);
         let prompt = prompt.into();
         let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
         let for_args = build.clone();
@@ -383,7 +387,7 @@ impl ActionSpec {
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        debug_assert!(kind != OperationKind::Document);
+        debug_assert_ne!(kind, OperationKind::Document);
         Self::typed_with_kind(
             id,
             label,

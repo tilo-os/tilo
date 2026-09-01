@@ -787,20 +787,19 @@ mod tests {
         sync_round(&mut hub, &bob_replica, &[&host, &carol_replica]);
         sync_round(&mut hub, &carol_replica, &[&host, &bob_replica]);
         for (tree, workspace) in [(&bob_tree, bob_workspace), (&carol_tree, carol_workspace)] {
-            let tree = tree.read();
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|ws| ws.id == workspace)
-                .unwrap();
-            assert_eq!(
-                workspace.role_of(&bob),
-                Some(crate::shell::state::CapRole::Editor)
-            );
-            assert_eq!(
-                workspace.role_of(&carol),
-                Some(crate::shell::state::CapRole::Commenter)
-            );
+            let (bob_role, carol_role) = {
+                let tree = tree.read();
+                let workspace = tree
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.id == workspace)
+                    .unwrap();
+                let roles = (workspace.role_of(&bob), workspace.role_of(&carol));
+                drop(tree);
+                roles
+            };
+            assert_eq!(bob_role, Some(crate::shell::state::CapRole::Editor));
+            assert_eq!(carol_role, Some(crate::shell::state::CapRole::Commenter));
         }
 
         assert!(
@@ -817,19 +816,20 @@ mod tests {
         sync_round(&mut hub, &restarted_bob, &[&host, &carol_replica]);
 
         for (tree, workspace) in [(&bob_tree, bob_workspace), (&carol_tree, carol_workspace)] {
-            let tree = tree.read();
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|ws| ws.id == workspace)
-                .unwrap();
+            let (bob_role, carol_role) = {
+                let tree = tree.read();
+                let workspace = tree
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.id == workspace)
+                    .unwrap();
+                let roles = (workspace.role_of(&bob), workspace.role_of(&carol));
+                drop(tree);
+                roles
+            };
+            assert_eq!(bob_role, None, "revoked Bob survived reconnect");
             assert_eq!(
-                workspace.role_of(&bob),
-                None,
-                "revoked Bob survived reconnect"
-            );
-            assert_eq!(
-                workspace.role_of(&carol),
+                carol_role,
                 Some(crate::shell::state::CapRole::Commenter),
                 "Bob's revocation damaged Carol's independent role"
             );

@@ -370,6 +370,7 @@ fn portal_error(message: impl Into<String>) -> LaunchError {
 #[cfg(test)]
 mod tests {
     use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::PermissionsExt as _;
 
     use tempfile::TempDir;
 
@@ -444,7 +445,12 @@ mod tests {
         let lease = broker.materialize(&request(grant)).unwrap();
         assert!(lease.shares[0].read_only);
         let document = lease.shares[0].host_path.join("document");
-        assert!(OpenOptions::new().write(true).open(&document).is_err());
+        assert_eq!(
+            fs::metadata(&document).unwrap().permissions().mode() & 0o777,
+            0o400,
+            "the unprivileged projection is defense-in-depth read-only before \
+             the RAIL helper applies its authoritative --ro-bind"
+        );
         broker.revoke(&lease.lease_id);
     }
 

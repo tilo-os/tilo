@@ -369,7 +369,7 @@ pub struct App {
         std::collections::HashMap<String, crate::floating_surface::FloatingSurfacePresentation>,
     /// Activity IDs from the previous service pump, including generic
     /// browser/capture mirrors that do not own a secondary native window.
-    /// Comparing this set lets an app toggle PiP off with an explicit Dismiss
+    /// Comparing this set lets an app toggle `PiP` off with an explicit Dismiss
     /// instead of abandoning a compositor mirror until process exit.
     last_active_floating_ids: std::collections::HashSet<String>,
     /// IDs whose shell `PrepareSurface`/`Adopted` reply has established
@@ -527,6 +527,10 @@ impl App {
             .with_a11y(&self.a11y, self.text_scale, self.ui_scale);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the service pump keeps one ordered lifecycle transaction in a single function"
+    )]
     fn pump_floating_surface_service(&mut self) -> bool {
         let active_ids = self
             .root_widget
@@ -780,7 +784,7 @@ impl App {
                         self.root_widget.set_floating_surface_bounds(bounds);
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "shell sent invalid floating-surface bounds")
+                        tracing::warn!(%error, "shell sent invalid floating-surface bounds");
                     }
                 }
             }
@@ -853,7 +857,7 @@ impl App {
                 position: PhysicalPosition::new(position.x + dx, position.y + dy),
             }),
             WindowEvent::Touch(touch) => {
-                let mut translated = touch.clone();
+                let mut translated = *touch;
                 translated.location.x += dx;
                 translated.location.y += dy;
                 Some(WindowEvent::Touch(translated))
@@ -957,11 +961,11 @@ impl App {
         id: u64,
         resource: String,
         action: String,
-        argument: Option<String>,
-        actor: String,
+        argument: Option<&str>,
+        actor: &str,
     ) {
         let address = qos_actions::ActionAddress::new(resource, action);
-        let result = self.invoke_resource_action(&address, argument.as_deref(), &actor);
+        let result = self.invoke_resource_action(&address, argument, actor);
         let (code, message) = match result {
             Ok(()) => (String::new(), String::new()),
             Err(error) => (error.code().to_string(), error.to_string()),
@@ -2030,7 +2034,9 @@ impl App {
                     action,
                     argument,
                     actor,
-                } => self.invoke_published_action(id, resource, action, argument, actor),
+                } => {
+                    self.invoke_published_action(id, resource, action, argument.as_deref(), &actor);
+                }
             }
         }
         any
@@ -2120,7 +2126,7 @@ impl App {
                 action,
                 argument,
                 actor,
-            } => self.invoke_published_action(id, resource, action, argument, actor),
+            } => self.invoke_published_action(id, resource, action, argument.as_deref(), &actor),
             _ => {}
         }
     }
@@ -2609,6 +2615,25 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
+        fn find_resource_action(
+            resources: &[qos_actions::Resource],
+            target: accesskit::NodeId,
+        ) -> Option<qos_actions::ActionAddress> {
+            resources.iter().find_map(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|spec| {
+                        crate::accesskit_bridge::resource_action_node_id(
+                            resource.id.as_str(),
+                            &spec.id,
+                        ) == target
+                    })
+                    .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
+                    .or_else(|| find_resource_action(&resource.children, target))
+            })
+        }
+
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
 
@@ -2619,24 +2644,6 @@ impl App {
         };
         if let Some(argument) = argument {
             let resources = self.collect_declared_resources();
-            fn find_resource_action(
-                resources: &[qos_actions::Resource],
-                target: accesskit::NodeId,
-            ) -> Option<qos_actions::ActionAddress> {
-                resources.iter().find_map(|resource| {
-                    resource
-                        .actions
-                        .iter()
-                        .find(|spec| {
-                            crate::accesskit_bridge::resource_action_node_id(
-                                resource.id.as_str(),
-                                &spec.id,
-                            ) == target
-                        })
-                        .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
-                        .or_else(|| find_resource_action(&resource.children, target))
-                })
-            }
             if let Some(address) = find_resource_action(&resources, target) {
                 let actor = crate::collaboration::local_user_id().0;
                 if self
@@ -3940,12 +3947,12 @@ impl AppHandler {
                         match self.create_native_floating_window(event_loop, id, token, rect) {
                             Ok(()) => changed = true,
                             Err(error) => {
-                                tracing::warn!(%error, "could not prepare native floating surface")
+                                tracing::warn!(%error, "could not prepare native floating surface");
                             }
                         }
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "shell sent invalid floating surface rect")
+                        tracing::warn!(%error, "shell sent invalid floating surface rect");
                     }
                 },
                 crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, rect } => {
@@ -4811,7 +4818,7 @@ impl AppHandler {
 
         if !handled && let Some(root_node) = app.root_node {
             let scale_factor = window.scale_factor();
-            let had_floating_presentation =
+            let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             let floating_pointer_event = app.primary_floating_pointer_event(&event, scale_factor);
             let used_desktop_pointer_space = floating_pointer_event.is_some();
@@ -4834,11 +4841,11 @@ impl AppHandler {
                 root_node,
                 &app.taffy,
             );
-            let has_floating_presentation =
+            let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
                 && (used_desktop_pointer_space
-                    || had_floating_presentation != has_floating_presentation);
+                    || presentation_was_floating != presentation_is_floating);
             if was_mouse_click {
                 tracing::debug!(
                     handled,
@@ -5255,6 +5262,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "winit requires the complete per-window event dispatch at this callback boundary"
+    )]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -5266,19 +5277,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .iter()
             .position(|surface| surface.window.id() == window_id)
         {
-            let window = self.floating_windows[index].window.clone();
-            let desktop_rect = self.floating_windows[index].desktop_rect;
+            let Some(surface) = self.floating_windows.get(index) else {
+                return;
+            };
+            let window = surface.window.clone();
+            let desktop_rect = surface.desktop_rect;
+            let surface_id = surface.id.clone();
             match event {
                 WindowEvent::CloseRequested => {
-                    let id = self.floating_windows[index].id.clone();
                     if let Some(client) = self.app.floating_surface_client.as_mut() {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
-                                id: id.clone(),
+                                id: surface_id.clone(),
                             },
                         );
                     }
-                    self.close_native_floating_window(&id);
+                    self.close_native_floating_window(&surface_id);
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                     window.request_redraw();
@@ -5372,6 +5386,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "winit idle work must remain ordered within its single lifecycle callback"
+    )]
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(window) = self.window.clone() else {
             return;
