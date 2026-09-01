@@ -206,24 +206,30 @@ mod tests {
         const RINGS: [f32; 4] = [51.0, 30.0, 15.0, 5.0];
 
         for name in Theme::ALL {
-            let t = Theme::named(name).unwrap();
-            let scale = t.tokens.elevation.shadow_scale;
+            let theme = Theme::named(name).unwrap();
+            let scale = theme.tokens.elevation.shadow_scale;
             if scale >= 1.0 {
                 continue; // dark ladder: black on a dark ground is already soft
             }
-            let ground = t.tokens.colors.surfaces.raised;
-            let (mut r, mut g, mut b) = (
-                ground.to_rgba8().r as f32,
-                ground.to_rgba8().g as f32,
-                ground.to_rgba8().b as f32,
+            let ground = theme.tokens.colors.surfaces.raised;
+            let ground_channels = ground.to_rgba8();
+            let (mut red, mut green, mut blue) = (
+                f32::from(ground_channels.r),
+                f32::from(ground_channels.g),
+                f32::from(ground_channels.b),
             );
             for ring in RINGS {
-                let a = (ring * scale).round() / 255.0;
-                r *= 1.0 - a;
-                g *= 1.0 - a;
-                b *= 1.0 - a;
+                let alpha = (ring * scale).round() / 255.0;
+                red *= 1.0 - alpha;
+                green *= 1.0 - alpha;
+                blue *= 1.0 - alpha;
             }
-            let seen = Color::from_rgb8(r.round() as u8, g.round() as u8, b.round() as u8);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "multiplying u8-derived channels by 0.0..=1.0 alphas keeps each rounded channel within 0..=255"
+            )]
+            let seen = Color::from_rgb8(red.round() as u8, green.round() as u8, blue.round() as u8);
             let weight = contrast_ratio(seen, ground);
             assert!(
                 weight < 1.60,

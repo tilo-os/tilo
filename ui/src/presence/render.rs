@@ -295,7 +295,7 @@ impl PresenceCtx {
     ///
     /// Inside, it goes to the **right**, because an object that carries a
     /// label of its own puts it top-left: a chip there turns a clip named
-    /// "Logo_Bug.png" into one named "Ada_Bug.png". On an object too narrow to
+    /// `Logo_Bug.png` into one named `Ada_Bug.png`. On an object too narrow to
     /// hold both, the chip stays within the object rather than escaping it —
     /// covering a name is recoverable, pointing at the wrong clip is not.
     #[allow(clippy::too_many_arguments)]
@@ -759,12 +759,16 @@ fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f6
     let label_size = theme.tokens.typography.scale.xs;
     let (tw, _th) = text_renderer.measure(name, label_size, None);
     (
-        tw as f64 + CHIP_PAD_X * 2.0,
-        label_size as f64 + CHIP_PAD_Y * 2.0,
+        f64::from(tw) + CHIP_PAD_X * 2.0,
+        f64::from(label_size) + CHIP_PAD_Y * 2.0,
     )
 }
 
 /// Paint the chip into a rectangle the caller has already chosen.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
+)]
 fn draw_name_chip_in(
     scene: &mut Scene,
     theme: &Theme,
@@ -774,7 +778,7 @@ fn draw_name_chip_in(
     name: &str,
     chip_rect: Rect,
 ) {
-    let chip = RoundedRect::from_rect(chip_rect, theme.tokens.radii.sm as f64);
+    let chip = RoundedRect::from_rect(chip_rect, f64::from(theme.tokens.radii.sm));
     // Solid fill in the peer's colour so the chip reads as "them".
     scene.fill(Fill::NonZero, transform, color, None, &chip);
     // Label ink: white or near-black for contrast against the colour.

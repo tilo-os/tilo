@@ -48,6 +48,10 @@ const LABELLED_SIZE: (f32, f32) = (96.0, 32.0);
 ///
 /// Disabled — dimmed, unfocusable, and reported `disabled` to assistive
 /// technology — exactly when the corresponding shortcut would do nothing.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent pointer, focus, availability, and repaint states"
+)]
 pub struct UndoButton {
     kind: UndoRequest,
     /// Visible label. Empty by default: the control is icon-only, and its
@@ -106,12 +110,14 @@ impl UndoButton {
 
     /// Show a visible label beside the icon (`"Undo"`). Pass a fluent key to
     /// localise it; the accessible name follows the same string.
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
         self
     }
 
     /// Override the tooltip. The default already names the shortcut.
+    #[must_use]
     pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.tooltip = tooltip.into();
         self
@@ -120,11 +126,13 @@ impl UndoButton {
     /// Override the button style. Defaults to
     /// [`Ghost`](crate::widget::button::ButtonStyle::Ghost) — a history control
     /// belongs in a toolbar, not competing with the primary action.
+    #[must_use]
     pub fn with_style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
         self
     }
 
+    #[must_use]
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self
@@ -194,6 +202,10 @@ impl Widget for UndoButton {
         } else {
             LABELLED_SIZE
         });
+        #[allow(
+            clippy::expect_used,
+            reason = "a fixed-size leaf style is valid and Widget cannot return a layout error"
+        )]
         let node = taffy
             .new_leaf(Style {
                 flex_shrink: 0.0,
@@ -203,20 +215,26 @@ impl Widget for UndoButton {
                 },
                 ..Default::default()
             })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            .expect("fixed-size leaf style is valid");
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        let x = origin.x + layout.location.x as f64;
-        let y = origin.y + layout.location.y as f64;
+        #[allow(
+            clippy::expect_used,
+            reason = "Widget apply_layout receives the node created by build_layout"
+        )]
+        let layout = taffy
+            .layout(node)
+            .expect("build_layout registered this node with the same tree");
+        let x = origin.x + f64::from(layout.location.x);
+        let y = origin.y + f64::from(layout.location.y);
         let next = Rect::new(
             x,
             y,
-            x + layout.size.width as f64,
-            y + layout.size.height as f64,
+            x + f64::from(layout.size.width),
+            y + f64::from(layout.size.height),
         );
         if next != self.rect {
             self.rect = next;
@@ -307,7 +325,7 @@ impl Widget for UndoButton {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "UndoButton"
     }
 
