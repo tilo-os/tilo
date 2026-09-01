@@ -242,12 +242,11 @@ information includes:
 - current layer, capsule/appliance identity, catalogue explanation, runner, and
   prefix or guest-storage identity;
 - effective host access and the shared-appliance security boundary;
-- explicit route override and reset-to-catalogue controls;
 - separate publish, remove-launcher, vendor-uninstall, and private-data actions.
 
 Remaining management targets are snapshots, duplicate/export/reset, runner
-migration, active-process inspection, and richer links into the existing qOS
-grant controls.
+migration, explicit persistent route override/reset, active-process inspection,
+and richer links into the existing qOS grant controls.
 
 Route-policy and remaining mutation controls stay disabled until they have a
 trusted action handoff. VM launch appears only when the provisioned singleton,
