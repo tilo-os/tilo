@@ -102,9 +102,21 @@ pub mod generated_tree_component {
     include!(concat!(env!("OUT_DIR"), "/project_tree.rs"));
 }
 
+pub mod generated_list_component {
+    include!(concat!(env!("OUT_DIR"), "/activity_list.rs"));
+}
+
+pub mod generated_table_component {
+    include!(concat!(env!("OUT_DIR"), "/results_table.rs"));
+}
+
+pub mod generated_text_component {
+    include!(concat!(env!("OUT_DIR"), "/article_body.rs"));
+}
+
 pub mod screens {
     use ui::widget::Widget;
-    use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
+    use ui::{RouteError, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
 
     const UI_SOURCE: &str = r#"{
       "version": 1,
@@ -166,7 +178,19 @@ pub mod screens {
     ///
     /// Returns a graph parse, validation, or construction error.
     pub fn main(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
-        build(UI_SOURCE, theme)
+        main_with(theme, UiBuildContext::default())
+    }
+
+    /// Build the main screen with app-owned component factories.
+    ///
+    /// # Errors
+    ///
+    /// Returns a graph parse, validation, component, or construction error.
+    pub fn main_with(
+        theme: &Theme,
+        context: UiBuildContext,
+    ) -> Result<Box<dyn Widget>, UiGraphError> {
+        build_with(UI_SOURCE, theme, context)
     }
 
     pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphError>> {
@@ -184,33 +208,45 @@ pub mod screens {
     /// Returns an error when the route is absent or one of its graphs cannot
     /// be parsed, validated, or constructed.
     pub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {
+        router_with(initial, theme, UiBuildContext::default())
+    }
+
+    /// Build the route registry with app-owned component factories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the initial route or a screen is invalid.
+    pub fn router_with(
+        initial: &str,
+        theme: &Theme,
+        context: UiBuildContext,
+    ) -> Result<Router, RouteError> {
         Router::new(
             initial,
             ["main", "settings"],
             theme,
-            |route, theme, navigation| {
+            move |route, theme, navigation| {
                 let source = if route == "main" {
                     UI_SOURCE
                 } else {
                     SETTINGS_SOURCE
                 };
-                build_routed(source, theme, navigation).map_err(|error| error.to_string())
+                let context = context.clone().with_router(navigation.clone());
+                build_with(source, theme, context).map_err(|error| error.to_string())
             },
         )
     }
 
     fn build(source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
-        let graph = UiGraphHandle::from_json(source)?;
-        Ok(Box::new(graph.widget(theme)?))
+        build_with(source, theme, UiBuildContext::default())
     }
 
-    fn build_routed(
+    fn build_with(
         source: &str,
         theme: &Theme,
-        navigation: &RouteHandle,
+        context: UiBuildContext,
     ) -> Result<Box<dyn Widget>, UiGraphError> {
         let graph = UiGraphHandle::from_json(source)?;
-        let context = UiBuildContext::default().with_router(navigation.clone());
         Ok(Box::new(graph.widget_with(theme, context)?))
     }
 }

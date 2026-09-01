@@ -30,6 +30,8 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/windows/compat-catalogue",
+    "crates/windows/compat-service",
     "crates/dev/headless-schema",
     "crates/dev/qos-dev",
     "crates/dev/qos-dev-template-smoke",
@@ -112,6 +114,7 @@ members = [
     "apps/code_editor",
     "apps/contacts",
     "apps/containers",
+    "apps/windows",
     "apps/db_client",
     "apps/diffmerge",
     "apps/disks",
@@ -153,6 +156,7 @@ members = [
     "crates/system/settings-store",
     "crates/system/atomic-file",
     "crates/system/desktop-entry",
+    "crates/system/windows-vm",
 ]
 resolver = "2"
 
