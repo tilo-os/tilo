@@ -24,13 +24,14 @@ use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
+    ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
+    ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
+    ResultSpec, RetryPolicy,
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
 use ui::widget::{ContextMenu, MenuItem};
+use ui::widget::{ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
 use crate::canvas::{self, MapPalette};
@@ -181,6 +182,11 @@ pub struct MapsApp {
     location_rx: Option<LocationChannel>,
     /// True while a location fix is being acquired (drives the "Locating…" UI).
     locating: bool,
+    /// Broker identity for a location request admitted through the canonical
+    /// resource/action surface. The portal result, rather than admission, is
+    /// the operation's terminal answer.
+    location_invocation: Option<InvocationId>,
+    location_terminal: Option<InvocationUpdate>,
 
     // raster basemap (non-blocking OSM tiles)
     tiles: TileLayer,
@@ -300,6 +306,8 @@ impl MapsApp {
             online,
             location_rx: None,
             locating: false,
+            location_invocation: None,
+            location_terminal: None,
             tiles,
             overflow: {
                 let mut m = ContextMenu::new();
@@ -1707,6 +1715,18 @@ impl MapsApp {
                 self.locating = false;
                 self.location_rx = None;
                 self.model.status = "Location unavailable".to_string();
+                if let Some(invocation) = self.location_invocation {
+                    self.location_terminal = Some(InvocationUpdate::Failed {
+                        invocation,
+                        error: ActionFailure {
+                            code: "location_channel_closed".into(),
+                            message: "The location service disconnected before returning a fix"
+                                .into(),
+                            details: None,
+                            retryable: true,
+                        },
+                    });
+                }
                 self.mark_dirty();
                 return;
             }
@@ -1737,9 +1757,26 @@ impl MapsApp {
                         self.recompute_route();
                     }
                 }
+                if let Some(invocation) = self.location_invocation {
+                    self.location_terminal = Some(InvocationUpdate::Succeeded {
+                        invocation,
+                        output: ActionOutput::default(),
+                    });
+                }
             }
             LocationOutcome::Unavailable(reason) => {
                 self.model.status = format!("Location unavailable — {reason}");
+                if let Some(invocation) = self.location_invocation {
+                    self.location_terminal = Some(InvocationUpdate::Failed {
+                        invocation,
+                        error: ActionFailure {
+                            code: "location_unavailable".into(),
+                            message: reason,
+                            details: None,
+                            retryable: true,
+                        },
+                    });
+                }
             }
         }
         self.mark_dirty();
@@ -4451,7 +4488,12 @@ impl Widget for MapsApp {
             )
             .expect("Maps operation payload is serializable")
             .with_contract(ActionContract {
-                availability: if self.location_rx.is_none() {
+                availability: if !self.online {
+                    Availability::Unavailable {
+                        code: "location_service_offline".into(),
+                        reason: "The location service is unavailable in this session".into(),
+                    }
+                } else if self.location_rx.is_none() {
                     Availability::Available
                 } else {
                     Availability::Unavailable {
@@ -4461,9 +4503,9 @@ impl Widget for MapsApp {
                 },
                 permission: PermissionRequirement::Read,
                 retry: RetryPolicy::AtMostOnce,
-                execution: ExecutionMode::Immediate,
+                execution: ExecutionMode::Background { cancellable: false },
                 discovery: DiscoveryScope::Launchable,
-                result: ResultSpec::None,
+                result: ResultSpec::Job,
                 ..ActionContract::default()
             }),
         );
@@ -4536,6 +4578,47 @@ impl Widget for MapsApp {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if (kind, type_id) != (OperationKind::Effect, "maps.locate") {
+            return self
+                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                .map(|output| output.map(ResourceOperationStart::Completed));
+        }
+        if !self.online {
+            return Err("The location service is unavailable in this session".into());
+        }
+        if self.location_invocation.is_some() || self.location_rx.is_some() {
+            return Err("A location request is already in progress".into());
+        }
+        self.location_invocation = Some(invocation);
+        self.location_terminal = None;
+        self.use_my_location();
+        Ok(Some(ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<InvocationUpdate> {
+        if self.location_invocation != Some(invocation) {
+            return None;
+        }
+        let terminal = self.location_terminal.take()?;
+        self.location_invocation = None;
+        Some(terminal)
     }
 
     /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
@@ -4848,6 +4931,37 @@ impl MapsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn location_action_reports_the_real_portal_terminal_result() {
+        let mut app = MapsApp::offline();
+        app.online = true;
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let locate = app
+            .resources(&state.doc)
+            .into_iter()
+            .flat_map(|resource| resource.actions)
+            .find(|action| action.id == "locate")
+            .expect("location action");
+        assert_eq!(
+            locate.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert_eq!(locate.contract.result, ResultSpec::Job);
+
+        let invocation = InvocationId::default();
+        app.location_invocation = Some(invocation);
+        app.location_rx = Some(crate::location::inject_for_test(
+            LocationOutcome::Unavailable("permission denied".into()),
+        ));
+        app.drain_location();
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &state.doc, &state.root),
+            Some(InvocationUpdate::Failed { error, .. }) if error.code == "location_unavailable"
+        ));
+        assert_eq!(app.location_invocation, None);
+    }
 
     #[test]
     fn resource_place_open_uses_the_same_selection_route_as_the_map() {
