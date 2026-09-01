@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
 
@@ -455,17 +455,62 @@ pub fn validate_inbound_op(
     let ra = verify_attestation_chain(op, channel_state)?;
     let attestation = &ra.attestation;
 
+    // Step 6: timestamp inside attestation validity window.
+    if op.timestamp < attestation.valid_from || op.timestamp > attestation.valid_until {
+        return Err(ValidationError::OutsideValidityWindow);
+    }
+
+    validate_authorized_op(op, ra.role, channel_state)
+}
+
+/// Validate an op whose author and role were established by a certified
+/// device join plus the live workspace roster. This is the production
+/// document path: certificate/admission validation happens at the broker
+/// boundary, while this function preserves the shared signature, role table,
+/// capability, freshness, replay, clearance, and redaction checks.
+///
+/// Unlike [`validate_inbound_op`], no channel role-attestation is resolved:
+/// `role` is the broker's already-verified live roster result. `max_clock_skew`
+/// replaces the attestation validity window and bounds how far an admitted
+/// device may backdate or future-date an operation.
+///
+/// # Errors
+///
+/// Returns [`ValidationError::BadOpSignature`] for a forged envelope,
+/// [`ValidationError::OutsideValidityWindow`] outside the clock-skew window,
+/// or the same policy/replay/redaction errors as [`validate_inbound_op`].
+pub fn validate_admitted_inbound_op(
+    op: &SignedOp,
+    role: Role,
+    channel_state: &mut ChannelState,
+    now: SystemTime,
+    max_clock_skew: Duration,
+) -> Result<(), ValidationError> {
+    verify_op(op).map_err(ValidationError::BadOpSignature)?;
+    let earliest = now
+        .checked_sub(max_clock_skew)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let latest = now.checked_add(max_clock_skew).unwrap_or(now);
+    if op.timestamp < earliest || op.timestamp > latest {
+        return Err(ValidationError::OutsideValidityWindow);
+    }
+
+    validate_authorized_op(op, role, channel_state)
+}
+
+/// Checks shared by attestation-authorised and certified-roster-authorised
+/// operations after their respective identity/time proofs have passed.
+fn validate_authorized_op(
+    op: &SignedOp,
+    role: Role,
+    channel_state: &mut ChannelState,
+) -> Result<(), ValidationError> {
     // Steps 5, 5a: role table + capability overrides.
-    check_op_permission(op, ra.role, channel_state)?;
+    check_op_permission(op, role, channel_state)?;
 
     // Step 5b: Redact payload parsing + recursive-redaction rejection.
     if op.op_class == OpClass::Redact {
         check_redact_payload(op, channel_state)?;
-    }
-
-    // Step 6: timestamp inside attestation validity window.
-    if op.timestamp < attestation.valid_from || op.timestamp > attestation.valid_until {
-        return Err(ValidationError::OutsideValidityWindow);
     }
 
     // Step 7: monotonic seq.
