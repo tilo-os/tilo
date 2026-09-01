@@ -99,6 +99,8 @@ pub enum AgentError {
     NotPublished(String),
     #[error("guest bridge returned an invalid RemoteApp endpoint")]
     InvalidEndpoint,
+    #[error("guest bridge installer package or operation was invalid")]
+    InvalidInstaller,
     #[error("guest bridge transport failed: {0}")]
     Transport(String),
 }
