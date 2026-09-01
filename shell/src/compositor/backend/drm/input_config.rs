@@ -416,6 +416,10 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact normalized input fixtures are the contract under test"
+)]
 mod tests {
     use super::*;
     // Only the tests build a `Path`; the module itself deals in `PathBuf`.
