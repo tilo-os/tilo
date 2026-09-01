@@ -250,6 +250,20 @@ impl PlayerApp {
         self.portal_rx = Some(video_open_request().send());
     }
 
+    fn perform_resource_operation(&mut self, operation: crate::actions::PlayerOperation) {
+        use crate::actions::PlayerOperation;
+        match operation {
+            PlayerOperation::OpenPicker => self.trigger_open(),
+            PlayerOperation::OpenPath(path) => self.open_path(Path::new(&path)),
+            PlayerOperation::TogglePlayback => self.player.toggle_play(),
+            PlayerOperation::ToggleMute => self.player.toggle_mute(),
+            PlayerOperation::SeekSeconds(seconds) => {
+                self.player.seek_to_ms((seconds.max(0.0) * 1000.0) as u64);
+            }
+        }
+        self.dirty = true;
+    }
+
     /// Drain a pending portal outcome, opening the chosen file.
     fn drain_portal(&mut self) {
         let mut clear = false;
@@ -386,6 +400,28 @@ impl Default for PlayerApp {
 }
 
 impl Widget for PlayerApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        crate::actions::resources(&self.title, self.player.latest_frame().is_some(), doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation);
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_portal();
         self.tick_collab();
@@ -484,8 +520,7 @@ impl Widget for PlayerApp {
             // Only intercept the Open pill while the overlay is actually shown;
             // during immersive playback that corner is just video.
             if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-                self.trigger_open();
-                self.dirty = true;
+                self.perform_resource_operation(crate::actions::PlayerOperation::OpenPicker);
                 *handled = true;
                 return;
             }

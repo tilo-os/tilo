@@ -667,6 +667,7 @@ mod tests {
                 action_label: label.to_string(),
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
+                kind: qos_actions::OperationKind::Document,
                 input,
             },
         }
@@ -736,6 +737,7 @@ mod tests {
                     action_label: "open the conversation".to_string(),
                     description: None,
                     locus: ExecutionLocus::ServerPreferred,
+                    kind: qos_actions::OperationKind::Effect,
                     input: InputSpec::None,
                 },
             }],

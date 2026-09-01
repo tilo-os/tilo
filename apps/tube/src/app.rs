@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -62,6 +62,8 @@ type ScrollCell = Rc<Cell<(f32, f32)>>;
 )]
 pub struct TubeApp {
     model: TubeModel,
+    /// Canonical document-operation dispatcher used by visible affordances.
+    actions: ui::ActionHost,
     bus: ActionBus,
     worker: Option<Worker>,
 
@@ -179,6 +181,7 @@ impl TubeApp {
     pub fn new() -> Self {
         Self {
             model: crate::sample::model(),
+            actions: ui::ActionHost::new(),
             bus: action::new_bus(),
             worker: None,
             root_child: None,
@@ -207,6 +210,20 @@ impl TubeApp {
             scroll_cells: RefCell::new(HashMap::new()),
             requested_channels: HashSet::new(),
             last_pointer: Point::ZERO,
+        }
+    }
+
+    fn perform_resource_operation(&mut self, operation: crate::actions::TubeOperation) {
+        match operation {
+            crate::actions::TubeOperation::TogglePlayback => {
+                self.player.borrow_mut().toggle_play();
+                self.model.playing = self.player.borrow().is_playing();
+            }
+            crate::actions::TubeOperation::Share { video_id } => {
+                let url = format!("https://youtu.be/{video_id}");
+                ui::clipboard_copy(&url);
+                self.model.push_notice(format!("Link copied: {url}"));
+            }
         }
     }
 
@@ -1055,10 +1072,7 @@ impl TubeApp {
                 }
             }
             Action::TogglePlay => {
-                // Drive the real media engine, then mirror its resulting state
-                // onto the model so the rest of the UI stays truthful.
-                self.player.borrow_mut().toggle_play();
-                self.model.playing = self.player.borrow().is_playing();
+                self.perform_resource_operation(crate::actions::TubeOperation::TogglePlayback);
             }
             Action::ToggleCategory(c) => {
                 self.model.settings.cycle_category(c);
@@ -1109,18 +1123,29 @@ impl TubeApp {
                 }
             }
             Action::ToggleLike(id) => {
-                // A real, visible toggle: the watch page's like pill reads
-                // `is_liked` for its active fill and `display_likes` for the
-                // count, so this flips both.
+                // The visible cache follows the canonical CRDT operation. The
+                // toolbar and exported resource now build the same payload and
+                // cross the same ActionHost boundary.
+                self.actions.dispatch_with_context(
+                    state,
+                    crate::actions::TUBE_ACTION_TYPE,
+                    &crate::actions::TubeAction::LikeVideo {
+                        video_id: id.clone(),
+                    },
+                    qos_actions::ActionContext::for_action(
+                        "org.qos.Tube",
+                        "Tube",
+                        &crate::actions::TubeAction::LikeVideo {
+                            video_id: id.clone(),
+                        },
+                    ),
+                );
                 self.model.toggle_like(&id);
             }
             Action::Share(id) => {
-                // Copy the canonical shareable link to the system clipboard —
-                // the real action — and drop a toast so the (otherwise
-                // invisible) clipboard write has visible confirmation.
-                let url = format!("https://youtu.be/{id}");
-                ui::clipboard_copy(&url);
-                self.model.push_notice(format!("Link copied: {url}"));
+                self.perform_resource_operation(crate::actions::TubeOperation::Share {
+                    video_id: id,
+                });
             }
             Action::OpenPalette => {
                 self.model.palette_open = true;
@@ -1524,6 +1549,28 @@ impl Widget for TubeApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation);
+        Ok(true)
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {

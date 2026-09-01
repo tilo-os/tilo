@@ -2318,6 +2318,54 @@ impl Widget for ApiTesterApp {
         self.actions.take_committed()
     }
 
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::API_TESTER_OPERATION_TYPE
+        {
+            return Ok(false);
+        }
+        let operation: crate::actions::ApiTesterOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match operation {
+            crate::actions::ApiTesterOperation::SendRequest {
+                collection_id,
+                request_id,
+            } => {
+                let collection_id = uuid::Uuid::parse_str(&collection_id)
+                    .map_err(|_| "invalid API Tester collection id".to_string())?;
+                let request_id = uuid::Uuid::parse_str(&request_id)
+                    .map_err(|_| "invalid API Tester request id".to_string())?;
+                let Some((collection_index, request_index)) = self
+                    .collections
+                    .iter()
+                    .enumerate()
+                    .find_map(|(collection_index, collection)| {
+                        (collection.id == collection_id).then(|| {
+                            collection
+                                .requests
+                                .iter()
+                                .position(|request| request.id == request_id)
+                                .map(|request_index| (collection_index, request_index))
+                        })
+                    })
+                    .flatten()
+                else {
+                    return Err("saved request no longer exists".to_string());
+                };
+                self.load_request(collection_index, request_index);
+                self.send();
+            }
+        }
+        Ok(true)
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         // Drain child structure-dirty flags per the trait contract, then add
         // our own child-set changes. A plain loop, not `.any()`: every child

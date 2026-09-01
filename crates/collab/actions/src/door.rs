@@ -16,7 +16,7 @@
 //! operation the caller may not perform is *absent* from the survey,
 //! never a flag to ignore.
 
-use crate::action::{EncodedAction, ExecutionLocus};
+use crate::action::{EncodedAction, ExecutionLocus, OperationKind};
 use crate::context::ActionContext;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
@@ -127,6 +127,7 @@ pub struct ActionDescriptor {
     pub action_label: String,
     pub description: Option<String>,
     pub locus: ExecutionLocus,
+    pub kind: OperationKind,
     pub input: InputSpec,
 }
 
@@ -206,6 +207,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             action_label: action.label.clone(),
             description: action.description.clone(),
             locus: action.locus,
+            kind: action.kind,
             input: InputSpec::of(&action.input),
         });
     }
@@ -307,6 +309,12 @@ pub fn invoke_with_context(
         .iter()
         .find(|candidate| candidate.id == address.action)
         .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    if spec.kind != OperationKind::Document {
+        return Err(DoorError::Failed(format!(
+            "{} operation must be handled by the owning application",
+            spec.kind.as_str()
+        )));
+    }
     let mut context = ActionContext::for_resource(
         &spec.label,
         resource.id.as_str(),

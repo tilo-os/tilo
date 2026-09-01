@@ -34,6 +34,7 @@ fn action(id: &str, label: &str, desc: &str) -> ActionSpec {
         label: label.into(),
         description: Some(desc.into()),
         locus: ExecutionLocus::ClientLocal,
+        kind: qos_actions::OperationKind::Document,
         input: ActionInput::Immediate(EncodedAction {
             type_id: format!("demo.{id}"),
             payload: b"{}".to_vec(),

@@ -3,8 +3,8 @@
 //! [`Widget::accessibility`](crate::widget::Widget::accessibility)) into an
 //! [`accesskit::TreeUpdate`], published over AT-SPI2.
 //!
-//! [`build_tree_update`] is a pure function of `(root_widget, node_map,
-//! focused)`: a depth-first walk that emits one node per widget returning
+//! [`build_tree_update_with_resources`] is a pure function of `(root_widget,
+//! node_map, focused, resources)`: a depth-first walk that emits one node per widget returning
 //! `Some(AccessNode)`, and collapses presentational widgets (`None`) by
 //! reparenting their accessible children onto the nearest ancestor —
 //! mirroring ARIA `role="presentation"`. Being pure and keyed off the same
@@ -34,6 +34,35 @@ use crate::widget::Widget;
 pub const ROOT_ID: AkNodeId = AkNodeId(0);
 const TEXT_RUN_ID_BASE: u64 = 1u64 << 62;
 pub const SYNTHETIC_ID_BASE: u64 = 1u64 << 48;
+/// Resource and action nodes occupy reserved ranges above synthetic widget
+/// nodes and below text-run nodes. The ids are stable hashes of their public
+/// addresses, so assistive technology can retain identity across frames.
+pub const RESOURCE_ID_BASE: u64 = 1u64 << 60;
+const ACTION_ID_BASE: u64 = 2u64 << 60;
+const ADDRESS_ID_MASK: u64 = (1u64 << 60) - 1;
+
+fn stable_address_hash(parts: &[&str]) -> u64 {
+    // FNV-1a is deliberately fixed here rather than using RandomState: node
+    // identity must survive process restarts and Rust upgrades.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for part in parts {
+        for byte in part.as_bytes().iter().copied().chain([0]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash & ADDRESS_ID_MASK
+}
+
+#[must_use]
+pub fn resource_node_id(resource: &str) -> AkNodeId {
+    AkNodeId(RESOURCE_ID_BASE | stable_address_hash(&[resource]))
+}
+
+#[must_use]
+pub fn resource_action_node_id(resource: &str, action: &str) -> AkNodeId {
+    AkNodeId(ACTION_ID_BASE | stable_address_hash(&[resource, action]))
+}
 
 /// E.g. [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
 /// [`Role::ToggleButton`] becomes [`AkRole::Button`] carrying `toggled` state.
@@ -194,6 +223,20 @@ pub fn build_tree_update<S: std::hash::BuildHasher>(
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
+    build_tree_update_with_resources(root, node_map, focused, scale, &[])
+}
+
+/// Build the widget accessibility tree and append the exact same live
+/// resource/action surface used by the palette, shell and collaboration API.
+/// Immediate operations expose `Click`; prompted operations expose `SetValue`
+/// with the supplied value becoming their argument.
+pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+    resources: &[qos_actions::Resource],
+) -> TreeUpdate {
     // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
     let mut ptr_to_taffy: HashMap<*const dyn Widget, TaffyNodeId> = HashMap::new();
     for (&taffy_id, &w_ptr) in node_map {
@@ -219,6 +262,7 @@ pub fn build_tree_update<S: std::hash::BuildHasher>(
         &mut nodes,
         &mut root_children,
     );
+    append_resource_nodes(resources, &mut nodes, &mut root_children);
     root_node.set_children(root_children);
     nodes.push((ROOT_ID, root_node));
 
@@ -235,6 +279,49 @@ pub fn build_tree_update<S: std::hash::BuildHasher>(
         tree: Some(TreeInfo::new(ROOT_ID)),
         tree_id: accesskit::TreeId::ROOT,
         focus,
+    }
+}
+
+fn append_resource_nodes(
+    resources: &[qos_actions::Resource],
+    nodes: &mut Vec<(AkNodeId, AkNode)>,
+    parent_children: &mut Vec<AkNodeId>,
+) {
+    for resource in resources {
+        let id = resource_node_id(resource.id.as_str());
+        let mut node = AkNode::new(AkRole::Group);
+        node.set_label(resource.label.clone());
+        node.set_description(format!("{} resource", resource.kind));
+        let mut children = Vec::new();
+
+        for action in &resource.actions {
+            let action_id = resource_action_node_id(resource.id.as_str(), &action.id);
+            let mut action_node = AkNode::new(AkRole::Button);
+            action_node.set_label(action.label.clone());
+            let operation = action.kind.as_str();
+            match &action.input {
+                qos_actions::ActionInput::Immediate(_) => {
+                    action_node.add_action(AkAction::Click);
+                    if let Some(description) = &action.description {
+                        action_node.set_description(format!("{description} ({operation})"));
+                    } else {
+                        action_node.set_description(format!("{operation} operation"));
+                    }
+                }
+                qos_actions::ActionInput::Prompted { prompt, .. } => {
+                    action_node.add_action(AkAction::SetValue);
+                    let description = action.description.as_deref().unwrap_or(prompt);
+                    action_node.set_description(format!("{description} ({operation})"));
+                }
+            }
+            nodes.push((action_id, action_node));
+            children.push(action_id);
+        }
+
+        append_resource_nodes(&resource.children, nodes, &mut children);
+        node.set_children(children);
+        nodes.push((id, node));
+        parent_children.push(id);
     }
 }
 
@@ -355,7 +442,7 @@ pub fn resolve_synthetic_target<'a>(
     root: &'a dyn Widget,
     target: AkNodeId,
 ) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    if target.0 < SYNTHETIC_ID_BASE || target.0 >= TEXT_RUN_ID_BASE {
+    if target.0 < SYNTHETIC_ID_BASE || target.0 >= RESOURCE_ID_BASE {
         return None;
     }
     fn visit_widget<'a>(
@@ -1081,6 +1168,64 @@ mod tests {
         assert!(update.tree.is_some());
         assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
         assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
+    }
+
+    #[test]
+    fn live_resources_are_accessible_through_the_same_action_addresses() {
+        let immediate = qos_actions::ActionSpec::operation(
+            "refresh",
+            "Refresh",
+            qos_actions::OperationKind::Effect,
+            "test.refresh",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        let prompted = qos_actions::ActionSpec::prompted_operation(
+            "find",
+            "Find",
+            "Text to find",
+            "query",
+            qos_actions::OperationKind::View,
+            |value| {
+                qos_actions::EncodedAction::encode_operation("test.find", &value).unwrap()
+            },
+        );
+        let resources = [qos_actions::Resource::new("document:1", "test.document", "Document")
+            .with_action(immediate)
+            .with_action(prompted)];
+        let mut root = TestWidget::new(None);
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update_with_resources(
+            &root,
+            &node_map,
+            None,
+            1.0,
+            &resources,
+        );
+
+        let resource_id = resource_node_id("document:1");
+        let refresh_id = resource_action_node_id("document:1", "refresh");
+        let find_id = resource_action_node_id("document:1", "find");
+        let root_node = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
+        assert!(root_node.1.children().contains(&resource_id));
+        let resource = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == resource_id)
+            .unwrap();
+        assert_eq!(resource.1.role(), AkRole::Group);
+        assert_eq!(resource.1.children(), &[refresh_id, find_id]);
+        let refresh = update.nodes.iter().find(|(id, _)| *id == refresh_id).unwrap();
+        let find = update.nodes.iter().find(|(id, _)| *id == find_id).unwrap();
+        assert!(refresh.1.supports_action(AkAction::Click));
+        assert!(!refresh.1.supports_action(AkAction::SetValue));
+        assert!(find.1.supports_action(AkAction::SetValue));
+        assert!(!find.1.supports_action(AkAction::Click));
+        assert_eq!(
+            resource_action_node_id("document:1", "refresh"),
+            refresh_id,
+            "action identity must remain stable between frames"
+        );
     }
 
     #[test]
