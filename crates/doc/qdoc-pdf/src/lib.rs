@@ -40,6 +40,7 @@
 mod metrics;
 mod pdf;
 
+use qdoc::export::{BlockKind, ExportBlock, TablePlan};
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot};
 use std::fmt;
@@ -216,26 +217,14 @@ pub fn render_pdf(snap: &DocSnapshot) -> Result<Vec<u8>, DocPdfError> {
 // ---- block dispatch ---------------------------------------------------------
 
 fn render_block(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
-    match block.kind.as_str() {
-        "heading" => render_heading(layout, block),
-        "list_item" => render_list_item(layout, block),
-        "image" => render_image(layout, snap, block),
-        "table" => render_table(layout, block),
-        // paragraph + any unknown text-bearing kind: render as a paragraph.
-        _ => render_paragraph(layout, block),
-    }
-}
-
-/// Heading level (1..=6), defaulting to 1 if absent/out of range.
-fn heading_level(block: &BlockView) -> u8 {
-    match block.attrs.get("level") {
-        // Clamped to 1..=6 just above, so this always fits `u8`.
-        #[allow(
-            clippy::cast_sign_loss,
-            reason = "clamped to 1..=6 above, so the value is always positive and fits u8"
-        )]
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6) as u8,
-        _ => 1,
+    match ExportBlock::new(block).kind() {
+        BlockKind::Heading => render_heading(layout, block),
+        BlockKind::ListItem => render_list_item(layout, block),
+        BlockKind::Image => render_image(layout, snap, block),
+        BlockKind::Table => render_table(layout, block),
+        BlockKind::Paragraph | BlockKind::Quote | BlockKind::Code => {
+            render_paragraph(layout, block);
+        }
     }
 }
 
@@ -252,7 +241,7 @@ fn heading_size(level: u8) -> f32 {
 }
 
 fn render_heading(layout: &mut Layout, block: &BlockView) {
-    let level = heading_level(block);
+    let level = ExportBlock::new(block).heading_level();
     let size = heading_size(level);
     let leading = size * 1.25;
     layout.gap(PARA_GAP);
@@ -349,36 +338,12 @@ fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
 fn render_table(layout: &mut Layout, block: &BlockView) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the alternate flat-cells-with-`cols`-attr shape.
-    let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block
-            .children
-            .iter()
-            .map(|row| row.children.iter().collect())
-            .collect()
-    } else if !block.children.is_empty() {
-        let cols = match block.attrs.get("cols") {
-            // `.max(1)` already rules out sign loss; an oversized `cols`
-            // just makes `chunks` below yield one chunk, not a bad layout.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "cols only sizes a chunks() call; an oversized value degrades to one chunk, not a hazard"
-            )]
-            Some(AttrVal::Int(n)) => (*n).max(1) as usize,
-            _ => block.children.len().max(1),
-        };
-        block
-            .children
-            .chunks(cols)
-            .map(|c| c.iter().collect())
-            .collect()
-    } else {
-        Vec::new()
-    };
-    if rows.is_empty() {
+    let plan = TablePlan::new(block);
+    if plan.is_empty() {
         return;
     }
-    let ncols = rows
+    let ncols = plan
+        .rows()
         .iter()
         .map(std::vec::Vec::len)
         .max()
@@ -395,7 +360,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
     let row_h = BODY_LEADING + 2.0 * TABLE_PAD;
 
     layout.gap(PARA_GAP);
-    for row in &rows {
+    for row in plan.rows() {
         // Keep a whole row together where possible.
         layout.ensure(row_h);
         let top = layout.y;

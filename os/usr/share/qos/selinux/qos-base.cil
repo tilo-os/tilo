@@ -39,6 +39,19 @@
 (allow qos_fs_t bin_t (file (entrypoint execute execute_no_trans read open getattr map ioctl)))
 (allow init_t qos_fs_t (process (siginh rlimitinh noatsecure)))
 
+; The authenticated greetd session runs qos-session in xdm_t. That wrapper
+; starts and stops exactly one user lifecycle target before/after the native
+; compositor. Give that target its own unit-file type so this does not grant
+; xdm_t control over every systemd unit on the machine.
+(type qos_session_unit_file_t)
+(roletype object_r qos_session_unit_file_t)
+(typeattributeset file_type (qos_session_unit_file_t))
+(typeattributeset non_auth_file_type (qos_session_unit_file_t))
+(typeattributeset systemd_unit_file_type (qos_session_unit_file_t))
+(filecon "/usr/lib/systemd/user/qos-graphical-session.target" file
+  (system_u object_r qos_session_unit_file_t ((s0) (s0))))
+(allow xdm_t qos_session_unit_file_t (service (start stop status)))
+
 ; ENFORCING HARDENING PATH (do after a VM run captures AVCs):
 ; -----------------------------------------------------------
 ; 1. boot, exercise fs (mount /var/workspace, read/write, peer sync),

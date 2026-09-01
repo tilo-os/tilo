@@ -2,13 +2,21 @@
 //!
 //! Sort is non-destructive: rows stay in insertion order and an index `view`
 //! carries the display order, so [`DataTable::sort_by_with`] can re-apply the
-//! remembered comparator whenever rows change. Row virtualization
-//! ([`DataTable::set_viewport`]/[`DataTable::visible_row_range`]) windows the
-//! `draw` pass to the visible rows plus a small overscan.
+//! remembered comparator whenever local rows change. [`DataTable::from_model`]
+//! instead delegates order and paging to [`TableModel`]. Its sparse viewport
+//! keeps memory proportional to measured/visible rows even when the logical
+//! model has hundreds of millions of entries. Keyed, variable-height row
+//! virtualization ([`DataTable::set_viewport`]/[`DataTable::visible_row_range`])
+//! windows paint, hit testing, fetching, scrolling, and accessibility to the
+//! same visible rows.
 
 use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::ops::Range;
+use std::sync::Arc;
+use std::time::Instant;
+use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -17,9 +25,11 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::virtual_viewport::{
+    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+};
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::{Element, TaffyTreeExt, Widget};
 
 /// Matches [`crate::widget::Scrollable`] so a `DataTable` bar and a
 /// wrapping `Scrollable` bar read identically.
@@ -45,6 +55,12 @@ pub type CellTextRender<Row> =
 pub type CellRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
 
+/// Builds a real retained widget for one visible cell. The widget is keyed by
+/// the row's stable identity and the column key, so it survives sorting and
+/// scrolling while that cell remains in the mounted window.
+pub type CellWidgetBuilder<Row> = Box<dyn FnMut(&Row, usize) -> Element>;
+pub type CellAccessibleValue<Row> = Arc<dyn Fn(&Row) -> String + Send + Sync>;
+
 pub struct ColumnDef<Row> {
     pub key: String,
     pub header: String,
@@ -54,6 +70,10 @@ pub struct ColumnDef<Row> {
     pub text_render: Option<CellTextRender<Row>>,
     /// No-op by default; set via [`ColumnDef::with_render`].
     pub render_cell: CellRender<Row>,
+    /// `None` by default; set via [`ColumnDef::with_widget`].
+    pub widget: Option<CellWidgetBuilder<Row>>,
+    /// Value exposed for ready rows; set directly or by [`ColumnDef::with_text`].
+    pub accessible_value: Option<CellAccessibleValue<Row>>,
     pub(crate) resize_handle_px: f32,
 }
 
@@ -66,6 +86,8 @@ impl<Row> ColumnDef<Row> {
             sortable: false,
             text_render: None,
             render_cell: Box::new(|_, _, _, _, _| {}),
+            widget: None,
+            accessible_value: None,
             resize_handle_px: 6.0,
         }
     }
@@ -82,14 +104,155 @@ impl<Row> ColumnDef<Row> {
         self
     }
 
+    /// Render ordinary cell text and expose the exact same string as the
+    /// accessible cell value. This is the concise default for most columns;
+    /// use [`Self::with_text_render`] plus [`Self::with_accessible_value`] when
+    /// custom drawing is required.
+    #[must_use]
+    pub fn with_text(mut self, value: impl Fn(&Row) -> String + Send + Sync + 'static) -> Self
+    where
+        Row: 'static,
+    {
+        let value: CellAccessibleValue<Row> = Arc::new(value);
+        self.accessible_value = Some(Arc::clone(&value));
+        self.text_render = Some(Box::new(move |row, scene, text, rect, theme, selected| {
+            let color = if selected {
+                theme.tokens.colors.on_accent(4.5)
+            } else {
+                theme.text_primary
+            };
+            text.draw_text(
+                scene,
+                &value(row),
+                theme.tokens.typography.scale.sm,
+                color,
+                Affine::translate((rect.x0 + CELL_PADDING_X, rect.y0 + 5.0)),
+                None,
+            );
+        }));
+        self
+    }
+
+    /// Expose a value for a custom-painted cell. The column header remains
+    /// the cell name, while this string becomes its row-specific value.
+    #[must_use]
+    pub fn with_accessible_value(
+        mut self,
+        value: impl Fn(&Row) -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.accessible_value = Some(Arc::new(value));
+        self
+    }
+
     #[must_use]
     pub fn with_render(mut self, f: CellRender<Row>) -> Self {
         self.render_cell = f;
         self
     }
+
+    /// Render this column with real child widgets. Only ready cells in the
+    /// visible range plus overscan are built; controls participate in input,
+    /// focus, animation, layout, inspection, and accessibility.
+    #[must_use]
+    pub fn with_widget(mut self, builder: impl FnMut(&Row, usize) -> Element + 'static) -> Self {
+        self.widget = Some(Box::new(builder));
+        self
+    }
 }
 
 pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
+
+/// State of one logical row in a potentially paged or asynchronous table.
+/// Loading and error rows keep their geometry and stable key, so completing a
+/// fetch does not disturb the scroll anchor or selection.
+#[derive(Clone, Copy, Debug)]
+pub enum TableRowState<'a, Row> {
+    Ready(&'a Row),
+    Loading,
+    Error(&'a str),
+}
+
+/// One model notification batch consumed after the backing data has changed.
+/// Structural variants preserve mounted controls by stable row key;
+/// [`Self::RowsChanged`] rebuilds controls only for the named rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableModelChange {
+    RowsInserted {
+        index: usize,
+        count: usize,
+    },
+    RowsRemoved {
+        index: usize,
+        count: usize,
+    },
+    /// `to` is the first destination index in the post-move order.
+    RowsMoved {
+        from: usize,
+        to: usize,
+        count: usize,
+    },
+    RowsChanged {
+        keys: Vec<u64>,
+    },
+    Reset,
+}
+
+/// Unopinionated backing model for very large or asynchronously populated
+/// tables. Implementations need not keep all rows resident: `DataTable`
+/// queries only the visible range plus overscan.
+pub trait TableModel {
+    type Row;
+
+    /// Logical row count. This may be much larger than the resident cache.
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Stable, unique identity for the row at `index`.
+    fn key_at(&self, index: usize) -> Option<u64>;
+
+    /// Current index for a stable key, used to preserve anchors and selection
+    /// across inserts, removals, moves, and sort changes.
+    fn index_of(&self, key: u64) -> Option<usize>;
+
+    /// Return resident data or an explicit placeholder state.
+    fn row_state(&self, index: usize) -> TableRowState<'_, Self::Row>;
+
+    /// Opportunity to enqueue a fetch for the visible range plus overscan.
+    fn request_range(&mut self, _range: Range<usize>) {}
+
+    /// Drain model notifications. Return true after any logical order, count,
+    /// key, or row-state change so the table reconciles and repaints.
+    fn poll_changed(&mut self) -> bool {
+        false
+    }
+
+    /// Drain a specific model-notification batch. Existing implementations of
+    /// [`Self::poll_changed`] remain compatible and produce [`TableModelChange::Reset`].
+    /// New asynchronous models should override this method so unchanged
+    /// retained cell controls survive background updates.
+    fn poll_changes(&mut self) -> Vec<TableModelChange> {
+        if self.poll_changed() {
+            vec![TableModelChange::Reset]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Apply a model-owned sort. Return true when the logical order changed
+    /// synchronously or a remote sort request was accepted.
+    fn sort_by(&mut self, _column_key: &str, _ascending: bool) -> bool {
+        false
+    }
+
+    /// Whether the host should keep scheduling frames so `poll_changed` can
+    /// observe an in-flight asynchronous source.
+    fn needs_poll(&self) -> bool {
+        false
+    }
+}
 
 /// `(display_index, ctrl, shift)`.
 type RowClick = Box<dyn FnMut(usize, bool, bool)>;
@@ -110,13 +273,40 @@ struct ResizeState {
     origin_w: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RowIdentity {
+    value: u64,
+    occurrence: usize,
+}
+
+struct MountedCell {
+    row_key: RowIdentity,
+    column_key: String,
+    row_index: usize,
+    column_index: usize,
+    widget: Element,
+    node: Option<NodeId>,
+}
+
+type RowKey<Row> = Box<dyn Fn(&Row) -> u64 + Send + Sync>;
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "focus, selection, scrolling, and invalidation are independent table states"
+)]
 pub struct DataTable<Row> {
+    test_id: String,
+    accessible_name: Option<String>,
     columns: Vec<ColumnDef<Row>>,
     rows: Vec<Row>,
+    /// Present for sparse/paged tables. Vec-backed tables keep this `None`
+    /// and retain their local sorting API.
+    model: Option<Box<dyn TableModel<Row = Row>>>,
     /// Indices into `rows` in display order — sort operates on this so the
     /// original insertion order stays untouched.
     view: Vec<usize>,
     sort: Option<SortState<Row>>,
+    model_sort: Option<(String, bool)>,
     rect: Rect,
     col_rects: Vec<Rect>,
     is_focused: bool,
@@ -127,12 +317,20 @@ pub struct DataTable<Row> {
     resize: Option<ResizeState>,
     /// For hit-testing press events against the per-column resize handles.
     last_cursor: Option<Point>,
-    /// `0.0` = unset (fall back to drawing the full `rect`).
-    viewport_h: f32,
-    /// Defaults to [`ROW_HEIGHT`] so callers who never call `set_viewport`
-    /// still get a sensible `visible_row_range` answer.
-    row_height: f32,
-    scroll_y: f32,
+    /// Shared variable-height geometry. Stable identities follow rows across
+    /// sort/reconciliation; paint, hit testing and accessibility all consume
+    /// the same visible range.
+    viewport: SparseVirtualViewport<RowIdentity>,
+    /// Snapshot from the last reconciled/rendered state. External model
+    /// mutations may already be visible by the time `poll_changed` fires, so
+    /// capturing at notification time would be one revision too late.
+    last_anchor: Option<SparseAnchor<RowIdentity>>,
+    row_keys: Vec<RowIdentity>,
+    row_key: Option<RowKey<Row>>,
+    mounted_cells: Vec<MountedCell>,
+    structure_dirty: bool,
+    layout_dirty: bool,
+    interaction: crate::interaction::InteractionEnvironment,
     /// Clicks update [`selection`], rows render a selection fill, and
     /// keyboard Up/Down/Enter/Ctrl-A are honoured while focused. Off by
     /// default so existing read-only tables are unaffected.
@@ -140,6 +338,9 @@ pub struct DataTable<Row> {
     /// Indices into `view`. Seeded by the owner each frame for stateless
     /// hosts; mutated in place on click.
     selection: crate::selection::SelectionModel,
+    /// Model-backed tables attach selection to stable keys. Select-all is a
+    /// complement and therefore constant-space even for 100M rows.
+    model_selection: crate::selection::KeySelection<u64>,
     /// `(display_index, ctrl, shift)`, so a stateless host (rebuilt each
     /// frame) can own the selection.
     on_row_click: Option<RowClick>,
@@ -154,6 +355,9 @@ pub struct DataTable<Row> {
     /// `set_viewport` and rows overflow it); dormant when wrapped in an
     /// outer [`crate::widget::Scrollable`], to avoid a double bar.
     vbar: Scrollbar,
+    drag_scroll: DragScroller,
+    momentum: ScrollMomentum,
+    last_tick: Option<Instant>,
 }
 
 impl<Row> DataTable<Row> {
@@ -169,27 +373,74 @@ impl<Row> DataTable<Row> {
             })
             .collect();
         Self {
+            test_id: "data_table".to_owned(),
+            accessible_name: None,
             columns,
             rows: Vec::new(),
+            model: None,
             view: Vec::new(),
             sort: None,
+            model_sort: None,
             rect: Rect::ZERO,
             col_rects: Vec::new(),
             is_focused: false,
             col_widths_px,
             resize: None,
             last_cursor: None,
-            viewport_h: 0.0,
-            row_height: px(ROW_HEIGHT),
-            scroll_y: 0.0,
+            viewport: {
+                let mut viewport = SparseVirtualViewport::new(ROW_HEIGHT);
+                viewport.set_overscan(viewport.estimated_height() * 2.0);
+                viewport
+            },
+            last_anchor: None,
+            row_keys: Vec::new(),
+            row_key: None,
+            mounted_cells: Vec::new(),
+            structure_dirty: true,
+            layout_dirty: true,
+            interaction: crate::interaction::InteractionEnvironment::default(),
             selectable: false,
             selection: crate::selection::SelectionModel::new(),
+            model_selection: crate::selection::KeySelection::new(),
             on_row_click: None,
             on_activate: None,
             on_header_click: None,
             last_click_row: None,
             vbar: Scrollbar::vertical(),
+            drag_scroll: DragScroller::new(),
+            momentum: ScrollMomentum::new(),
+            last_tick: None,
         }
+    }
+
+    /// Construct a sparse table backed by an arbitrary model. Geometry and
+    /// selection remain proportional to visible/measured rows rather than
+    /// `model.len()`.
+    pub fn from_model<M>(columns: Vec<ColumnDef<Row>>, model: M) -> Self
+    where
+        M: TableModel<Row = Row> + 'static,
+    {
+        let mut table = Self::new(columns);
+        table.model = Some(Box::new(model));
+        table.reconcile_viewport(None);
+        table
+    }
+
+    /// Give this table a stable app-test/inspection id. The historical
+    /// default is `data_table`; set an explicit id when an app has more than
+    /// one table.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = id.into();
+        self
+    }
+
+    /// Give the table itself a localized screen-reader label. Column headers
+    /// continue to label individual cells.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     #[must_use]
@@ -208,6 +459,17 @@ impl<Row> DataTable<Row> {
 
     pub fn selection_mut(&mut self) -> &mut crate::selection::SelectionModel {
         &mut self.selection
+    }
+
+    /// Stable-key selection used by model-backed tables.
+    #[must_use]
+    pub fn model_selection(&self) -> &crate::selection::KeySelection<u64> {
+        &self.model_selection
+    }
+
+    /// Mutable stable-key selection used by model-backed tables.
+    pub fn model_selection_mut(&mut self) -> &mut crate::selection::KeySelection<u64> {
+        &mut self.model_selection
     }
 
     #[must_use]
@@ -234,6 +496,21 @@ impl<Row> DataTable<Row> {
         self
     }
 
+    /// Give rows stable model identity so scroll anchoring and cached
+    /// measurements survive inserts, removals, and sorting. Duplicate values
+    /// are disambiguated by occurrence order; unique keys provide the
+    /// strongest continuity.
+    #[must_use]
+    pub fn with_row_key<F>(mut self, key: F) -> Self
+    where
+        F: Fn(&Row) -> u64 + Send + Sync + 'static,
+    {
+        self.row_key = Some(Box::new(key));
+        self.rebuild_row_keys();
+        self.reconcile_viewport(None);
+        self
+    }
+
     /// `None` for points in the header or below the last row.
     fn row_at(&self, pt: Point) -> Option<usize> {
         if pt.x < self.rect.x0 || pt.x > self.rect.x1 {
@@ -243,19 +520,8 @@ impl<Row> DataTable<Row> {
         if pt.y < body_top {
             return None;
         }
-        let rel = pt.y - body_top + f64::from(self.scroll_y);
-        if rel < 0.0 {
-            return None;
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "rel >= 0.0 is checked above and row_height is always > 0 \
-                      (default ROW_HEIGHT or set_viewport's max(1.0) clamp); \
-                      this cast is the intended floor-to-row-index conversion"
-        )]
-        let idx = (rel / f64::from(self.row_height)) as usize;
-        if idx < self.view.len() {
+        let idx = self.viewport.hit_test(pt.y - body_top)?;
+        if idx < self.display_len() {
             Some(idx)
         } else {
             None
@@ -263,9 +529,185 @@ impl<Row> DataTable<Row> {
     }
 
     pub fn set_rows(&mut self, rows: Vec<Row>) {
+        let anchor = self.capture_view_anchor();
+        self.model = None;
+        self.model_sort = None;
+        self.model_selection.clear();
         self.rows = rows;
+        if !self.mounted_cells.is_empty() {
+            self.mounted_cells.clear();
+            self.structure_dirty = true;
+        }
+        self.rebuild_row_keys();
         self.view = (0..self.rows.len()).collect();
-        self.reapply_sort();
+        self.reapply_sort_with_anchor(anchor.as_ref());
+    }
+
+    fn rebuild_row_keys(&mut self) {
+        let mut occurrences = HashMap::<u64, usize>::new();
+        self.row_keys = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let value = self
+                    .row_key
+                    .as_ref()
+                    .map_or_else(|| u64::try_from(index).unwrap_or(u64::MAX), |key| key(row));
+                let occurrence = occurrences.entry(value).or_default();
+                let identity = RowIdentity {
+                    value,
+                    occurrence: *occurrence,
+                };
+                *occurrence = occurrence.saturating_add(1);
+                identity
+            })
+            .collect();
+    }
+
+    fn capture_view_anchor(&self) -> Option<SparseAnchor<RowIdentity>> {
+        self.viewport
+            .capture_anchor(|index| self.row_identity_at(index))
+    }
+
+    fn refresh_view_anchor(&mut self) {
+        self.last_anchor = self.capture_view_anchor();
+    }
+
+    fn reconcile_viewport(&mut self, anchor: Option<&SparseAnchor<RowIdentity>>) {
+        let count = self.display_len();
+        let model = self.model.as_deref();
+        let view = &self.view;
+        let row_keys = &self.row_keys;
+        self.viewport.reconcile(
+            count,
+            |identity| {
+                if let Some(model) = model {
+                    (identity.occurrence == 0)
+                        .then(|| model.index_of(identity.value))
+                        .flatten()
+                } else {
+                    view.iter()
+                        .position(|row_index| row_keys.get(*row_index).copied() == Some(*identity))
+                }
+            },
+            anchor,
+        );
+        if let Some(model) = self.model.as_deref() {
+            self.model_selection
+                .reconcile(|key| model.index_of(*key).is_some());
+        } else {
+            self.selection.clamp_to(count);
+        }
+        self.last_anchor = self.capture_view_anchor();
+    }
+
+    fn row_identity_at(&self, display_index: usize) -> Option<RowIdentity> {
+        if let Some(model) = self.model.as_deref() {
+            return model.key_at(display_index).map(|value| RowIdentity {
+                value,
+                occurrence: 0,
+            });
+        }
+        let source_index = *self.view.get(display_index)?;
+        self.row_keys.get(source_index).copied()
+    }
+
+    fn display_len(&self) -> usize {
+        self.model
+            .as_deref()
+            .map_or(self.view.len(), TableModel::len)
+    }
+
+    fn row_state_at(&self, display_index: usize) -> Option<TableRowState<'_, Row>> {
+        if let Some(model) = self.model.as_deref() {
+            return (display_index < model.len()).then(|| model.row_state(display_index));
+        }
+        let source_index = *self.view.get(display_index)?;
+        self.rows.get(source_index).map(TableRowState::Ready)
+    }
+
+    fn model_key_at(&self, display_index: usize) -> Option<u64> {
+        self.model.as_deref()?.key_at(display_index)
+    }
+
+    fn primary_index(&self) -> Option<usize> {
+        if let Some(model) = self.model.as_deref() {
+            return self
+                .model_selection
+                .primary()
+                .and_then(|key| model.index_of(*key));
+        }
+        self.selection.primary()
+    }
+
+    fn is_row_selected(&self, display_index: usize) -> bool {
+        if self.model.is_some() {
+            return self
+                .model_key_at(display_index)
+                .is_some_and(|key| self.model_selection.is_selected(&key));
+        }
+        self.selection.is_selected(display_index)
+    }
+
+    fn apply_selection_click(&mut self, display_index: usize, ctrl: bool, shift: bool) {
+        let Some(model) = self.model.as_deref() else {
+            self.selection.apply_click(display_index, ctrl, shift);
+            return;
+        };
+        let Some(target) = model.key_at(display_index) else {
+            return;
+        };
+        if shift {
+            let Some(anchor_index) = self
+                .model_selection
+                .anchor()
+                .and_then(|anchor| model.index_of(*anchor))
+            else {
+                self.model_selection.select_only(target);
+                return;
+            };
+            let (start, end) = if anchor_index <= display_index {
+                (anchor_index, display_index)
+            } else {
+                (display_index, anchor_index)
+            };
+            let keys = (start..=end).filter_map(|index| model.key_at(index));
+            self.model_selection.select_range(target, keys, ctrl);
+        } else if ctrl {
+            self.model_selection.toggle(target);
+        } else {
+            self.model_selection.select_only(target);
+        }
+    }
+
+    fn move_selection_to(&mut self, display_index: usize, extend: bool) {
+        self.apply_selection_click(display_index, false, extend);
+    }
+
+    fn select_only_index(&mut self, display_index: usize) {
+        if let Some(key) = self.model_key_at(display_index) {
+            self.model_selection.select_only(key);
+        } else if self.model.is_none() {
+            self.selection.select_only(display_index);
+        }
+    }
+
+    fn semantic_row_index(&self, target: &str) -> Option<usize> {
+        let raw = target.strip_prefix("row:")?;
+        let (value, occurrence) = raw.split_once(':')?;
+        let identity = RowIdentity {
+            value: value.parse().ok()?,
+            occurrence: occurrence.parse().ok()?,
+        };
+        if let Some(model) = self.model.as_deref() {
+            return (identity.occurrence == 0)
+                .then(|| model.index_of(identity.value))
+                .flatten();
+        }
+        self.view.iter().enumerate().find_map(|(display_index, _)| {
+            (self.row_identity_at(display_index) == Some(identity)).then_some(display_index)
+        })
     }
 
     pub fn columns(&self) -> &[ColumnDef<Row>] {
@@ -274,19 +716,78 @@ impl<Row> DataTable<Row> {
 
     /// Rows in current sort order.
     pub fn view_rows(&self) -> Vec<&Row> {
+        if self.model.is_some() {
+            return self
+                .viewport
+                .visible_range()
+                .filter_map(|index| match self.row_state_at(index) {
+                    Some(TableRowState::Ready(row)) => Some(row),
+                    _ => None,
+                })
+                .collect();
+        }
         self.view.iter().filter_map(|&i| self.rows.get(i)).collect()
     }
 
+    /// Reconcile an externally changed model. The first visible stable key,
+    /// measured heights, and key selection survive moves and inserts.
+    pub fn notify_model_changed(&mut self) {
+        self.notify_model_changes(&[TableModelChange::Reset]);
+    }
+
+    /// Reconcile one already-applied model change batch. Structural changes
+    /// retain visible cell controls whose stable keys still exist, while
+    /// `RowsChanged` rebuilds controls only for the named keys.
+    pub fn notify_model_changes(&mut self, changes: &[TableModelChange]) {
+        if self.model.is_none() {
+            return;
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let anchor = self
+            .last_anchor
+            .clone()
+            .or_else(|| self.capture_view_anchor());
+        self.reconcile_viewport(anchor.as_ref());
+
+        if changes
+            .iter()
+            .any(|change| matches!(change, TableModelChange::Reset))
+        {
+            self.mounted_cells.clear();
+        } else {
+            self.mounted_cells.retain(|cell| {
+                !changes.iter().any(|change| match change {
+                    TableModelChange::RowsChanged { keys } => keys.contains(&cell.row_key.value),
+                    TableModelChange::RowsInserted { .. }
+                    | TableModelChange::RowsRemoved { .. }
+                    | TableModelChange::RowsMoved { .. }
+                    | TableModelChange::Reset => false,
+                })
+            });
+        }
+        self.structure_dirty = true;
+        self.layout_dirty = true;
+    }
+
     pub fn sort_state(&self) -> Option<(&str, bool)> {
+        if let Some((key, ascending)) = &self.model_sort {
+            return Some((key.as_str(), *ascending));
+        }
         self.sort.as_ref().map(|s| (s.key.as_str(), s.ascending))
     }
 
     /// Stores the comparator + key + direction so `set_rows` re-applies the
-    /// same ordering automatically.
+    /// same ordering automatically. Model-backed tables delegate sorting to
+    /// [`TableModel::sort_by`] instead.
     pub fn sort_by_with<F>(&mut self, cmp: F, key: &str, ascending: bool)
     where
         F: Fn(&Row, &Row) -> Ordering + Send + Sync + 'static,
     {
+        if self.model.is_some() {
+            return;
+        }
         self.sort = Some(SortState {
             key: key.to_string(),
             ascending,
@@ -301,6 +802,14 @@ impl<Row> DataTable<Row> {
     /// install one typed comparator, then header-click/keyboard handlers flip
     /// direction through this simpler entry point.
     pub fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
+        if let Some(model) = self.model.as_deref_mut() {
+            if !model.sort_by(column_key, ascending) {
+                return false;
+            }
+            self.model_sort = Some((column_key.to_owned(), ascending));
+            self.notify_model_changed();
+            return true;
+        }
         if let Some(s) = &mut self.sort
             && s.key == column_key
         {
@@ -312,6 +821,11 @@ impl<Row> DataTable<Row> {
     }
 
     fn reapply_sort(&mut self) {
+        let anchor = self.capture_view_anchor();
+        self.reapply_sort_with_anchor(anchor.as_ref());
+    }
+
+    fn reapply_sort_with_anchor(&mut self, anchor: Option<&SparseAnchor<RowIdentity>>) {
         if let Some(s) = &self.sort {
             let rows = &self.rows;
             let cmp = &s.cmp;
@@ -324,6 +838,7 @@ impl<Row> DataTable<Row> {
                 if ascending { o } else { o.reverse() }
             });
         }
+        self.reconcile_viewport(anchor);
     }
 
     /// Falls back to `ColumnWidth::Fixed`; Flex/Auto columns return `None`
@@ -359,6 +874,8 @@ impl<Row> DataTable<Row> {
             let new_w = (r.origin_w + delta).max(Self::MIN_COL_WIDTH);
             let key = r.key.clone();
             self.col_widths_px.insert(key, new_w);
+            self.structure_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -369,69 +886,185 @@ impl<Row> DataTable<Row> {
     /// Enables the [`visible_row_range`] windowing so only rows intersecting
     /// the viewport (plus overscan) are rendered.
     pub fn set_viewport(&mut self, height_px: f32, row_height_px: f32) {
-        self.viewport_h = height_px.max(0.0);
-        self.row_height = row_height_px.max(1.0);
+        self.viewport.set_estimated_height(f64::from(row_height_px));
+        self.viewport.set_viewport(f64::from(height_px));
+        self.viewport
+            .set_overscan(self.viewport.estimated_height() * 2.0);
+        self.visible_window_changed();
     }
 
     pub fn set_scroll_y(&mut self, y: f32) {
-        self.scroll_y = y.max(0.0);
+        self.momentum.stop();
+        self.set_scroll_offset(f64::from(y));
     }
 
-    /// `(start, end)` row-index range (half-open), with a 2-row overscan on
-    /// each side so scrolling stays smooth. With no viewport set, the entire
-    /// row list is returned.
-    pub fn visible_row_range(&self) -> (usize, usize) {
-        let len = self.view.len();
-        if self.viewport_h <= 0.0 || self.row_height <= 0.0 {
-            return (0, len);
+    fn set_scroll_offset(&mut self, y: f64) {
+        let before = self.viewport.visible_range();
+        self.viewport.set_offset(y);
+        if self.viewport.visible_range() != before {
+            self.structure_dirty = true;
         }
-        // scroll_y and row_height are both non-negative (enforced by
-        // set_scroll_y/set_viewport), so these floored/ceiled quotients are
-        // already integral and >= 0 — the casts below only narrow that
-        // already-integral value, bounded by the on-screen row count.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "scroll_y/row_height >= 0 is enforced by set_scroll_y/set_viewport; \
-                      floor()/ceil() already yields an integral, non-negative value"
-        )]
-        let (first, visible) = (
-            (self.scroll_y / self.row_height).floor() as usize,
-            (self.viewport_h / self.row_height).ceil() as usize,
-        );
-        let start = first.saturating_sub(2);
-        let end = start.saturating_add(visible).saturating_add(4).min(len);
-        (start, end)
+        self.layout_dirty = true;
+        self.last_anchor = self.capture_view_anchor();
+    }
+
+    #[must_use]
+    pub fn scroll_y(&self) -> f32 {
+        px(self.viewport.offset())
+    }
+
+    /// Override one display row's measured height while keeping the current
+    /// stable anchor fixed. Returns `false` when `display_index` is absent or
+    /// geometry did not change.
+    pub fn set_row_height(&mut self, display_index: usize, height_px: f32) -> bool {
+        let Some(key) = self.row_identity_at(display_index) else {
+            return false;
+        };
+        let changed = self
+            .viewport
+            .measure(display_index, key, f64::from(height_px));
+        if changed {
+            self.visible_window_changed();
+        }
+        changed
+    }
+
+    /// `(start, end)` row-index range (half-open), with two estimated row
+    /// heights of pixel overscan on each side. With no viewport set, the
+    /// entire row list is returned.
+    pub fn visible_row_range(&self) -> (usize, usize) {
+        let range = self.viewport.visible_range();
+        (range.start, range.end)
+    }
+
+    /// Number of retained cell controls. This remains proportional to the
+    /// visible window, not the logical model size.
+    #[must_use]
+    pub fn mounted_cell_count(&self) -> usize {
+        self.mounted_cells.len()
+    }
+
+    fn visible_window_changed(&mut self) {
+        self.structure_dirty = true;
+        self.layout_dirty = true;
+        self.refresh_view_anchor();
+    }
+
+    fn reconcile_mounted_cells(&mut self) {
+        let range = self.viewport.visible_range();
+        if let Some(model) = self.model.as_deref_mut() {
+            model.request_range(range.clone());
+        }
+        let widget_columns = self
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, column)| column.widget.as_ref().map(|_| index))
+            .collect::<Vec<_>>();
+        let mut desired = Vec::with_capacity(range.len().saturating_mul(widget_columns.len()));
+        for row_index in range {
+            let Some(row_key) = self.row_identity_at(row_index) else {
+                continue;
+            };
+            for &column_index in &widget_columns {
+                desired.push((row_index, row_key, column_index));
+            }
+        }
+        let old_order = self
+            .mounted_cells
+            .iter()
+            .map(|cell| (cell.row_key, cell.column_key.clone()))
+            .collect::<Vec<_>>();
+        let mut old = std::mem::take(&mut self.mounted_cells)
+            .into_iter()
+            .map(|cell| ((cell.row_key, cell.column_key.clone()), cell))
+            .collect::<HashMap<_, _>>();
+        let interaction = self.interaction;
+        let mut mounted = Vec::with_capacity(desired.len());
+        for (row_index, row_key, column_index) in desired {
+            let Some(column_key) = self
+                .columns
+                .get(column_index)
+                .map(|column| column.key.clone())
+            else {
+                continue;
+            };
+            let key = (row_key, column_key.clone());
+            if let Some(mut cell) = old.remove(&key) {
+                cell.row_index = row_index;
+                cell.column_index = column_index;
+                cell.node = None;
+                cell.widget.set_interaction_environment(interaction);
+                mounted.push(cell);
+                continue;
+            }
+            let row = if let Some(model) = self.model.as_deref() {
+                match model.row_state(row_index) {
+                    TableRowState::Ready(row) => Some(row),
+                    TableRowState::Loading | TableRowState::Error(_) => None,
+                }
+            } else {
+                self.view
+                    .get(row_index)
+                    .and_then(|source| self.rows.get(*source))
+            };
+            let Some(row) = row else { continue };
+            let Some(builder) = self
+                .columns
+                .get_mut(column_index)
+                .and_then(|column| column.widget.as_mut())
+            else {
+                continue;
+            };
+            let mut widget = builder(row, row_index);
+            widget.set_interaction_environment(interaction);
+            mounted.push(MountedCell {
+                row_key,
+                column_key,
+                row_index,
+                column_index,
+                widget,
+                node: None,
+            });
+        }
+        let next_order = mounted
+            .iter()
+            .map(|cell| (cell.row_key, cell.column_key.clone()))
+            .collect::<Vec<_>>();
+        if old_order != next_order {
+            self.structure_dirty = true;
+        }
+        self.mounted_cells = mounted;
     }
 
     fn body_viewport_h(&self) -> f64 {
-        if self.viewport_h > 0.0 {
-            f64::from(self.viewport_h)
+        if self.viewport.viewport() > 0.0 {
+            self.viewport.viewport()
         } else {
             (self.rect.height() - HEADER_HEIGHT).max(0.0)
         }
     }
 
     fn content_body_h(&self) -> f64 {
-        f64::from(self.row_height) * count_f64(self.view.len())
+        self.viewport.content_extent()
     }
 
     /// `content - viewport`, floored at 0.
     pub fn max_scroll_y(&self) -> f32 {
-        px((self.content_body_h() - self.body_viewport_h()).max(0.0))
+        px(self.viewport.max_offset())
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
         ScrollMetrics::new(
             self.content_body_h(),
             self.body_viewport_h(),
-            f64::from(self.scroll_y),
+            self.viewport.offset(),
         )
     }
 
     /// Live when an explicit viewport was set and the rows overflow it.
     fn internal_scroll(&self) -> bool {
-        self.viewport_h > 0.0 && self.v_metrics().overflows()
+        self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
 
     fn v_track(&self) -> Option<Rect> {
@@ -500,6 +1133,13 @@ impl<Row> DataTable<Row> {
             return None;
         }
         let key = col.key.clone();
+        if self.model.is_some() {
+            let ascending = match &self.model_sort {
+                Some((active, ascending)) if active == &key => !ascending,
+                _ => true,
+            };
+            return self.sort_by(&key, ascending).then_some((key, ascending));
+        }
         let ascending = match &self.sort {
             Some(s) if s.key == key => !s.ascending,
             _ => true,
@@ -553,9 +1193,10 @@ impl<Row> DataTable<Row> {
                 continue;
             };
             let label_y = header_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0;
+            let header = crate::i18n::I18nManager::lookup_plain(&col.header);
             text_renderer.draw_text(
                 scene,
-                &col.header,
+                &header,
                 text_size,
                 tokens.colors.text_primary,
                 translated(transform, cr.x0 + CELL_PADDING_X, label_y),
@@ -588,28 +1229,30 @@ impl<Row> DataTable<Row> {
     ) {
         let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
-        let row_h = f64::from(self.row_height);
+        let body_bottom = self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h();
         for ri in vis_start..vis_end {
-            let Some(&row_idx) = self.view.get(ri) else {
-                break;
-            };
-            let Some(row) = self.rows.get(row_idx) else {
+            let Some(row_state) = self.row_state_at(ri) else {
                 continue;
             };
-            // Internal virtualization subtracts scroll_y; when driven by an
-            // outer Scrollable, scroll_y stays 0 and the whole rect is
+            // Internal virtualization subtracts the viewport offset; when
+            // driven by an outer Scrollable, it stays zero and the whole rect is
             // translated instead — both paths render correctly.
-            let y0 =
-                self.rect.y0 + HEADER_HEIGHT + count_f64(ri) * row_h - f64::from(self.scroll_y);
+            let Some(view_top) = self.viewport.item_view_top(ri) else {
+                continue;
+            };
+            let Some(row_h) = self.viewport.item_height(ri) else {
+                continue;
+            };
+            let y0 = self.rect.y0 + HEADER_HEIGHT + view_top;
             let y1 = y0 + row_h;
             if y1 <= self.rect.y0 + HEADER_HEIGHT {
                 continue;
             }
-            if y0 >= self.rect.y1 {
+            if y0 >= body_bottom {
                 break;
             }
-            let selected = self.selectable && self.selection.is_selected(ri);
-            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(self.rect.y1));
+            let selected = self.selectable && self.is_row_selected(ri);
+            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(body_bottom));
             // Selection fill takes precedence over the zebra stripe.
             if selected {
                 scene.fill(
@@ -628,14 +1271,38 @@ impl<Row> DataTable<Row> {
                     &row_rect,
                 );
             }
-            for (i, col) in self.columns.iter().enumerate() {
-                let cell_rect = match self.col_rects.get(i) {
-                    Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(self.rect.y1)),
-                    None => continue,
-                };
-                (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
-                if let Some(tr) = &col.text_render {
-                    tr(row, scene, text_renderer, cell_rect, theme, selected);
+            match row_state {
+                TableRowState::Ready(row) => {
+                    for (i, col) in self.columns.iter().enumerate() {
+                        let cell_rect = match self.col_rects.get(i) {
+                            Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(body_bottom)),
+                            None => continue,
+                        };
+                        (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
+                        if let Some(tr) = &col.text_render {
+                            tr(row, scene, text_renderer, cell_rect, theme, selected);
+                        }
+                    }
+                }
+                TableRowState::Loading => {
+                    text_renderer.draw_text(
+                        scene,
+                        "Loading…",
+                        tokens.typography.scale.sm,
+                        tokens.colors.text_dim,
+                        translated(transform, self.rect.x0 + CELL_PADDING_X, y0 + 5.0),
+                        None,
+                    );
+                }
+                TableRowState::Error(message) => {
+                    text_renderer.draw_text(
+                        scene,
+                        message,
+                        tokens.typography.scale.sm,
+                        tokens.colors.text_primary,
+                        translated(transform, self.rect.x0 + CELL_PADDING_X, y0 + 5.0),
+                        None,
+                    );
                 }
             }
         }
@@ -660,6 +1327,16 @@ impl<Row> DataTable<Row> {
             *handled = true;
             return;
         }
+        if self.drag_scroll.is_tracking() {
+            let now = Instant::now();
+            if let Some(update) = self.drag_scroll.update(pt.y, now) {
+                self.momentum.stop();
+                self.set_scroll_offset(update.target_offset);
+                self.last_tick = Some(now);
+                *handled = true;
+            }
+            return;
+        }
         if let Some(track) = self.v_track() {
             self.vbar.update_hover(track, self.v_metrics(), pt);
         } else {
@@ -677,6 +1354,7 @@ impl<Row> DataTable<Row> {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
     ) {
+        self.momentum.stop();
         let Some(pt) = self.last_cursor else { return };
         // 0. Built-in scrollbar wins over the body beneath it.
         if let Some(track) = self.v_track() {
@@ -727,13 +1405,36 @@ impl<Row> DataTable<Row> {
             }
             return;
         }
-        // 3. Body-row selection.
+        // 3. An internally scrolling body defers row activation until
+        // release so the same gesture can become a drag without selecting.
+        let in_body = pt.x >= self.rect.x0
+            && pt.x <= self.rect.x1
+            && pt.y >= self.rect.y0 + HEADER_HEIGHT
+            && pt.y <= self.rect.y1;
+        if self.internal_scroll() && in_body {
+            self.drag_scroll
+                .begin(pt.y, self.viewport.offset(), Instant::now());
+            *focus_target = Some(node_id);
+            *handled = true;
+            return;
+        }
+        self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
+    }
+
+    fn select_row_at_cursor(
+        &mut self,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        let Some(pt) = self.last_cursor else { return };
         if self.selectable
             && let Some(ri) = self.row_at(pt)
         {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             let shift = modifiers.state().shift_key();
-            self.selection.apply_click(ri, ctrl, shift);
+            self.apply_selection_click(ri, ctrl, shift);
             *focus_target = Some(node_id);
             if let Some(cb) = &mut self.on_row_click {
                 cb(ri, ctrl, shift);
@@ -758,13 +1459,28 @@ impl<Row> DataTable<Row> {
 
     /// `WindowEvent::MouseInput { state: Released, button: Left }` — ends any
     /// in-progress column resize or scrollbar drag.
-    fn on_left_release(&mut self, handled: &mut bool) {
+    fn on_left_release(
+        &mut self,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
         let mut did = false;
         if self.resize.is_some() {
             self.end_resize();
             did = true;
         }
         if self.vbar.release() {
+            did = true;
+        }
+        if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
+            if drag.dragged {
+                self.momentum.fling(drag.velocity);
+                self.last_tick = Some(Instant::now());
+            } else {
+                self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
+            }
             did = true;
         }
         if did {
@@ -776,15 +1492,36 @@ impl<Row> DataTable<Row> {
     /// internally (an outer `Scrollable` otherwise consumes the wheel first).
     fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         if self.internal_scroll() {
-            const LINE_PX: f32 = 60.0;
+            self.drag_scroll.cancel();
             let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-                MouseScrollDelta::PixelDelta(pp) => px(-pp.y),
+                MouseScrollDelta::LineDelta(_, y) => {
+                    self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
+                }
+                MouseScrollDelta::PixelDelta(pp) => {
+                    self.momentum.stop();
+                    -pp.y
+                }
             };
-            let next = (self.scroll_y + dy).clamp(0.0, self.max_scroll_y());
-            self.set_scroll_y(next);
-            *handled = true;
+            self.last_tick = Some(Instant::now());
+            let before = self.viewport.offset();
+            self.set_scroll_offset(before + dy);
+            *handled = self.viewport.offset().to_bits() != before.to_bits();
+            if !*handled {
+                self.momentum.stop();
+            }
         }
+    }
+
+    fn page_selection(&mut self, forward: bool, extend: bool) -> bool {
+        let len = self.display_len();
+        let current = self
+            .primary_index()
+            .unwrap_or_else(|| if forward { 0 } else { len.saturating_sub(1) });
+        let Some((next, scrolled)) = self.viewport.page_from(current, forward) else {
+            return false;
+        };
+        self.move_selection_to(next, extend);
+        scrolled || next != current
     }
 
     /// `WindowEvent::KeyboardInput`, guarded by the caller to only fire while
@@ -798,20 +1535,41 @@ impl<Row> DataTable<Row> {
     ) {
         use winit::keyboard::{Key, NamedKey};
         let shift = modifiers.state().shift_key();
-        let len = self.view.len();
+        let len = self.display_len();
         if len == 0 {
             return;
         }
-        let cur = self.selection.primary();
+        let cur = self.primary_index();
         match &ke.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 let next = cur.map_or(0, |c| c.saturating_add(1).min(len.saturating_sub(1)));
-                self.selection.move_to(next, shift);
+                self.move_selection_to(next, shift);
+                self.viewport
+                    .scroll_to_index(next, ScrollAlignment::Nearest);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
                 let next = cur.map_or(0, |c| c.saturating_sub(1));
-                self.selection.move_to(next, shift);
+                self.move_selection_to(next, shift);
+                self.viewport
+                    .scroll_to_index(next, ScrollAlignment::Nearest);
+                *handled = true;
+            }
+            Key::Named(NamedKey::PageDown) => {
+                *handled = self.page_selection(true, shift);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                *handled = self.page_selection(false, shift);
+            }
+            Key::Named(NamedKey::Home) => {
+                self.move_selection_to(0, shift);
+                self.viewport.scroll_to_index(0, ScrollAlignment::Start);
+                *handled = true;
+            }
+            Key::Named(NamedKey::End) => {
+                let last = len.saturating_sub(1);
+                self.move_selection_to(last, shift);
+                self.viewport.scroll_to_index(last, ScrollAlignment::End);
                 *handled = true;
             }
             Key::Named(NamedKey::Enter) => {
@@ -823,10 +1581,67 @@ impl<Row> DataTable<Row> {
                 *handled = true;
             }
             Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
-                self.selection.select_all(len);
+                if self.model.is_some() {
+                    self.model_selection.select_all();
+                } else {
+                    self.selection.select_all(len);
+                }
                 *handled = true;
             }
             _ => {}
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the Widget event contract plus handled/focus outputs"
+    )]
+    fn route_to_cell_widgets(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let Some(cell) = self
+            .mounted_cells
+            .iter_mut()
+            .find(|cell| cell.widget.wants_pointer_capture())
+            && let Some(node) = cell.node
+        {
+            cell.widget.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node,
+                taffy,
+            );
+            return;
+        }
+        for cell in self.mounted_cells.iter_mut().rev() {
+            let Some(node) = cell.node else { continue };
+            cell.widget.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node,
+                taffy,
+            );
+            if *handled {
+                break;
+            }
         }
     }
 }
@@ -834,13 +1649,7 @@ impl<Row> DataTable<Row> {
 const HEADER_HEIGHT: f64 = 28.0;
 const ROW_HEIGHT: f64 = 24.0;
 const CELL_PADDING_X: f64 = 8.0;
-
-/// Widens a row/column count to `f64` for layout math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a
-/// `DataTable` never approaches `u32::MAX` rows or columns.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
+const WHEEL_LINE_PX: f64 = 60.0;
 
 /// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
 /// vello/taffy; table content stays far below `f32::MAX`.
@@ -864,26 +1673,130 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
+fn accessible_sort_description<Row>(
+    columns: &[ColumnDef<Row>],
+    sort: Option<(&str, bool)>,
+) -> Option<String> {
+    sort.map(|(key, ascending)| {
+        let header = columns.iter().find(|column| column.key == key).map_or_else(
+            || key.to_owned(),
+            |column| crate::i18n::I18nManager::lookup_plain(&column.header),
+        );
+        let direction = if ascending { "ascending" } else { "descending" };
+        format!("sorted by {header} {direction}")
+    })
+}
+
 impl<Row: 'static> Widget for DataTable<Row> {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.viewport
+            .set_minimum_height(f64::from(environment.minimum_collection_row()));
+        self.viewport
+            .set_overscan(self.viewport.estimated_height() * 2.0);
+        for cell in &mut self.mounted_cells {
+            cell.widget.set_interaction_environment(environment);
+        }
+        self.visible_window_changed();
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let model_changes = self
+            .model
+            .as_deref_mut()
+            .map_or_else(Vec::new, TableModel::poll_changes);
+        let received_changes = !model_changes.is_empty();
+        if received_changes {
+            self.notify_model_changes(&model_changes);
+        }
+        let now = Instant::now();
+        let elapsed = self
+            .last_tick
+            .replace(now)
+            .map_or(std::time::Duration::ZERO, |last| {
+                now.saturating_duration_since(last)
+            });
+        let mut children_changed = false;
+        for cell in &mut self.mounted_cells {
+            children_changed |= cell.widget.update(state, path);
+        }
+        if !self.momentum.is_active() {
+            self.refresh_view_anchor();
+            return received_changes || children_changed;
+        }
+        let delta = self.momentum.tick(elapsed);
+        let before = self.viewport.offset();
+        self.set_scroll_offset(before + delta);
+        let moved = self.viewport.offset().to_bits() != before.to_bits();
+        if !moved {
+            self.momentum.stop();
+        }
+        self.refresh_view_anchor();
+        received_changes || moved || children_changed
+    }
+
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        for cell in &mut self.mounted_cells {
+            cell.widget.sync(state, path);
+        }
+    }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let height = HEADER_HEIGHT + ROW_HEIGHT * count_f64(self.view.len().max(1));
-        let node = taffy.leaf_node(Style {
-            // A bare `auto` leaf with no measure collapses to zero
-            // under compute_layout_with_measure.
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(px(height)),
+        self.reconcile_mounted_cells();
+        let mut child_nodes = Vec::with_capacity(self.mounted_cells.len());
+        for cell in &mut self.mounted_cells {
+            let child = cell.widget.build_layout(taffy, theme, node_map);
+            let mut style = taffy.style(child).cloned().unwrap_or_default();
+            style.position = taffy::Position::Absolute;
+            if let Some(column) = self.col_rects.get(cell.column_index) {
+                style.inset.left = length(px(column.x0 - self.rect.x0));
+                style.size.width = Dimension::length(px(column.width()));
+            } else if let Some(column) = self.columns.get(cell.column_index)
+                && let ColumnWidth::Fixed(width) = column.width
+            {
+                style.size.width = Dimension::length(width);
+            }
+            let top = self
+                .viewport
+                .item_view_top(cell.row_index)
+                .unwrap_or_default();
+            style.inset.top = length(px(HEADER_HEIGHT + top));
+            let _ = taffy.set_style(child, style);
+            cell.node = Some(child);
+            child_nodes.push(child);
+        }
+        let body_height = if self.viewport.viewport() > 0.0 {
+            self.viewport.viewport()
+        } else {
+            self.viewport
+                .content_extent()
+                .max(self.viewport.estimated_height())
+        };
+        let height = HEADER_HEIGHT + body_height;
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: Dimension::length(px(height)),
+                },
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Clip,
+                    y: taffy::Overflow::Clip,
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        });
+            &child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        self.structure_dirty = false;
         node
     }
 
@@ -896,7 +1809,54 @@ impl<Row: 'static> Widget for DataTable<Row> {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
-        self.col_rects = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
+        let next_columns = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
+        let columns_changed = self.col_rects != next_columns;
+        self.col_rects = next_columns;
+        let mut row_heights = HashMap::<usize, f64>::new();
+        for cell in &mut self.mounted_cells {
+            let Some(child) = cell.node else { continue };
+            let child_layout = taffy.layout(child).copied().unwrap_or_default();
+            let desired_x = self
+                .col_rects
+                .get(cell.column_index)
+                .map_or(self.rect.x0, |column| column.x0);
+            let desired_y = self.rect.y0
+                + HEADER_HEIGHT
+                + self
+                    .viewport
+                    .item_view_top(cell.row_index)
+                    .unwrap_or_default();
+            // Position from live viewport/column geometry rather than only
+            // the absolute Taffy style captured at tree-build time. Scroll
+            // frames can then reposition retained controls without forcing a
+            // structural rebuild when the mounted key window is unchanged.
+            let child_origin = Point::new(
+                desired_x - f64::from(child_layout.location.x),
+                desired_y - f64::from(child_layout.location.y),
+            );
+            cell.widget.apply_layout(taffy, child, child_origin);
+            row_heights
+                .entry(cell.row_index)
+                .and_modify(|height| *height = height.max(cell.widget.get_rect().height()))
+                .or_insert_with(|| cell.widget.get_rect().height());
+        }
+        let mut measured = false;
+        for (row_index, height) in row_heights {
+            if let Some(key) = self.row_identity_at(row_index) {
+                measured |= self
+                    .viewport
+                    .measure(row_index, key, height.max(ROW_HEIGHT));
+            }
+        }
+        if columns_changed {
+            self.structure_dirty = true;
+        }
+        if measured {
+            self.visible_window_changed();
+        } else if !columns_changed {
+            self.layout_dirty = false;
+            self.refresh_view_anchor();
+        }
     }
 
     fn draw(
@@ -905,8 +1865,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
+        if theme.reduce_motion {
+            self.momentum.stop();
+        }
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -917,6 +1880,24 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
         self.draw_header(scene, transform, text_renderer, theme);
         self.draw_rows(scene, transform, text_renderer, theme);
+        let body = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.x1,
+            self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h(),
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &body,
+        );
+        for cell in &mut self.mounted_cells {
+            cell.widget
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+        scene.pop_layer();
 
         // Focus ring, so arrow-key navigation reads as a focused control.
         if self.is_focused {
@@ -930,6 +1911,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
 
         self.draw_scrollbar(scene, transform, theme);
+        self.refresh_view_anchor();
     }
 
     fn handle_event(
@@ -937,13 +1919,28 @@ impl<Row: 'static> Widget for DataTable<Row> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        taffy: &TaffyTree<()>,
     ) {
+        if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
+            self.route_to_cell_widgets(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
+        if *handled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -961,7 +1958,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_release(handled);
+                self.on_left_release(*modifiers, handled, focus_target, node_id);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.on_wheel(delta, handled);
@@ -969,21 +1966,86 @@ impl<Row: 'static> Widget for DataTable<Row> {
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
             {
+                self.drag_scroll.cancel();
+                self.momentum.stop();
                 self.on_key(ke, *modifiers, handled);
             }
             _ => {}
         }
+        self.refresh_view_anchor();
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.resize.is_some() || self.vbar.is_dragging()
+        self.resize.is_some()
+            || self.vbar.is_dragging()
+            || self.drag_scroll.is_tracking()
+            || self
+                .mounted_cells
+                .iter()
+                .any(|cell| cell.widget.wants_pointer_capture())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.momentum.is_active()
+            || self.model.as_deref().is_some_and(TableModel::needs_poll)
+            || self
+                .mounted_cells
+                .iter()
+                .any(|cell| cell.widget.needs_animation_frame())
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.mounted_cells
+            .iter()
+            .map(|cell| cell.widget.as_ref())
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.mounted_cells
+            .iter_mut()
+            .map(|cell| cell.widget.as_mut() as &mut dyn Widget)
+            .collect()
+    }
+
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        let cell = self.mounted_cells.get(child_index)?;
+        let visible_start = self.viewport.visible_range().start;
+        Some(vec![
+            cell.row_index.checked_sub(visible_start)?,
+            cell.column_index,
+        ])
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        for cell in &mut self.mounted_cells {
+            dirty |= cell.widget.take_structure_dirty();
+        }
+        dirty
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty
+            || self
+                .mounted_cells
+                .iter()
+                .any(|cell| cell.widget.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.layout_dirty
+            || self
+                .mounted_cells
+                .iter()
+                .any(|cell| cell.widget.layout_needs_measure())
     }
 
     fn name(&self) -> &'static str {
         "DataTable"
     }
     fn test_id(&self) -> Option<&str> {
-        Some("data_table")
+        Some(&self.test_id)
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -1000,56 +2062,218 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let selected_pos = self.selection.primary();
+        let selected_pos = self.primary_index();
         // Human header, not the internal key, so the announcement reads naturally.
-        let description = self.sort_state().map(|(key, ascending)| {
-            let header = self
-                .columns
-                .iter()
-                .find(|c| c.key == key)
-                .map_or(key, |c| c.header.as_str());
-            let dir = if ascending { "ascending" } else { "descending" };
-            format!("sorted by {header} {dir}")
-        });
+        let description = accessible_sort_description(&self.columns, self.sort_state());
         let mut node = AccessNode::new(Role::Table).with_state(AccessState {
             focusable: self.is_focusable(),
             focused: self.is_focused(),
             ..Default::default()
         });
+        if let Some(name) = &self.accessible_name {
+            node = node.with_name(crate::i18n::I18nManager::lookup_plain(name));
+        }
         if let Some(i) = selected_pos {
-            node = node.with_position(i.saturating_add(1), self.view.len());
+            node = node.with_position(i.saturating_add(1), self.display_len());
         }
         if let Some(desc) = description {
             node = node.with_description(desc);
         }
-        // Cell content comes from an opaque closure renderer, so a cell's
-        // accessible name is its column header instead.
-        let row_count = self.view.len();
+        // A cell's name stays the localized column header. Ready rows may add
+        // their typed row-specific value; retained controls remain children.
+        let row_count = self.display_len();
         let col_count = self.columns.len();
-        let rows: Vec<AccessNode> = (0..row_count)
+        // The keyboard cursor (Up/Down move it, Enter activates it) is the
+        // table's *active descendant*: when the table holds keyboard focus, the
+        // export layer puts the reader on that row rather than on the table as a
+        // whole, so arrowing down reads each row instead of repeating "table".
+        let cursor = if self.selectable { selected_pos } else { None };
+        // A virtual collection must keep its semantic tree virtual too. ATs
+        // receive the visible rows with their absolute position/set size;
+        // keyboard navigation scrolls the primary row into this window.
+        let visible = {
+            let laid_out = self.viewport.visible_range();
+            if laid_out.is_empty() && row_count > 0 {
+                // Accessibility can be queried before the first layout (unit
+                // tests and some AT startup paths). Keep that fallback bounded
+                // too, while ensuring the keyboard cursor is represented.
+                let start = cursor.unwrap_or(0).saturating_sub(16);
+                start..start.saturating_add(32).min(row_count)
+            } else {
+                laid_out
+            }
+        };
+        let rows: Vec<AccessNode> = visible
             .map(|ri| {
-                let selected = self.selectable && self.selection.is_selected(ri);
+                let selected = self.selectable && self.is_row_selected(ri);
+                let row_state = self.row_state_at(ri);
+                let row_bounds = self
+                    .viewport
+                    .item_view_top(ri)
+                    .zip(self.viewport.item_height(ri))
+                    .map(|(top, height)| {
+                        let y0 = self.rect.y0 + HEADER_HEIGHT + top;
+                        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + height)
+                    });
                 let cells: Vec<AccessNode> = self
                     .columns
                     .iter()
                     .enumerate()
                     .map(|(ci, col)| {
-                        AccessNode::new(Role::Cell)
-                            .with_name(col.header.clone())
-                            .with_position(ci.saturating_add(1), col_count)
+                        let mut cell = AccessNode::new(Role::Cell)
+                            .with_name(crate::i18n::I18nManager::lookup_plain(&col.header))
+                            .with_position(ci.saturating_add(1), col_count);
+                        if let Some(TableRowState::Ready(row)) = row_state
+                            && let Some(value) = &col.accessible_value
+                        {
+                            cell = cell.with_value(value(row));
+                        }
+                        if let (Some(row), Some(column)) = (row_bounds, self.col_rects.get(ci)) {
+                            cell =
+                                cell.with_bounds(Rect::new(column.x0, row.y0, column.x1, row.y1));
+                        }
+                        cell
                     })
                     .collect();
-                AccessNode::new(Role::Row)
+                let mut row = AccessNode::new(Role::Row)
                     .with_position(ri.saturating_add(1), row_count)
                     .with_state(AccessState {
+                        focusable: self.selectable,
+                        focused: cursor == Some(ri),
                         selected,
+                        busy: matches!(row_state, Some(TableRowState::Loading)),
+                        invalid: matches!(row_state, Some(TableRowState::Error(_))),
                         ..Default::default()
                     })
-                    .with_children(cells)
+                    // Only a viewport slice is exported, so its ordinal is not
+                    // the absolute row. Key it by display position for stable
+                    // AccessKit routing across scroll windows.
+                    .with_key(ri as u64)
+                    .with_children(cells);
+                row = match row_state {
+                    Some(TableRowState::Loading) => row.with_name("Loading"),
+                    Some(TableRowState::Error(message)) => row.with_name(message),
+                    _ => row,
+                };
+                if let Some(bounds) = row_bounds {
+                    row = row.with_bounds(bounds);
+                }
+                if (self.row_key.is_some() || self.model.is_some())
+                    && (self.selectable || self.on_activate.is_some())
+                    && let Some(identity) = self.row_identity_at(ri)
+                {
+                    row = row.with_action_target(format!(
+                        "row:{}:{}",
+                        identity.value, identity.occurrence
+                    ));
+                }
+                row
             })
             .collect();
         node = node.with_children(rows);
         Some(node)
+    }
+
+    /// Route an assistive technology's action to the **row** it was aimed at.
+    ///
+    /// The table paints its own rows and cells, so they reach an AT as synthetic
+    /// nodes rather than as child widgets; without this, an AT could describe
+    /// row 4 but activating it would land a click in the middle of the table.
+    /// `key_path` is `[row]` for a row and `[row, column]` for a cell — the
+    /// table acts on the row either way, since a cell has no independent
+    /// behaviour here.
+    ///
+    /// Rows carry no explicit key, so the path element is the row's display
+    /// index (its ordinal among the table's synthetic children), which is the
+    /// same index `on_row_click` / `on_activate` report.
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        // Empty path: the table itself, not a row — nothing table-specific to do.
+        let Some(&row_key) = key_path.first() else {
+            return self.perform_action(action, state, path);
+        };
+        // A read-only table's rows aren't operable.
+        if !self.selectable {
+            return false;
+        }
+        let Ok(row) = usize::try_from(row_key) else {
+            return false;
+        };
+        // An id an AT held across a change can name a row that no longer
+        // exists. Drop it — acting on whatever now sits at that index would
+        // operate on the wrong record.
+        if row >= self.display_len() {
+            return false;
+        }
+        match action {
+            // The host moves keyboard focus to the table; we move our own
+            // cursor to the requested row, which is the half only we can do.
+            Action::Focus => {
+                self.select_only_index(row);
+                self.viewport.scroll_to_index(row, ScrollAlignment::Nearest);
+                self.refresh_view_anchor();
+                true
+            }
+            Action::Activate | Action::ToggleCheck => {
+                self.select_only_index(row);
+                if let Some(cb) = &mut self.on_activate {
+                    cb(row);
+                }
+                self.refresh_view_anchor();
+                true
+            }
+            Action::ScrollIntoView => {
+                self.viewport.scroll_to_index(row, ScrollAlignment::Nearest);
+                self.refresh_view_anchor();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        let Some(index) = self.semantic_row_index(target) else {
+            return false;
+        };
+        let handled = match action {
+            Action::Focus if self.selectable => {
+                self.select_only_index(index);
+                self.viewport
+                    .scroll_to_index(index, ScrollAlignment::Nearest);
+                true
+            }
+            Action::Activate if self.selectable || self.on_activate.is_some() => {
+                if self.selectable {
+                    self.select_only_index(index);
+                }
+                if let Some(callback) = &mut self.on_activate {
+                    callback(index);
+                }
+                true
+            }
+            Action::ScrollIntoView => {
+                self.viewport
+                    .scroll_to_index(index, ScrollAlignment::Nearest);
+                true
+            }
+            _ => false,
+        };
+        self.refresh_view_anchor();
+        handled
     }
 }
 
@@ -1109,6 +2333,9 @@ fn compute_column_rects<Row>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Button;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     #[derive(Clone)]
     struct R {
@@ -1122,6 +2349,215 @@ mod tests {
         ]
     }
 
+    struct HugeModel {
+        row: R,
+        key_queries: Rc<Cell<usize>>,
+        row_queries: Rc<Cell<usize>>,
+    }
+
+    impl TableModel for HugeModel {
+        type Row = R;
+
+        fn len(&self) -> usize {
+            100_000_000
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.key_queries
+                .set(self.key_queries.get().saturating_add(1));
+            (index < self.len()).then(|| u64::try_from(index).expect("index fits u64"))
+        }
+
+        fn index_of(&self, key: u64) -> Option<usize> {
+            usize::try_from(key)
+                .ok()
+                .filter(|index| *index < self.len())
+        }
+
+        fn row_state(&self, index: usize) -> TableRowState<'_, Self::Row> {
+            self.row_queries
+                .set(self.row_queries.get().saturating_add(1));
+            if index < self.len() {
+                TableRowState::Ready(&self.row)
+            } else {
+                TableRowState::Error("outside model")
+            }
+        }
+    }
+
+    struct PagingModel {
+        row: R,
+        loaded: Rc<Cell<bool>>,
+        changed: Rc<Cell<bool>>,
+        requested: Rc<RefCell<Vec<Range<usize>>>>,
+    }
+
+    struct InsertModel {
+        row: R,
+        inserted: Rc<Cell<bool>>,
+    }
+
+    struct SortableModel {
+        row: R,
+        descending: Rc<Cell<bool>>,
+    }
+
+    struct NotifyingModel {
+        row: R,
+        order: Rc<RefCell<Vec<u64>>>,
+        changes: Rc<RefCell<Vec<TableModelChange>>>,
+    }
+
+    impl TableModel for NotifyingModel {
+        type Row = R;
+
+        fn len(&self) -> usize {
+            self.order.borrow().len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.order.borrow().get(index).copied()
+        }
+
+        fn index_of(&self, key: u64) -> Option<usize> {
+            self.order
+                .borrow()
+                .iter()
+                .position(|candidate| *candidate == key)
+        }
+
+        fn row_state(&self, _index: usize) -> TableRowState<'_, Self::Row> {
+            TableRowState::Ready(&self.row)
+        }
+
+        fn poll_changes(&mut self) -> Vec<TableModelChange> {
+            std::mem::take(&mut *self.changes.borrow_mut())
+        }
+    }
+
+    impl TableModel for SortableModel {
+        type Row = R;
+
+        fn len(&self) -> usize {
+            3
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            let order = if self.descending.get() {
+                [3, 2, 1]
+            } else {
+                [1, 2, 3]
+            };
+            order.get(index).copied()
+        }
+
+        fn index_of(&self, key: u64) -> Option<usize> {
+            let order = if self.descending.get() {
+                [3, 2, 1]
+            } else {
+                [1, 2, 3]
+            };
+            order.iter().position(|candidate| *candidate == key)
+        }
+
+        fn row_state(&self, _index: usize) -> TableRowState<'_, Self::Row> {
+            TableRowState::Ready(&self.row)
+        }
+
+        fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
+            if column_key != "name" {
+                return false;
+            }
+            self.descending.set(!ascending);
+            true
+        }
+    }
+
+    impl TableModel for InsertModel {
+        type Row = R;
+
+        fn len(&self) -> usize {
+            if self.inserted.get() { 101 } else { 100 }
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            if index >= self.len() {
+                return None;
+            }
+            if self.inserted.get() {
+                Some(if index == 0 {
+                    10_000
+                } else {
+                    u64::try_from(index.saturating_sub(1)).expect("index fits u64")
+                })
+            } else {
+                Some(u64::try_from(index).expect("index fits u64"))
+            }
+        }
+
+        fn index_of(&self, key: u64) -> Option<usize> {
+            if self.inserted.get() {
+                if key == 10_000 {
+                    return Some(0);
+                }
+                usize::try_from(key)
+                    .ok()
+                    .filter(|index| *index < 100)
+                    .map(|index| index.saturating_add(1))
+            } else {
+                usize::try_from(key).ok().filter(|index| *index < 100)
+            }
+        }
+
+        fn row_state(&self, _index: usize) -> TableRowState<'_, Self::Row> {
+            TableRowState::Ready(&self.row)
+        }
+    }
+
+    impl TableModel for PagingModel {
+        type Row = R;
+
+        fn len(&self) -> usize {
+            10_000
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            (index < self.len()).then(|| {
+                u64::try_from(index)
+                    .expect("index fits u64")
+                    .saturating_add(1_000)
+            })
+        }
+
+        fn index_of(&self, key: u64) -> Option<usize> {
+            key.checked_sub(1_000)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < self.len())
+        }
+
+        fn row_state(&self, index: usize) -> TableRowState<'_, Self::Row> {
+            if index == 3 {
+                TableRowState::Error("row failed to load")
+            } else if self.loaded.get() {
+                TableRowState::Ready(&self.row)
+            } else {
+                TableRowState::Loading
+            }
+        }
+
+        fn request_range(&mut self, range: Range<usize>) {
+            self.requested.borrow_mut().push(range);
+        }
+
+        fn poll_changed(&mut self) -> bool {
+            self.changed.replace(false)
+        }
+
+        fn needs_poll(&self) -> bool {
+            !self.loaded.get()
+        }
+    }
+
     #[test]
     fn compute_column_rects_splits_flex_after_fixed() {
         let cols = sample_cols();
@@ -1130,6 +2566,228 @@ mod tests {
         assert_eq!(rects.len(), 2);
         assert!((rects[0].width() - 160.0).abs() < 0.01);
         assert!((rects[1].width() - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn model_table_virtualizes_a_hundred_million_rows_in_constant_space() {
+        let key_queries = Rc::new(Cell::new(0));
+        let row_queries = Rc::new(Cell::new(0));
+        let mut table = DataTable::from_model(
+            sample_cols(),
+            HugeModel {
+                row: R {
+                    name: "resident".into(),
+                },
+                key_queries: Rc::clone(&key_queries),
+                row_queries: Rc::clone(&row_queries),
+            },
+        )
+        .selectable(true);
+        table.set_viewport(120.0, 24.0);
+        table.set_scroll_y(f32::MAX);
+        let _laid = lay_out(&mut table);
+
+        let semantics = Widget::accessibility(&table).expect("table semantics");
+        assert_eq!(table.viewport.len(), 100_000_000);
+        assert_eq!(table.viewport.resident_measurements(), 0);
+        assert!(semantics.children.len() <= 10);
+        assert!(
+            key_queries.get() < 100,
+            "queried {} keys",
+            key_queries.get()
+        );
+        assert!(
+            row_queries.get() < 100,
+            "queried {} rows",
+            row_queries.get()
+        );
+
+        assert!(Widget::perform_semantic_action(
+            &mut table,
+            "row:99999999:0",
+            &crate::a11y::Action::Focus,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(table.model_selection().primary(), Some(&99_999_999));
+        table.model_selection_mut().select_all();
+        assert!(table.model_selection().is_select_all());
+        assert_eq!(table.model_selection().len(100_000_000), 100_000_000);
+        assert_eq!(table.model_selection().stored_keys().count(), 0);
+    }
+
+    #[test]
+    fn paged_model_requests_only_the_window_and_wakes_on_loaded_rows() {
+        let loaded = Rc::new(Cell::new(false));
+        let changed = Rc::new(Cell::new(false));
+        let requested = Rc::new(RefCell::new(Vec::new()));
+        let mut table = DataTable::from_model(
+            sample_cols(),
+            PagingModel {
+                row: R {
+                    name: "loaded row".into(),
+                },
+                loaded: Rc::clone(&loaded),
+                changed: Rc::clone(&changed),
+                requested: Rc::clone(&requested),
+            },
+        );
+        table.set_viewport(96.0, 24.0);
+
+        let before = Widget::accessibility(&table).expect("loading semantics");
+        assert_eq!(before.children[0].name.as_deref(), Some("Loading"));
+        assert!(before.children[0].state.busy);
+        assert_eq!(
+            before.children[3].name.as_deref(),
+            Some("row failed to load")
+        );
+        assert!(before.children[3].state.invalid);
+        assert!(table.needs_animation_frame());
+
+        let _fills = table_color_fills(&mut table);
+        let requested = requested.borrow();
+        assert_eq!(requested.len(), 1);
+        assert!(requested[0].start == 0 && requested[0].end < 16);
+        drop(requested);
+
+        loaded.set(true);
+        changed.set(true);
+        assert!(Widget::update(
+            &mut table,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        let after = Widget::accessibility(&table).expect("loaded semantics");
+        assert_eq!(after.children[0].name, None);
+        assert!(!table.needs_animation_frame());
+    }
+
+    #[test]
+    fn granular_row_change_rebuilds_only_that_rows_retained_control() {
+        let builds = Rc::new(Cell::new(0));
+        let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let mut table = DataTable::from_model(
+            interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
+            NotifyingModel {
+                row: R { name: "row".into() },
+                order,
+                changes: Rc::clone(&changes),
+            },
+        );
+        table.set_viewport(120.0, 24.0);
+        let _ = lay_out(&mut table);
+        let initial_builds = builds.get();
+
+        changes
+            .borrow_mut()
+            .push(TableModelChange::RowsChanged { keys: vec![2] });
+        assert!(Widget::update(
+            &mut table,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        let _ = lay_out(&mut table);
+
+        assert_eq!(builds.get(), initial_builds + 1);
+        assert_eq!(table.mounted_cell_count(), 4);
+    }
+
+    #[test]
+    fn granular_structural_changes_retain_controls_by_stable_key() {
+        let builds = Rc::new(Cell::new(0));
+        let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let mut table = DataTable::from_model(
+            interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
+            NotifyingModel {
+                row: R { name: "row".into() },
+                order: Rc::clone(&order),
+                changes: Rc::clone(&changes),
+            },
+        );
+        table.set_viewport(144.0, 24.0);
+        let _ = lay_out(&mut table);
+        let initial_builds = builds.get();
+
+        order.borrow_mut().insert(0, 99);
+        changes
+            .borrow_mut()
+            .push(TableModelChange::RowsInserted { index: 0, count: 1 });
+        assert!(Widget::update(
+            &mut table,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        let _ = lay_out(&mut table);
+        assert_eq!(builds.get(), initial_builds + 1);
+
+        order.borrow_mut().swap(1, 3);
+        changes.borrow_mut().push(TableModelChange::RowsMoved {
+            from: 1,
+            to: 3,
+            count: 1,
+        });
+        assert!(Widget::update(
+            &mut table,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        let _ = lay_out(&mut table);
+
+        assert_eq!(
+            builds.get(),
+            initial_builds + 1,
+            "moving stable keys retains their live cell controls"
+        );
+        assert_eq!(table.mounted_cell_count(), 5);
+    }
+
+    #[test]
+    fn model_insert_preserves_stable_anchor_and_key_selection() {
+        let inserted = Rc::new(Cell::new(false));
+        let mut table = DataTable::from_model(
+            sample_cols(),
+            InsertModel {
+                row: R { name: "row".into() },
+                inserted: Rc::clone(&inserted),
+            },
+        )
+        .selectable(true);
+        table.set_viewport(48.0, 24.0);
+        table.set_scroll_y(50.0 * 24.0 + 5.0);
+        table.model_selection_mut().select_only(50);
+        let before = table.viewport.item_view_top(50);
+
+        inserted.set(true);
+        table.notify_model_changed();
+
+        assert_eq!(table.semantic_row_index("row:50:0"), Some(51));
+        assert_eq!(table.viewport.item_view_top(51), before);
+        assert_eq!(table.model_selection().primary(), Some(&50));
+        assert!(table.model_selection().is_selected(&50));
+    }
+
+    #[test]
+    fn model_owns_sort_order_while_table_owns_header_state() {
+        let descending = Rc::new(Cell::new(false));
+        let mut table = DataTable::from_model(
+            sample_cols(),
+            SortableModel {
+                row: R { name: "row".into() },
+                descending: Rc::clone(&descending),
+            },
+        );
+
+        assert_eq!(table.toggle_sort(0), Some(("name".into(), true)));
+        assert!(!descending.get());
+        assert_eq!(table.sort_state(), Some(("name", true)));
+        assert_eq!(table.semantic_row_index("row:1:0"), Some(0));
+
+        assert_eq!(table.toggle_sort(0), Some(("name".into(), false)));
+        assert!(descending.get());
+        assert_eq!(table.sort_state(), Some(("name", false)));
+        assert_eq!(table.semantic_row_index("row:1:0"), Some(2));
     }
 
     #[test]
@@ -1162,9 +2820,82 @@ mod tests {
     }
 
     #[test]
-    fn data_table_test_id_returns_data_table() {
+    fn data_table_exposes_stable_test_and_accessible_names() {
         let t = DataTable::<R>::new(sample_cols());
         assert_eq!(Widget::test_id(&t), Some("data_table"));
+        let named = DataTable::<R>::new(sample_cols())
+            .with_id("results-table")
+            .with_accessible_name("Results");
+        assert_eq!(Widget::test_id(&named), Some("results-table"));
+        assert_eq!(
+            Widget::accessibility(&named).and_then(|node| node.name),
+            Some("Results".into())
+        );
+    }
+
+    #[test]
+    fn semantic_row_actions_use_stable_row_identities() {
+        let activated = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&activated);
+        let mut table = DataTable::<R>::new(sample_cols())
+            .with_row_key(|row| u64::from(row.name.as_bytes()[0]))
+            .selectable(true)
+            .on_activate(move |index| captured.borrow_mut().push(index));
+        table.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
+
+        let semantics = Widget::accessibility(&table).expect("table semantics");
+        assert_eq!(
+            semantics.children[1].action_target.as_deref(),
+            Some("row:98:0")
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut table,
+            "row:98:0",
+            &crate::a11y::Action::Focus,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(table.selection().primary(), Some(1));
+        assert!(Widget::perform_semantic_action(
+            &mut table,
+            "row:98:0",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(&*activated.borrow(), &[1]);
+
+        let mut index_keyed = DataTable::<R>::new(sample_cols()).selectable(true);
+        index_keyed.set_rows(vec![R { name: "a".into() }]);
+        assert_eq!(
+            Widget::accessibility(&index_keyed).unwrap().children[0].action_target,
+            None,
+            "index fallbacks are not stable action identities"
+        );
+    }
+
+    #[test]
+    fn semantic_rows_and_cells_publish_scrolled_viewport_geometry() {
+        let mut table = DataTable::<R>::new(sample_cols());
+        table.set_rows(rows4());
+        table.set_viewport(72.0, 24.0);
+        table.set_scroll_y(10.0);
+        let _ = lay_out(&mut table);
+
+        let semantics = Widget::accessibility(&table).expect("table semantics");
+        let row = semantics.children.first().expect("first visible row");
+        let row_bounds = row.bounds.expect("row bounds").to_rect();
+        assert_eq!(row_bounds.y0, table.rect.y0 + HEADER_HEIGHT - 10.0);
+        assert_eq!(row_bounds.y1, row_bounds.y0 + 24.0);
+        assert_eq!(row_bounds.x0, table.rect.x0);
+        assert_eq!(row_bounds.x1, table.rect.x1);
+
+        let first_cell = row.children.first().expect("first cell");
+        let cell_bounds = first_cell.bounds.expect("cell bounds").to_rect();
+        assert_eq!(cell_bounds.y0, row_bounds.y0);
+        assert_eq!(cell_bounds.y1, row_bounds.y1);
+        assert_eq!(cell_bounds.x0, table.col_rects[0].x0);
+        assert_eq!(cell_bounds.x1, table.col_rects[0].x1);
     }
 
     #[test]
@@ -1204,6 +2935,84 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_cursor_row_is_exported_as_the_active_descendant() {
+        // Exactly one row may claim focus, and it must be the row Up/Down moved
+        // the cursor to — that is what puts a reader on the row rather than on
+        // the table.
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows(vec![
+            R { name: "a".into() },
+            R { name: "b".into() },
+            R { name: "c".into() },
+        ]);
+        t.selection_mut().move_to(1, false);
+        let node = Widget::accessibility(&t).unwrap();
+        let focused: Vec<usize> = node
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.state.focused)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(focused, vec![1], "the cursor row, and only it, is focused");
+        assert!(
+            node.children.iter().all(|r| r.state.focusable),
+            "every row must be focusable or an AT cannot navigate to it"
+        );
+
+        t.selection_mut().move_to(2, false);
+        let node = Widget::accessibility(&t).unwrap();
+        assert!(node.children[2].state.focused, "focus follows the cursor");
+        assert!(!node.children[1].state.focused);
+    }
+
+    #[test]
+    fn a_read_only_tables_rows_are_not_focusable() {
+        // Nothing to operate, so nothing should advertise itself as operable.
+        let mut t = DataTable::<R>::new(sample_cols());
+        t.set_rows(rows4());
+        assert!(!t.selectable, "the default table is read-only");
+        let node = Widget::accessibility(&t).unwrap();
+        assert!(node.children.iter().all(|r| !r.state.focusable));
+        assert!(node.children.iter().all(|r| !r.state.focused));
+    }
+
+    #[test]
+    fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
+        // An assistive technology can hold a node id across a row being
+        // removed. Acting on whatever now sits at that index would operate on
+        // the wrong record — so an out-of-range row must be dropped, not
+        // clamped.
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+        let sink = fired.clone();
+        let mut t = DataTable::<R>::new(sample_cols())
+            .selectable(true)
+            .on_activate(move |i| sink.borrow_mut().push(i));
+        t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
+        t.selection_mut().move_to(0, false);
+
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let handled = Widget::perform_action_at(
+            &mut t,
+            &crate::a11y::Action::Activate,
+            &[7],
+            &mut doc,
+            &root,
+        );
+        assert!(!handled, "a vanished row cannot be activated");
+        assert!(
+            fired.borrow().is_empty(),
+            "and must not activate some other row in its place"
+        );
+        assert_eq!(
+            t.selection.primary(),
+            Some(0),
+            "nor move the cursor off the row the user was on"
+        );
+    }
+
+    #[test]
     fn accessibility_exposes_per_row_and_cell_structure() {
         use crate::a11y::Role;
         let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
@@ -1233,8 +3042,38 @@ mod tests {
         assert!(!node.children[0].state.selected);
     }
 
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    #[test]
+    fn typed_text_and_custom_cells_publish_row_specific_values() {
+        let columns = vec![
+            ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+                .with_text(|row: &R| row.name.clone()),
+            ColumnDef::new("custom", "Custom", ColumnWidth::Fixed(80.0))
+                .with_render(Box::new(|_, _, _, _, _| {}))
+                .with_accessible_value(|row: &R| format!("custom {}", row.name)),
+            ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
+                .with_widget(|_, _| Box::new(Button::new("edit", "Edit", None))),
+        ];
+        let mut table = DataTable::new(columns);
+        table.set_rows(vec![R { name: "Ada".into() }]);
+        let semantics = Widget::accessibility(&table).expect("table semantics");
+        let cells = &semantics.children.first().expect("ready row").children;
+
+        assert_eq!(
+            cells.first().and_then(|cell| cell.value.as_deref()),
+            Some("Ada")
+        );
+        assert_eq!(
+            cells.get(1).and_then(|cell| cell.value.as_deref()),
+            Some("custom Ada")
+        );
+        assert_eq!(
+            cells.get(2).and_then(|cell| cell.value.as_deref()),
+            None,
+            "retained controls provide their own nested semantics"
+        );
+        assert!(table.columns[0].text_render.is_some());
+    }
+
     use winit::event::{DeviceId, ElementState, MouseButton};
 
     /// Inside a 300×400 flex-column root so the table's auto width stretches
@@ -1275,6 +3114,155 @@ mod tests {
             R { name: "c".into() },
             R { name: "d".into() },
         ]
+    }
+
+    fn interactive_cols(clicks: Rc<Cell<usize>>, builds: Rc<Cell<usize>>) -> Vec<ColumnDef<R>> {
+        vec![
+            ColumnDef::new("action", "Action", ColumnWidth::Fixed(120.0)).with_widget(
+                move |row: &R, index| {
+                    builds.set(builds.get().saturating_add(1));
+                    let clicks = Rc::clone(&clicks);
+                    let id = format!("action-{index}");
+                    Box::new(
+                        Button::new(&id, &row.name, None)
+                            .on_click(move || clicks.set(clicks.get().saturating_add(1))),
+                    )
+                },
+            ),
+            ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)),
+        ]
+    }
+
+    #[test]
+    fn retained_cell_widgets_are_bounded_to_the_huge_model_window() {
+        let key_queries = Rc::new(Cell::new(0));
+        let row_queries = Rc::new(Cell::new(0));
+        let builds = Rc::new(Cell::new(0));
+        let model = HugeModel {
+            row: R {
+                name: "Edit".into(),
+            },
+            key_queries: Rc::clone(&key_queries),
+            row_queries: Rc::clone(&row_queries),
+        };
+        let mut table = DataTable::from_model(
+            interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
+            model,
+        );
+        table.set_viewport(48.0, 24.0);
+        let _ = lay_out(&mut table);
+
+        assert!(table.mounted_cell_count() > 0);
+        assert!(
+            table.mounted_cell_count() < 20,
+            "100M logical rows retain only the viewport window"
+        );
+        assert_eq!(builds.get(), table.mounted_cell_count());
+        assert!(key_queries.get() < 100);
+        assert!(row_queries.get() < 100);
+    }
+
+    #[test]
+    fn retained_cell_widgets_follow_stable_rows_through_sorting() {
+        let builds = Rc::new(Cell::new(0));
+        let mut table = DataTable::new(interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)))
+            .with_row_key(|row: &R| {
+                u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
+            });
+        table.set_rows(rows4());
+        let _ = lay_out(&mut table);
+        let first_builds = builds.get();
+        table.sort_by_with(|a, b| a.name.cmp(&b.name), "name", false);
+        let _ = lay_out(&mut table);
+
+        assert_eq!(
+            builds.get(),
+            first_builds,
+            "sorting repositions cells without rebuilding retained controls"
+        );
+    }
+
+    #[test]
+    fn interactive_cell_consumes_click_without_selecting_its_row() {
+        let clicks = Rc::new(Cell::new(0));
+        let mut table = DataTable::new(interactive_cols(Rc::clone(&clicks), Rc::new(Cell::new(0))))
+            .selectable(true)
+            .with_row_key(|row: &R| {
+                u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
+            });
+        table.set_rows(rows4());
+        // The first pass learns flex column geometry; the second positions
+        // retained cell controls against those exact column rectangles.
+        let _ = lay_out(&mut table);
+        let (tree, node) = lay_out(&mut table);
+        let modifiers = winit::event::Modifiers::default();
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (20.0, HEADER_HEIGHT + 12.0).into(),
+            },
+            modifiers,
+        );
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            modifiers,
+        );
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+            modifiers,
+        );
+
+        assert_eq!(clicks.get(), 1, "real cell button receives activation");
+        assert!(
+            table.selection().is_empty(),
+            "the button gesture does not leak into row selection"
+        );
+        assert_eq!(table.accessibility_child_path(0), Some(vec![0, 0]));
+    }
+
+    #[test]
+    fn retained_cell_widgets_track_scroll_inside_the_same_mounted_window() {
+        let mut table = DataTable::new(interactive_cols(
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(0)),
+        ));
+        table.set_rows(rows4());
+        table.set_viewport(48.0, 24.0);
+        let (tree, node) = lay_out(&mut table);
+        let before = table
+            .mounted_cells
+            .first()
+            .expect("first mounted cell")
+            .widget
+            .get_rect()
+            .y0;
+        table.set_scroll_y(5.0);
+        table.apply_layout(&tree, node, Point::ZERO);
+        let after = table
+            .mounted_cells
+            .first()
+            .expect("first mounted cell")
+            .widget
+            .get_rect()
+            .y0;
+        assert_eq!(after, before - 5.0);
     }
 
     fn dispatch(
@@ -1452,6 +3440,48 @@ mod tests {
     }
 
     #[test]
+    fn page_navigation_and_accelerated_wheel_share_variable_row_geometry() {
+        let mut table = DataTable::<R>::new(sample_cols()).selectable(true);
+        table.set_rows(
+            (0..100)
+                .map(|i| R {
+                    name: format!("row {i}"),
+                })
+                .collect(),
+        );
+        table.set_viewport(100.0, 24.0);
+        assert!(table.set_row_height(0, 300.0));
+        table.selection_mut().select_only(0);
+
+        assert!(table.page_selection(true, false));
+        assert_eq!(table.selection().primary(), Some(0));
+        assert_eq!(table.scroll_y(), 90.0);
+        assert!(table.page_selection(false, false));
+        assert_eq!(table.scroll_y(), 0.0);
+
+        let mut handled = false;
+        table.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), &mut handled);
+        assert!(handled);
+        let immediate = table.scroll_y();
+        assert_eq!(immediate, 60.0);
+        assert!(table.needs_animation_frame());
+        table.last_tick = Some(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(16))
+                .expect("a 16 ms earlier instant is representable"),
+        );
+        assert!(Widget::update(
+            &mut table,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!(
+            table.scroll_y() > immediate,
+            "momentum advances after input"
+        );
+    }
+
+    #[test]
     fn internal_scroll_offsets_hit_testing() {
         // draw() subtracts scroll_y and row_at() adds it — these must stay
         // inverses or a click resolves to the wrong row once scrolled.
@@ -1479,6 +3509,70 @@ mod tests {
             (8..=10).contains(&start),
             "window starts near the scroll position: {start}"
         );
+    }
+
+    #[test]
+    fn variable_row_heights_share_placement_and_hit_testing() {
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows(rows4());
+        t.set_viewport(60.0, px(ROW_HEIGHT));
+        assert!(t.set_row_height(0, 10.0));
+        assert!(t.set_row_height(1, 50.0));
+        let _laid = lay_out(&mut t);
+        let body = t.get_rect().y0 + HEADER_HEIGHT;
+
+        assert_eq!(t.row_at(Point::new(10.0, body + 9.0)), Some(0));
+        assert_eq!(t.row_at(Point::new(10.0, body + 10.0)), Some(1));
+        assert_eq!(t.row_at(Point::new(10.0, body + 59.0)), Some(1));
+        assert_eq!(t.row_at(Point::new(10.0, body + 60.0)), None);
+    }
+
+    #[test]
+    fn stable_row_keys_anchor_inserts_above_the_viewport() {
+        let mut t = DataTable::<R>::new(sample_cols())
+            .with_row_key(|row| u64::from(row.name.as_bytes()[0]));
+        t.set_rows(rows4());
+        t.set_viewport(24.0, px(ROW_HEIGHT));
+        t.set_scroll_y(2.0 * px(ROW_HEIGHT) + 5.0);
+        let before = t.viewport.item_view_top(2);
+
+        t.set_rows(vec![
+            R { name: "x".into() },
+            R { name: "a".into() },
+            R { name: "b".into() },
+            R { name: "c".into() },
+            R { name: "d".into() },
+        ]);
+
+        let c = t.semantic_row_index(&format!("row:{}:0", u64::from(b'c')));
+        assert_eq!(c, Some(3));
+        assert_eq!(t.viewport.item_view_top(c.unwrap()), before);
+    }
+
+    #[test]
+    fn configured_viewport_bounds_layout_and_accessibility_work() {
+        let mut t = DataTable::<R>::new(sample_cols());
+        t.set_rows(
+            (0..100_000)
+                .map(|i| R {
+                    name: format!("r{i}"),
+                })
+                .collect(),
+        );
+        t.set_viewport(120.0, px(ROW_HEIGHT));
+        t.set_scroll_y(50_000.0 * px(ROW_HEIGHT));
+        let _laid = lay_out(&mut t);
+
+        assert!((t.get_rect().height() - (HEADER_HEIGHT + 120.0)).abs() < 0.01);
+        let node = Widget::accessibility(&t).expect("table semantics");
+        assert!(
+            node.children.len() <= 10,
+            "semantic tree stays proportional to the viewport: {} rows",
+            node.children.len()
+        );
+        let first = node.children.first().expect("visible semantic row");
+        assert_eq!(first.set_size, Some(100_000));
+        assert!(first.pos_in_set.expect("absolute row position") > 49_990);
     }
 
     /// 100 rows at 300×400, internal-scroll with a 5-row viewport (120 px
@@ -1584,7 +3678,7 @@ mod tests {
         );
         assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
         assert!(t.wants_pointer_capture(), "drag captures the pointer");
-        assert_eq!(t.scroll_y, 0.0);
+        assert_eq!(t.scroll_y(), 0.0);
 
         // Drag down 50 px → scroll_y increases, staying clamped to max.
         dispatch(
@@ -1598,12 +3692,12 @@ mod tests {
             mods,
         );
         assert!(
-            t.scroll_y > 0.0,
+            t.scroll_y() > 0.0,
             "drag down increases scroll_y: {}",
-            t.scroll_y
+            t.scroll_y()
         );
-        assert!(t.scroll_y <= t.max_scroll_y(), "clamped to max");
-        let after = t.scroll_y;
+        assert!(t.scroll_y() <= t.max_scroll_y(), "clamped to max");
+        let after = t.scroll_y();
 
         // Drag back up past the start → scroll_y returns toward 0.
         dispatch(
@@ -1616,7 +3710,7 @@ mod tests {
             },
             mods,
         );
-        assert!(t.scroll_y < after, "drag up decreases scroll_y");
+        assert!(t.scroll_y() < after, "drag up decreases scroll_y");
 
         dispatch(
             &mut t,
@@ -1665,9 +3759,9 @@ mod tests {
         // Paged by ≈ one viewport (120 px) × PAGE_FRACTION.
         let expected = 120.0 * px(crate::widget::scrollbar::PAGE_FRACTION);
         assert!(
-            (t.scroll_y - expected).abs() < 1.0,
+            (t.scroll_y() - expected).abs() < 1.0,
             "page step ≈ viewport*frac ({expected}), got {}",
-            t.scroll_y,
+            t.scroll_y(),
         );
     }
 
@@ -1675,7 +3769,7 @@ mod tests {
     fn wheel_scrolls_in_internal_mode() {
         let (mut t, tree, node) = scrolling_table();
         let mods = winit::event::Modifiers::default();
-        assert_eq!(t.scroll_y, 0.0);
+        assert_eq!(t.scroll_y(), 0.0);
         let wheel = WindowEvent::MouseWheel {
             device_id: device(),
             delta: MouseScrollDelta::LineDelta(0.0, -1.0),
@@ -1683,11 +3777,107 @@ mod tests {
         };
         dispatch(&mut t, &tree, node, &wheel, mods);
         assert!(
-            t.scroll_y > 0.0,
+            t.scroll_y() > 0.0,
             "wheel down increases scroll_y: {}",
-            t.scroll_y
+            t.scroll_y()
         );
-        assert!(t.scroll_y <= t.max_scroll_y(), "clamped to max");
+        assert!(t.scroll_y() <= t.max_scroll_y(), "clamped to max");
+    }
+
+    #[test]
+    fn body_drag_scrolls_table_without_selecting_but_click_still_selects() {
+        let (mut table, tree, node) = scrolling_table();
+        let modifiers = winit::event::Modifiers::default();
+        let body_top = table.get_rect().y0 + HEADER_HEIGHT;
+        let move_cursor = |y| WindowEvent::CursorMoved {
+            device_id: device(),
+            position: (20.0, y).into(),
+        };
+        let button = |state| WindowEvent::MouseInput {
+            device_id: device(),
+            state,
+            button: MouseButton::Left,
+        };
+
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &move_cursor(body_top + 100.0),
+            modifiers,
+        );
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed),
+            modifiers,
+        );
+        assert!(table.wants_pointer_capture());
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &move_cursor(body_top + 40.0),
+            modifiers,
+        );
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Released),
+            modifiers,
+        );
+        assert_eq!(table.scroll_y(), 60.0);
+        assert!(
+            table.selection().is_empty(),
+            "panning does not select a row"
+        );
+
+        table.set_scroll_y(0.0);
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &move_cursor(body_top + 10.0),
+            modifiers,
+        );
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed),
+            modifiers,
+        );
+        dispatch(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Released),
+            modifiers,
+        );
+        assert!(table.selection().is_selected(0));
+    }
+
+    #[test]
+    fn reduced_motion_stops_collection_momentum() {
+        let (mut table, _tree, _node) = scrolling_table();
+        let mut handled = false;
+        table.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), &mut handled);
+        assert!(handled);
+        assert!(table.momentum.is_active());
+
+        let mut theme = Theme::dark();
+        theme.reduce_motion = true;
+        table.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(!table.momentum.is_active());
+        assert!(!table.needs_animation_frame());
     }
 
     #[test]

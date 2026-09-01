@@ -2013,6 +2013,7 @@ impl Widget for TubeApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::Category;

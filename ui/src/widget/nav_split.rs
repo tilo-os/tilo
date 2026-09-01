@@ -643,11 +643,9 @@ impl Widget for NavSplit {
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         // The reveal/push slide is driven from the draw path (`self_tick`),
-        // NOT here — `ui::App` never calls `Widget::update`, so advancing the
-        // easing on this tick would silently snap the flap instead of
-        // sliding it. This only forwards to children and reports whether
-        // anything still needs frames; `needs_animation_frame` is
-        // authoritative.
+        // not here, because drawing owns its real frame delta. This pass only
+        // forwards to children and reports whether anything still needs
+        // frames; `needs_animation_frame` is authoritative.
         let sc = self.sidebar.update(state, path);
         let cc = self.content.update(state, path);
         self.flap.is_animating(self.layout_mode()) || sc || cc
@@ -1168,9 +1166,8 @@ mod tests {
 
     /// The overlay flap must *slide* — advance its eased reveal across
     /// successive frames from the DRAW path — not snap straight to the
-    /// endpoint (`Widget::update()`, which `ui::App` never calls, would
-    /// teleport it). Opens the flap, draws two frames a few ms apart, and
-    /// asserts the reveal moved strictly between 0 and 1.
+    /// endpoint during the update pass. Opens the flap, draws two frames a
+    /// few ms apart, and asserts the reveal moved strictly between 0 and 1.
     #[test]
     fn overlay_flap_slides_across_frames_from_draw_path() {
         let mut ns = split(600.0, SplitMode::Adaptive);

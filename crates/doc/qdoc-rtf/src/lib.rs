@@ -50,6 +50,7 @@
     )
 )]
 
+use qdoc::export::{BlockKind, ExportBlock, TablePlan, walk_blocks};
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 use std::collections::BTreeMap;
@@ -151,7 +152,7 @@ impl ColorTable {
 /// Walk blocks (and children) interning every `color` mark so the color
 /// table is complete before the body renders.
 fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
-    for b in blocks {
+    for b in walk_blocks(blocks) {
         for m in &b.marks {
             if m.name == "color"
                 && let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color)
@@ -159,7 +160,6 @@ fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
                 colors.intern(hex);
             }
         }
-        collect_colors(&b.children, colors);
     }
 }
 
@@ -174,23 +174,14 @@ fn render_blocks(out: &mut String, blocks: &[BlockView], colors: &ColorTable, in
 }
 
 fn render_block(out: &mut String, block: &BlockView, colors: &ColorTable, indent_level: i64) {
-    match block.kind.as_str() {
-        "heading" => render_heading(out, block, colors),
-        "quote" | "blockquote" => render_quote(out, block, colors, indent_level),
-        "list_item" => render_list_item(out, block, colors),
-        "table" => render_table(out, block, colors),
-        "code" | "code_block" => render_code(out, block),
-        "image" => render_image(out, block, indent_level),
-        // paragraph + any unknown text-bearing kind → a paragraph.
-        _ => render_paragraph(out, block, colors, indent_level),
-    }
-}
-
-/// Heading level (1..=6), defaulting to 1 if absent/out of range.
-fn heading_level(block: &BlockView) -> i64 {
-    match block.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-        _ => 1,
+    match ExportBlock::new(block).kind() {
+        BlockKind::Heading => render_heading(out, block, colors),
+        BlockKind::Quote => render_quote(out, block, colors, indent_level),
+        BlockKind::ListItem => render_list_item(out, block, colors),
+        BlockKind::Table => render_table(out, block, colors),
+        BlockKind::Code => render_code(out, block),
+        BlockKind::Image => render_image(out, block, indent_level),
+        BlockKind::Paragraph => render_paragraph(out, block, colors, indent_level),
     }
 }
 
@@ -207,7 +198,7 @@ fn heading_pt(level: i64) -> i64 {
 }
 
 fn render_heading(out: &mut String, block: &BlockView, colors: &ColorTable) {
-    let level = heading_level(block);
+    let level = i64::from(ExportBlock::new(block).heading_level());
     let pt = heading_pt(level);
     out.push_str("{\\pard");
     push_align(out, block);
@@ -314,32 +305,15 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     // Rows are child blocks, each row's children its cells. Tolerates
     // the flat shape (cells directly under the table with a `cols`
     // attr), matching qdoc-html's handling.
-    let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block
-            .children
-            .iter()
-            .map(|row| row.children.iter().collect())
-            .collect()
-    } else if !block.children.is_empty() {
-        let cols = match block.attrs.get("cols") {
-            Some(AttrVal::Int(n)) => usize::try_from((*n).max(1)).unwrap_or(1),
-            _ => block.children.len().max(1),
-        };
-        block
-            .children
-            .chunks(cols)
-            .map(|c| c.iter().collect())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let plan = TablePlan::new(block);
 
-    if rows.is_empty() {
+    if plan.is_empty() {
         return;
     }
 
     // Equal-width columns across the page width (≈ 9000 twips of usable width).
-    let max_cols = rows
+    let max_cols = plan
+        .rows()
         .iter()
         .map(std::vec::Vec::len)
         .max()
@@ -349,7 +323,7 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     let max_cols_i64 = i64::try_from(max_cols).unwrap_or(i64::MAX).max(1);
     let col_w = total_twips.checked_div(max_cols_i64).unwrap_or(total_twips);
 
-    for row in &rows {
+    for row in plan.rows() {
         out.push_str("\\trowd");
         // Cell boundary positions: cumulative right edge of each column.
         for c in 1..=max_cols {

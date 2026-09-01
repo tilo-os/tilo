@@ -2106,7 +2106,7 @@ impl TopBarChrome {
             format!("{}  ·  {} new", headline, self.activity_unread)
         };
         let size = theme.tokens.typography.scale.sm;
-        let max_width = (self.center_rect.width() - 36.0).max(80.0) as f32;
+        let max_width = ui::num::f32_of_f64((self.center_rect.width() - 36.0).max(80.0));
         let (w, h) = text_renderer.measure(&label, size, Some(max_width));
         text_renderer.draw_text_weighted(
             scene,

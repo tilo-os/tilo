@@ -699,6 +699,7 @@ impl Widget for ToggleGroup {
             .enumerate()
             .map(|(i, s)| {
                 AccessNode::new(Role::ToggleButton)
+                    .with_action_target(format!("segment:{i}"))
                     .with_name(s.label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
@@ -718,6 +719,36 @@ impl Widget for ToggleGroup {
                 })
                 .with_children(seg_children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("segment:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < self.segments.len())
+        else {
+            return false;
+        };
+        if !matches!(
+            action,
+            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        if self.selected != index {
+            self.selected = index;
+            self.cache_dirty = true;
+            if let Some(callback) = self.on_change.as_mut() {
+                callback(index);
+            }
+        }
+        true
     }
 }
 
@@ -1040,5 +1071,23 @@ mod tests {
             Widget::accessibility(&g).unwrap().value.as_deref(),
             Some("c")
         );
+    }
+
+    #[test]
+    fn synthetic_segment_activation_selects_and_fires_on_change() {
+        let changed = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&changed);
+        let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
+            .on_change(move |index| captured.borrow_mut().push(index));
+
+        assert!(Widget::perform_semantic_action(
+            &mut group,
+            "segment:1",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(group.selected(), 1);
+        assert_eq!(&*changed.borrow(), &[1]);
     }
 }

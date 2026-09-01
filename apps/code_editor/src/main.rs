@@ -65,13 +65,14 @@ const SCENARIOS: &[&str] = &[
     "status",
 ];
 
-/// # Errors
-/// Returns an error when `--shots` fails to lay out or render the offscreen
-/// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
-/// the process directly rather than returning an error.
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+/// # Errors
+///
+/// Returns an error when `--shots` fails to lay out or render the offscreen
+/// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
+/// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("dev.qos.code-editor", code_editor::app_root)

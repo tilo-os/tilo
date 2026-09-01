@@ -37,8 +37,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::ContactsDoc;
@@ -268,14 +268,13 @@ fn split_name(name: &str) -> (String, String) {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CONTACTS_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        kind: qos_actions::OperationKind::Document,
-        input: ActionInput::Immediate(encode(action)),
-    })
+    ActionSpec::immediate(id, label, CONTACTS_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Build the resource tree Contacts currently has open: the book (with a "New
@@ -384,7 +383,7 @@ mod tests {
     use crate::app::ContactsApp;
     use crate::search_provider::ContactSearchProvider;
     use automerge::ROOT;
-    use qos_actions::LocalTransport;
+    use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {

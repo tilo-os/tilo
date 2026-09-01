@@ -182,15 +182,11 @@ fn write_image_blobs(
 
 /// Detect an image's file extension + ODF media type from its magic bytes; unknown payloads fall back to a generic binary stream.
 fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        ("png", "image/png")
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        ("jpg", "image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("gif", "image/gif")
-    } else {
-        ("bin", "application/octet-stream")
-    }
+    crate::export::detect_image_media(bytes)
+        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
+        .map_or(("bin", "application/octet-stream"), |media| {
+            (media.extension, media.mime)
+        })
 }
 
 /// The `Pictures/<hash>.<ext>` href an image block's blob is written under.
