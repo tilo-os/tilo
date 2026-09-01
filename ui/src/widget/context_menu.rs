@@ -492,14 +492,46 @@ impl Widget for ContextMenu {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Menu items are drawn rows (not child widgets), so the container
-        // carries the semantics; a closed menu is `hidden` so it collapses
-        // out of the focus order.
-        Some(AccessNode::new(Role::Menu).with_state(AccessState {
-            expanded: Some(self.open),
-            hidden: !self.open,
-            ..Default::default()
-        }))
+        // Menu items are painted rows rather than child widgets, so publish
+        // virtual children. A container-only node made the menu visible to an
+        // assistive technology but hid every action inside it.
+        let action_count = self
+            .items
+            .iter()
+            .filter(|item| matches!(item, MenuItem::Action { .. }))
+            .count();
+        let mut action_position: usize = 0;
+        let children = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let MenuItem::Action { label, .. } = item else {
+                    return None;
+                };
+                action_position = action_position.saturating_add(1);
+                Some(
+                    AccessNode::new(Role::MenuItem)
+                        .with_name(label.clone())
+                        .with_position(action_position, action_count)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.open && self.hovered == Some(index),
+                            hidden: !self.open,
+                            ..Default::default()
+                        }),
+                )
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Menu)
+                .with_state(AccessState {
+                    expanded: Some(self.open),
+                    hidden: !self.open,
+                    ..Default::default()
+                })
+                .with_children(children),
+        )
     }
 }
 
@@ -531,6 +563,24 @@ mod a11y_tests {
         let node = Widget::accessibility(&menu).unwrap();
         assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
         assert!(!node.state.hidden, "open menu is visible");
+    }
+
+    #[test]
+    fn accessibility_exposes_named_action_rows_and_skips_separators() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Keep Offline", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Sharing & Access…", || {}));
+        menu.open_at([10.0, 20.0]);
+
+        let node = Widget::accessibility(&menu).unwrap();
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(node.children[0].role, crate::a11y::Role::MenuItem);
+        assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
+        assert_eq!(node.children[0].pos_in_set, Some(1));
+        assert_eq!(node.children[0].set_size, Some(2));
+        assert_eq!(node.children[1].name.as_deref(), Some("Sharing & Access…"));
+        assert!(node.children.iter().all(|child| child.state.focusable));
     }
 }
 

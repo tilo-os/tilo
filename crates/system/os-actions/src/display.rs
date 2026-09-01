@@ -241,6 +241,7 @@ fn parse_brightness_machine(stdout: &str) -> Result<f32, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

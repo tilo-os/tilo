@@ -11,28 +11,36 @@
 //! back/forward history. The query path touches no filesystem, so it stays
 //! synchronous.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use ui::search::{SearchProvider, SearchResult};
 
 use crate::favorites::Favorite;
-
-/// The kind label (and result-group header) the file explorer produces.
-pub const PLACE_KIND: &str = "Places";
+use crate::model::WorkspaceRecord;
 
 /// The `action_id` prefix. A chosen row's `action_id` is `fav:<path>`;
 /// [`parse_action_id`] turns it back into the destination path.
 const ACTION_PREFIX: &str = "fav:";
+const RECORD_ACTION_PREFIX: &str = "record:";
+
+/// A directory projection is untrusted input. Keep the palette snapshot small
+/// even when a mount exposes an unusually large directory.
+pub const MAX_COLLABORATIVE_SEARCH_RECORDS: usize = 256;
 
 /// A [`SearchProvider`] over a snapshot of the Favourites / Places list.
 pub struct PlacesSearchProvider {
     favorites: Vec<Favorite>,
+    kind: String,
 }
 
 impl PlacesSearchProvider {
     /// Snapshot the current favourites into a provider.
     pub fn new(favorites: Vec<Favorite>) -> Self {
-        Self { favorites }
+        Self {
+            favorites,
+            kind: crate::i18n::t("files-a11y-places"),
+        }
     }
 
     /// The `action_id` for a place — its destination path is its identity.
@@ -52,7 +60,7 @@ impl PlacesSearchProvider {
 
 impl SearchProvider for PlacesSearchProvider {
     fn name(&self) -> &str {
-        PLACE_KIND
+        &self.kind
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -64,9 +72,94 @@ impl SearchProvider for PlacesSearchProvider {
                     || f.path.to_string_lossy().to_lowercase().contains(&q)
             })
             .map(|f| {
-                SearchResult::new(PLACE_KIND, f.label.clone(), Self::action_id(&f.path))
+                SearchResult::new(&self.kind, f.label.clone(), Self::action_id(&f.path))
                     .with_subtitle(f.path.display().to_string())
                     .with_icon(f.icon())
+            })
+            .collect()
+    }
+}
+
+/// Bounded search over the mount's ACL-filtered room record catalog. Record
+/// UUIDs, rather than paths, are action identity: paths are mutable provenance
+/// used only for matching and presentation.
+pub struct CollaborativeRecordSearchProvider {
+    records: Vec<CollaborativeSearchRecord>,
+    kind: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CollaborativeSearchRecord {
+    record_id: uuid::Uuid,
+    name: String,
+    provenance: PathBuf,
+    is_dir: bool,
+}
+
+impl CollaborativeRecordSearchProvider {
+    pub fn new(entries: &[WorkspaceRecord]) -> Self {
+        let mut seen = BTreeSet::new();
+        let records = entries
+            .iter()
+            .filter_map(|entry| {
+                let record_id = entry.record_id;
+                seen.insert(record_id).then(|| CollaborativeSearchRecord {
+                    record_id,
+                    name: entry.name.clone(),
+                    provenance: entry.path.clone(),
+                    is_dir: entry.is_dir,
+                })
+            })
+            .take(MAX_COLLABORATIVE_SEARCH_RECORDS)
+            .collect();
+        Self {
+            records,
+            kind: crate::i18n::t("files-search-collaborative-records"),
+        }
+    }
+
+    pub fn action_id(record_id: uuid::Uuid) -> String {
+        format!("{RECORD_ACTION_PREFIX}{record_id}")
+    }
+
+    pub fn parse_action_id(action_id: &str) -> Option<uuid::Uuid> {
+        action_id
+            .strip_prefix(RECORD_ACTION_PREFIX)
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+    }
+}
+
+impl SearchProvider for CollaborativeRecordSearchProvider {
+    fn name(&self) -> &str {
+        &self.kind
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        let query = query.to_lowercase();
+        self.records
+            .iter()
+            .filter(|record| {
+                record.name.to_lowercase().contains(&query)
+                    || record
+                        .provenance
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .map(|record| {
+                SearchResult::new(
+                    &self.kind,
+                    record.name.clone(),
+                    Self::action_id(record.record_id),
+                )
+                .with_subtitle(crate::i18n::t_args(
+                    "files-search-record-provenance",
+                    &[
+                        crate::i18n::arg("path", record.provenance.display().to_string()),
+                        crate::i18n::arg("record", record.record_id.to_string()),
+                    ],
+                ))
+                .with_icon(ui::icons::icon_for_path(&record.provenance, record.is_dir))
             })
             .collect()
     }
@@ -99,6 +192,15 @@ mod tests {
                 kind: FavKind::Folder,
             },
         ]
+    }
+
+    fn collaborative_entry(name: &str) -> WorkspaceRecord {
+        WorkspaceRecord {
+            record_id: uuid::Uuid::nil(),
+            name: name.into(),
+            path: PathBuf::from(name),
+            is_dir: false,
+        }
     }
 
     #[test]
@@ -139,6 +241,36 @@ mod tests {
     fn parse_action_id_rejects_foreign_ids() {
         assert!(PlacesSearchProvider::parse_action_id("contact:42").is_none());
         assert!(PlacesSearchProvider::parse_action_id("fav:").is_none());
+    }
+
+    #[test]
+    fn collaborative_results_use_stable_record_identity_and_path_as_provenance() {
+        let record_id = uuid::Uuid::from_u128(0x51);
+        let mut entry = collaborative_entry("old-name.txt");
+        entry.path = PathBuf::from("/Workspace/old-name.txt");
+        entry.record_id = record_id;
+        let provider = CollaborativeRecordSearchProvider::new(&[entry]);
+        let hit = provider.search("workspace").pop().expect("path matches");
+        assert_eq!(
+            CollaborativeRecordSearchProvider::parse_action_id(&hit.action_id),
+            Some(record_id)
+        );
+        assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
+    }
+
+    #[test]
+    fn collaborative_projection_is_deduplicated_and_bounded() {
+        let entries: Vec<_> = (0..MAX_COLLABORATIVE_SEARCH_RECORDS + 20)
+            .flat_map(|index| {
+                let id = uuid::Uuid::from_u128(index as u128 + 1);
+                let mut first = collaborative_entry(&format!("file-{index}"));
+                first.record_id = id;
+                let duplicate = first.clone();
+                [first, duplicate]
+            })
+            .collect();
+        let provider = CollaborativeRecordSearchProvider::new(&entries);
+        assert_eq!(provider.search("").len(), MAX_COLLABORATIVE_SEARCH_RECORDS);
     }
 
     #[test]

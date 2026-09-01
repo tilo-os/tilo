@@ -170,11 +170,13 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
     // bytes survive from whatever previously occupied `dst`. Truncation is a
     // no-op on a real block device (not a regular file), so this is safe for
     // both the temp-file test path and the gated device path.
-    let mut writer = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(dst)?;
+    let regular_file = dst.metadata().map_or(true, |meta| meta.is_file());
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if regular_file {
+        options.create(true).truncate(true);
+    }
+    let mut writer = options.open(dst)?;
     let mut buf = vec![0u8; CHUNK];
     let mut written: u64 = 0;
     loop {
@@ -327,10 +329,121 @@ pub fn run_job_paths(
 fn run_system_job(req: &WriteRequest, tx: &Sender<Progress>) -> JobResult {
     let src = std::path::PathBuf::from(&req.source.path);
     let dst = std::path::PathBuf::from(req.target.dev_path());
-    run_job_paths(&src, &dst, req.source.size, |p| {
+    if let Err(error) = revalidate_target(&req.target) {
+        return JobResult::WriteFailed(format!("target changed since confirmation: {error}"));
+    }
+    if let Err(error) = prepare_target(&req.target) {
+        return JobResult::WriteFailed(format!("could not safely unmount target: {error}"));
+    }
+    let result = run_job_paths(&src, &dst, req.source.size, |p| {
         let _ = tx.send(p);
+    });
+    finish_target(&req.target);
+    result
+}
+
+fn revalidate_target(selected: &TargetDrive) -> io::Result<()> {
+    let current = crate::probe::probe()
+        .and_then(|drives| drives.into_iter().find(|drive| drive.name == selected.name))
+        .ok_or_else(|| io::Error::other("the selected device is no longer present"))?;
+    if !target_identity_matches(selected, &current) {
+        return Err(io::Error::other(
+            "device identity, capacity, or system-disk status changed",
+        ));
+    }
+    Ok(())
+}
+
+fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) -> bool {
+    let stable_id_changed = match (&selected.stable_id, &current.stable_id) {
+        (Some(expected), Some(actual)) => expected != actual,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    !stable_id_changed
+        && current.name == selected.name
+        && current.size == selected.size
+        && current.model == selected.model
+        && current.removable == selected.removable
+        && (selected.is_system || !current.is_system)
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_target(target: &TargetDrive) -> io::Result<()> {
+    let out = std::process::Command::new("lsblk")
+        .args(["-lnpo", "NAME,MOUNTPOINT", &target.dev_path()])
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other("lsblk could not inspect mount state"));
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let Some(device) = fields.next() else {
+            continue;
+        };
+        if fields.next().is_some() {
+            let status = std::process::Command::new("umount").arg(device).status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!("failed to unmount {device}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_target(target: &TargetDrive) -> io::Result<()> {
+    let status = std::process::Command::new("diskutil")
+        .args(["unmountDisk", &format!("/dev/{}", target.name)])
+        .status()?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| io::Error::other("diskutil unmountDisk failed"))
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_target(target: &TargetDrive) -> io::Result<()> {
+    let number = target
+        .name
+        .strip_prefix("PhysicalDrive")
+        .ok_or_else(|| io::Error::other("invalid Windows physical-drive name"))?;
+    let script = format!("Set-Disk -Number {number} -IsOffline $true -ErrorAction Stop");
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .status()?;
+    status.success().then_some(()).ok_or_else(|| {
+        io::Error::other("Windows could not take the disk offline; run qOS Imager as Administrator")
     })
 }
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn prepare_target(_target: &TargetDrive) -> io::Result<()> {
+    Err(io::Error::other(
+        "raw media writing is unsupported on this platform",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn finish_target(target: &TargetDrive) {
+    let _ = std::process::Command::new("diskutil")
+        .args(["eject", &format!("/dev/{}", target.name)])
+        .status();
+}
+
+#[cfg(target_os = "windows")]
+fn finish_target(target: &TargetDrive) {
+    if let Some(number) = target.name.strip_prefix("PhysicalDrive") {
+        let script =
+            format!("Set-Disk -Number {number} -IsOffline $false -ErrorAction SilentlyContinue");
+        let _ = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status();
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn finish_target(_target: &TargetDrive) {}
 
 /// Spawn a job on a worker thread and return the receiver the UI drains once
 /// per frame. The returned [`JobStart`] is the validation result; a channel is
@@ -479,6 +592,18 @@ mod tests {
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
         assert_eq!(WriteBackend::system(), WriteBackend::Simulated);
+    }
+
+    #[test]
+    fn target_revalidation_rejects_reused_device_name() {
+        let selected = req().target;
+        let mut replacement = selected.clone();
+        assert!(target_identity_matches(&selected, &replacement));
+        replacement.stable_id = Some("another-device".into());
+        assert!(!target_identity_matches(&selected, &replacement));
+        replacement = selected.clone();
+        replacement.is_system = true;
+        assert!(!target_identity_matches(&selected, &replacement));
     }
 
     // ---- the real engine, proven against temp files (never a device) -------

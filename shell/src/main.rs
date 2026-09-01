@@ -8,7 +8,7 @@
 //! Two side-channel modes short-circuit dispatch before `parse_mode`
 //! runs, mutually exclusive: `--portal-server-only` runs only the
 //! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
-//! for `wayland-N`); `--firstboot` runs first-boot setup, then continues into the normal compositor boot.
+//! for `wayland-N`); `--firstboot` runs machine setup and exits.
 
 #![cfg_attr(
     test,
@@ -114,10 +114,99 @@ fn log_gpu_pin(gpu_pin: Option<&compositor::render_node::ProcessPin>) {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "startup ordering is security-sensitive and kept visible in one linear entry point"
-)]
+fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode> {
+    match identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
+            if provision_requested {
+                tracing::info!(
+                    path = %store.path().display(),
+                    "identity repair found no existing identity; interactive native setup will handle creation"
+                );
+                return Some(std::process::ExitCode::SUCCESS);
+            }
+            if compositor::parse_mode_from_args() == Mode::Hosted {
+                tracing::error!(
+                    path = %store.path().display(),
+                    "hosted mode cannot create the first identity; start a native qOS session once to complete setup"
+                );
+                return Some(std::process::ExitCode::FAILURE);
+            }
+            tracing::info!(
+                "no qOS identity found at {}; native compositor chrome will run {} setup",
+                store.path().display(),
+                if compositor::parse_install_mode_from_args()
+                    == compositor::InstallMode::HostDesktop
+                {
+                    "the reduced host-session identity"
+                } else {
+                    "first-login"
+                }
+            );
+        }
+        Ok(store) => {
+            let Some(identity_dir) = store.path().parent() else {
+                tracing::error!("identity record has no parent directory");
+                return Some(std::process::ExitCode::FAILURE);
+            };
+            let paths = firstboot::collaboration_identity_paths();
+            if let Err(error) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
+                if provision_requested {
+                    tracing::error!("could not provision collaboration identity: {error}");
+                } else {
+                    tracing::error!("qOS identity chain is incomplete or invalid: {error}");
+                }
+                return Some(std::process::ExitCode::FAILURE);
+            }
+            if provision_requested {
+                tracing::info!("qOS collaboration identity is provisioned");
+                return Some(std::process::ExitCode::SUCCESS);
+            }
+            tracing::info!("loaded qOS identity from {}", store.path().display());
+        }
+        Err(error) => {
+            tracing::error!("could not initialise identity store: {error}");
+            return Some(std::process::ExitCode::FAILURE);
+        }
+    }
+    None
+}
+
+fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::process::ExitCode {
+    if provision_requested {
+        eprintln!(
+            "error: --provision-identity and --verify-collaboration-identity are mutually exclusive"
+        );
+        return std::process::ExitCode::from(2);
+    }
+    let store = match identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("identity verification failed: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let Some(identity_dir) = store.path().parent() else {
+        eprintln!("identity verification failed: primary identity has no parent directory");
+        return std::process::ExitCode::FAILURE;
+    };
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    if let Err(error) = firstboot::verify_collaboration_identity(
+        identity_dir,
+        &firstboot::collaboration_identity_paths(),
+        now_ns,
+    ) {
+        eprintln!("identity verification failed: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    println!("qOS collaboration identity verified");
+    std::process::ExitCode::SUCCESS
+}
+
 fn main() -> std::process::ExitCode {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
@@ -185,6 +274,7 @@ fn main() -> std::process::ExitCode {
     let firstboot_requested = compositor::parse_firstboot_from_args();
     let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
     let provision_identity_requested = compositor::parse_provision_identity_from_args();
+    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
 
     if portal_only && (firstboot_requested || firstboot_only_requested) {
         eprintln!(
@@ -214,6 +304,10 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
+    if verify_identity_requested {
+        return verify_collaboration_identity_entrypoint(provision_identity_requested);
+    }
+
     if firstboot_requested && let Err(e) = firstboot::run() {
         // Don't fail the boot — log and continue. A non-zero exit still poisons
         // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
@@ -226,65 +320,8 @@ fn main() -> std::process::ExitCode {
     // `--provision-identity` is migration/repair for an existing record.
     // Creation is interactive and lives in trusted native-compositor chrome;
     // a pre-graphical winit app has no display server to connect to.
-    match identity_provisioning::DiskIdentityStore::from_env() {
-        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
-            if provision_identity_requested {
-                tracing::info!(
-                    path = %store.path().display(),
-                    "identity repair found no existing identity; interactive native setup will handle creation"
-                );
-                return std::process::ExitCode::SUCCESS;
-            }
-            if compositor::parse_mode_from_args() == Mode::Hosted {
-                tracing::error!(
-                    path = %store.path().display(),
-                    "hosted mode cannot create the first identity; start a native qOS session once to complete setup"
-                );
-                std::process::exit(1);
-            }
-            tracing::info!(
-                "no qOS identity found at {}; native compositor chrome will run {} setup",
-                store.path().display(),
-                if compositor::parse_install_mode_from_args()
-                    == compositor::InstallMode::HostDesktop
-                {
-                    "the reduced host-session identity"
-                } else {
-                    "first-login"
-                }
-            );
-        }
-        Ok(store) if provision_identity_requested => {
-            // Migrate older installs which have the personal signing record
-            // but not yet the certified device/Iroh identity chain.
-            let Some(identity_dir) = store.path().parent() else {
-                tracing::error!("identity record has no parent directory");
-                std::process::exit(1);
-            };
-            let paths = firstboot::collaboration_identity_paths();
-            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                tracing::error!("could not provision collaboration identity: {e}");
-                std::process::exit(1);
-            }
-            tracing::info!("qOS collaboration identity is provisioned");
-            return std::process::ExitCode::SUCCESS;
-        }
-        Ok(store) => {
-            let Some(identity_dir) = store.path().parent() else {
-                tracing::error!("identity record has no parent directory");
-                std::process::exit(1);
-            };
-            let paths = firstboot::collaboration_identity_paths();
-            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                tracing::error!("qOS identity chain is incomplete or invalid: {e}");
-                std::process::exit(1);
-            }
-            tracing::info!("loaded qOS identity from {}", store.path().display());
-        }
-        Err(e) => {
-            tracing::error!("could not initialise identity store: {e}");
-            std::process::exit(1);
-        }
+    if let Some(exit_code) = prepare_identity(provision_identity_requested) {
+        return exit_code;
     }
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();

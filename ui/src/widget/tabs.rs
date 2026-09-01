@@ -575,6 +575,10 @@ impl TabBar {
 
     /// Presence-in-navigation mist. A peer on another tab should read as a
     /// destination, not as an unexplained notification count.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Affine multiplication is the geometry library's point-transform operation"
+    )]
     fn draw_pill_presence(
         scene: &mut Scene,
         transform: Affine,
@@ -604,7 +608,7 @@ impl TabBar {
         for (index, peer) in peers.iter().take(capped).enumerate() {
             let index = u8::try_from(index).unwrap_or(3);
             let x0 = r.x0 + f64::from(index) * segment_w;
-            let x1 = if index + 1 == count {
+            let x1 = if index.saturating_add(1) == count {
                 r.x1
             } else {
                 x0 + segment_w
@@ -2044,6 +2048,7 @@ impl Widget for TabBar {
             .enumerate()
             .map(|(i, t)| {
                 let node = AccessNode::new(Role::Tab)
+                    .with_action_target(format!("tab:{}", t.id))
                     .with_name(t.title.clone())
                     .with_state(AccessState {
                         selected: t.id == self.active_id,
@@ -2063,6 +2068,28 @@ impl Widget for TabBar {
             .collect();
         node = node.with_children(tab_children);
         Some(node)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(id) = target
+            .strip_prefix("tab:")
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        if !matches!(action, crate::a11y::Action::Activate)
+            || !self.tabs.iter().any(|tab| tab.id == id)
+        {
+            return false;
+        }
+        self.active_id = id;
+        true
     }
 
     fn get_rect(&self) -> Rect {
@@ -4794,6 +4821,26 @@ mod tests {
             Some("C"),
             "value tracks the active tab"
         );
+    }
+
+    #[test]
+    fn synthetic_tab_activation_selects_by_stable_tab_id() {
+        let mut b = bar();
+        assert!(Widget::perform_semantic_action(
+            &mut b,
+            "tab:3",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(b.active_id(), 3);
+        assert!(!Widget::perform_semantic_action(
+            &mut b,
+            "tab:999",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
     }
 
     /// The shape a window group imposes on its tab strip. `MAX_CONTENT` (used by

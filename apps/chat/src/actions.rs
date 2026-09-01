@@ -325,7 +325,7 @@ pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
         label: if kind == "chat.message" {
             "Message".to_string()
         } else {
-            channel.to_string()
+            channel.clone()
         },
     });
     context

@@ -259,6 +259,7 @@ pub(crate) fn scroll_from_thumb_drag(viewport: Rect, original: f64, max: f64, dy
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     #[test]

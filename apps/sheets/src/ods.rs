@@ -216,6 +216,7 @@ fn xml_escape_attr(s: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::{CellValue, Currency};

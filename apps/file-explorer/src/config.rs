@@ -51,6 +51,7 @@ pub fn save_zoom(dir: &Path, level: i32) {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

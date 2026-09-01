@@ -247,6 +247,10 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact streaming transform fixtures are the behavior under test"
+)]
 mod tests {
     use super::*;
     use crate::network::streaming::test_support::RecordingSink;
