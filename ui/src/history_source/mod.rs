@@ -31,6 +31,8 @@ use qdoc::snapshot::DocSnapshot;
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
 pub mod authors;
+pub mod digest;
+pub mod facets;
 pub mod groups;
 pub mod revert;
 pub mod run_undo;
@@ -38,6 +40,8 @@ pub mod runs;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author, short_id, stable_hue,
 };
+pub use digest::{ActivityBrief, ActivityDigest};
+pub use facets::HistoryFacetIndex;
 pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, name_range, read_named_ranges,
 };
@@ -144,7 +148,7 @@ impl HistorySource {
                 .cloned()
                 .unwrap_or_default();
             let after = heads.get(&v.index).cloned().unwrap_or_default();
-            let (summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
+            let (structural_summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
                 (Some(prev), Some(cur)) => structural_summary(prev, cur),
                 _ => patch_summary(doc, &before, &after),
             };
@@ -164,12 +168,21 @@ impl HistorySource {
             // not a row — the name is already on screen as the band's title.
             // Checked only when there's no other summary, so the common path
             // pays no extra diff.
-            if summary == NO_VISIBLE_CHANGE {
+            if structural_summary == NO_VISIBLE_CHANGE {
                 let patches = doc.diff(&before, &after);
                 if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
                     continue;
                 }
             }
+
+            let context = v
+                .message
+                .as_deref()
+                .and_then(qos_actions::ActionContext::from_change_message);
+            let summary = context
+                .as_ref()
+                .and_then(qos_actions::ActionContext::summary)
+                .unwrap_or(structural_summary);
 
             out.push(HistoryEntry {
                 id: entry_id_from_hash(&v.change_hash),
@@ -185,6 +198,7 @@ impl HistorySource {
                 // Projected from the broker's redaction log, keyed by
                 // artifact and not reachable from a bare document.
                 redaction: None,
+                context,
             });
         }
         out

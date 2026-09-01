@@ -180,7 +180,8 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::{
-    AuthorDirectory, HistorySource, heads_for_entry, version_index_for_entry,
+    ActivityBrief, ActivityDigest, AuthorDirectory, HistoryFacetIndex, HistorySource,
+    heads_for_entry, version_index_for_entry,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.

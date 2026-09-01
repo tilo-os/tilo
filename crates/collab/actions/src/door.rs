@@ -17,7 +17,8 @@
 //! never a flag to ignore.
 
 use crate::action::{EncodedAction, ExecutionLocus};
-use crate::executor::{ActionTransport, Dispatched, dispatch_by};
+use crate::context::ActionContext;
+use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{ActionInput, ActionSpec, Collects, KEY_SEP, Resource};
 
@@ -281,12 +282,42 @@ pub fn invoke(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
+    let resource = find_resource(resources, &address.resource)
+        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    let spec = resource
+        .actions
+        .iter()
+        .find(|candidate| candidate.id == address.action)
+        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    let context = ActionContext::for_resource(
+        &spec.label,
+        resource.id.as_str(),
+        &resource.kind,
+        &resource.label,
+    );
     let encoded = encode(resources, address, argument)?;
     let action = registry
         .decode(&encoded)
         .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
-    dispatch_by(doc, action.as_ref(), encoded, transport, Some(actor))
-        .map_err(|e| DoorError::Failed(e.to_string()))
+    dispatch_by_with_context(
+        doc,
+        action.as_ref(),
+        encoded,
+        transport,
+        Some(actor),
+        context,
+    )
+    .map_err(|e| DoorError::Failed(e.to_string()))
+}
+
+fn find_resource<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
+    fn walk<'a>(resource: &'a Resource, id: &str) -> Option<&'a Resource> {
+        if resource.id.as_str() == id {
+            return Some(resource);
+        }
+        resource.children.iter().find_map(|child| walk(child, id))
+    }
+    resources.iter().find_map(|resource| walk(resource, id))
 }
 
 #[cfg(test)]
@@ -573,10 +604,26 @@ mod tests {
         assert!(dispatched.mutated_local());
         let env = dispatched.envelope().clone();
         assert_eq!(env.actor.as_deref(), Some(caller));
+        let context = env.context.as_ref().expect("door supplies provenance");
+        assert_eq!(context.action_label, "Star");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("notes.note:1")
+        );
 
         let heads = doc.get_heads();
         let change = doc.get_change_by_hash(&heads[0]).unwrap();
         assert_eq!(change.actor_id().to_bytes(), caller);
+        assert_eq!(
+            change
+                .message()
+                .and_then(|message| ActionContext::from_change_message(message)),
+            env.context,
+            "semantic provenance survives as part of the durable change"
+        );
         assert_ne!(change.actor_id(), &app_actor, "not the app's own actor");
         assert_ne!(
             change.actor_id().to_bytes(),

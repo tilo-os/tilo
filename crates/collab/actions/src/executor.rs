@@ -17,6 +17,7 @@
 use automerge::transaction::{CommitOptions, Transactable};
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+use crate::context::ActionContext;
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
 
@@ -37,6 +38,7 @@ fn envelope_for(
     action: &dyn Action,
     encoded: EncodedAction,
     actor: Option<&[u8]>,
+    context: Option<ActionContext>,
 ) -> ActionEnvelope {
     let base = doc.get_heads();
     ActionEnvelope {
@@ -46,6 +48,7 @@ fn envelope_for(
         timestamp: now_secs(),
         locus: action.locus(),
         actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
+        context,
     }
 }
 
@@ -96,7 +99,11 @@ fn apply_under_envelope(
         // The action produced ops: commit as the pinned actor's single
         // change under the pinned timestamp, content-addressed identical on
         // origin and every replaying replica.
-        doc.commit_with(CommitOptions::default().with_time(env.timestamp));
+        let mut options = CommitOptions::default().with_time(env.timestamp);
+        if let Some(message) = env.context.as_ref().and_then(ActionContext::change_message) {
+            options = options.with_message(message);
+        }
+        doc.commit_with(options);
         doc.set_actor(prev_actor);
     } else {
         // No ops: a genuine no-op. Do not `commit_with` (it would pin then
@@ -165,7 +172,26 @@ pub fn apply_local_by(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor);
+    let env = envelope_for(doc, action, encoded, actor, None);
+    apply_under_envelope(doc, action, &env)?;
+    Ok(env)
+}
+
+/// [`apply_local`], with semantic provenance embedded in the resulting
+/// durable change. Use this at framework/action-door boundaries where the
+/// resource and human action label are already known.
+///
+/// # Errors
+///
+/// See [`apply_local`].
+pub fn apply_local_with_context(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    actor: Option<&[u8]>,
+    context: ActionContext,
+) -> Result<ActionEnvelope, ActionError> {
+    let env = envelope_for(doc, action, encoded, actor, Some(context));
     apply_under_envelope(doc, action, &env)?;
     Ok(env)
 }
@@ -279,14 +305,58 @@ pub fn dispatch_by(
     transport: &mut dyn ActionTransport,
     actor: Option<&[u8]>,
 ) -> Result<Dispatched, ActionError> {
+    dispatch_by_maybe_context(doc, action, encoded, transport, actor, None)
+}
+
+/// [`dispatch`], carrying semantic provenance into the replicated envelope
+/// and the committed CRDT change.
+///
+/// # Errors
+///
+/// See [`dispatch`].
+pub fn dispatch_with_context(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    transport: &mut dyn ActionTransport,
+    context: ActionContext,
+) -> Result<Dispatched, ActionError> {
+    dispatch_by_maybe_context(doc, action, encoded, transport, None, Some(context))
+}
+
+/// Attributed variant of [`dispatch_with_context`].
+///
+/// # Errors
+///
+/// See [`dispatch`].
+pub fn dispatch_by_with_context(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    transport: &mut dyn ActionTransport,
+    actor: Option<&[u8]>,
+    context: ActionContext,
+) -> Result<Dispatched, ActionError> {
+    dispatch_by_maybe_context(doc, action, encoded, transport, actor, Some(context))
+}
+
+fn dispatch_by_maybe_context(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    transport: &mut dyn ActionTransport,
+    actor: Option<&[u8]>,
+    context: Option<ActionContext>,
+) -> Result<Dispatched, ActionError> {
     match action.locus() {
         ExecutionLocus::ClientLocal => {
-            let env = apply_local_by(doc, action, encoded, actor)?;
+            let env = envelope_for(doc, action, encoded, actor, context);
+            apply_under_envelope(doc, action, &env)?;
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }
         ExecutionLocus::ServerPreferred => {
-            let env = envelope_for(doc, action, encoded, actor);
+            let env = envelope_for(doc, action, encoded, actor, context);
             match transport.submit_to_host(&env) {
                 HostDecision::AcceptedByHost => Ok(Dispatched::SubmittedToHost(env)),
                 HostDecision::NoHostFallbackLocal => {

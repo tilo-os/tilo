@@ -12,6 +12,7 @@
 use std::time::SystemTime;
 
 use collab_types::{ArtifactKind, OpClass};
+use qos_actions::{ActionContext, ActionFacet};
 
 /// Opaque: only ever compared for equality (revert/restore callbacks
 /// pass it back to the caller). The caller picks the byte layout —
@@ -98,6 +99,9 @@ pub struct HistoryEntry {
     pub diff_payload: Option<Vec<u8>>,
     /// `None` means "not redacted; render the summary as normal".
     pub redaction: Option<RedactionDisplay>,
+    /// Semantic provenance carried by an action. Legacy/direct CRDT edits
+    /// leave this empty and retain their structural diff summary.
+    pub context: Option<ActionContext>,
 }
 
 /// Empty fields are "match everything" so a freshly-constructed filter
@@ -116,6 +120,13 @@ pub struct HistoryFilter {
     /// used elsewhere in qOS so two adjacent filters never double-count
     /// a boundary entry.
     pub time_range: Option<(SystemTime, SystemTime)>,
+    /// App id or label, case-insensitive. Empty means every app, including
+    /// legacy entries with no app provenance.
+    pub apps: Vec<String>,
+    /// Stable resource kind (`files.entry`, `word-processor.document`, …).
+    pub resource_kinds: Vec<String>,
+    /// Selected browse facets. All selected key/value pairs must match.
+    pub facets: Vec<ActionFacet>,
 }
 
 impl HistoryFilter {
@@ -135,6 +146,51 @@ impl HistoryFilter {
         {
             return false;
         }
+        if !self.apps.is_empty() {
+            let Some(app) = entry
+                .context
+                .as_ref()
+                .and_then(|context| context.app.as_ref())
+            else {
+                return false;
+            };
+            let id = app.id.to_lowercase();
+            let label = app.label.to_lowercase();
+            if !self.apps.iter().any(|candidate| {
+                candidate.to_lowercase() == id || candidate.to_lowercase() == label
+            }) {
+                return false;
+            }
+        }
+        if !self.resource_kinds.is_empty() {
+            let Some(kind) = entry
+                .context
+                .as_ref()
+                .and_then(|context| context.resource.as_ref())
+                .map(|resource| resource.kind.as_str())
+            else {
+                return false;
+            };
+            if !self
+                .resource_kinds
+                .iter()
+                .any(|candidate| candidate == kind)
+            {
+                return false;
+            }
+        }
+        if !self.facets.is_empty() {
+            let Some(context) = entry.context.as_ref() else {
+                return false;
+            };
+            if !self
+                .facets
+                .iter()
+                .all(|facet| context.facets.contains(facet))
+            {
+                return false;
+            }
+        }
         true
     }
 
@@ -147,6 +203,24 @@ impl HistoryFilter {
     #[must_use]
     pub fn with_op_class(mut self, op: OpClass) -> Self {
         self.op_classes.push(op);
+        self
+    }
+
+    #[must_use]
+    pub fn with_app(mut self, app: impl Into<String>) -> Self {
+        self.apps.push(app.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_resource_kind(mut self, kind: impl Into<String>) -> Self {
+        self.resource_kinds.push(kind.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_facet(mut self, facet: ActionFacet) -> Self {
+        self.facets.push(facet);
         self
     }
 }
@@ -266,6 +340,7 @@ mod tests {
             text_delta: None,
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
@@ -311,6 +386,37 @@ mod tests {
         assert!(f.matches(&entry(OpClass::Splice, "Alice", 150)));
         assert!(!f.matches(&entry(OpClass::Splice, "Alice", 200)));
         assert!(!f.matches(&entry(OpClass::Splice, "Alice", 300)));
+    }
+
+    #[test]
+    fn semantic_facets_filter_context_without_guessing_legacy_entries() {
+        let mut contextual = entry(OpClass::EditMeta, "Ada", 100);
+        contextual.context = Some(
+            ActionContext::for_resource(
+                "Rename",
+                "files.entry:brief.md",
+                "files.entry",
+                "brief.md",
+            )
+            .with_app("org.qos.Files", "Files")
+            .with_facet(ActionFacet::new("file-type", "Markdown")),
+        );
+        let legacy = entry(OpClass::EditMeta, "Ada", 100);
+
+        let by_app = HistoryFilter::default().with_app("files");
+        assert!(by_app.matches(&contextual));
+        assert!(!by_app.matches(&legacy));
+
+        let by_kind = HistoryFilter::default().with_resource_kind("files.entry");
+        assert!(by_kind.matches(&contextual));
+        let by_type =
+            HistoryFilter::default().with_facet(ActionFacet::new("file-type", "Markdown"));
+        assert!(by_type.matches(&contextual));
+        assert!(
+            !HistoryFilter::default()
+                .with_facet(ActionFacet::new("file-type", "PDF"))
+                .matches(&contextual)
+        );
     }
 
     #[test]
