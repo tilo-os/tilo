@@ -49,8 +49,18 @@ def evict(paths):
 
 def run(binary, env):
     started = time.perf_counter_ns()
-    subprocess.run([binary, *args], env=env, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, check=True)
+    completed = subprocess.run(
+        [binary, *args],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "no stderr"
+        raise SystemExit(
+            f"{binary} exited {completed.returncode} during benchmark: {detail}"
+        )
     return (time.perf_counter_ns() - started) / 1_000_000
 
 def report(label, values):
