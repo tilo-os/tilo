@@ -108,9 +108,29 @@ bounded, expiring, one-use, and private to the operation. Setup opens in the
 app-focused surface, and Windows Apps continues polling the server-owned
 operation if the viewer closes. Bounded Program Files discovery returns
 unpublished candidates; the owner chooses which become qOS launchers. Removing
-a launcher keeps the guest install. Vendor uninstall is offered only when the
-guest discovered a typed MSI product code, and always executes the fixed
-`msiexec /x <product-code>` form rather than a registry command string.
+a launcher keeps the guest install. Vendor uninstall is offered for either a
+typed MSI product code or a narrowly bound EXE record. MSI always executes the
+fixed `msiexec /x <product-code>` form. An EXE record is accepted only when all
+of these discovery and execution checks hold:
+
+- the record came from HKLM, has a non-empty product-specific
+  `InstallLocation` below Program Files or Program Files (x86), and both the
+  discovered application and uninstaller are below that same root;
+- the root, every intervening directory, and both files are non-reparse paths,
+  owned by SYSTEM, Administrators, or TrustedInstaller, with no write-capable
+  allow ACE for another principal;
+- native `CommandLineToArgvW` parsing yields one absolute `.exe` plus at most
+  32 arguments, each at most 4,096 characters and at most 16,384 characters in
+  aggregate, with no control characters; and
+- the exact executable path, root, application association, parsed argv, and
+  SHA-256 are persisted administrator-only and all revalidated immediately
+  before launch and again after UAC elevation when elevation is required.
+
+The raw `UninstallString` is neither stored nor run. qOS quotes the persisted
+argv back into a direct `CreateProcessW` call without a shell. Missing
+`InstallLocation`, unquoted/ambiguous executable paths, system/temp/user roots,
+writable or reparse paths, digest changes, and out-of-bound argv all mean that
+no vendor-uninstall action is exposed.
 
 Setup remains interactive as an ordinary qOS window while Windows Apps stays
 responsive and reports installing/failed/ready state. Discovery is bounded and
@@ -232,8 +252,9 @@ Lifecycle actions deliberately say what they remove:
 
 - **Remove launcher** unregisters one qOS entry and keeps the Windows install
   and all private data.
-- **Run uninstaller** executes only the discovered vendor uninstaller inside
-  the capsule, then retains leftovers for inspection or deletion.
+- **Run uninstaller** executes only the typed MSI product code or the
+  digest-bound, Program Files-rooted EXE/argv contract discovered for that
+  application, then retains leftovers for inspection or deletion.
 - **Delete app & data** atomically retires and recursively deletes the whole
   private capsule. It requires a second explicit click.
 

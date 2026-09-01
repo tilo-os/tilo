@@ -21,7 +21,7 @@ if ($resolvedJob -notmatch '^C:\\ProgramData\\qOS\\InstallerSession\\operations\
     throw 'invalid qOS installer job path'
 }
 $job = Get-Content -Raw -LiteralPath $resolvedJob | ConvertFrom-Json
-if ($job.operationId -notmatch '^[A-Za-z0-9._-]{16,128}$' -or $job.kind -notin @('exe', 'msi')) {
+if ([string]$job.operationKind -ne 'installation' -or $job.operationId -notmatch '^[A-Za-z0-9._-]{16,128}$' -or $job.kind -notin @('exe', 'msi')) {
     throw 'invalid qOS installer job'
 }
 $package = [IO.Path]::GetFullPath([string]$job.packagePath)
