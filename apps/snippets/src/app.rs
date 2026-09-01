@@ -30,6 +30,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout, TextInput, Widget,
 };
@@ -824,7 +825,15 @@ impl ui::widget::Widget for SnippetsApp {
         }
 
         if let Some(toast) = &self.toast {
-            draw_toast(scene, t, tr, theme, self.rect, &toast.message);
+            paint_transient(
+                scene,
+                t,
+                tr,
+                theme,
+                self.rect,
+                ToastAnchor::BottomRight,
+                &ToastCard::new(&toast.message, ToastKind::Info),
+            );
         }
 
         // The expand modal renders above everything. While it's open the
@@ -2509,35 +2518,6 @@ fn section_header(
         11.0,
         theme.tokens.colors.text_dim,
         TextWeight::Bold,
-    );
-}
-
-fn draw_toast(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    message: &str,
-) {
-    let c = &theme.tokens.colors;
-    let toast_w = f64::from(tr.measure(message, 14.0, None).0) + 40.0;
-    let toast_h = 40.0;
-    let x = area.x1 - toast_w - 24.0;
-    let y = area.y1 - toast_h - 24.0;
-    let rect = Rect::new(x, y, x + toast_w, y + toast_h);
-    draw::fill_round(scene, t, rect, theme.radii_md(), c.surfaces.raised);
-    draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.accent[5]);
-    draw::text(
-        scene,
-        tr,
-        t,
-        message,
-        x + 20.0,
-        y + (toast_h - 15.0) / 2.0,
-        14.0,
-        c.text_primary,
-        TextWeight::Medium,
     );
 }
 
