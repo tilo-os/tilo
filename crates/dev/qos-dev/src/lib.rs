@@ -91,6 +91,8 @@ pub enum ComponentTemplate {
     List,
     /// A source-agnostic sparse table with app-defined columns and cells.
     Table,
+    /// Advanced text with shared style, polygon flow, and replaceable layout.
+    Text,
 }
 
 #[derive(Debug)]
@@ -559,6 +561,7 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
         ComponentTemplate::Tree => "tree",
         ComponentTemplate::List => "list",
         ComponentTemplate::Table => "table",
+        ComponentTemplate::Text => "text",
     }
 }
 
@@ -1948,6 +1951,7 @@ fn component_source(
         ComponentTemplate::Tree => tree_component_source(name, module_name, type_name),
         ComponentTemplate::List => list_component_source(name, module_name, type_name),
         ComponentTemplate::Table => table_component_source(name, module_name, type_name),
+        ComponentTemplate::Text => text_component_source(name, module_name, type_name),
     }
 }
 
@@ -2531,6 +2535,171 @@ mod tests {{
         let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
         assert!((first - second).abs() > 1.0, "measured rows drive geometry");
         assert!(app.dump_json().contains("open-requested"));
+    }}
+}}
+"#
+    )
+}
+
+fn text_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let body = ScreenMessage::new(name, "body", "Replace this copy with application content.");
+    let mut source = format!(
+        r#"use ui::widget::Text;
+use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextStyle}};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Props {{
+    pub message: String,
+    pub style: TextStyle,
+}}
+
+impl {type_name}Props {{
+    #[must_use]
+    pub fn new(message: impl Into<String>, style: TextStyle) -> Self {{
+        Self {{ message: message.into(), style }}
+    }}
+}}
+
+impl Default for {type_name}Props {{
+    fn default() -> Self {{
+        Self::new(
+            "{name}-body",
+            TextStyle::new(18.0)
+                .with_line_height(1.5)
+                .with_kerning(true)
+                .with_letter_spacing(0.15)
+                .with_auto_hyphenation("en-US"),
+        )
+    }}
+}}
+
+/// Build ordinary reusable `{name}` text with one style shared by layout and paint.
+pub fn {module_name}(id: &str, props: &{type_name}Props) -> Text {{
+    Text::new(&props.message)
+        .with_id(id)
+        .with_style(props.style.clone())
+}}
+
+/// Keep the standard Text lifecycle while replacing measurement and painting.
+pub fn {module_name}_with_engine<E: TextLayoutEngine + 'static>(
+    id: &str,
+    props: &{type_name}Props,
+    engine: E,
+) -> Text {{
+    {module_name}(id, props).with_layout_engine(engine)
+}}
+
+/// Flow and exactly clip the text to a concave or convex local-coordinate polygon.
+pub fn {module_name}_in_region(
+    id: &str,
+    props: &{type_name}Props,
+    region: TextFlowRegion,
+) -> Text {{
+    {module_name}_with_engine(id, props, PolygonTextLayout::new(region))
+}}
+"#
+    );
+    source.push_str(&text_component_test_source(module_name, type_name));
+    (source, vec![body])
+}
+
+fn text_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use ui::a11y::Role;
+    use ui::headless::SemanticExpectation;
+    use ui::kurbo::Point;
+    use ui::{{TextLayoutConstraints, TextRenderer}};
+
+    struct RecordingLayout(Rc<Cell<u32>>);
+
+    impl TextLayoutEngine for RecordingLayout {{
+        fn measure(
+            &mut self,
+            _renderer: &mut TextRenderer,
+            _text: &str,
+            _constraints: TextLayoutConstraints,
+            _style: &TextStyle,
+        ) -> (f32, f32) {{
+            self.0.set(self.0.get().saturating_add(1));
+            (320.0, 96.0)
+        }}
+
+        fn draw(
+            &mut self,
+            _renderer: &mut TextRenderer,
+            _scene: &mut ui::vello::Scene,
+            _text: &str,
+            _constraints: TextLayoutConstraints,
+            _style: &TextStyle,
+            _color: ui::peniko::Color,
+            _transform: ui::kurbo::Affine,
+        ) {{}}
+    }}
+
+    #[test]
+    fn component_keeps_text_semantics_with_a_custom_engine() {{
+        let measures = Rc::new(Cell::new(0));
+        let props = {type_name}Props::new(
+            "Advanced typography",
+            TextStyle::new(18.0).with_kerning(true),
+        );
+        let text = {module_name}_with_engine(
+            "example-text",
+            &props,
+            RecordingLayout(Rc::clone(&measures)),
+        );
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(text),
+            (480, 240),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("example-text")
+                .role(Role::StaticText)
+                .name("Advanced typography"),
+        )
+        .expect("custom engine retains Text accessibility");
+        assert!(measures.get() > 0, "custom engine participates in layout");
+    }}
+
+    #[test]
+    fn component_accepts_non_rectangular_text_flow() {{
+        let props = {type_name}Props::new("Polygon text", TextStyle::new(18.0));
+        let region = TextFlowRegion::polygon([
+            Point::new(0.0, 0.0),
+            Point::new(360.0, 0.0),
+            Point::new(360.0, 180.0),
+            Point::new(220.0, 180.0),
+            Point::new(220.0, 72.0),
+            Point::new(140.0, 72.0),
+            Point::new(140.0, 180.0),
+            Point::new(0.0, 180.0),
+        ])
+        .expect("valid concave region");
+        let text = {module_name}_in_region("polygon-text", &props, region);
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(text),
+            (400, 220),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("polygon-text")
+                .role(Role::StaticText)
+                .name("Polygon text"),
+        )
+        .expect("polygon layout retains Text accessibility");
     }}
 }}
 "#
@@ -5311,7 +5480,7 @@ fn prompt_component_template(
 ) -> Result<ComponentTemplate> {
     writeln!(
         output,
-        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows\n  5) table    Any TableModel with app-defined columns and cells"
+        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows\n  5) table    Any TableModel with app-defined columns and cells\n  6) text     Styled text with polygon flow or a custom layout engine"
     )
     .context("showing component template choices")?;
     loop {
@@ -5322,9 +5491,10 @@ fn prompt_component_template(
             "3" | "tree" | "t" => return Ok(ComponentTemplate::Tree),
             "4" | "list" | "l" => return Ok(ComponentTemplate::List),
             "5" | "table" | "data" => return Ok(ComponentTemplate::Table),
+            "6" | "text" | "typography" => return Ok(ComponentTemplate::Text),
             _ => writeln!(
                 output,
-                "  ! unknown component template {value:?}; choose 1-5 or `display`, `form`, `tree`, `list`, or `table`"
+                "  ! unknown component template {value:?}; choose 1-6 or `display`, `form`, `tree`, `list`, `table`, or `text`"
             )
             .context("showing component template error")?,
         }
@@ -6106,6 +6276,7 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "qos-dev add component project-tree --template tree");
     let _ = writeln!(out, "qos-dev add component activity-list --template list");
     let _ = writeln!(out, "qos-dev add component results-table --template table");
+    let _ = writeln!(out, "qos-dev add component article-body --template text");
     let _ = writeln!(out, "qos-dev add screen settings --template settings");
     let _ = writeln!(out, "qos-dev add scenario empty-state");
     let _ = writeln!(out, "qos-dev scenario run");
@@ -6708,6 +6879,18 @@ mod tests {
     }
 
     #[test]
+    fn component_wizard_exposes_the_advanced_text_template() {
+        let mut input = std::io::Cursor::new(b"6\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::Text);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("custom layout engine"));
+    }
+
+    #[test]
     fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -6879,6 +7062,33 @@ mod tests {
     }
 
     #[test]
+    fn add_text_component_exposes_standard_polygon_and_custom_engine_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "article-body".into(),
+                template: ComponentTemplate::Text,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source = std::fs::read_to_string(app.join("src/components/article_body.rs")).unwrap();
+        syn::parse_file(&source).unwrap();
+        assert!(source.contains("pub struct ArticleBodyProps"));
+        assert!(source.contains("pub fn article_body(id: &str"));
+        assert!(source.contains("pub fn article_body_with_engine<E: TextLayoutEngine"));
+        assert!(source.contains("pub fn article_body_in_region("));
+        assert!(source.contains("PolygonTextLayout::new(region)"));
+        assert!(source.contains("with_auto_hyphenation(\"en-US\")"));
+    }
+
+    #[test]
     fn component_generation_is_dry_run_safe_and_localizes_template_copy() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
@@ -6958,6 +7168,24 @@ mod tests {
         let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
         assert!(
             catalog.contains("results-table-accessible-name = { \"Results Table\" }"),
+            "{catalog}"
+        );
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "article-body".into(),
+                template: ComponentTemplate::Text,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains(
+                "article-body-body = { \"Replace this copy with application content.\" }"
+            ),
             "{catalog}"
         );
     }
@@ -8466,6 +8694,7 @@ mod tests {
             assert!(readme.contains("qos-dev add component project-tree --template tree"));
             assert!(readme.contains("qos-dev add component activity-list --template list"));
             assert!(readme.contains("qos-dev add component results-table --template table"));
+            assert!(readme.contains("qos-dev add component article-body --template text"));
             assert!(readme.contains("qos-dev scenario run\n"));
             assert!(readme.contains("qos-dev scenario run --artifacts target/scenario-artifacts"));
             assert!(

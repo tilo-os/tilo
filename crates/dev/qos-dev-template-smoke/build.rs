@@ -29,6 +29,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             qos_dev::ComponentTemplate::Table,
             "results_table.rs",
         ),
+        (
+            "article-body",
+            qos_dev::ComponentTemplate::Text,
+            "article_body.rs",
+        ),
     ] {
         let source = qos_dev::render_component_source(name, template)?;
         std::fs::write(output.join(file), source)?;
