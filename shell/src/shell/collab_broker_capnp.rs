@@ -29,7 +29,9 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
-    ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
+    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, OpClass, RedactedMarker,
+    ResourceRef, SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id,
+    validate_admitted_inbound_op, validate_inbound_op,
 };
 use runtime_collab::raw::{
     OpKind, channel_handle, collab_service, context_stream, presence_event, presence_handle,
@@ -55,9 +57,9 @@ struct VerifiedJoinIdentity {
 struct AdmittedJoinIdentity {
     verified: VerifiedJoinIdentity,
     principal_id: String,
-    /// Workspace admission role from the owner/capability roster. This does
-    /// not replace `ChannelState`'s signed role attestations: they remain the
-    /// authority for which signed operation classes the device may apply.
+    /// Workspace admission role from the live owner/capability roster.
+    /// Certified document operations use this directly instead of requiring
+    /// a second, channel-local role attestation for the same person.
     role: CapRole,
 }
 
@@ -308,20 +310,78 @@ impl CapnpBrokerState {
         &self,
         route: &CrdtRoute,
         admitted: Option<&AdmittedJoinIdentity>,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<Option<AdmittedJoinIdentity>, capnp::Error> {
         let Some(admitted) = admitted else {
-            return Ok(());
+            return Ok(None);
         };
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
         admit_verified_join(&membership.read(), route, admitted.verified.clone())
-            .map(|_| ())
+            .map(Some)
             .map_err(|error| {
                 capnp::Error::failed(format!(
                     "certified collaboration session is no longer admitted: {error}"
                 ))
             })
+    }
+
+    /// Bind a certified operation to the route, typed document protocol and
+    /// current workspace capability state. The identity service performs the
+    /// same checks before signing; repeating them at receipt prevents a stale
+    /// role or capability from remaining effective after launch.
+    fn authorize_certified_document(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+        envelope: &SignedOp,
+    ) -> Result<DocumentMutation, capnp::Error> {
+        let expected_artifact =
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let expected_attestation =
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
+        if route.app_id.is_empty()
+            || envelope.artifact != expected_artifact
+            || envelope.attestation_id != expected_attestation
+            || envelope.op_class != OpClass::Splice
+            || envelope.encryption.is_some()
+        {
+            return Err(capnp::Error::failed(
+                "certified document operation does not match its joined route".into(),
+            ));
+        }
+        let mutation = DocumentMutation::decode(&envelope.payload).map_err(|error| {
+            capnp::Error::failed(format!(
+                "certified document operation has an invalid typed payload: {error}"
+            ))
+        })?;
+        let membership = self.membership.as_ref().ok_or_else(|| {
+            capnp::Error::failed("certified session lost its membership authority".into())
+        })?;
+        let tree = membership.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == route.cluster_id)
+            .ok_or_else(|| {
+                capnp::Error::failed("certified document workspace is no longer available".into())
+            })?;
+        let actor = Actor::person(Some(admitted.role), admitted.principal_id.clone())
+            .with_principal(Principal::App(route.app_id.clone()))
+            .in_room(route.cluster_id.clone());
+        let resource = ResourceRef::Artifact {
+            app: Some(route.app_id.clone()),
+            kind: ArtifactKind::Note,
+            instance: expected_artifact,
+        };
+        let decision = workspace.decide(&actor, &resource, Verb::Write);
+        drop(tree);
+        if decision != CapDecision::Allow {
+            return Err(capnp::Error::failed(
+                "current workspace capability denies document editing".into(),
+            ));
+        }
+        Ok(mutation)
     }
 
     fn publisher(&self) -> &Arc<PeerPublisher> {
@@ -367,6 +427,10 @@ impl CapnpBrokerState {
             .map(|(_, subs)| subs);
         match event {
             CollabEvent::SignedCRDTIncremental {
+                envelope,
+                from_user_id,
+            }
+            | CollabEvent::SignedCRDTUpdate {
                 envelope,
                 from_user_id,
             } => Self::fanout_signed_incremental(channels, except, envelope, from_user_id),
@@ -694,15 +758,21 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "capnp send: op is not a postcard-encoded SignedOp: {e}"
                 ))
             })?;
-            state.revalidate_admission(&route, verified_identity.as_ref())?;
-            verify_session_author(verified_identity.as_ref(), envelope.author)
+            let current_identity =
+                state.revalidate_admission(&route, verified_identity.as_ref())?;
+            verify_session_author(current_identity.as_ref(), envelope.author)
                 .map_err(|error| capnp::Error::failed(format!("capnp send: {error}")))?;
+            let document_mutation = current_identity
+                .as_ref()
+                .map(|identity| state.authorize_certified_document(&route, identity, &envelope))
+                .transpose()?;
             handle_signed_op_send(
                 &state,
                 peer_id,
                 &route,
                 announced_handle.as_deref(),
-                verified_identity.as_ref(),
+                current_identity.as_ref(),
+                document_mutation.as_ref(),
                 envelope,
             );
             Ok(())
@@ -852,6 +922,7 @@ fn handle_signed_op_send(
     route: &CrdtRoute,
     announced_handle: Option<&str>,
     verified_identity: Option<&AdmittedJoinIdentity>,
+    document_mutation: Option<&DocumentMutation>,
     envelope: SignedOp,
 ) {
     let artifact = envelope.artifact;
@@ -860,7 +931,21 @@ fn handle_signed_op_send(
             return;
         };
         let ch_state = ch.state_for(artifact);
-        validate_inbound_op(&envelope, ch_state)
+        if let Some(identity) = verified_identity {
+            ch_state.artifacts.insert(artifact, ArtifactKind::Note);
+            ch_state
+                .artifact_apps
+                .insert(artifact, route.app_id.clone());
+            validate_admitted_inbound_op(
+                &envelope,
+                identity.role,
+                ch_state,
+                std::time::SystemTime::now(),
+                Duration::from_secs(300),
+            )
+        } else {
+            validate_inbound_op(&envelope, ch_state)
+        }
     };
     match validation {
         Ok(()) => {
@@ -878,9 +963,18 @@ fn handle_signed_op_send(
             }
             // Republishing is not vouching.
             state.publisher().signed_document(route, envelope.clone());
-            let event = CollabEvent::SignedCRDTIncremental {
-                envelope: Box::new(envelope),
-                from_user_id: state.participant_id(route, announced_handle, verified_identity),
+            let from_user_id = state.participant_id(route, announced_handle, verified_identity);
+            let event = match document_mutation {
+                Some(DocumentMutation::Snapshot(_)) => CollabEvent::SignedCRDTUpdate {
+                    envelope: Box::new(envelope),
+                    from_user_id,
+                },
+                Some(DocumentMutation::Incremental(_)) | None => {
+                    CollabEvent::SignedCRDTIncremental {
+                        envelope: Box::new(envelope),
+                        from_user_id,
+                    }
+                }
             };
             if let Some(t) = state.fanout.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -1008,6 +1102,7 @@ impl CapnpPresenceHandle {
     fn revalidate(&self) -> Result<(), capnp::Error> {
         self.state
             .revalidate_admission(&self.route(), self.verified_identity.as_ref())
+            .map(|_| ())
     }
 
     /// Publish one typed keyed-presence update. A malformed key is isolated
@@ -1545,8 +1640,9 @@ mod tests {
     use crate::shell::collab_broker::{BrokerHandle, spawn_native, spawn_native_with_publisher};
     use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
     use collab_types::{
-        ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Ed25519PublicKey, Role,
-        RoleAttestation, Signature, generate_keypair, sign_event, sign_op,
+        ArtifactKind, Attestation, AttestationId, CapOverride, ChannelId, ChannelState,
+        Ed25519PublicKey, Role, RoleAttestation, Signature, Subject, generate_keypair, sign_event,
+        sign_op,
     };
     use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
@@ -1690,6 +1786,19 @@ mod tests {
         }
     }
 
+    fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, principal: &str, room: &str) {
+        let mut tree = membership.write();
+        let workspace = &mut tree.workspaces[0];
+        workspace.owner = None;
+        workspace.capabilities.clear();
+        workspace.capabilities.push(CapOverride::membership(
+            Subject::person(principal),
+            room,
+            Verb::Read,
+        ));
+        drop(tree);
+    }
+
     #[test]
     fn certified_join_admission_uses_workspace_membership_and_role() {
         let root = SigningKey::from_bytes(&[20; 32]);
@@ -1793,6 +1902,108 @@ mod tests {
         tree.workspaces.push(other_workspace);
 
         assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
+    }
+
+    #[test]
+    fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
+        let root = SigningKey::from_bytes(&[24; 32]);
+        let device = SigningKey::from_bytes(&[25; 32]);
+        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(5),
+            "Typed document room",
+        );
+        workspace.set_owner(&principal);
+        let route = CrdtRoute::record("dev.qos.notes", workspace.room.to_string(), "meeting-notes");
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        let admitted = admit_verified_join(
+            &membership.read(),
+            &route,
+            VerifiedJoinIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+            },
+        )
+        .expect("owner is admitted");
+
+        let fanout = Arc::new(FanoutState::new());
+        let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::clone(&broker_channels),
+            PeerPublisher::disabled(),
+            LocalIdentity::from_network(None),
+            Some(Arc::clone(&membership)),
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        state.ensure_channel(&route.channel_key());
+        let mut received = state.subscribe_ops(&route.channel_key(), 2);
+
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            artifact,
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        sign_op(&mut op, &device).expect("device signs document op");
+        let mutation = state
+            .authorize_certified_document(&route, &admitted, &op)
+            .expect("live owner may edit the joined document");
+        handle_signed_op_send(
+            &state,
+            1,
+            &route,
+            None,
+            Some(&admitted),
+            Some(&mutation),
+            op.clone(),
+        );
+
+        let delivered = received.try_recv().expect("snapshot fanout");
+        assert_eq!(delivered.kind, OpKind::Signed);
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
+            op
+        );
+        assert_eq!(
+            broker_channels
+                .lock()
+                .expect("broker channels")
+                .state_for(artifact)
+                .op_log
+                .len(),
+            1,
+            "the admitted validator records the certified op without a role attestation"
+        );
+
+        downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
+        let viewer = state
+            .revalidate_admission(&route, Some(&admitted))
+            .expect("member still admitted")
+            .expect("certified identity");
+        assert_eq!(viewer.role, Role::Viewer);
+        assert!(
+            state
+                .authorize_certified_document(&route, &viewer, &op)
+                .is_err(),
+            "a live downgrade must take effect before the next send"
+        );
+        let other_record =
+            CrdtRoute::record(route.app_id.clone(), route.cluster_id, "other-record");
+        assert!(
+            state
+                .authorize_certified_document(&other_record, &admitted, &op)
+                .is_err(),
+            "a signed envelope cannot be replayed through another record route"
+        );
     }
 
     fn unique_path(label: &str) -> PathBuf {
