@@ -23,6 +23,27 @@ Existing installations are migrated idempotently by `shell
 --provision-identity`. Existing keys are checked for agreement and are never
 silently replaced.
 
+Native qOS and the legacy-host compatibility route deliberately have different
+trust models. A normal qOS installation creates identity through the dedicated
+OOBE and requires a LUKS2-encrypted system before that identity is created.
+Machines with TPM2 use one required startup PIN only after a dedicated preflight
+proves verified boot continues from the live medium through the installed
+target. Secure Boot state on the installer alone is not enough. Machines
+without every part of that boundary require one normal disk passphrase. That
+same credential is the local
+session-unlock credential, and successful disk authentication hands directly
+to the installed user's first session rather than immediately prompting for a
+second password. Native provisioning remains responsible for protected-key
+migration and does not infer a person's identity from the implementation-level
+Unix account.
+
+Only when qDesktop is installed on top of an existing Linux distribution does
+identity associate with the already-authenticated Unix login. Its files live in
+that user's XDG trees with ordinary Unix ownership, and a newly-created identity
+takes its public display label from the account's passwd entry. This route does
+not create a second login or identity password, and it does not rewrite or
+migrate a pre-existing identity record.
+
 ## Direct collaboration
 
 `shell/src/network/actor.rs` owns an Iroh endpoint and one `iroh-gossip` topic
@@ -33,6 +54,40 @@ establish one.
 
 Direct collaboration has no server requirement. It is the fast path for an
 ad-hoc invitation and remains active when a workspace host is configured.
+
+An invite also signs the maximum role its bearer receives: Viewer,
+Commenter, or Editor. The inviter chooses that role before the token is
+minted; changing it invalidates the signature. After the joining device
+presents its person-signed device certificate, the workspace authority turns
+that signed choice into the ordinary room-membership capability. Redemption
+carries a hash of the exact signed invite, so multiple outstanding invites
+cannot exchange names or roles and an ambient room participant cannot consume
+the next grant. From then on the same role checks gate app actions whether
+peers connect directly, through a home host, or through hosted infrastructure.
+
+Every inbound room message is authorized after device-certificate
+authentication. Membership with `Read` is required to request or receive room
+state and presence; publishing room mutations requires `Write`. The sole
+bootstrap exception accepts the first governance snapshot only from the exact
+authority endpoint signed into the invite. Topic ids are treated as lossy
+routing hints, so a collision is rejected rather than selecting an arbitrary
+room.
+
+Only a locally governing administrator can mint an invite or change membership
+and capabilities. Ordinary role controls expose Viewer, Commenter, and Editor;
+Owner is structural governance authority and is never created or transferred
+by cycling a role chip. Document actions use their signed semantic class across
+apps: comments require `Comment`, edits/moves/deletes require `Write`, and
+governance/compaction/redaction require `Admin`, with the static role table and
+live capability restrictions both enforced before signing and on receipt.
+Publishing a surface stream, granting or injecting remote control, and room
+state responses likewise require `Write`; passive presence, requests, and
+validated history reads require `Read`.
+
+Live session handles in cursor, app-presence, remote-input, stream, and
+scrollback messages are bound to the authenticated transport endpoint before
+dispatch. A member therefore cannot impersonate another member merely by
+copying that member's numeric session handle.
 
 ## Workspace hosts
 
