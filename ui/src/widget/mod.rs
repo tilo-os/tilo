@@ -206,9 +206,21 @@ pub trait Widget {
         false
     }
     fn needs_commit(&self) -> bool {
-        false
+        self.children().iter().any(|child| child.needs_commit())
     }
-    fn on_commit(&mut self) {}
+    /// Drain semantic provenance for the native transaction currently asking
+    /// the host to commit. Use this for CRDT-native edits such as flowing text;
+    /// replayable discrete operations should continue through `ActionHost`.
+    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_commit_context)
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            child.on_commit();
+        }
+    }
     fn get_state(&self) -> Option<String> {
         None
     }
