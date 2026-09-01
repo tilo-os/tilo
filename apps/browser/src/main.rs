@@ -93,7 +93,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
             })
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        render_live_shot_to_png(&url, size, std::path::Path::new(&out))?;
+        render_live_shot_to_png(
+            &url,
+            size,
+            std::path::Path::new(&out),
+            args.iter().any(|arg| arg == "--probe-pip"),
+        )?;
         return Ok(());
     }
     if let Some(out) = parse_arg_value(&args, "--shots-suggestions") {
@@ -128,6 +133,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_shot_to_png(Box::new(widget), (1000, 650), std::path::Path::new(&out))?;
         return Ok(());
     }
+    if let Some(out) = parse_arg_value(&args, "--shots-pip-empty") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_empty_pip_feedback();
+        let size = parse_arg_value(&args, "--size")
+            .and_then(|s| {
+                let (w, h) = s.split_once('x')?;
+                Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+            })
+            .unwrap_or((1000, 650));
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(&out))?;
+        return Ok(());
+    }
     if let Some(out) = parse_arg_value(&args, "--shots-settings") {
         // Render the settings pane standalone, to inspect its layout.
         render_shot_to_png(
@@ -138,7 +155,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = BrowserWidget::new_headless();
+        let mut widget = BrowserWidget::new_headless();
+        if args.iter().any(|arg| arg == "--pip-active") {
+            widget.debug_show_active_pip();
+        }
         render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
@@ -304,6 +324,7 @@ fn render_live_shot_to_png(
     url: &str,
     viewport: (u32, u32),
     out: &std::path::Path,
+    probe_pip: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
@@ -334,6 +355,8 @@ fn render_live_shot_to_png(
     // Then let the page settle briefly so late-loading content paints.
     let deadline = Instant::now() + Duration::from_secs(45);
     let mut sized_frame_seen_at: Option<Instant> = None;
+    let mut pip_probe_started = false;
+    let mut pip_request = None;
     loop {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -370,6 +393,10 @@ fn render_live_shot_to_png(
         }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
+        if pip_probe_started && pip_request.is_none() {
+            pip_request = Widget::take_floating_surface_request(&mut widget);
+        }
+
         let frame = engine.frames().lock().unwrap().clone();
         if let Some(f) = frame {
             let painted = f.rgba.chunks_exact(4).any(|px| px[3] != 0);
@@ -385,6 +412,14 @@ fn render_live_shot_to_png(
                 // desktop switch fires one on the first resize) completes
                 // over the network before we capture.
                 if seen.elapsed() > Duration::from_secs(6) {
+                    if probe_pip && !pip_probe_started {
+                        widget.debug_request_picture_in_picture();
+                        pip_probe_started = true;
+                        continue;
+                    }
+                    if probe_pip && pip_request.is_none() {
+                        continue;
+                    }
                     let mut scene = Scene::new();
                     widget.draw_with_presence(
                         &mut scene,
@@ -399,6 +434,33 @@ fn render_live_shot_to_png(
                     }
                     let mut renderer = OffscreenRenderer::new(w, h);
                     renderer.render_png(&scene, vello::peniko::Color::TRANSPARENT, out);
+                    if let Some(request) = pip_request.as_ref() {
+                        let ui::floating_surface::FloatingSource::AppElement {
+                            element_id,
+                            region,
+                            ..
+                        } = &request.source
+                        else {
+                            return Err(
+                                "real browser PiP did not preserve a semantic media element".into(),
+                            );
+                        };
+                        if element_id.trim().is_empty() || region.area() <= 1.0 {
+                            return Err("real browser PiP returned empty semantic geometry".into());
+                        }
+                        let protocol: ui::floating_surface::FloatingSurfaceProtocolRequest =
+                            request.into();
+                        let sidecar =
+                            std::path::PathBuf::from(format!("{}.pip.json", out.display()));
+                        std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
+                        println!(
+                            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
+                            request.title,
+                            region.width(),
+                            region.height(),
+                            sidecar.display()
+                        );
+                    }
                     println!("browser: wrote live shot of {url} to {}", out.display());
                     return Ok(());
                 }
@@ -416,6 +478,7 @@ fn render_live_shot_to_png(
     _url: &str,
     _viewport: (u32, u32),
     _out: &std::path::Path,
+    _probe_pip: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Err("--shots-live needs the real engine: rebuild with --features wpe".into())
 }

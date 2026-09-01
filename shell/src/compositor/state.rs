@@ -82,6 +82,194 @@ use std::collections::HashMap;
 /// compositor's private OSK socket.
 pub const OSK_APP_ID: &str = "dev.qos.osk";
 
+/// Frozen pixels from the final app-owned frame. The shell moves this exact
+/// image under the pointer while the authenticated secondary surface warms,
+/// then drops it atomically on the first native buffer.
+#[derive(Clone, Debug)]
+pub(crate) struct FloatingTransferFrame {
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Primary-app rect the frozen transfer was cut from. The proxy remains here
+/// until the app explicitly confirms that its cleared primary frame presented;
+/// moving it sooner would reveal the same card in both owners.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FloatingTransferSource {
+    pub rect: vello::kurbo::Rect,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingFloatingToplevel {
+    pub token: String,
+    pub connection: u64,
+    pub public_id: String,
+    pub app_id: String,
+    pub content_rect: vello::kurbo::Rect,
+    pub rect: vello::kurbo::Rect,
+    pub transfer_frame: Option<FloatingTransferFrame>,
+    pub transfer_source: Option<FloatingTransferSource>,
+    pub suspended: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FloatingToplevel {
+    pub surface_id: u64,
+    pub token: String,
+    pub connection: u64,
+    pub public_id: String,
+    pub app_id: String,
+    pub content_rect: vello::kurbo::Rect,
+    pub rect: vello::kurbo::Rect,
+    pub transfer_frame: Option<FloatingTransferFrame>,
+    pub transfer_source: Option<FloatingTransferSource>,
+    /// Hidden while the activity is attached inside its app. The Wayland
+    /// surface and authenticated capability deliberately remain alive so a
+    /// later detach can resume without renderer or identity churn.
+    pub suspended: bool,
+    /// True only after the first commit carrying pixels. Constructing an
+    /// xdg_toplevel alone is not a visible ownership transfer.
+    pub presented: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum FloatingToplevelEvent {
+    Mapped(FloatingToplevel),
+    Destroyed { connection: u64, public_id: String },
+}
+
+fn suspend_floating_entries(
+    pending: &mut [PendingFloatingToplevel],
+    live: &mut [FloatingToplevel],
+    connection: u64,
+    public_id: &str,
+) -> bool {
+    if let Some(surface) = live
+        .iter_mut()
+        .find(|surface| surface.connection == connection && surface.public_id == public_id)
+    {
+        let changed = !surface.suspended;
+        surface.suspended = true;
+        return changed;
+    }
+    if let Some(pending) = pending
+        .iter_mut()
+        .find(|pending| pending.connection == connection && pending.public_id == public_id)
+    {
+        let changed = !pending.suspended;
+        pending.suspended = true;
+        return changed;
+    }
+    false
+}
+
+fn resume_floating_entries(
+    pending: &mut [PendingFloatingToplevel],
+    live: &mut [FloatingToplevel],
+    connection: u64,
+    public_id: &str,
+    geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
+    transfer_frame: Option<FloatingTransferFrame>,
+    transfer_source: Option<FloatingTransferSource>,
+) -> Option<String> {
+    let (rect, content_rect) = geometry;
+    if let Some(surface) = live
+        .iter_mut()
+        .find(|surface| surface.connection == connection && surface.public_id == public_id)
+    {
+        surface.rect = rect;
+        surface.content_rect = content_rect;
+        surface.transfer_frame = transfer_frame;
+        surface.transfer_source = transfer_source;
+        surface.suspended = false;
+        // Keep the frozen app frame on top until a fresh buffer commits; the
+        // retained window's previous buffer must never flash stale.
+        surface.presented = false;
+        return Some(surface.token.clone());
+    }
+    if let Some(pending) = pending
+        .iter_mut()
+        .find(|pending| pending.connection == connection && pending.public_id == public_id)
+    {
+        pending.rect = rect;
+        pending.content_rect = content_rect;
+        pending.transfer_frame = transfer_frame;
+        pending.transfer_source = transfer_source;
+        pending.suspended = false;
+        return Some(pending.token.clone());
+    }
+    None
+}
+
+fn complete_floating_return_entries(
+    pending: &mut [PendingFloatingToplevel],
+    live: &mut [FloatingToplevel],
+    connection: u64,
+    public_id: &str,
+) -> bool {
+    if let Some(surface) = live
+        .iter_mut()
+        .find(|surface| surface.connection == connection && surface.public_id == public_id)
+    {
+        if !surface.suspended {
+            return false;
+        }
+        let changed = surface.transfer_source.take().is_some();
+        surface.transfer_frame = None;
+        return changed;
+    }
+    if let Some(pending) = pending
+        .iter_mut()
+        .find(|pending| pending.connection == connection && pending.public_id == public_id)
+    {
+        if !pending.suspended {
+            return false;
+        }
+        let changed = pending.transfer_source.take().is_some();
+        pending.transfer_frame = None;
+        return changed;
+    }
+    false
+}
+
+fn clear_floating_source_entries(
+    pending: &mut [PendingFloatingToplevel],
+    live: &mut [FloatingToplevel],
+    connection: u64,
+    public_id: &str,
+) -> bool {
+    if let Some(surface) = live
+        .iter_mut()
+        .find(|surface| surface.connection == connection && surface.public_id == public_id)
+    {
+        // A late detach acknowledgement must never clear the newer reverse
+        // handoff proxy after the surface has already been suspended.
+        return !surface.suspended && surface.transfer_source.take().is_some();
+    }
+    if let Some(pending) = pending
+        .iter_mut()
+        .find(|pending| pending.connection == connection && pending.public_id == public_id)
+    {
+        return !pending.suspended && pending.transfer_source.take().is_some();
+    }
+    false
+}
+
+fn dismiss_floating_entries(
+    pending: &mut Vec<PendingFloatingToplevel>,
+    live: &mut Vec<FloatingToplevel>,
+    connection: u64,
+    public_id: &str,
+) -> bool {
+    let pending_before = pending.len();
+    pending
+        .retain(|candidate| candidate.connection != connection || candidate.public_id != public_id);
+    let live_before = live.len();
+    live.retain(|surface| surface.connection != connection || surface.public_id != public_id);
+    pending_before != pending.len() || live_before != live.len()
+}
+
 /// Read the persisted `HiDPI` display scale from the shared settings store.
 ///
 /// The Settings app writes `~/.config/qos/settings.json` with a
@@ -323,9 +511,215 @@ pub struct State {
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
+    /// One-time capabilities issued through the authenticated shell-ui
+    /// service. A public Wayland client is promoted only when its app-id
+    /// carries an exact token from this set.
+    pub(crate) pending_floating_toplevels: Vec<PendingFloatingToplevel>,
+    /// Live app-owned secondary surfaces, outside the normal workspace tree.
+    pub(crate) floating_toplevels: Vec<FloatingToplevel>,
+    pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
 }
 
 impl State {
+    pub(crate) fn authorize_floating_toplevel(&mut self, pending: PendingFloatingToplevel) {
+        self.pending_floating_toplevels.retain(|candidate| {
+            candidate.connection != pending.connection || candidate.public_id != pending.public_id
+        });
+        self.pending_floating_toplevels.push(pending);
+    }
+
+    fn promote_floating_toplevel(&mut self, surface_id: u64, app_id: &str) -> bool {
+        let Some(token) = floating_capability_token(app_id) else {
+            return false;
+        };
+        let Some(index) = self
+            .pending_floating_toplevels
+            .iter()
+            .position(|pending| pending.token == token)
+        else {
+            return false;
+        };
+        let pending = self.pending_floating_toplevels.remove(index);
+        self.client_input.promote_to_overlay(surface_id);
+        let surface = FloatingToplevel {
+            surface_id,
+            token: pending.token,
+            connection: pending.connection,
+            public_id: pending.public_id,
+            app_id: pending.app_id,
+            content_rect: pending.content_rect,
+            rect: pending.rect,
+            transfer_frame: pending.transfer_frame,
+            transfer_source: pending.transfer_source,
+            suspended: pending.suspended,
+            presented: false,
+        };
+        self.floating_toplevels.push(surface.clone());
+        true
+    }
+
+    fn mark_floating_toplevel_presented(&mut self, surface_id: u64) {
+        let Some(surface) = self
+            .floating_toplevels
+            .iter_mut()
+            .find(|surface| surface.surface_id == surface_id)
+        else {
+            return;
+        };
+        if surface.presented {
+            return;
+        }
+        surface.presented = true;
+        if !surface.suspended {
+            self.floating_toplevel_events
+                .push(FloatingToplevelEvent::Mapped(surface.clone()));
+        }
+    }
+
+    pub(crate) fn update_floating_toplevel_rect(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        rect: vello::kurbo::Rect,
+        content_rect: vello::kurbo::Rect,
+    ) -> bool {
+        if let Some(surface) = self
+            .floating_toplevels
+            .iter_mut()
+            .find(|surface| surface.connection == connection && surface.public_id == public_id)
+        {
+            let changed = surface.rect != rect || surface.content_rect != content_rect;
+            surface.rect = rect;
+            surface.content_rect = content_rect;
+            return changed;
+        }
+        if let Some(pending) = self
+            .pending_floating_toplevels
+            .iter_mut()
+            .find(|pending| pending.connection == connection && pending.public_id == public_id)
+        {
+            let changed = pending.rect != rect || pending.content_rect != content_rect;
+            pending.rect = rect;
+            pending.content_rect = content_rect;
+            return changed;
+        }
+        false
+    }
+
+    /// Hide one app-owned surface without invalidating its capability or
+    /// dropping its authenticated Wayland identity. This also covers the
+    /// very-fast return that arrives before the secondary toplevel maps.
+    pub(crate) fn suspend_floating_toplevel(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        return_frame: Option<FloatingTransferFrame>,
+    ) -> bool {
+        if let Some(frame) = return_frame
+            && let Some(surface) = self
+                .floating_toplevels
+                .iter_mut()
+                .find(|surface| surface.connection == connection && surface.public_id == public_id)
+        {
+            // Preserve the last shell-owned pixels at their exact desktop
+            // geometry until the primary app window confirms its replacement
+            // frame was presented. This is the reverse of SourceCleared.
+            surface.transfer_frame = Some(frame);
+            surface.transfer_source = Some(FloatingTransferSource { rect: surface.rect });
+        }
+        suspend_floating_entries(
+            &mut self.pending_floating_toplevels,
+            &mut self.floating_toplevels,
+            connection,
+            public_id,
+        )
+    }
+
+    /// Release the shell → app return proxy only after the app's primary
+    /// render worker confirms the reattached pixels reached presentation.
+    pub(crate) fn mark_floating_destination_presented(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+    ) -> bool {
+        complete_floating_return_entries(
+            &mut self.pending_floating_toplevels,
+            &mut self.floating_toplevels,
+            connection,
+            public_id,
+        )
+    }
+
+    /// Release the source-frame gate only after the app's primary render
+    /// worker confirms that a frame without the transferred pixels reached
+    /// presentation. Until this call, proxy and native geometry remain pinned
+    /// over the captured source rect.
+    pub(crate) fn mark_floating_source_cleared(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+    ) -> bool {
+        clear_floating_source_entries(
+            &mut self.pending_floating_toplevels,
+            &mut self.floating_toplevels,
+            connection,
+            public_id,
+        )
+    }
+
+    /// Resume the exact capability previously suspended for this
+    /// authenticated service connection. Returning the original token is the
+    /// proof that no new overlay authority was minted for the round trip.
+    pub(crate) fn resume_floating_toplevel(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        rect: vello::kurbo::Rect,
+        content_rect: vello::kurbo::Rect,
+        transfer_frame: Option<FloatingTransferFrame>,
+        transfer_source: Option<FloatingTransferSource>,
+    ) -> Option<String> {
+        resume_floating_entries(
+            &mut self.pending_floating_toplevels,
+            &mut self.floating_toplevels,
+            connection,
+            public_id,
+            (rect, content_rect),
+            transfer_frame,
+            transfer_source,
+        )
+    }
+
+    pub(crate) fn dismiss_floating_toplevel(&mut self, connection: u64, public_id: &str) -> bool {
+        dismiss_floating_entries(
+            &mut self.pending_floating_toplevels,
+            &mut self.floating_toplevels,
+            connection,
+            public_id,
+        )
+    }
+
+    pub(crate) fn dismiss_floating_connection(&mut self, connection: u64) -> bool {
+        let pending_before = self.pending_floating_toplevels.len();
+        let live_before = self.floating_toplevels.len();
+        self.pending_floating_toplevels
+            .retain(|pending| pending.connection != connection);
+        self.floating_toplevels
+            .retain(|surface| surface.connection != connection);
+        pending_before != self.pending_floating_toplevels.len()
+            || live_before != self.floating_toplevels.len()
+    }
+
+    pub(crate) fn take_floating_toplevel_events(&mut self) -> Vec<FloatingToplevelEvent> {
+        std::mem::take(&mut self.floating_toplevel_events)
+    }
+
+    pub(crate) fn is_floating_toplevel(&self, surface_id: u64) -> bool {
+        self.floating_toplevels
+            .iter()
+            .any(|surface| surface.surface_id == surface_id)
+    }
+
     /// Whether the focused client has committed an enabled text-input-v3
     /// session. This is the compositor's source of truth for OSK visibility;
     /// Wayland xdg-toplevels have no client-side visibility request.
@@ -428,6 +822,9 @@ impl State {
             pointer_gestures_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             osk_surface: None,
+            pending_floating_toplevels: Vec::new(),
+            floating_toplevels: Vec::new(),
+            floating_toplevel_events: Vec::new(),
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
@@ -1321,8 +1718,24 @@ impl CompositorHandler for State {
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         let is_foreign_tab =
             tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
-        if is_foreign_tab || self.osk_surface == Some(surface_id) {
+        if is_foreign_tab
+            || self.osk_surface == Some(surface_id)
+            || self.is_floating_toplevel(surface_id)
+        {
             Self::capture_foreign_surface(surface, surface_id);
+        }
+        let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
+            && wl_compositor::with_states(surface, |states| {
+                let mut attrs = states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>();
+                matches!(
+                    &attrs.current().buffer,
+                    Some(wl_compositor::BufferAssignment::NewBuffer(_))
+                )
+            });
+        if floating_has_new_buffer {
+            self.mark_floating_toplevel_presented(surface_id);
         }
         if !is_shared {
             return;
@@ -1485,6 +1898,11 @@ fn osk_identity_is_trusted(app_id: Option<&str>, socket_authorized: bool) -> boo
     socket_authorized && app_id == Some(OSK_APP_ID)
 }
 
+fn floating_capability_token(app_id: &str) -> Option<&str> {
+    let token = app_id.strip_prefix(ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX)?;
+    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -1518,10 +1936,13 @@ impl XdgShellHandler for State {
             app_id.clone(),
         );
 
+        let floating = app_id
+            .as_deref()
+            .is_some_and(|app_id| self.promote_floating_toplevel(surface_id, app_id));
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
-        } else {
+        } else if !floating {
             tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
         }
 
@@ -1534,6 +1955,18 @@ impl XdgShellHandler for State {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
+        }
+        if let Some(index) = self
+            .floating_toplevels
+            .iter()
+            .position(|candidate| candidate.surface_id == surface_id)
+        {
+            let surface = self.floating_toplevels.remove(index);
+            self.floating_toplevel_events
+                .push(FloatingToplevelEvent::Destroyed {
+                    connection: surface.connection,
+                    public_id: surface.public_id,
+                });
         }
         // If the destroyed surface held the output fullscreen, drop the transient promotion so layout restores instead of staying collapsed.
         if self.fullscreen_group
@@ -1575,6 +2008,16 @@ impl XdgShellHandler for State {
                 );
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
+                return;
+            }
+            if self.promote_floating_toplevel(surface_id, &app_id) {
+                // `new_toplevel` may have inserted an anonymous placeholder
+                // before the app-id arrived. Remove it before the next tree
+                // mirror can expose a one-frame phantom tab.
+                let _ = tab_binding::close_tab_for_destroyed_surface(
+                    &mut self.workspace_tree,
+                    surface_id,
+                );
                 return;
             }
             let _ = tab_binding::rename_tab_for_app_id(
@@ -1844,6 +2287,163 @@ mod osk_identity_tests {
     fn public_clients_never_receive_the_osk_global_credential() {
         assert!(!ClientState::default().osk);
         assert!(ClientState::osk_arc().osk);
+    }
+
+    #[test]
+    fn floating_overlay_identity_requires_a_full_random_capability() {
+        let token = "5e8f16a2a2e24bf7ad86758f2f28e316";
+        let app_id = format!(
+            "{}{}",
+            ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX,
+            token
+        );
+        assert_eq!(floating_capability_token(&app_id), Some(token));
+        assert_eq!(
+            floating_capability_token(ui::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX),
+            None
+        );
+        assert_eq!(
+            floating_capability_token("dev.qos.shell-float.predictable"),
+            None
+        );
+        assert_eq!(floating_capability_token("dev.qos.chat"), None);
+    }
+}
+
+#[cfg(test)]
+mod floating_lifecycle_tests {
+    use super::*;
+
+    fn live_surface() -> FloatingToplevel {
+        FloatingToplevel {
+            surface_id: 41,
+            token: "5e8f16a2a2e24bf7ad86758f2f28e316".into(),
+            connection: 7,
+            public_id: "maps-navigation:active".into(),
+            app_id: "dev.qos.maps".into(),
+            content_rect: vello::kurbo::Rect::new(100.0, 80.0, 420.0, 260.0),
+            rect: vello::kurbo::Rect::new(92.0, 72.0, 428.0, 268.0),
+            transfer_frame: None,
+            transfer_source: None,
+            suspended: false,
+            presented: true,
+        }
+    }
+
+    #[test]
+    fn suspend_and_resume_reuses_the_exact_authenticated_surface() {
+        let mut pending = Vec::new();
+        let mut live = vec![live_surface()];
+        assert!(suspend_floating_entries(
+            &mut pending,
+            &mut live,
+            7,
+            "maps-navigation:active"
+        ));
+        assert!(live[0].suspended);
+
+        let next_window = vello::kurbo::Rect::new(692.0, 52.0, 1_028.0, 248.0);
+        let next_content = vello::kurbo::Rect::new(700.0, 60.0, 1_020.0, 240.0);
+        let token = resume_floating_entries(
+            &mut pending,
+            &mut live,
+            7,
+            "maps-navigation:active",
+            (next_window, next_content),
+            None,
+            None,
+        );
+        assert_eq!(token.as_deref(), Some("5e8f16a2a2e24bf7ad86758f2f28e316"));
+        assert_eq!(live[0].surface_id, 41);
+        assert_eq!(live[0].rect, next_window);
+        assert!(!live[0].suspended);
+        assert!(!live[0].presented, "resume waits for fresh pixels");
+    }
+
+    #[test]
+    fn return_proxy_survives_suspend_until_primary_destination_is_presented() {
+        let mut pending = Vec::new();
+        let mut live = vec![live_surface()];
+        let return_rect = live[0].rect;
+        live[0].transfer_frame = Some(FloatingTransferFrame {
+            rgba: std::sync::Arc::new(vec![0xff; 4 * 4 * 4]),
+            width: 4,
+            height: 4,
+        });
+        live[0].transfer_source = Some(FloatingTransferSource { rect: return_rect });
+
+        assert!(suspend_floating_entries(
+            &mut pending,
+            &mut live,
+            7,
+            "maps-navigation:active"
+        ));
+        assert!(live[0].suspended);
+        assert_eq!(live[0].transfer_source.unwrap().rect, return_rect);
+        assert!(live[0].transfer_frame.is_some());
+        assert!(
+            !clear_floating_source_entries(&mut pending, &mut live, 7, "maps-navigation:active"),
+            "a late detach acknowledgement cannot tear down the newer return proxy"
+        );
+        assert!(live[0].transfer_source.is_some());
+
+        assert!(complete_floating_return_entries(
+            &mut pending,
+            &mut live,
+            7,
+            "maps-navigation:active"
+        ));
+        assert!(live[0].transfer_source.is_none());
+        assert!(live[0].transfer_frame.is_none());
+        assert!(
+            !complete_floating_return_entries(&mut pending, &mut live, 7, "maps-navigation:active"),
+            "the destination acknowledgement is idempotent"
+        );
+    }
+
+    #[test]
+    fn capability_cannot_be_resumed_from_another_connection() {
+        let mut pending = Vec::new();
+        let mut live = vec![live_surface()];
+        assert!(
+            resume_floating_entries(
+                &mut pending,
+                &mut live,
+                99,
+                "maps-navigation:active",
+                (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
+                None,
+                None,
+            )
+            .is_none()
+        );
+        assert_eq!(live[0].connection, 7);
+        assert!(live[0].presented);
+    }
+
+    #[test]
+    fn permanent_dismiss_cannot_be_resumed() {
+        let mut pending = Vec::new();
+        let mut live = vec![live_surface()];
+        assert!(dismiss_floating_entries(
+            &mut pending,
+            &mut live,
+            7,
+            "maps-navigation:active"
+        ));
+        assert!(live.is_empty());
+        assert!(
+            resume_floating_entries(
+                &mut pending,
+                &mut live,
+                7,
+                "maps-navigation:active",
+                (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
+                None,
+                None,
+            )
+            .is_none()
+        );
     }
 }
 

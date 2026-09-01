@@ -890,6 +890,7 @@ pub struct ForeignSurfaceWidget {
     /// Only the placeholder below reads it — the rare path where an app
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
+    preserve_transparency: bool,
 }
 
 impl ForeignSurfaceWidget {
@@ -902,6 +903,14 @@ impl ForeignSurfaceWidget {
             cached_seq: 0,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
+            preserve_transparency: false,
+        }
+    }
+
+    pub fn new_floating(surface_id: SurfaceId, app_id: String) -> Self {
+        Self {
+            preserve_transparency: true,
+            ..Self::new(surface_id, app_id)
         }
     }
 
@@ -1084,6 +1093,24 @@ impl Widget for ForeignSurfaceWidget {
         if let Some(image) = self.cached.clone()
             && let Some(dst) = self.fit_rect(image.width, image.height)
         {
+            let sx = dst.width() / f64::from(image.width);
+            let sy = dst.height() / f64::from(image.height);
+            let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
+            let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+            if self.preserve_transparency {
+                // The app buffer already carries the shared floating chrome's
+                // soft silhouette. Drawing it directly preserves transparent
+                // corners and prevents a second radius/backdrop from making
+                // the native handoff look wider than the in-app surface.
+                scene.fill(
+                    Fill::NonZero,
+                    brush_transform,
+                    &brush,
+                    None,
+                    &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
+                );
+                return;
+            }
             // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
             scene.fill(
                 Fill::NonZero,
@@ -1092,10 +1119,6 @@ impl Widget for ForeignSurfaceWidget {
                 None,
                 &clip,
             );
-            let sx = dst.width() / f64::from(image.width);
-            let sy = dst.height() / f64::from(image.height);
-            let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
-            let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -1502,7 +1525,10 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
         let id = crate::compositor::state::surface_id(surface);
-        if !is_visible_tab(&state.workspace_tree, id) && state.osk_surface != Some(id) {
+        if !is_visible_tab(&state.workspace_tree, id)
+            && state.osk_surface != Some(id)
+            && !state.is_floating_toplevel(id)
+        {
             continue;
         }
         let mut fired = false;
