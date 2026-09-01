@@ -3,8 +3,8 @@
 The host package installs qOS as an additional Wayland session on an existing
 Linux system. It is deliberately smaller than the bootc operating-system image:
 the package contains the compositor, sandbox launcher, unlock helper, PAM policy,
-portal registration, and display-manager entry. It does not replace the host's
-boot chain, greeter, or package manager.
+portal registration, display-manager entry, and AGPL-3.0 license text. It does
+not replace the host's boot chain, greeter, or package manager.
 
 ## Supported outputs
 
@@ -140,8 +140,9 @@ beyond the existing `REGISTRY_TOKEN` is introduced; it must have repository and
 package write permission for tag releases.
 
 Every distro job first checks the architecture visible inside its container,
-builds inside its target distribution, and then installs the result with that
-distribution's package manager. The Nix job builds the flake, checks the session
-entry and ELF architecture, and exports the complete store closure as a
-`.nar.gz`. Tagged release assets therefore contain only artifacts that passed
-their target-architecture install test.
+builds inside its target distribution, and then installs both the main and
+developer packages with that distribution's package manager. The Nix job builds
+the flake, checks every installed path, immutable store substitution, native ELF
+architecture and shared-library closure, and exports the complete store closure
+as a `.nar.gz`. Tagged release assets therefore contain only artifacts that
+passed their target-architecture install test.
