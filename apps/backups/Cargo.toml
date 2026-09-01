@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "backups"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # The qOS action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
