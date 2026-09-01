@@ -108,6 +108,10 @@ pub struct ShellOverlayHost {
     onboarding: Option<crate::onboarding_view::OnboardingView>,
     /// One-shot relayout edge raised when onboarding releases the desktop.
     onboarding_released: bool,
+    /// One-shot focus edge paired with [`Self::onboarding_released`]. Kept
+    /// separate because relayout can consume its edge before the next input
+    /// dispatch clears the compositor's cached widget node.
+    onboarding_focus_reset: bool,
     /// Floating sidebar wheel. Optional so tests can build a bare host
     /// without one; production always provides it.
     sidebar: Option<Box<dyn Widget>>,
@@ -863,6 +867,7 @@ impl ShellOverlayHost {
             content,
             onboarding: None,
             onboarding_released: false,
+            onboarding_focus_reset: false,
             sidebar: None,
             outputs: Vec::new(),
             palette,
@@ -951,6 +956,7 @@ impl ShellOverlayHost {
     pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
         self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
         self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
     }
 
     /// Whether first-login chrome is still withholding the desktop.
@@ -6449,6 +6455,7 @@ impl Widget for ShellOverlayHost {
             if finished {
                 self.onboarding = None;
                 self.onboarding_released = true;
+                self.onboarding_focus_reset = true;
             }
             return;
         }
@@ -6811,6 +6818,10 @@ impl Widget for ShellOverlayHost {
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "event routing stays linear so modal gates retain their security-sensitive order"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -6973,9 +6984,11 @@ impl Widget for ShellOverlayHost {
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        self.onboarding
-            .as_mut()
-            .is_some_and(Widget::take_focus_reset)
+        std::mem::take(&mut self.onboarding_focus_reset)
+            | self
+                .onboarding
+                .as_mut()
+                .is_some_and(Widget::take_focus_reset)
     }
 
     fn get_rect(&self) -> Rect {
@@ -13574,6 +13587,17 @@ mod tests {
         fn get_rect(&self) -> Rect {
             self.rect
         }
+    }
+
+    #[test]
+    fn onboarding_release_keeps_focus_reset_after_relayout_edge_is_consumed() {
+        let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+        host.onboarding_released = true;
+        host.onboarding_focus_reset = true;
+
+        assert!(host.take_structure_dirty());
+        assert!(host.take_focus_reset());
+        assert!(!host.take_focus_reset(), "focus reset must remain one-shot");
     }
 
     /// Bundle of host + chrome + the taffy state needed to dispatch
