@@ -43,6 +43,10 @@ if ($isServer) {
 
 $apps = Get-Content -Raw -LiteralPath $ApplicationsPath | ConvertFrom-Json
 if ($null -eq $apps -or $null -eq $apps.applications) { throw 'Application manifest has no applications array.' }
+$generationText = [string]$apps.generation
+if ($generationText -notmatch '^[0-9]{1,19}$') { throw 'Application manifest has an invalid generation.' }
+try { $null = [UInt64]$generationText }
+catch { throw 'Application manifest generation is out of range.' }
 foreach ($app in $apps.applications) {
     if ($app.id -notmatch '^[A-Za-z0-9._-]{1,128}$') { throw "Invalid app id: $($app.id)" }
     if ([string]::IsNullOrWhiteSpace($app.name) -or [string]::IsNullOrWhiteSpace($app.path)) { throw "Incomplete application: $($app.id)" }
