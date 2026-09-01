@@ -876,6 +876,10 @@ impl AppWidget for NotesApp {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact note viewport geometry is the behavior under test"
+)]
 mod tests {
     use super::*;
     use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};

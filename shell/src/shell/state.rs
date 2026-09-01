@@ -5,6 +5,15 @@ use std::collections::HashMap;
 mod shared_surfaces;
 pub use shared_surfaces::SharedSurfaces;
 
+fn now_unix_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 pub use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability,
@@ -269,6 +278,18 @@ pub enum RoomAuthority {
     /// Joined without an invite naming an administrator: the first peer
     /// to supply governance becomes it, and is pinned.
     Unpinned,
+}
+
+/// Root-signed device identity admitted into one room by that room's
+/// governance authority. The map key is the authenticated Iroh endpoint id
+/// and must equal the certificate's device key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GovernedPeerIdentity {
+    pub device_cert: qos_user_identity::DeviceCert,
+    /// Additive root-signed evidence. Omission in a later announcement cannot
+    /// remove an already-governed revocation.
+    #[serde(default)]
+    pub revocations: Vec<qos_user_identity::RevocationEntry>,
 }
 
 impl From<u64> for WorkspaceId {
@@ -1628,6 +1649,11 @@ pub struct WorkspaceTree {
     /// [`Self::apply_room_changes`] refuses it from anyone else.
     #[serde(default, deserialize_with = "deserialize_room_peer_names")]
     pub room_peer_names: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
+    /// Certified endpoint→human-root associations admitted by the room
+    /// governor. A peer announcement never writes this map directly.
+    #[serde(default)]
+    pub room_peer_identities:
+        HashMap<RoomId, std::collections::BTreeMap<String, GovernedPeerIdentity>>,
     /// Mirror of each room's record index (record id → kind), pushed by
     /// [`Self::set_room_records`] — a plain-data copy since the real
     /// index lives behind an `Rc<RefCell<_>>` peer-sync's
@@ -1677,6 +1703,7 @@ impl Default for WorkspaceTree {
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
             room_peer_names: HashMap::new(),
+            room_peer_identities: HashMap::new(),
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
@@ -1760,6 +1787,7 @@ type RoomGovernance = (
     Option<String>,
     std::collections::BTreeMap<String, Vec<u8>>,
     std::collections::BTreeMap<String, String>,
+    std::collections::BTreeMap<String, Vec<u8>>,
 );
 
 impl WorkspaceTree {
@@ -1955,7 +1983,12 @@ impl WorkspaceTree {
         let name = name.trim();
         let entry = self.room_peer_names.entry(room).or_default();
         let changed = if name.is_empty() {
-            entry.remove(peer_id).is_some()
+            let removed_name = entry.remove(peer_id).is_some();
+            // Retain the signed identity row as room-governance evidence.
+            // It is not projected without a name, but its additive revocations
+            // must survive un-naming so a later re-name cannot resurrect a
+            // revoked endpoint.
+            removed_name
         } else {
             entry
                 .insert(peer_id.to_string(), name.to_string())
@@ -1970,6 +2003,146 @@ impl WorkspaceTree {
             self.flush_to_disk();
         }
         true
+    }
+
+    /// Admit a root-signed device certificate under a governed peer name.
+    /// Only the room-governing machine may call this successfully; the
+    /// transport-authenticated endpoint must be the certified device key.
+    pub fn certify_peer_identity(
+        &mut self,
+        room: RoomId,
+        peer_id: &str,
+        device_cert: qos_user_identity::DeviceCert,
+    ) -> bool {
+        self.certify_peer_identity_with_revocations(room, peer_id, device_cert, Vec::new())
+    }
+
+    /// Admit a certificate and additive, root-signed revocation evidence.
+    pub fn certify_peer_identity_with_revocations(
+        &mut self,
+        room: RoomId,
+        peer_id: &str,
+        device_cert: qos_user_identity::DeviceCert,
+        revocations: Vec<qos_user_identity::RevocationEntry>,
+    ) -> bool {
+        if !self.governs_room(room)
+            || qos_user_identity::verify_device_cert(&device_cert).is_err()
+            || device_cert.is_expired_at(now_unix_nanos())
+            || device_cert.device_label.is_empty()
+            || device_cert.device_label.trim() != device_cert.device_label
+            || device_cert.device_label.len()
+                > qos_user_identity::MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES
+            || device_cert.device_label.chars().any(char::is_control)
+        {
+            return false;
+        }
+        if revocations.len() > qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+            || revocations.iter().any(|entry| {
+                entry.user_public_key != device_cert.user_public_key
+                    || qos_user_identity::verify_revocation_entry(entry).is_err()
+            })
+        {
+            return false;
+        }
+        let Ok(peer) = peer_id.parse::<iroh::EndpointId>() else {
+            return false;
+        };
+        if peer.as_bytes() != &device_cert.device_public_key
+            || !self
+                .room_peer_names
+                .get(&room)
+                .is_some_and(|names| names.contains_key(peer_id))
+        {
+            return false;
+        }
+        let identities = self.room_peer_identities.entry(room).or_default();
+        if !identities.contains_key(peer_id)
+            && identities.len() >= qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+        {
+            return false;
+        }
+        let mut governed_revocations = identities
+            .values()
+            .filter(|identity| identity.device_cert.user_public_key == device_cert.user_public_key)
+            .flat_map(|identity| identity.revocations.iter().cloned())
+            .chain(revocations)
+            .collect::<Vec<_>>();
+        governed_revocations
+            .sort_by_key(|entry| (entry.revoked_device_public_key, entry.revoked_at_ns));
+        governed_revocations.dedup_by_key(|entry| entry.revoked_device_public_key);
+        let row = GovernedPeerIdentity {
+            device_cert,
+            revocations: governed_revocations,
+        };
+        let changed = identities.insert(peer_id.to_string(), row.clone()).as_ref() != Some(&row);
+        if changed {
+            self.sync_room_doc(room);
+            self.flush_to_disk();
+        }
+        changed
+    }
+
+    /// Current Files projection derived solely from governance names and
+    /// root-signed device certificates in the accepted room document.
+    pub fn trusted_identity_projection(
+        &self,
+        room: RoomId,
+    ) -> qos_user_identity::TrustedIdentityProjectionV2 {
+        let names = self.room_peer_names_in_doc(room);
+        let identities = self.room_peer_identities_in_doc(room);
+        let revoked = identities
+            .values()
+            .flat_map(|identity| identity.revocations.iter())
+            .map(|entry| (entry.user_public_key, entry.revoked_device_public_key))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut grouped: std::collections::BTreeMap<
+            [u8; 32],
+            (
+                String,
+                Vec<qos_user_identity::GovernedDeviceIdentityV2>,
+                bool,
+            ),
+        > = std::collections::BTreeMap::new();
+        for (peer, identity) in identities {
+            let Some(name) = names.get(&peer) else {
+                continue;
+            };
+            let root_key = identity.device_cert.user_public_key;
+            if revoked.contains(&(root_key, identity.device_cert.device_public_key)) {
+                continue;
+            }
+            let entry = grouped
+                .entry(root_key)
+                .or_insert_with(|| (name.clone(), Vec::new(), true));
+            if entry.0 != *name {
+                entry.2 = false;
+                continue;
+            }
+            entry.1.push(qos_user_identity::GovernedDeviceIdentityV2 {
+                certificate: identity.device_cert,
+            });
+        }
+        let humans = grouped
+            .into_iter()
+            .filter(|(_, (_, devices, consistent))| *consistent && !devices.is_empty())
+            .map(|(root_public_key, (display_name, mut devices, _))| {
+                devices.sort_by_key(|device| device.certificate.device_public_key);
+                qos_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key,
+                    display_name,
+                    devices,
+                }
+            })
+            .collect();
+        let projection = qos_user_identity::TrustedIdentityProjectionV2 {
+            schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+            humans,
+        };
+        if projection.validate().is_ok() {
+            projection
+        } else {
+            qos_user_identity::TrustedIdentityProjectionV2::empty()
+        }
     }
 
     /// The names `room` carries, keyed by the peer **handle** the
@@ -2176,6 +2349,11 @@ impl WorkspaceTree {
         let caps: Vec<CapOverride> = ws.capabilities.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
+        let peer_identities = self
+            .room_peer_identities
+            .get(&room)
+            .cloned()
+            .unwrap_or_default();
         let held: std::collections::BTreeMap<String, String> = self
             .room_records_held
             .get(&room)
@@ -2275,6 +2453,7 @@ impl WorkspaceTree {
             }
         }
         Self::project_peer_names(doc, &peer_names);
+        Self::project_peer_identities(doc, &peer_identities);
         let _ = qdoc::history::commit_stamped(doc);
         // Nothing reads this doc through patches, so the log is pure
         // overhead — worse, `PatchLog::migrate_actors` panics when a
@@ -2284,6 +2463,7 @@ impl WorkspaceTree {
 
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
+    const ROOM_PEER_IDENTITIES_KEY: &'static str = "peer_identities_v1";
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`
     /// -> display name. Called only from the governing branch of
@@ -2328,6 +2508,93 @@ impl WorkspaceTree {
                 let _ = doc.put(&peers_id, peer, name.clone());
             }
         }
+    }
+
+    fn project_peer_identities(
+        doc: &mut AutoCommit,
+        identities: &std::collections::BTreeMap<String, GovernedPeerIdentity>,
+    ) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        let object = if let Some((_, id)) = doc
+            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
+            .ok()
+            .flatten()
+        {
+            id
+        } else {
+            if identities.is_empty() {
+                return;
+            }
+            let Ok(id) = doc.put_object(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY, ObjType::Map) else {
+                return;
+            };
+            id
+        };
+        let stale = doc
+            .keys(&object)
+            .filter(|key| !identities.contains_key(key))
+            .collect::<Vec<_>>();
+        for key in stale {
+            let _ = doc.delete(&object, key);
+        }
+        for (peer, identity) in identities {
+            let Ok(bytes) = serde_json::to_vec(identity) else {
+                continue;
+            };
+            let unchanged = matches!(
+                doc.get(&object, peer).ok().flatten(),
+                Some((Value::Scalar(value), _))
+                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &bytes)
+            );
+            if !unchanged {
+                let _ = doc.put(&object, peer, ScalarValue::Bytes(bytes));
+            }
+        }
+    }
+
+    pub fn room_peer_identities_in_doc(
+        &self,
+        room: RoomId,
+    ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let mut out = std::collections::BTreeMap::new();
+        let Some(doc) = self.room_docs.get(&room) else {
+            return out;
+        };
+        let Some((_, object)) = doc
+            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
+            .ok()
+            .flatten()
+        else {
+            return out;
+        };
+        for peer in doc.keys(&object) {
+            let Some((Value::Scalar(value), _)) = doc.get(&object, &peer).ok().flatten() else {
+                continue;
+            };
+            let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                continue;
+            };
+            let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
+                continue;
+            };
+            let Ok(endpoint) = peer.parse::<iroh::EndpointId>() else {
+                continue;
+            };
+            if endpoint.as_bytes() == &identity.device_cert.device_public_key
+                && qos_user_identity::verify_device_cert(&identity.device_cert).is_ok()
+                && !identity.device_cert.is_expired_at(now_unix_nanos())
+                && identity.revocations.len()
+                    <= qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+                && identity.revocations.iter().all(|entry| {
+                    entry.user_public_key == identity.device_cert.user_public_key
+                        && qos_user_identity::verify_revocation_entry(entry).is_ok()
+                })
+            {
+                out.insert(peer, identity);
+            }
+        }
+        out
     }
 
     /// Every name the room document carries. Read from the **document**,
@@ -3203,6 +3470,7 @@ impl WorkspaceTree {
                 None,
                 std::collections::BTreeMap::new(),
                 std::collections::BTreeMap::new(),
+                std::collections::BTreeMap::new(),
             );
         };
         let owner = match doc.get(&ROOT, "owner").ok().flatten() {
@@ -3237,7 +3505,21 @@ impl WorkspaceTree {
                 }
             }
         }
-        (owner, caps, peers)
+        let mut identities = std::collections::BTreeMap::new();
+        if let Some((_, object)) = doc
+            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
+            .ok()
+            .flatten()
+        {
+            for key in doc.keys(&object) {
+                if let Some((Value::Scalar(value), _)) = doc.get(&object, &key).ok().flatten()
+                    && let ScalarValue::Bytes(bytes) = value.as_ref()
+                {
+                    identities.insert(key, bytes.clone());
+                }
+            }
+        }
+        (owner, caps, peers, identities)
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -5874,6 +6156,10 @@ mod bootstrap_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact persisted width migration values are the behavior under test"
+)]
 mod automerge_foundation_tests {
     //! Tests for the `WorkspaceTree` ↔ automerge sync surface:
     //! `current_heads`, `export_changes_since`, `apply_changes`, and the
@@ -6962,6 +7248,125 @@ mod automerge_foundation_tests {
             !joiner.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Xaver"),
             "a machine that joined the room does not get to name its peers",
         );
+    }
+
+    #[test]
+    fn governed_name_and_root_signed_endpoint_project_human_and_device() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let device_secret = iroh::SecretKey::generate();
+        let endpoint = device_secret.public();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        let mut certificate = qos_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *endpoint.as_bytes(),
+            device_label: "Studio laptop".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        assert!(host.name_peer(
+            room,
+            &"quinten".to_string(),
+            &endpoint.to_string(),
+            "Ada Lovelace"
+        ));
+        assert!(host.certify_peer_identity(room, &endpoint.to_string(), certificate.clone()));
+
+        let projection = host.trusted_identity_projection(room);
+        assert_eq!(projection.humans.len(), 1);
+        assert_eq!(projection.humans[0].display_name, "Ada Lovelace");
+        assert_eq!(
+            projection.humans[0].devices[0]
+                .certificate
+                .device_public_key,
+            *endpoint.as_bytes()
+        );
+
+        ship(&mut host, &mut guest, room, 1);
+        assert_eq!(guest.trusted_identity_projection(room), projection);
+
+        {
+            use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+            let doc = guest.room_docs.get_mut(&room).unwrap();
+            let (_, identities) = doc
+                .get(&ROOT, WorkspaceTree::ROOM_PEER_IDENTITIES_KEY)
+                .unwrap()
+                .unwrap();
+            let mut spoofed = certificate.clone();
+            spoofed.device_label = "Spoofed label".into();
+            let bytes = serde_json::to_vec(&GovernedPeerIdentity {
+                device_cert: spoofed,
+                revocations: Vec::new(),
+            })
+            .unwrap();
+            doc.put(&identities, endpoint.to_string(), ScalarValue::Bytes(bytes))
+                .unwrap();
+            let _ = qdoc::history::commit_stamped(doc);
+        }
+        let spoof = guest.export_room_changes_since(room, &[]).unwrap();
+        assert!(
+            !host
+                .apply_room_changes(room, &spoof, &PeerOrigin::hub(2))
+                .unwrap(),
+            "a guest cannot rewrite a governed certificate row"
+        );
+        assert_eq!(host.trusted_identity_projection(room), projection);
+
+        let other = iroh::SecretKey::generate().public();
+        assert!(
+            !host.certify_peer_identity(room, &other.to_string(), certificate),
+            "a valid certificate cannot be rebound to another transport endpoint"
+        );
+    }
+
+    #[test]
+    fn root_signed_room_revocation_is_additive_and_prevents_rename_resurrection() {
+        let (mut host, _guest, room) = two_in_a_room();
+        let device_secret = iroh::SecretKey::generate();
+        let endpoint = device_secret.public();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
+        let mut certificate = qos_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *endpoint.as_bytes(),
+            device_label: "Retired laptop".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        assert!(host.name_peer(room, &"quinten".to_string(), &endpoint.to_string(), "Ada"));
+        assert!(host.certify_peer_identity(room, &endpoint.to_string(), certificate.clone()));
+        assert_eq!(host.trusted_identity_projection(room).humans.len(), 1);
+
+        let mut revocation = qos_user_identity::RevocationEntry {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            revoked_device_public_key: *endpoint.as_bytes(),
+            revoked_at_ns: 2,
+            reason: qos_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut revocation, &root_key).unwrap();
+        assert!(host.certify_peer_identity_with_revocations(
+            room,
+            &endpoint.to_string(),
+            certificate.clone(),
+            vec![revocation]
+        ));
+        assert!(host.trusted_identity_projection(room).humans.is_empty());
+
+        // Omission is not removal, and un-name/re-name cannot revive it.
+        assert!(!host.certify_peer_identity(room, &endpoint.to_string(), certificate));
+        assert!(host.name_peer(room, &"quinten".to_string(), &endpoint.to_string(), ""));
+        assert!(host.name_peer(
+            room,
+            &"quinten".to_string(),
+            &endpoint.to_string(),
+            "Ada Renamed"
+        ));
+        assert!(host.trusted_identity_projection(room).humans.is_empty());
     }
 
     /// A key that isn't a peer id names nobody — storing one would put

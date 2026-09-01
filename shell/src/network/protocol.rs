@@ -194,6 +194,24 @@ pub enum NeighbourMsg {
         /// Hashed Iroh peer id of the answering broker.
         responder: PeerId,
     },
+    /// Root-signed device certificate announced on one room. Appended to the
+    /// enum to preserve every existing Postcard discriminant. The receiver
+    /// binds it to the transport-authenticated sender endpoint and only the
+    /// room governor may promote it into replicated governance.
+    IdentityAnnouncement {
+        room: String,
+        device_cert: Box<qos_user_identity::DeviceCert>,
+    },
+    /// V2 identity announcement carrying additive root-signed revocations.
+    /// Appended rather than changing V1's Postcard payload layout.
+    IdentityAnnouncementV2 {
+        room: String,
+        device_cert: Box<qos_user_identity::DeviceCert>,
+        /// Additive root-signed revocations for the certificate's human root.
+        /// The room governor verifies and retains them independently of the
+        /// announcing device, so omission can never resurrect a device.
+        revocations: Vec<qos_user_identity::RevocationEntry>,
+    },
 }
 
 #[cfg(test)]

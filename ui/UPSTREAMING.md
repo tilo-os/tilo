@@ -281,7 +281,7 @@ leverage items here.
 | C | **Confirmation / modal dialogs** hand-painted, though `ui::widget::ModalDialog` exists (6 adopters: db_client, mail, notes, pdf_viewer, terminal, totp). | **~16** hand-draw a confirm/dialog/overlay sheet: browser, code_editor, contacts, disks, file-explorer, git_client, hex_editor, imager, logs, monitor, slides, store, themes, vpn, weather, word-processor. | **Adopt `ui::widget::ModalDialog`** (add a `confirm(title, body, destructive)` convenience for the delete/format/discard case that recurs most). | **M** | **no** — not mentioned in this file yet; widget adoption. |
 | D | **Per-app config/state dir + JSON read/write** — each app re-resolves its own `dirs::config_dir()/qos/<app>/…` and hand-writes serde JSON. | **~12**: `file-explorer config.rs`/`favorites.rs`, `db_client session.rs`, `store config.rs`, `settings prefs.rs`/`region.rs`, `totp storage.rs`, `browser settings.rs`/`history.rs`, `vpn config.rs`, `themes app.rs`, `music storage.rs`, `mail account.rs`, `contacts storage.rs`, `chat storage.rs`. | **Extend `crates/system/app-state`** (already the canonical *Automerge-doc* home) with a sibling `app_config::<T: Serialize>` path-resolver + atomic JSON store (built on the new `atomic-file`). | **M** | **maybe** — directly adjacent to dedupe-io's `app-state`/`settings-store`/`atomic-file` work; they may fold this in. Confirm with that session before building. |
 | E | **Icon set fragmentation** — `ui::Icon` (66 named icons) + `IconWidget` exist and 14 apps use them, but two apps declare a *private* `Icon` enum and ~8 hand-draw vector glyphs into the scene. | Private enums: `containers draw.rs:enum Icon`, `music icon.rs:enum Icon`. Hand-drawn vector icons: `camera paint.rs:icon`, `containers draw.rs:icon`, `backups app.rs:draw_{source,dest}_icon`, `code_editor file_tree.rs:draw_{folder,file}_icon`, `contacts app.rs:draw_calendar_glyph`, `maps canvas.rs:draw_category_icon`, `pdf_viewer app_draw.rs`. Emoji/`&'static str` glyph maps: `chat model.rs:glyph`, `db_client model.rs:glyph`+`icon`, `maps model.rs:glyph` (×4), `mail model.rs:icon`, `file-explorer icons.rs:icon_for`. | **Grow `ui::icons`** to cover the missing glyphs (folder/file kinds, category pins, source/dest kinds) so apps drop private enums + bespoke painters. | **M–L** (nuanced; some are genuinely app-specific pictograms) | **no** — but note an *active* thread elsewhere is already replacing emoji glyphs with vector icons (`osk` ⇧/⌫/⏎ landed), so coordinate. Partially overlaps item 5 (StatTile/IconGrid). |
-| F | **Clipboard** — `ui::text_selection::{clipboard_copy,clipboard_paste,clipboard_copy_image,clipboard_copy_primary}` exist and 14 apps use them; `word-processor widget.rs` (4 sites) still instantiates `arboard::Clipboard` directly. | 1 real offender (`word-processor`); `terminal` only in tests. | Route `word-processor` through the shared helpers; consider promoting them out of `text_selection` into a `ui::clipboard` module for discoverability. | **S** | **no** |
+| F | **Clipboard** — `ui::{clipboard_copy,clipboard_paste,clipboard_copy_image,clipboard_copy_primary}` route text and images through the installed compositor/Wayland backend, with X11 and headless fallbacks. Word Processor's four text sites now use these helpers while retaining its rich-fragment sidecar. | No production app instantiates `arboard::Clipboard` directly; `terminal` only does so in tests. | Complete. Keep the root re-exports as the concise widget-facing API; `ui::clipboard` remains the backend boundary. | **S** | **no** |
 | G | **Remote-image fetch + decode** — `ui::Fetcher` + `ui::ImageStore` exist (adopted by chat, mail, music, slides, tube); three network apps fetch+decode by hand. | **3**: `weather`, `feeds`, `maps` fetch images with `reqwest`/`ureq` and decode without `ImageStore`. | Adopt `ui::ImageStore`/`Fetcher`. | **S–M** | **no** |
 
 ### Item B resolved (2026-07-29) — avatars adopt `ui::widget::Avatar`
@@ -398,16 +398,22 @@ math). A `ui::format` test asserts the unit label matches its base
   (`search_type.rs:compact_count`, `backend/live.rs:human_count`,
   `app/render.rs:human_count`) → `ui::format::compact_count`
 
-**Remaining adopters — checklist for follow-up** (each is a straight swap to the
-matching `ui::format` fn + delete the local copy; adjust the app's own test
-expectations to the IEC/canonical output):
+**Remaining adopters — checklist for follow-up** (each true equivalent is a
+straight swap to the matching `ui::format` fn + deletion of the local copy):
 
-- byte-size (9): `api_tester model.rs:human_size`, `imager model.rs:fmt_size`,
-  `maps app.rs:fmt_bytes`, `camera app.rs:human_size`,
-  `chat render_chat.rs:human_size`, `disks model.rs:fmt_size`,
-  `file-explorer model.rs:human_size`, `hex_editor view.rs:human_size`,
-  `monitor model.rs:fmt_bytes` — all base-1024, so all currently mis-label as
-  `KB/MB/GB`; `ui::format::bytes` fixes each.
+- [x] byte-size, base-1024 (5): `api_tester model.rs:human_size`, `maps
+  app.rs:fmt_bytes`, `chat render_chat.rs:human_size`, `hex_editor
+  view.rs:human_size`, `monitor model.rs:fmt_bytes` → `ui::format::bytes`. The
+  four copies that mislabeled binary values as `KB/MB/GB` now use canonical IEC
+  units; Monitor already used the correct labels.
+- [ ] byte-size, base-1000 (4): `imager model.rs:fmt_size`, `camera
+  app.rs:human_size`, `disks model.rs:fmt_size`, `file-explorer
+  model.rs:human_size`. These were incorrectly classified as base-1024 in the
+  original survey. Imager and Disks deliberately show vendor-style decimal
+  storage sizes, File Explorer explicitly selects `humansize::DECIMAL`, and
+  Camera also divides by 1000. Their precision and zero-value conventions do
+  not exactly match `ui::format::bytes_si`, so they remain until that API can
+  preserve the caller-visible formatting rather than changing it incidentally.
 - timecode (5): `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`,
   `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`.
 - compact-count (3): `tube util.rs:human_count`, inline in `monitor`,

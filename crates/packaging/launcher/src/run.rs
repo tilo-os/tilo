@@ -161,6 +161,10 @@ pub struct RunOptions {
     /// `$XDG_CONFIG_HOME`/`$HOME` default. It is read only by the launcher to
     /// create a broker capability and is never bound into the sandbox.
     pub identity_host_path: Option<PathBuf>,
+    /// Host path of the session's bounded, non-secret human identity
+    /// projection. Honoured only for Files and mounted read-only over its
+    /// otherwise writable app directory.
+    pub trusted_identities_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id
     /// ([`crate::sandbox::WORKSPACE_ID_ENV`]). `None` means no session.
     pub workspace_id: Option<String>,
@@ -886,6 +890,24 @@ fn splice_app_dir(
     Ok(())
 }
 
+/// Mount Files' live room-governance identity directory read-only. The
+/// projection is package-scoped and must remain visible across atomic host
+/// replacement, so the containing directory—not one inode—is bound.
+fn splice_trusted_identities(
+    argv: &mut Vec<String>,
+    manifest: &MinimalManifest,
+    opts: &RunOptions,
+) -> Result<(), RunError> {
+    if manifest.package_id == "dev.qos.file-explorer"
+        && let Some(host_path) = opts.trusted_identities_host_path.as_deref()
+    {
+        let entry = pop_entry(argv)?;
+        crate::sandbox::push_trusted_identities_bind(argv, host_path);
+        argv.push(entry);
+    }
+    Ok(())
+}
+
 /// Wayland display, spliced before the entrypoint token like the
 /// minimal-libs binds. No `wayland_socket` means no display at all. Returns
 /// the resolved bind, needed again by the shim's Landlock plan.
@@ -1440,6 +1462,7 @@ pub fn run_with(
     splice_workspace_id_bind(&mut argv, opts)?;
     splice_tool_context(&mut argv)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -1687,6 +1710,7 @@ pub fn run_with_captured(
         crate::appdir::push_app_dir(&mut argv, &app_dir);
         argv.push(entry);
     }
+    splice_trusted_identities(&mut argv, manifest, opts)?;
 
     spawn_and_capture(
         argv,

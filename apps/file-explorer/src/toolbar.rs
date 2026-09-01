@@ -44,6 +44,7 @@ use ui::widget::toggle_group::ToggleGroup;
 use ui::widget::{Button, Widget};
 
 use crate::command::{CommandSink, FileCommand, push};
+use crate::i18n::t;
 use crate::model::ViewMode;
 use crate::path_bar::PathBar;
 
@@ -140,21 +141,21 @@ impl FileToolbar {
                 Icon::ArrowLeft,
                 FileCommand::Back,
                 self.can_back,
-                "Back",
+                &t("files-back"),
             ),
             self.nav_button(
                 "files.forward",
                 Icon::ArrowRight,
                 FileCommand::Forward,
                 self.can_forward,
-                "Forward",
+                &t("files-forward"),
             ),
             self.nav_button(
                 "files.up",
                 Icon::ArrowUp,
                 FileCommand::Up,
                 self.can_up,
-                "Up one folder",
+                &t("files-up"),
             ),
         ]
     }
@@ -169,16 +170,21 @@ impl FileToolbar {
             ViewMode::Grid => 1,
         };
         out.push(Box::new(
-            ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], selected).on_change(
-                move |i| {
-                    let mode = if i == 0 {
-                        ViewMode::List
-                    } else {
-                        ViewMode::Grid
-                    };
-                    push(&view_sink, FileCommand::SetView(mode));
-                },
-            ),
+            ToggleGroup::new(
+                vec![
+                    Segment::new(t("files-view-list")),
+                    Segment::new(t("files-view-grid")),
+                ],
+                selected,
+            )
+            .on_change(move |i| {
+                let mode = if i == 0 {
+                    ViewMode::List
+                } else {
+                    ViewMode::Grid
+                };
+                push(&view_sink, FileCommand::SetView(mode));
+            }),
         ));
 
         // Grid mode has no clickable column header, so it gets a labelled Sort
@@ -186,7 +192,7 @@ impl FileToolbar {
         if self.view_mode == ViewMode::Grid {
             let sink = self.sink.clone();
             out.push(Box::new(
-                Button::new("files.sort_menu", "Sort by", None)
+                Button::new("files.sort_menu", &t("files-sort-by"), None)
                     .with_icon(Icon::ArrowUpDown)
                     .with_size(104.0, NAV_H)
                     .on_click(move || push(&sink, FileCommand::OpenSortMenu)),
@@ -201,8 +207,8 @@ impl FileToolbar {
             Button::new("files.view_menu", "", None)
                 .with_icon(Icon::MoreHorizontal)
                 .with_size(NAV_W, NAV_H)
-                .with_accessible_name("View options")
-                .tooltip("View options")
+                .with_accessible_name(&t("files-view-options"))
+                .tooltip(t("files-view-options"))
                 .on_click(move || push(&sink, FileCommand::OpenViewMenu)),
         ));
         out

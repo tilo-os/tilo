@@ -361,17 +361,6 @@ pub enum StatusClass {
     Other,
 }
 
-/// Format a byte count as a compact human string ("512 B", "1.4 KB").
-pub fn human_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// Format a millisecond duration compactly ("84 ms", "1.2 s").
 pub fn human_duration(ms: u64) -> String {
     if ms < 1000 {
@@ -435,12 +424,6 @@ mod tests {
         assert_eq!(r.status_class(), StatusClass::ClientError);
         r.status = 503;
         assert_eq!(r.status_class(), StatusClass::ServerError);
-    }
-
-    #[test]
-    fn human_size_uses_units() {
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(2048), "2.0 KB");
     }
 
     #[test]

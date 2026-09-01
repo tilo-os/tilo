@@ -1,0 +1,21 @@
+[package]
+name = "genawaiter-proc-macro"
+version = "0.99.1"
+edition = "2018"
+authors = ["Devin R <devin.ragotzy@gmail.com>"]
+description = "Procedural macros for genawaiter, with maintained diagnostics"
+license = "MIT"
+repository = "https://github.com/whatisaphone/genawaiter"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+proc-macro-hack = "0.5"
+quote = "1"
+syn = { version = "1", features = ["full", "visit-mut"] }
+
+[features]
+strict = []

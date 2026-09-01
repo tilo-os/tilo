@@ -10,6 +10,11 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::{
+    io::{Read, Seek, SeekFrom, Write},
+    os::unix::ffi::OsStringExt,
+    os::unix::fs::MetadataExt,
+};
 
 use collab_types::{CapOverride, Ed25519PublicKey, Effect, Role, Scope, Subject, Verb};
 use fs::namespace::ROOT_INO;
@@ -35,6 +40,36 @@ macro_rules! require_fuse {
     };
 }
 
+/// Finish every background owner before the per-test Tokio runtime exits.
+///
+/// `BackgroundSession::drop` only requests unmounting, while an unclosed Iroh
+/// endpoint aborts its task set from `Drop`.  Awaiting these owners in order
+/// prevents either teardown path from leaking into the next serialized test.
+async fn shutdown_fuse_fixture(
+    session: fuser::BackgroundSession,
+    endpoint: Endpoint,
+    store: Arc<ContentStore>,
+) {
+    session
+        .umount_and_join()
+        .expect("unmount and join FUSE session");
+    endpoint.close().await;
+    store
+        .store()
+        .shutdown()
+        .await
+        .expect("shut down blob store");
+}
+
+async fn shutdown_runtime_fixture(endpoint: Endpoint, store: Arc<ContentStore>) {
+    endpoint.close().await;
+    store
+        .store()
+        .shutdown()
+        .await
+        .expect("shut down blob store");
+}
+
 const ALICE: [u8; 32] = [0xA1; 32];
 const BOB: [u8; 32] = [0xB0; 32];
 
@@ -49,6 +84,8 @@ const BOB: [u8; 32] = [0xB0; 32];
 /// beneath it. Returns the inode of each interesting path.
 struct CapFixture {
     fs: QuickFS,
+    endpoint: Endpoint,
+    store: Arc<ContentStore>,
     /// `/w/docs` — the granted subtree itself.
     docs: u64,
     /// `/w/docs/report.md` — beneath the granted subtree.
@@ -58,6 +95,19 @@ struct CapFixture {
     /// `/w/docsSECRET/leak.md` — shares the string prefix `/w/docs`, but is
     /// a different directory.
     look_alike_child: u64,
+}
+
+impl CapFixture {
+    async fn shutdown(self) {
+        let Self {
+            fs,
+            endpoint,
+            store,
+            ..
+        } = self;
+        drop(fs);
+        shutdown_runtime_fixture(endpoint, store).await;
+    }
 }
 
 async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
@@ -98,12 +148,16 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
         (docs, docs_child, other_child, look_alike_child)
     };
 
+    let shutdown_endpoint = endpoint.clone();
+    let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
 
     CapFixture {
         fs,
+        endpoint: shutdown_endpoint,
+        store: shutdown_store,
         docs,
         docs_child,
         other_child,
@@ -143,6 +197,7 @@ async fn a_capability_on_one_subtree_denies_a_sibling_subtree() {
         Err(libc::ENOENT),
         "nor may it write there"
     );
+    f.shutdown().await;
 }
 
 // The prefix is a *path* prefix, not a string prefix. `/w/docsSECRET`
@@ -162,6 +217,7 @@ async fn a_capability_stops_at_the_path_component_boundary() {
         Err(libc::ENOENT),
         "/w/docs must NOT cover /w/docsSECRET/leak.md — component boundary"
     );
+    f.shutdown().await;
 }
 
 // `Verb::Read` does not imply `Verb::Write`. A share that says "read"
@@ -180,6 +236,7 @@ async fn a_read_capability_is_denied_a_write() {
         Err(libc::EROFS),
         "a read-only capability sees a read-only filesystem, not a refusal"
     );
+    f.shutdown().await;
 }
 
 // An expired capability is gone, not merely stale — evaluated past
@@ -208,6 +265,8 @@ async fn an_expired_capability_authorises_nothing() {
         Err(libc::ENOENT),
         "including on the granted directory itself"
     );
+    live.shutdown().await;
+    lapsed.shutdown().await;
 }
 
 // The fail-closed floor: an identity holding nothing gets nothing —
@@ -247,6 +306,7 @@ async fn an_identity_with_no_capability_is_denied_everything() {
         Err(libc::EROFS),
         "and it is read-only rather than forbidden"
     );
+    f.shutdown().await;
 }
 
 // A role is not a key to the filesystem. `role_base_applies` is false
@@ -268,6 +328,7 @@ async fn a_role_wide_grant_does_not_authorise_a_path() {
         Err(libc::ENOENT),
         "an Owner-role grant must not authorise a path for a mount that holds no role"
     );
+    f.shutdown().await;
 }
 
 // The per-identity ACL decision, exercised on the REAL fs access
@@ -280,16 +341,19 @@ async fn identity_acl_gates_the_real_fs_access_path() {
     async fn mount_as(
         namespace: Arc<Mutex<Namespace>>,
         acl: Option<(WorkspaceAcl, [u8; 32])>,
-    ) -> QuickFS {
+    ) -> (QuickFS, Endpoint, Arc<ContentStore>) {
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
-        match acl {
+        let fs = match acl {
             Some((a, id)) => fs.with_acl(a, id),
             None => fs,
-        }
+        };
+        (fs, shutdown_endpoint, shutdown_store)
     }
 
     let store = Arc::new(ContentStore::memory());
@@ -317,7 +381,8 @@ async fn identity_acl_gates_the_real_fs_access_path() {
     acl.grant_read_write(BOB, "/secret");
 
     // Mount view A — bound to Alice's identity.
-    let alice_fs = mount_as(namespace.clone(), Some((acl.clone(), ALICE))).await;
+    let (alice_fs, alice_endpoint, alice_store) =
+        mount_as(namespace.clone(), Some((acl.clone(), ALICE))).await;
     // Alice: read on the shared file → allowed; read on the secret dir
     // AND the secret child → denied (EACCES).
     assert_eq!(
@@ -343,7 +408,7 @@ async fn identity_acl_gates_the_real_fs_access_path() {
     );
 
     // Mount view B — same namespace + ACL, bound to Bob's identity.
-    let bob_fs = mount_as(namespace.clone(), Some((acl, BOB))).await;
+    let (bob_fs, bob_endpoint, bob_store) = mount_as(namespace.clone(), Some((acl, BOB))).await;
     assert_eq!(
         bob_fs.check_access(secret_child_ino, Access::Read),
         Ok(()),
@@ -362,12 +427,17 @@ async fn identity_acl_gates_the_real_fs_access_path() {
 
     // A mount with NO ACL attached keeps the compatibility veneer: every
     // access is allowed (the Unix layer alone governs).
-    let open_fs = mount_as(namespace, None).await;
+    let (open_fs, open_endpoint, open_store) = mount_as(namespace, None).await;
     assert_eq!(
         open_fs.check_access(shared_ino, Access::Write),
         Ok(()),
         "a mount without an ACL allows access (compat veneer)"
     );
+    drop((alice_fs, bob_fs, open_fs));
+    shutdown_runtime_fixture(alice_endpoint, alice_store).await;
+    shutdown_runtime_fixture(bob_endpoint, bob_store).await;
+    shutdown_runtime_fixture(open_endpoint, open_store).await;
+    store.store().shutdown().await.unwrap();
 }
 
 // Full kernel path: mount two real FUSE sessions over the same
@@ -390,6 +460,8 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
                 .unwrap();
             drop(ns);
         }
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
 
@@ -403,7 +475,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
             .with_acl(acl.clone(), ALICE);
         let mut cfg_a = Config::default();
         cfg_a.mount_options = vec![MountOption::FSName("quickfs_acl_alice".into())];
-        let _sa =
+        let sa =
             fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a).expect("spawn alice session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -427,11 +499,19 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         let bob_fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_acl(acl, BOB);
         let mut cfg_b = Config::default();
         cfg_b.mount_options = vec![MountOption::FSName("quickfs_acl_bob".into())];
-        let _sb = fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
+        let sb = fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
         assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
+        sa.umount_and_join().expect("unmount Alice session");
+        sb.umount_and_join().expect("unmount Bob session");
+        shutdown_endpoint.close().await;
+        shutdown_store
+            .store()
+            .shutdown()
+            .await
+            .expect("shut down blob store");
     })
     .await;
 }
@@ -469,7 +549,9 @@ async fn fuse_projects_tree_and_reads_real_content() {
             drop(ns);
         }
 
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
@@ -480,7 +562,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         let mut config = Config::default();
         config.mount_options = options;
 
-        let _session = fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
+        let session = fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Projection: the tree is visible.
@@ -500,6 +582,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         // Hydration: reading the file returns the real ingested bytes.
         let read_back = std::fs::read(mount_path.join("test_file.txt")).expect("read file");
         assert_eq!(read_back, body, "FUSE read must return the real content");
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
     })
     .await;
 }
@@ -516,13 +599,15 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
-        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // create + write
@@ -552,8 +637,329 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         // unlink
         std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
         assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_non_utf8_name_survives_rename_and_namespace_restart() {
+    require_fuse!();
+    timeout(Duration::from_secs(20), async {
+        let first_mount = tempdir().unwrap();
+        let second_mount = tempdir().unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("byte-name-peer").unwrap()));
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let shutdown_endpoint = endpoint.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_non_utf8".into())];
+        let session = fuser::spawn_mount2(fs, first_mount.path(), &config).unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let mut original = first_mount.path().to_path_buf();
+        original.push(std::ffi::OsString::from_vec(b"raw-\xFF.txt".to_vec()));
+        let mut renamed = first_mount.path().to_path_buf();
+        renamed.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
+        std::fs::write(&original, b"exact bytes").unwrap();
+        std::fs::rename(&original, &renamed).unwrap();
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"exact bytes");
+        let listed = std::fs::read_dir(first_mount.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_vec())
+            .collect::<Vec<_>>();
+        assert!(listed.contains(&b"renamed-\xFE.txt".to_vec()));
+
+        let snapshot = namespace.lock().unwrap().save();
+        session.umount_and_join().unwrap();
+        shutdown_endpoint.close().await;
+        let reopened = Arc::new(Mutex::new(
+            Namespace::from_bytes("reopened", &snapshot).unwrap(),
+        ));
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let shutdown_endpoint = endpoint.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), reopened.clone()));
+        let fs = QuickFS::new(reopened, hydrator, heuristics);
+        let session = fuser::spawn_mount2(fs, second_mount.path(), &config).unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let mut after_restart = second_mount.path().to_path_buf();
+        after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
+        assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
+        session.umount_and_join().unwrap();
+        shutdown_endpoint.close().await;
+        store.store().shutdown().await.unwrap();
+    })
+    .await
+    .expect("non-UTF8 real-FUSE restart test timed out");
+}
+
+// POSIX replacement rename has two audiences: new path lookups must resolve
+// to the source inode, while a process that already holds the replaced inode
+// must keep reading that original object until its handle closes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_replacement_rename_preserves_the_replaced_open_handle() {
+    require_fuse!();
+    timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let path = mount_dir.path().to_path_buf();
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("replace-handle-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_replace_handle".to_string())];
+        let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let source = path.join("source.bin");
+        let destination = path.join("destination.bin");
+        std::fs::write(&source, b"source bytes").expect("write source");
+        std::fs::write(&destination, b"replaced bytes").expect("write destination");
+        let source_ino = std::fs::metadata(&source).unwrap().ino();
+        let replaced_ino = std::fs::metadata(&destination).unwrap().ino();
+        assert_ne!(source_ino, replaced_ino);
+
+        let mut replaced_handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&destination)
+            .expect("open victim");
+        std::fs::rename(&source, &destination).expect("replacement rename");
+
+        assert!(!source.exists());
+        assert_eq!(std::fs::metadata(&destination).unwrap().ino(), source_ino);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"source bytes");
+        let mut old_bytes = Vec::new();
+        replaced_handle
+            .read_to_end(&mut old_bytes)
+            .expect("read replaced open handle");
+        assert_eq!(old_bytes, b"replaced bytes");
+        replaced_handle.seek(SeekFrom::Start(0)).unwrap();
+        replaced_handle.write_all(b"private").unwrap();
+        replaced_handle.flush().unwrap();
+        replaced_handle.seek(SeekFrom::Start(0)).unwrap();
+        let mut private_bytes = Vec::new();
+        replaced_handle.read_to_end(&mut private_bytes).unwrap();
+        assert_eq!(private_bytes, b"privated bytes");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"source bytes");
+        drop(replaced_handle);
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+    })
+    .await
+    .expect("real-FUSE replacement test timed out");
+}
+
+// An unlinked inode belongs to its existing handles until the last close. A
+// new file may reuse the old pathname, but must never alias the old handle's
+// private buffer or inode identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_unlink_and_recreate_keeps_the_old_open_inode_private() {
+    require_fuse!();
+    timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("unlink-handle-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_unlink_handle".to_string())];
+        let session =
+            fuser::spawn_mount2(fs, mount_dir.path(), &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let path = mount_dir.path().join("same-name.bin");
+        std::fs::write(&path, b"old bytes").unwrap();
+        let old_ino = std::fs::metadata(&path).unwrap().ino();
+        let mut old = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists());
+        std::fs::write(&path, b"new bytes").unwrap();
+        let new_ino = std::fs::metadata(&path).unwrap().ino();
+        assert_ne!(old_ino, new_ino);
+
+        old.seek(SeekFrom::Start(0)).unwrap();
+        let mut observed = Vec::new();
+        old.read_to_end(&mut observed).unwrap();
+        assert_eq!(observed, b"old bytes");
+        old.seek(SeekFrom::Start(0)).unwrap();
+        old.write_all(b"private").unwrap();
+        old.flush().unwrap();
+        old.seek(SeekFrom::Start(0)).unwrap();
+        observed.clear();
+        old.read_to_end(&mut observed).unwrap();
+        assert_eq!(observed, b"privatees");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new bytes");
+        drop(old);
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+    })
+    .await
+    .expect("real-FUSE unlink/recreate test timed out");
+}
+
+// Writable handles share one live inode buffer. Closing or flushing either
+// handle must not commit a stale per-handle snapshot over the other writer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_two_writable_handles_preserve_disjoint_writes() {
+    require_fuse!();
+    timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("two-writer-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_two_writers".to_string())];
+        let session =
+            fuser::spawn_mount2(fs, mount_dir.path(), &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let path = mount_dir.path().join("shared.bin");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let mut left = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut right = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        left.seek(SeekFrom::Start(0)).unwrap();
+        left.write_all(b"ONE").unwrap();
+        left.flush().unwrap();
+        right.seek(SeekFrom::Start(3)).unwrap();
+        right.write_all(b"TWO").unwrap();
+        right.flush().unwrap();
+        drop(left);
+        drop(right);
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"ONETWO");
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+    })
+    .await
+    .expect("real-FUSE two-writer test timed out");
+}
+
+// The production signed path must preserve the same kernel contract while
+// atomically committing source history, victim tombstone, repository records,
+// namespace persistence, and the recovery journal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signed_fuse_replacement_is_transactional_and_preserves_open_handles() {
+    require_fuse!();
+    timeout(Duration::from_secs(30), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let state_dir = tempdir().expect("state temp dir");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let source_hash = store
+            .write_content(b"signed source")
+            .await
+            .unwrap()
+            .unwrap();
+        let victim_hash = store
+            .write_content(b"signed victim")
+            .await
+            .unwrap()
+            .unwrap();
+        let namespace = Arc::new(Mutex::new(Namespace::new("signed-fuse-replace").unwrap()));
+        let (source_ino, victim_ino, source_record, victim_record) = {
+            let mut namespace = namespace.lock().unwrap();
+            let source_ino = namespace
+                .create_file(ROOT_INO, "source.bin", Some(&source_hash), 13, 1)
+                .unwrap();
+            let victim_ino = namespace
+                .create_file(ROOT_INO, "destination.bin", Some(&victim_hash), 13, 1)
+                .unwrap();
+            (
+                source_ino,
+                victim_ino,
+                namespace.record_id_for(source_ino).unwrap(),
+                namespace.record_id_for(victim_ino).unwrap(),
+            )
+        };
+        let workspace_id = uuid::Uuid::new_v4();
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let person = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+        let actor = collab_types::FileActor {
+            person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
+            device: Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
+        };
+        let history =
+            Arc::new(fs::FileHistoryStore::open(state_dir.path().join("history.json")).unwrap());
+        let repository =
+            Arc::new(fs::RecordRepository::open(state_dir.path().join("records")).unwrap());
+        let publisher = Arc::new(
+            fs::RecordPublisher::new(repository.clone(), workspace_id, actor, signer).unwrap(),
+        );
+        let journal = Arc::new(Mutex::new(
+            fs::RecordTransactionJournal::open(state_dir.path().join("transactions")).unwrap(),
+        ));
+        let namespace_path = state_dir.path().join("namespace.bin");
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let quick_fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+            .with_history(history.clone(), actor)
+            .unwrap()
+            .with_record_publisher(publisher.clone())
+            .unwrap()
+            .with_replacement_transactions(journal.clone(), namespace_path.clone())
+            .unwrap();
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_signed_replace".to_string())];
+        let session = fuser::spawn_mount2(quick_fs, mount_dir.path(), &config)
+            .expect("spawn signed FUSE session");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let source = mount_dir.path().join("source.bin");
+        let destination = mount_dir.path().join("destination.bin");
+        assert_eq!(std::fs::metadata(&source).unwrap().ino(), source_ino);
+        assert_eq!(std::fs::metadata(&destination).unwrap().ino(), victim_ino);
+        let mut victim_handle = std::fs::File::open(&destination).unwrap();
+        std::fs::rename(&source, &destination).expect("signed replacement rename");
+        assert_eq!(std::fs::metadata(&destination).unwrap().ino(), source_ino);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"signed source");
+        let mut old_bytes = Vec::new();
+        victim_handle.read_to_end(&mut old_bytes).unwrap();
+        assert_eq!(old_bytes, b"signed victim");
+
+        let source_snapshot = publisher.snapshot(source_record).unwrap().unwrap();
+        let victim_snapshot = publisher.snapshot(victim_record).unwrap().unwrap();
+        assert_eq!(source_snapshot.binding.unwrap().name, "destination.bin");
+        assert!(victim_snapshot.binding.unwrap().tombstoned);
+        assert!(journal.lock().unwrap().entries().next().is_none());
+        assert!(namespace_path.exists());
+        assert!(history.snapshot(source_record).unwrap().versions.len() >= 2);
+        assert!(history.snapshot(victim_record).unwrap().versions.len() >= 2);
+        drop(victim_handle);
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+    })
+    .await
+    .expect("signed real-FUSE replacement test timed out");
 }
 
 /// Read the `user.qos.sync` extended attribute of `path` through the
@@ -615,13 +1021,15 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
             drop(ns);
         }
 
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_xattr".to_string())];
-        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         assert_eq!(
@@ -639,6 +1047,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
             Some("local"),
             "a directory is always local",
         );
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
     })
     .await;
 }
@@ -655,13 +1064,15 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_doc".to_string())];
-        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // A markdown document: recognized, stored as a CRDT, round-trips.
@@ -678,6 +1089,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
             std::fs::read(path.join("data.bin")).unwrap(),
             b"\x00\x01raw-bytes\xff"
         );
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
     })
     .await;
 }
@@ -694,13 +1106,15 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer").unwrap()));
+        let shutdown_endpoint = endpoint.clone();
+        let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rm".to_string())];
-        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         std::fs::create_dir(path.join("dir")).expect("mkdir");
@@ -727,6 +1141,7 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         std::fs::remove_file(path.join("dir/inner.txt")).expect("unlink inner");
         std::fs::remove_dir(path.join("dir")).expect("rmdir empty dir");
         assert!(!path.join("dir").exists(), "empty dir removed");
+        shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
     })
     .await;
 }
@@ -781,6 +1196,7 @@ async fn a_grant_made_after_the_mount_reaches_the_live_access_check() {
         Ok(()),
         "a capability granted after the mount came up must be honoured by the same live mount"
     );
+    f.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -814,6 +1230,7 @@ async fn a_revocation_after_the_mount_reaches_the_live_access_check() {
         Ok(()),
         "revoking one capability must not disturb the others"
     );
+    f.shutdown().await;
 }
 
 // Denial is an absence: the property under test is not "the read
@@ -836,7 +1253,9 @@ async fn a_revocation_after_the_mount_reaches_the_live_access_check() {
 /// /archive/old.txt         never granted
 /// ```
 struct ViewFixture {
-    _session: fuser::BackgroundSession,
+    session: fuser::BackgroundSession,
+    endpoint: Endpoint,
+    store: Arc<ContentStore>,
     dir: tempfile::TempDir,
     namespace: Arc<Mutex<Namespace>>,
 }
@@ -851,6 +1270,10 @@ impl ViewFixture {
     /// nothing, not merely that it reported an error.
     fn heads(&self) -> Vec<automerge::ChangeHash> {
         self.namespace.lock().unwrap().heads()
+    }
+
+    async fn shutdown(self) {
+        shutdown_fuse_fixture(self.session, self.endpoint, self.store).await;
     }
 }
 
@@ -885,6 +1308,8 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
             .unwrap();
         drop(ns);
     }
+    let shutdown_endpoint = endpoint.clone();
+    let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
@@ -898,7 +1323,9 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
     tokio::time::sleep(Duration::from_secs(1)).await;
     ViewFixture {
-        _session: session,
+        session,
+        endpoint: shutdown_endpoint,
+        store: shutdown_store,
         dir,
         namespace,
     }
@@ -981,6 +1408,8 @@ async fn a_denied_subtree_is_absent_from_the_listing() {
             "other".to_string()
         ])
     );
+    f.shutdown().await;
+    open.shutdown().await;
 }
 
 // The headline property: a hidden path and a path that was never
@@ -1069,6 +1498,7 @@ async fn a_hidden_path_answers_exactly_as_an_absent_one() {
         before,
         "probing for hidden paths must not modify the document"
     );
+    f.shutdown().await;
 }
 
 // A directory's link count is `2 + subdirectories`, taken from the
@@ -1105,6 +1535,8 @@ async fn directory_link_counts_match_the_filtered_listing() {
     );
     let w = std::fs::metadata(open.path().join("w")).expect("stat unfiltered /w");
     assert_eq!(w.nlink(), 5, "unfiltered, /w has three subdirectories");
+    f.shutdown().await;
+    open.shutdown().await;
 }
 
 // A read grant is a read-only mount, not a mount that refuses. Every
@@ -1174,6 +1606,7 @@ async fn a_read_grant_presents_a_read_only_filesystem() {
         Ok(vec!["report.md".to_string(), "sub".to_string()]),
         "and the directory is exactly as it was"
     );
+    f.shutdown().await;
 }
 
 // The one residual: an entry that's writable but not readable. The
@@ -1211,6 +1644,7 @@ async fn a_write_without_read_entry_refuses_rather_than_clobbering() {
         before,
         "and nothing about the hidden entry may change"
     );
+    f.shutdown().await;
 }
 
 // Read participation without authorship: a shared document is a
@@ -1225,14 +1659,21 @@ async fn a_write_without_read_entry_refuses_rather_than_clobbering() {
 
 /// A mounted workspace holding one CRDT-backed document under a granted
 /// subtree, plus the ACL the mount enforces.
-async fn document_fixture(
-    acl: Option<(WorkspaceAcl, [u8; 32])>,
-    name: &str,
-) -> (
-    fuser::BackgroundSession,
-    tempfile::TempDir,
-    Arc<Mutex<Namespace>>,
-) {
+struct DocumentFixture {
+    session: fuser::BackgroundSession,
+    endpoint: Endpoint,
+    store: Arc<ContentStore>,
+    dir: tempfile::TempDir,
+    namespace: Arc<Mutex<Namespace>>,
+}
+
+impl DocumentFixture {
+    async fn shutdown(self) {
+        shutdown_fuse_fixture(self.session, self.endpoint, self.store).await;
+    }
+}
+
+async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> DocumentFixture {
     let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer").unwrap()));
@@ -1246,6 +1687,8 @@ async fn document_fixture(
         assert!(ns.document_splice(ino, &block, 0, 0, "Shared paragraph"));
         drop(ns);
     }
+    let shutdown_endpoint = endpoint.clone();
+    let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
@@ -1258,7 +1701,13 @@ async fn document_fixture(
     config.mount_options = vec![MountOption::FSName(name.to_string())];
     let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
     tokio::time::sleep(Duration::from_secs(1)).await;
-    (session, dir, namespace)
+    DocumentFixture {
+        session,
+        endpoint: shutdown_endpoint,
+        store: shutdown_store,
+        dir,
+        namespace,
+    }
 }
 
 // A read participant reads the shared document and cannot author
@@ -1268,8 +1717,8 @@ async fn document_fixture(
 async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
     require_fuse!();
     let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap(ALICE, "/shared")], &[], None);
-    let (_session, dir, namespace) = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
-    let doc = dir.path().join("shared/notes.md");
+    let fixture = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
+    let doc = fixture.dir.path().join("shared/notes.md");
 
     // Participation: the document is there and it reads.
     let before = std::fs::read(&doc).expect("a read participant reads the shared document");
@@ -1278,8 +1727,8 @@ async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
         "the read must return the real document, not an empty stand-in: {:?}",
         String::from_utf8_lossy(&before)
     );
-    let heads_before = namespace.lock().unwrap().heads();
-    let nodes_before = namespace.lock().unwrap().live_node_ids();
+    let heads_before = fixture.namespace.lock().unwrap().heads();
+    let nodes_before = fixture.namespace.lock().unwrap().live_node_ids();
 
     // Authorship: every route by which bytes could become a change.
     for (what, outcome) in [
@@ -1311,16 +1760,16 @@ async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
         ),
         (
             "replace it with a new document of the same name",
-            std::fs::write(dir.path().join("shared/notes.md"), b"x"),
+            std::fs::write(fixture.dir.path().join("shared/notes.md"), b"x"),
         ),
         (
             "add a second document beside it",
-            std::fs::write(dir.path().join("shared/mine.md"), b"# Mine\n"),
+            std::fs::write(fixture.dir.path().join("shared/mine.md"), b"# Mine\n"),
         ),
         ("delete it", std::fs::remove_file(&doc)),
         (
             "rename it out of the way",
-            std::fs::rename(&doc, dir.path().join("shared/moved.md")),
+            std::fs::rename(&doc, fixture.dir.path().join("shared/moved.md")),
         ),
     ] {
         assert_eq!(
@@ -1333,12 +1782,12 @@ async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
     // Nothing was authored. Not "the change was refused" — the change
     // graph did not move.
     assert_eq!(
-        namespace.lock().unwrap().heads(),
+        fixture.namespace.lock().unwrap().heads(),
         heads_before,
         "the CRDT change graph must not have advanced"
     );
     assert_eq!(
-        namespace.lock().unwrap().live_node_ids(),
+        fixture.namespace.lock().unwrap().live_node_ids(),
         nodes_before,
         "and no node was added or removed"
     );
@@ -1361,17 +1810,19 @@ async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
         &[],
         None,
     );
-    let (_s2, dir2, ns2) = document_fixture(Some((rw, BOB)), "quickfs_doc_rw").await;
-    let heads2 = ns2.lock().unwrap().heads();
+    let fixture2 = document_fixture(Some((rw, BOB)), "quickfs_doc_rw").await;
+    let heads2 = fixture2.namespace.lock().unwrap().heads();
     std::fs::write(
-        dir2.path().join("shared/notes.md"),
+        fixture2.dir.path().join("shared/notes.md"),
         b"# Authored\n\nBy Bob\n",
     )
     .expect("an authoring participant may write the shared document");
     assert_ne!(
-        ns2.lock().unwrap().heads(),
+        fixture2.namespace.lock().unwrap().heads(),
         heads2,
         "an authored write must move the change graph — otherwise the assertions above prove \
          nothing about authorship"
     );
+    fixture.shutdown().await;
+    fixture2.shutdown().await;
 }
