@@ -805,6 +805,31 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
     Ok(())
 }
 
+/// Bound per-process resources inherited by bwrap and the qpkg. Core dumps may
+/// contain workspace content or broker responses; an untrusted app also does not
+/// need an unbounded descriptor table. Both soft and hard limits are set so the
+/// app cannot raise them again.
+unsafe fn set_sandbox_resource_limits() -> std::io::Result<()> {
+    let core = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // 1024 leaves ample room for renderers while bounding fd-exhaustion attacks.
+    let nofile = libc::rlimit {
+        rlim_cur: 1024,
+        rlim_max: 1024,
+    };
+    // SAFETY: both pointers refer to initialized rlimit values for the duration
+    // of these syscalls.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const core) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const nofile) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Pop the trailing entrypoint token that `build_bwrap_argv` /
 /// `build_bwrap_argv_for_entry` always leave at the end of `argv`, so a
 /// splice function can insert its own flags before it and push it back.
@@ -1251,6 +1276,7 @@ fn spawn_and_wait(
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
             place_service_fds(&mut service_fds)?;
+            set_sandbox_resource_limits()?;
             // Landlock is NOT installed here — bwrap needs broad FS access to set up
             // the namespace; the `__sandbox-exec` shim installs it after. See `landlock_shim`.
             Ok(())
@@ -1614,6 +1640,7 @@ fn spawn_and_capture(
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
             place_service_fds(&mut service_fds)?;
+            set_sandbox_resource_limits()?;
             Ok(())
         });
     }
