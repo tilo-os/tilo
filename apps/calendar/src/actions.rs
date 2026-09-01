@@ -224,7 +224,7 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
     context.resource = Some(qos_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
-        label: title.to_string(),
+        label: title.clone(),
     });
     context
 }
