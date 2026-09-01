@@ -326,6 +326,14 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Peer whose live tab focus this session mirrors. Local-only and
+    /// ephemeral: follow is a viewing mode, never shared workspace state.
+    followed_peer: Option<String>,
+    /// Persistent follow-mode banner painted while following.
+    follow_chip_rect: Rect,
+    /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
+    /// the banner is informative, not a surprising destructive target.
+    follow_stop_rect: Rect,
     /// Complete wireless projection picker, including controller, editor,
     /// animation, painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
@@ -937,6 +945,9 @@ impl ShellOverlayHost {
             room_activity_was_open: false,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: ProjectionOverlay::default(),
+            followed_peer: None,
+            follow_chip_rect: Rect::ZERO,
+            follow_stop_rect: Rect::ZERO,
         }
     }
 
@@ -2733,6 +2744,54 @@ impl ShellOverlayHost {
         };
         let Some(tab) = tab else { return false };
         self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Keep local focus attached to the followed participant's current tab.
+    /// Missing location is not guessed: the existing view stays put until a
+    /// fresh live target arrives.
+    fn reconcile_followed_peer(&mut self) -> bool {
+        let Some(peer_id) = self.followed_peer.as_deref() else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
+                Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
+                _ => &tree.collaborators,
+            };
+            let tab = roster
+                .iter()
+                .find(|participant| participant.id == peer_id && !participant.invited)
+                .and_then(|participant| participant.active_tab);
+            tab.and_then(|tab| {
+                tree.active_workspace()?.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|candidate| candidate.id == tab)
+                            .then_some((strip.id, group.id, tab))
+                    })
+                })
+            })
+        };
+        let Some((strip, group, tab)) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(strip, group, tab)
+    }
+
+    fn followed_roster_row(&self) -> Option<RosterRow> {
+        let peer_id = self.followed_peer.as_deref()?;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        collaborator_roster_rows(&state.tree())
+            .into_iter()
+            .find(|row| row.id == peer_id && row.followable)
     }
 
     /// Cached "+ Add workspace" tile rect, `Rect::ZERO` while the overview
@@ -5349,6 +5408,24 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return false;
         };
+        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
+            self.followed_peer = None;
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+            *handled = true;
+            return true;
+        }
+        // Following is a viewing mode, not a lock. The first deliberate
+        // click back into the workspace hands control to the local user and
+        // continues routing that very click to its intended target.
+        if self.followed_peer.is_some()
+            && !self.cursor_over_open_overlay(p)
+            && !self.follow_chip_rect.contains(p)
+        {
+            self.followed_peer = None;
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+        }
         // Gated on no overlay owning the pointer, so a click
         // under an open panel goes to the panel.
         if !self.overlay_flags().overview
@@ -5447,8 +5524,27 @@ impl ShellOverlayHost {
     /// swallow the click so content beneath doesn't grab it. Reached
     /// only once `flags.collaborators` is true, at which point every
     /// path absorbs the click.
-    fn handle_shell_collaborators_click(&self, p: Point, handled: &mut bool) {
+    fn handle_shell_collaborators_click(&mut self, p: Point, handled: &mut bool) {
         let hit = self.collaborators_overlay.hit_test(p);
+        if let CollaboratorsHit::ToggleFollow(index) = hit {
+            let target = self.chrome.as_ref().and_then(|chrome| {
+                let state = chrome.borrow();
+                collaborator_roster_rows(&state.tree())
+                    .get(index)
+                    .filter(|row| row.followable)
+                    .cloned()
+            });
+            if let Some(target) = target {
+                if self.followed_peer.as_deref() == Some(target.id.as_str()) {
+                    self.followed_peer = None;
+                } else {
+                    self.followed_peer = Some(target.id);
+                    self.reconcile_followed_peer();
+                }
+            }
+            *handled = true;
+            return;
+        }
         if let Some(chrome) = self.chrome.clone() {
             let mut state = chrome.borrow_mut();
             match hit {
@@ -5471,6 +5567,7 @@ impl ShellOverlayHost {
                     state.overlays.collaborators = false;
                     state.bump();
                 }
+                CollaboratorsHit::ToggleFollow(_) => {}
                 CollaboratorsHit::Absorb => {}
             }
         }
@@ -6503,6 +6600,7 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
+        let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
@@ -6543,6 +6641,7 @@ impl Widget for ShellOverlayHost {
             || chrome_dirty
             || portal_dirty
             || picker_dirty
+            || follow_dirty
     }
 
     fn build_layout(
@@ -7467,6 +7566,7 @@ impl ShellOverlayHost {
             sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
 
+        self.draw_follow_chip(scene, transform, text_renderer, theme);
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         if let Some(prompt) = self.permission_prompt.as_mut() {
@@ -7749,6 +7849,7 @@ impl ShellOverlayHost {
                     host: self.rect,
                     rows: &rows,
                     unavailable: unavailable.as_deref(),
+                    followed_id: self.followed_peer.as_deref(),
                     may_invite,
                 },
                 self.last_cursor,
@@ -9808,6 +9909,114 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Persistent local follow-mode banner. It says both what is happening
+    /// and how control returns to the local user; an explicit Stop button
+    /// avoids making an unlabeled slab destructive.
+    fn draw_follow_chip(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(row) = self.followed_roster_row() else {
+            self.followed_peer = None;
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+            return;
+        };
+        let label = format!("Following {}", row.label);
+        let detail = "Your view moves with theirs";
+        let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
+        let center_x = self.rect.center().x;
+        let y0 = self.rect.y0 + 54.0;
+        self.follow_chip_rect = Rect::new(
+            center_x - width / 2.0,
+            y0,
+            center_x + width / 2.0,
+            y0 + 48.0,
+        );
+        self.follow_stop_rect = Rect::new(
+            self.follow_chip_rect.x1 - 64.0,
+            self.follow_chip_rect.y0 + 10.0,
+            self.follow_chip_rect.x1 - 10.0,
+            self.follow_chip_rect.y1 - 10.0,
+        );
+        let radius =
+            ui::chrome::shell::ChromeRole::Selector.radius(theme, self.follow_chip_rect.height());
+        let shape = RoundedRect::from_rect(self.follow_chip_rect, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            row.color.multiply_alpha(0.16),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            transform,
+            row.color,
+            None,
+            &shape,
+        );
+        let avatar_rect = Rect::new(
+            self.follow_chip_rect.x0 + 10.0,
+            self.follow_chip_rect.y0 + 10.0,
+            self.follow_chip_rect.x0 + 38.0,
+            self.follow_chip_rect.y1 - 10.0,
+        );
+        ui::widget::Avatar::draw_at(
+            scene,
+            transform,
+            avatar_rect,
+            &row.initial.to_string(),
+            row.color,
+            theme,
+            text_renderer,
+        );
+        let label_x = self.follow_chip_rect.x0 + 48.0;
+        let label_budget = (self.follow_stop_rect.x0 - label_x - 8.0).max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the follow banner is a few hundred logical pixels wide"
+        )]
+        let label = text_renderer.elide_to_width_weighted(
+            &label,
+            theme.tokens.typography.scale.sm,
+            label_budget as f32,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &label,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate((label_x, y0 + 8.0).into()),
+            None,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            detail,
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((self.follow_chip_rect.x0 + 48.0, y0 + 27.0).into()),
+            None,
+        );
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.follow_stop_rect, "Stop")
+                .radius(f64::from(theme.tokens.radii.sm))
+                .hovered(
+                    self.last_cursor
+                        .is_some_and(|p| self.follow_stop_rect.contains(p)),
+                ),
+        );
+    }
+
     /// Paints every real peer's live pointer for the active workspace, via
     /// the same [`ui::presence::draw_peer_cursors`] call an app makes for
     /// peers inside its own window. One call for the whole set, since
@@ -9820,15 +10029,8 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let visible = self.visible_peers(presence);
-        ui::presence::draw_peer_cursors(
-            scene,
-            transform,
-            self.rect,
-            text_renderer,
-            theme,
-            &visible,
-        );
+        let peers = self.workspace_peers(presence);
+        ui::presence::draw_peer_presence(scene, transform, self.rect, text_renderer, theme, &peers);
     }
 
     /// Exactly the peers [`Self::draw_real_peers`] is about to paint:
@@ -9836,7 +10038,15 @@ impl ShellOverlayHost {
     /// selection can be asserted on directly — "no peer arrived" and "a
     /// peer arrived and was filtered out" must be distinguishable in a
     /// test, not just an empty screen both ways.
+    #[cfg(test)]
     pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
+        self.workspace_peers(presence)
+            .into_iter()
+            .filter(|peer| self.rect.contains(Point::new(peer.pos.0, peer.pos.1)))
+            .collect()
+    }
+
+    fn workspace_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -9870,13 +10080,6 @@ impl ShellOverlayHost {
 
         peers
             .iter()
-            .filter(|(_, pos)| {
-                // A peer with a different viewport can broadcast a point
-                // outside ours; clip to content so a cursor never trails
-                // into the top-bar/sidebar chrome.
-                self.rect
-                    .contains(Point::new(f64::from(pos.0), f64::from(pos.1)))
-            })
             .map(|(user, pos)| {
                 // An explicit roster colour outranks anything computed.
                 let (r, g, b) = presence
@@ -15147,8 +15350,9 @@ mod peer_cursor_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
-        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+        AppKind, Collaborator, GroupId, Strip, StripId, Tab, TileContent,
+        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
+        WorkspaceTree,
     };
     use ui::permissions::UserId;
     use ui::presence::{PresenceCtx, PresenceKey};
@@ -15267,11 +15471,44 @@ mod peer_cursor_tests {
             "a connected peer must still draw a cursor"
         );
     }
+    #[test]
+    fn following_a_peer_tracks_their_live_tab() {
+        let mut tree = one_group_seed();
+        let strip = tree.workspaces[0].strips[0].id;
+        let target_group = 200;
+        let target_tab = 201;
+        tree.workspaces[0].strips[0].window_groups.push(StateGroup {
+            id: target_group,
+            width: StateWidth::Normal,
+            maximized: false,
+            tabs: vec![Tab {
+                id: target_tab,
+                title: "Plan".into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Plan".into()),
+                    label: "Plan".into(),
+                },
+            }],
+            active_tab: target_tab,
+        });
+        tree.collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", target_tab));
+
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        host.followed_peer = Some("ada".to_string());
+
+        assert!(host.reconcile_followed_peer());
+        assert_eq!(
+            chrome.borrow().tree().active_group_for(strip),
+            Some(target_group),
+            "follow must move local focus to the participant's live group",
+        );
+    }
 }
 
-/// The collaborators dropdown lists people and agents together, and says
-/// which is which: an agent gets onto the list only by having been
-/// granted membership, and is never mistaken for a person once there.
+/// The collaborators dropdown lists live people and agents together, and
+/// says which is which. Dormant membership stays in workspace settings:
+/// immediate presence never invents an idle session.
 #[cfg(test)]
 mod roster_rows {
     use super::collaborator_roster_rows;
@@ -15297,10 +15534,12 @@ mod roster_rows {
         assert_eq!(rows.len(), 1, "only the peer is here: {rows:?}");
         assert!(!rows[0].is_agent);
         assert_eq!(rows[0].label, "bob");
+        assert!(rows[0].followable);
+        assert_eq!(rows[0].activity.as_deref(), Some("Here now"));
     }
 
     #[test]
-    fn a_granted_agent_is_listed_beside_the_peer_and_tagged() {
+    fn a_granted_but_absent_agent_is_not_reported_as_live() {
         let mut tree = tree_with_room();
         tree.collaborators.push(Collaborator::new("bob", "bob"));
         {
@@ -15314,15 +15553,35 @@ mod roster_rows {
         }
 
         let rows = collaborator_roster_rows(&tree);
-        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].label, "bob");
         assert!(!rows[0].is_agent, "a peer must never be tagged as an agent");
-        assert_eq!(rows[1].label, "scribe");
+    }
+
+    #[test]
+    fn a_connected_agent_is_tagged_and_followable_like_a_collaborator() {
+        let mut tree = tree_with_room();
+        {
+            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let room = ws.id.raw().to_string();
+            ws.grant_as(
+                &"ada".to_string(),
+                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+            )
+            .expect("the owner may admit an agent");
+            ws.collaborators.push(Collaborator::new("peer@9", "scribe"));
+        }
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "scribe");
         assert!(
-            rows[1].is_agent,
+            rows[0].is_agent,
             "an agent listed without its tag is the OS reporting a person",
         );
-        assert_eq!(rows[1].initial, 'S');
+        assert_eq!(rows[0].initial, 'S');
+        assert!(rows[0].followable);
+        assert_eq!(rows[0].activity.as_deref(), Some("Working now"));
     }
 
     /// A row shows what its participant may do here, and nothing where
@@ -15332,18 +15591,18 @@ mod roster_rows {
     #[test]
     fn a_row_carries_the_role_the_room_recorded_and_no_other() {
         let mut tree = tree_with_room();
-        tree.collaborators
-            .push(Collaborator::new("peer@7", "peer@7"));
-        tree.collaborators
-            .push(Collaborator::new("bob", "bob").with_role("editor"));
         {
             let ws = tree.active_workspace_mut().expect("fixture has a room");
+            ws.collaborators.push(Collaborator::new("peer@7", "peer@7"));
+            ws.collaborators
+                .push(Collaborator::new("bob", "bob").with_role("editor"));
             let room = ws.id.raw().to_string();
             ws.grant_as(
                 &"ada".to_string(),
                 CapOverride::membership(Subject::agent("scribe"), room, Verb::Comment),
             )
             .expect("the owner may admit an agent");
+            ws.collaborators.push(Collaborator::new("peer@9", "scribe"));
         }
 
         let rows = collaborator_roster_rows(&tree);
