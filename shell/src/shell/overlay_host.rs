@@ -3931,8 +3931,10 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             let records = st.records().clone();
             let mut tree = st.tree_mut();
+            let local = self.room_records.borrow();
             self.room_activity.refresh(&mut tree);
-            self.room_activity.refresh_records(&mut tree, &records);
+            self.room_activity
+                .refresh_records_with_local(&mut tree, &records, &*local);
         }
     }
 
@@ -3947,8 +3949,10 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             let records = st.records().clone();
             let mut tree = st.tree_mut();
+            let local = self.room_records.borrow();
             self.room_activity.refresh(&mut tree);
-            self.room_activity.refresh_records(&mut tree, &records);
+            self.room_activity
+                .refresh_records_with_local(&mut tree, &records, &*local);
             tree.active.raw()
         };
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
