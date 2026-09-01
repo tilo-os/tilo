@@ -29,7 +29,8 @@ use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Frame, FrameSlot, KeyInput, MouseButton, NamedKey, WebViewCommand, WebViewEngine, WebViewEvent,
+    Frame, FrameSlot, KeyInput, MediaElementInfo, MouseButton, NamedKey, WebViewCommand,
+    WebViewEngine, WebViewEvent,
 };
 
 /// Command-drain cadence on the engine thread's GLib loop.
@@ -179,6 +180,84 @@ struct EngineState {
     /// `Some` only on the zero-copy path (`QOS_WEBVIEW_DMABUF=1`); `None`
     /// uses the SHM copy path.
     egl: Option<egl::EglExport>,
+}
+
+struct MediaProbe {
+    state: *mut EngineState,
+    request_id: u64,
+}
+
+const MEDIA_ELEMENT_PROBE: &str = r#"(() => {
+  const vw = Math.max(window.innerWidth, 1);
+  const vh = Math.max(window.innerHeight, 1);
+  const videos = Array.from(document.querySelectorAll('video'));
+  let best = null;
+  let bestScore = 0;
+  for (const video of videos) {
+    const r = video.getBoundingClientRect();
+    const style = getComputedStyle(video);
+    const x0 = Math.max(0, r.left), y0 = Math.max(0, r.top);
+    const x1 = Math.min(vw, r.right), y1 = Math.min(vh, r.bottom);
+    const visible = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+    if (r.width < 80 || r.height < 45 || visible < 3600 ||
+        style.display === 'none' || style.visibility === 'hidden' ||
+        Number(style.opacity) < 0.05) continue;
+    const score = visible * (!video.paused && !video.ended ? 4 : 1) *
+      (video.readyState >= 2 ? 1.5 : 1);
+    if (score > bestScore) { best = { video, r, x0, y0, x1, y1 }; bestScore = score; }
+  }
+  if (!best) return '';
+  const v = best.video;
+  const ids = window.__qosPipElementIds || (window.__qosPipElementIds = new WeakMap());
+  const elements = window.__qosPipElements || (window.__qosPipElements = new Map());
+  let id = ids.get(v);
+  if (!id) {
+    const next = (window.__qosPipElementSequence || 0) + 1;
+    window.__qosPipElementSequence = next;
+    id = `media:${next}`;
+    ids.set(v, id);
+  }
+  elements.set(id, v);
+  const label = v.getAttribute('aria-label') || v.title ||
+    document.title || 'Browser video';
+  return JSON.stringify({
+    id,
+    rect: [best.x0 / vw, best.y0 / vh,
+      (best.x1 - best.x0) / vw, (best.y1 - best.y0) / vh],
+    size: [v.videoWidth || Math.round(best.r.width),
+      v.videoHeight || Math.round(best.r.height)],
+    label
+  });
+})()"#;
+
+const MEDIA_ELEMENT_REFRESH_PROBE: &str = r#"(() => {
+  const id = __QOS_ELEMENT_ID__;
+  const v = window.__qosPipElements && window.__qosPipElements.get(id);
+  if (!v || !v.isConnected) return '';
+  const vw = Math.max(window.innerWidth, 1);
+  const vh = Math.max(window.innerHeight, 1);
+  const r = v.getBoundingClientRect();
+  const style = getComputedStyle(v);
+  const x0 = Math.max(0, r.left), y0 = Math.max(0, r.top);
+  const x1 = Math.min(vw, r.right), y1 = Math.min(vh, r.bottom);
+  const visible = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+  if (r.width < 80 || r.height < 45 || visible < 3600 ||
+      style.display === 'none' || style.visibility === 'hidden' ||
+      Number(style.opacity) < 0.05) return '';
+  const label = v.getAttribute('aria-label') || v.title ||
+    document.title || 'Browser video';
+  return JSON.stringify({
+    id,
+    rect: [x0 / vw, y0 / vh, (x1 - x0) / vw, (y1 - y0) / vh],
+    size: [v.videoWidth || Math.round(r.width),
+      v.videoHeight || Math.round(r.height)],
+    label
+  });
+})()"#;
+
+fn media_element_refresh_probe(element_id: &str) -> Option<CString> {
+    let encoded = serde_json::to_string(element_id).ok()?;
+    CString::new(MEDIA_ELEMENT_REFRESH_PROBE.replace("__QOS_ELEMENT_ID__", &encoded)).ok()
 }
 
 fn engine_thread(
@@ -614,6 +693,92 @@ extern "C" fn on_filter_saved(
     }
 }
 
+extern "C" fn on_media_element(
+    source: *mut c_void,
+    result: *mut ffi::GAsyncResult,
+    data: *mut c_void,
+) {
+    unsafe {
+        let probe = Box::from_raw(data.cast::<MediaProbe>());
+        let state = &mut *probe.state;
+        let mut error: *mut ffi::GError = std::ptr::null_mut();
+        let value = ffi::webkit_web_view_evaluate_javascript_finish(
+            source.cast::<ffi::WebKitWebView>(),
+            result,
+            &mut error,
+        );
+        if !error.is_null() {
+            ffi::g_error_free(error);
+        }
+        let element = if value.is_null() {
+            None
+        } else {
+            let raw = ffi::jsc_value_to_string(value);
+            let parsed = if raw.is_null() {
+                None
+            } else {
+                let json = CStr::from_ptr(raw).to_string_lossy().into_owned();
+                ffi::g_free(raw.cast());
+                parse_media_element(&json)
+            };
+            ffi::g_object_unref(value.cast());
+            parsed
+        };
+        state.shared.push(element.map_or(
+            WebViewEvent::MediaElementUnavailable {
+                request_id: probe.request_id,
+            },
+            |element| WebViewEvent::MediaElement {
+                request_id: probe.request_id,
+                element,
+            },
+        ));
+    }
+}
+
+fn parse_media_element(json: &str) -> Option<MediaElementInfo> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let rect = value.get("rect")?.as_array()?;
+    let size = value.get("size")?.as_array()?;
+    if rect.len() != 4 || size.len() != 2 {
+        return None;
+    }
+    let mut viewport_rect = [0.0; 4];
+    for (slot, value) in viewport_rect.iter_mut().zip(rect) {
+        *slot = value.as_f64()?.clamp(0.0, 1.0);
+    }
+    if viewport_rect[2] <= 0.0 || viewport_rect[3] <= 0.0 {
+        return None;
+    }
+    let element_id: String = value
+        .get("id")?
+        .as_str()?
+        .trim()
+        .chars()
+        .take(128)
+        .collect();
+    if element_id.is_empty() {
+        return None;
+    }
+    Some(MediaElementInfo {
+        element_id,
+        viewport_rect,
+        intrinsic_size: [
+            u32::try_from(size[0].as_u64()?).ok()?.max(1),
+            u32::try_from(size[1].as_u64()?).ok()?.max(1),
+        ],
+        label: value
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or("Browser video")
+            .trim()
+            .chars()
+            .take(96)
+            .collect(),
+    })
+}
+
 // ─────────────────────────── command dispatch ─────────────────────────────
 
 extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
@@ -874,6 +1039,53 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                             ffi::webkit_user_script_unref(script);
                         }
                     }
+                }
+            }
+            WebViewCommand::RequestMediaElement { request_id } => {
+                if let Ok(script) = CString::new(MEDIA_ELEMENT_PROBE) {
+                    let probe = Box::new(MediaProbe {
+                        state: state as *mut EngineState,
+                        request_id,
+                    });
+                    ffi::webkit_web_view_evaluate_javascript(
+                        state.view,
+                        script.as_ptr(),
+                        -1,
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        on_media_element,
+                        Box::into_raw(probe).cast(),
+                    );
+                } else {
+                    state
+                        .shared
+                        .push(WebViewEvent::MediaElementUnavailable { request_id });
+                }
+            }
+            WebViewCommand::RequestMediaElementById {
+                request_id,
+                element_id,
+            } => {
+                if let Some(script) = media_element_refresh_probe(&element_id) {
+                    let probe = Box::new(MediaProbe {
+                        state: state as *mut EngineState,
+                        request_id,
+                    });
+                    ffi::webkit_web_view_evaluate_javascript(
+                        state.view,
+                        script.as_ptr(),
+                        -1,
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        on_media_element,
+                        Box::into_raw(probe).cast(),
+                    );
+                } else {
+                    state
+                        .shared
+                        .push(WebViewEvent::MediaElementUnavailable { request_id });
                 }
             }
             WebViewCommand::ClearWebsiteData => {

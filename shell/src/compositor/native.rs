@@ -63,11 +63,13 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::backend::{
-    Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId, WinitBackend, combined_geometry,
-    headless,
+    Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
+    combined_geometry, headless,
 };
+use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
 use crate::compositor::drag_feedback;
+use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceService};
 use crate::compositor::foreign;
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
@@ -87,6 +89,688 @@ use crate::compositor::test_control::{
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
+
+fn external_floating_id(connection: u64, id: &str) -> String {
+    format!("external:{connection}:{id}")
+}
+
+fn external_floating_parts(id: &str) -> Option<(u64, &str)> {
+    let (connection, public_id) = id.strip_prefix("external:")?.split_once(':')?;
+    Some((connection.parse().ok()?, public_id))
+}
+
+fn translate_external_region(region: Rect, app_rect: Rect) -> Result<Rect, String> {
+    let translated = Rect::new(
+        app_rect.x0 + region.x0,
+        app_rect.y0 + region.y0,
+        app_rect.x0 + region.x1,
+        app_rect.y0 + region.y1,
+    )
+    .intersect(app_rect);
+    (translated.area() > 0.0)
+        .then_some(translated)
+        .ok_or_else(|| "floating source lies outside its authenticated app surface".into())
+}
+
+fn translate_external_source(
+    source: ui::floating_surface::FloatingSource,
+    authenticated_app_id: &str,
+    app_rect: Rect,
+) -> Result<ui::floating_surface::FloatingSource, String> {
+    use ui::floating_surface::FloatingSource;
+    Ok(match source {
+        FloatingSource::AppRegion { app_id, region } => {
+            if app_id != authenticated_app_id {
+                return Err(format!(
+                    "floating source app id {app_id:?} does not match authenticated app {authenticated_app_id:?}"
+                ));
+            }
+            FloatingSource::AppRegion {
+                app_id: authenticated_app_id.to_string(),
+                region: translate_external_region(region, app_rect)?,
+            }
+        }
+        FloatingSource::AppElement {
+            app_id,
+            element_id,
+            region,
+        } => {
+            if app_id != authenticated_app_id {
+                return Err(format!(
+                    "floating source app id {app_id:?} does not match authenticated app {authenticated_app_id:?}"
+                ));
+            }
+            if element_id.trim().is_empty() {
+                return Err("floating media element id is empty".into());
+            }
+            FloatingSource::AppElement {
+                app_id: authenticated_app_id.to_string(),
+                element_id,
+                region: translate_external_region(region, app_rect)?,
+            }
+        }
+        FloatingSource::Composite(sources) => FloatingSource::Composite(
+            sources
+                .into_iter()
+                .map(|source| translate_external_source(source, authenticated_app_id, app_rect))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        FloatingSource::Surface { .. } => {
+            return Err("external clients cannot name compositor surface ids".into());
+        }
+    })
+}
+
+fn validate_app_owned_source(
+    source: &ui::floating_surface::FloatingSource,
+    authenticated_app_id: &str,
+) -> Result<(), String> {
+    use ui::floating_surface::FloatingSource;
+    match source {
+        FloatingSource::AppRegion { app_id, .. } | FloatingSource::AppElement { app_id, .. }
+            if app_id == authenticated_app_id =>
+        {
+            Ok(())
+        }
+        FloatingSource::Composite(sources) => sources
+            .iter()
+            .try_for_each(|source| validate_app_owned_source(source, authenticated_app_id)),
+        FloatingSource::AppRegion { app_id, .. } | FloatingSource::AppElement { app_id, .. } => {
+            Err(format!(
+                "floating source app id {app_id:?} does not match authenticated app {authenticated_app_id:?}"
+            ))
+        }
+        FloatingSource::Surface { .. } => {
+            Err("external clients cannot name compositor surface ids".into())
+        }
+    }
+}
+
+fn app_owned_source_region(
+    source: &ui::floating_surface::FloatingSource,
+    authenticated_app_id: &str,
+    app_size: vello::kurbo::Size,
+) -> Option<Rect> {
+    let (app_id, region) = match source {
+        ui::floating_surface::FloatingSource::AppRegion { app_id, region }
+        | ui::floating_surface::FloatingSource::AppElement { app_id, region, .. } => {
+            (app_id, region)
+        }
+        _ => return None,
+    };
+    let bounds = Rect::from_origin_size(vello::kurbo::Point::ZERO, app_size);
+    let visible = region.intersect(bounds);
+    (app_id == authenticated_app_id && visible.area() > 0.0).then_some(visible)
+}
+
+/// Region of the primary app buffer that must survive while its native
+/// floating surface commits its first frame.
+///
+/// `source` identifies the live content, but an app-owned call/navigation
+/// float also carries title chrome, controls, shadow and its soft silhouette
+/// in `presentation_rect`. Capturing only `source` makes those decorations
+/// disappear as soon as the app receives `PrepareSurface`. The old primary
+/// window can only contain the portion still inside its own bounds, so use
+/// that exact visible intersection; moving the frozen proxy to the same
+/// desktop rect then reproduces the last primary pixels without inventing an
+/// opaque halo beyond the app edge.
+fn app_owned_transfer_region(
+    source: &ui::floating_surface::FloatingSource,
+    presentation_rect: Option<Rect>,
+    authenticated_app_id: &str,
+    app_size: vello::kurbo::Size,
+) -> Option<Rect> {
+    let source = app_owned_source_region(source, authenticated_app_id, app_size)?;
+    let bounds = Rect::from_origin_size(vello::kurbo::Point::ZERO, app_size);
+    let decorated = presentation_rect.unwrap_or(source).intersect(bounds);
+    (decorated.area() > 0.0).then_some(decorated)
+}
+
+fn frozen_transfer_frame(
+    surface_id: u64,
+    source: Rect,
+    app_size: vello::kurbo::Size,
+) -> Option<crate::compositor::state::FloatingTransferFrame> {
+    let frame = foreign::store().snapshot(surface_id)?;
+    if app_size.width <= 0.0 || app_size.height <= 0.0 || source.area() <= 0.0 {
+        return None;
+    }
+    let scale_x = f64::from(frame.width) / app_size.width;
+    let scale_y = f64::from(frame.height) / app_size.height;
+    let x0 = (source.x0 * scale_x)
+        .floor()
+        .clamp(0.0, f64::from(frame.width)) as u32;
+    let y0 = (source.y0 * scale_y)
+        .floor()
+        .clamp(0.0, f64::from(frame.height)) as u32;
+    let x1 = (source.x1 * scale_x)
+        .ceil()
+        .clamp(0.0, f64::from(frame.width)) as u32;
+    let y1 = (source.y1 * scale_y)
+        .ceil()
+        .clamp(0.0, f64::from(frame.height)) as u32;
+    let width = x1.saturating_sub(x0);
+    let height = y1.saturating_sub(y0);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(
+        usize::try_from(width)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(height).unwrap_or(0))
+            .saturating_mul(4),
+    );
+    let stride = usize::try_from(frame.width).ok()?.saturating_mul(4);
+    let row_start = usize::try_from(x0).ok()?.saturating_mul(4);
+    let row_len = usize::try_from(width).ok()?.saturating_mul(4);
+    for y in y0..y1 {
+        let start = usize::try_from(y)
+            .ok()?
+            .saturating_mul(stride)
+            .saturating_add(row_start);
+        rgba.extend_from_slice(frame.rgba.get(start..start.saturating_add(row_len))?);
+    }
+    Some(crate::compositor::state::FloatingTransferFrame {
+        rgba: Arc::new(rgba),
+        width,
+        height,
+    })
+}
+
+/// Freeze the complete app-owned secondary surface for the reverse handoff.
+/// Unlike the detach snapshot, this buffer already contains the complete
+/// transparent window (soft outline, shadow, controls and content), so no
+/// app-local crop or coordinate conversion is needed.
+fn frozen_floating_return_frame(
+    surface_id: u64,
+) -> Option<crate::compositor::state::FloatingTransferFrame> {
+    let frame = foreign::store().snapshot(surface_id)?;
+    Some(crate::compositor::state::FloatingTransferFrame {
+        rgba: Arc::new(frame.rgba),
+        width: frame.width,
+        height: frame.height,
+    })
+}
+
+fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
+    rect + app_rect.origin().to_vec2()
+}
+
+fn pump_floating_surface_service(
+    service: &FloatingSurfaceService,
+    state: &mut State,
+    frame_builder: &mut FrameBuilder,
+    capture: &mut CaptureExecutor,
+    connection_ids: &mut HashMap<u64, Vec<String>>,
+    outputs: &[Output],
+    fallback_size: (u32, u32),
+) -> bool {
+    let desktop = floating_desktop_bounds(outputs, fallback_size);
+    let mut changed = false;
+    for event in service.drain() {
+        match event {
+            FloatingServiceEvent::Connected { connection, app_id } => {
+                service.send(
+                    connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::DesktopBounds {
+                        bounds: ui::floating_surface::protocol_rect_array(desktop),
+                    },
+                );
+                tracing::debug!(connection, %app_id, "authenticated shell-ui client connected");
+            }
+            FloatingServiceEvent::Message {
+                connection,
+                app_id,
+                message,
+            } => match message {
+                ui::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => {
+                    let mode = match mode {
+                        ui::floating_surface::CaptureStudioProtocolMode::Screenshot => {
+                            ui::widget::CaptureMode::Screenshot
+                        }
+                        ui::floating_surface::CaptureStudioProtocolMode::Recording => {
+                            ui::widget::CaptureMode::Recording
+                        }
+                        ui::floating_surface::CaptureStudioProtocolMode::PictureInPicture => {
+                            ui::widget::CaptureMode::Pip
+                        }
+                    };
+                    changed |= frame_builder.host_mut().open_capture_studio(mode);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::Present { request } => {
+                    let public_id = request.id.clone();
+                    let result = ui::floating_surface::FloatingSurfaceRequest::try_from(request)
+                        .and_then(|mut request| {
+                            let (source_surface_id, app_rect) =
+                                frame_builder.foreign_surface_for_app(&app_id).ok_or_else(
+                                    || format!("{app_id} has no visible foreign surface"),
+                                )?;
+                            let (transfer_frame, transfer_source) = if matches!(
+                                request.role,
+                                ui::floating_surface::FloatingRole::ActiveCall
+                                    | ui::floating_surface::FloatingRole::Navigation
+                            ) {
+                                validate_app_owned_source(&request.source, &app_id)?;
+                                let source = app_owned_transfer_region(
+                                    &request.source,
+                                    request.presentation_rect,
+                                    &app_id,
+                                    app_rect.size(),
+                                );
+                                let transfer_frame = source.and_then(|region| {
+                                    frozen_transfer_frame(
+                                        source_surface_id,
+                                        region,
+                                        app_rect.size(),
+                                    )
+                                });
+                                let transfer_source = transfer_frame.as_ref().and_then(|_| {
+                                    source.map(|region| {
+                                        crate::compositor::state::FloatingTransferSource {
+                                            rect: app_local_to_desktop(region, app_rect),
+                                        }
+                                    })
+                                });
+                                request.initial_rect = request
+                                    .initial_rect
+                                    .map(|rect| app_local_to_desktop(rect, app_rect));
+                                request.presentation_rect = request
+                                    .presentation_rect
+                                    .map(|rect| app_local_to_desktop(rect, app_rect));
+                                (transfer_frame, transfer_source)
+                            } else {
+                                let tracking_source = request.source.clone();
+                                request.source =
+                                    translate_external_source(request.source, &app_id, app_rect)?;
+                                request.tracking_source = Some(tracking_source);
+                                (None, None)
+                            };
+                            request.id = external_floating_id(connection, &public_id);
+                            Ok((
+                                request,
+                                transfer_frame,
+                                transfer_source,
+                                [app_rect.x0, app_rect.y0],
+                            ))
+                        });
+                    match result {
+                        Ok((request, transfer_frame, transfer_source, coordinate_offset)) => {
+                            if matches!(
+                                request.role,
+                                ui::floating_surface::FloatingRole::ActiveCall
+                                    | ui::floating_surface::FloatingRole::Navigation
+                            ) {
+                                let content_rect = request.initial_rect.unwrap_or_else(|| {
+                                    Rect::from_center_size(desktop.center(), request.preferred_size)
+                                });
+                                let window_rect = request
+                                    .presentation_rect
+                                    .unwrap_or(content_rect)
+                                    .union(content_rect);
+                                let (rect, content_rect) =
+                                    clamp_external_floating_geometry_to_outputs(
+                                        window_rect,
+                                        content_rect,
+                                        outputs,
+                                        fallback_size,
+                                    );
+                                let transfer_covered = transfer_frame.is_some();
+                                let token = state
+                                    .resume_floating_toplevel(
+                                        connection,
+                                        &public_id,
+                                        rect,
+                                        content_rect,
+                                        transfer_frame.clone(),
+                                        transfer_source,
+                                    )
+                                    .unwrap_or_else(|| {
+                                        let token = uuid::Uuid::new_v4().simple().to_string();
+                                        state.authorize_floating_toplevel(
+                                            crate::compositor::state::PendingFloatingToplevel {
+                                                token: token.clone(),
+                                                connection,
+                                                public_id: public_id.clone(),
+                                                app_id: app_id.clone(),
+                                                content_rect,
+                                                rect,
+                                                transfer_frame,
+                                                transfer_source,
+                                                suspended: false,
+                                            },
+                                        );
+                                        token
+                                    });
+                                service.send(
+                                    connection,
+                                    &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                                        id: public_id,
+                                        token,
+                                        rect: ui::floating_surface::protocol_rect_array(rect),
+                                        content_rect: ui::floating_surface::protocol_rect_array(
+                                            content_rect,
+                                        ),
+                                        transfer_covered,
+                                        coordinate_offset,
+                                    },
+                                );
+                                changed = true;
+                                continue;
+                            }
+                            let internal_id = request.id.clone();
+                            let adopted_rect = request.initial_rect.map_or(
+                                [0.0, 0.0, 1.0, 1.0],
+                                ui::floating_surface::protocol_rect_array,
+                            );
+                            capture.queue_external_floating(request);
+                            connection_ids
+                                .entry(connection)
+                                .or_default()
+                                .push(internal_id);
+                            service.send(
+                                connection,
+                                &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                                    id: public_id,
+                                    rect: adopted_rect,
+                                },
+                            );
+                            changed = true;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, %app_id, "floating request rejected");
+                            service.send(
+                                connection,
+                                &ui::floating_surface::FloatingSurfaceHostMessage::Closed {
+                                    id: public_id,
+                                },
+                            );
+                        }
+                    }
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::UpdateRegion { id, region } => {
+                    let result = ui::floating_surface::protocol_rect(region).and_then(|local| {
+                        let (_, app_rect) = frame_builder
+                            .foreign_surface_for_app(&app_id)
+                            .ok_or_else(|| format!("{app_id} has no visible foreign surface"))?;
+                        let translated = Rect::new(
+                            app_rect.x0 + local.x0,
+                            app_rect.y0 + local.y0,
+                            app_rect.x0 + local.x1,
+                            app_rect.y0 + local.y1,
+                        )
+                        .intersect(app_rect);
+                        (translated.area() > 0.0)
+                            .then_some((translated, local))
+                            .ok_or_else(|| "floating update lies outside its app surface".into())
+                    });
+                    match result {
+                        Ok((region, local)) => {
+                            capture.update_external_floating_region(
+                                external_floating_id(connection, &id),
+                                region,
+                                app_id.clone(),
+                                local,
+                            );
+                            changed = true;
+                        }
+                        Err(error) => tracing::warn!(%error, %app_id, "floating update rejected"),
+                    }
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::SurfaceGeometry {
+                    id,
+                    rect,
+                    content_rect,
+                } => match (
+                    ui::floating_surface::protocol_rect(rect),
+                    ui::floating_surface::protocol_rect(content_rect),
+                ) {
+                    (Ok(window_rect), Ok(content_rect)) => {
+                        let (rect, content_rect) = clamp_external_floating_geometry_to_outputs(
+                            window_rect,
+                            content_rect,
+                            outputs,
+                            fallback_size,
+                        );
+                        changed |= state.update_floating_toplevel_rect(
+                            connection,
+                            &id,
+                            rect,
+                            content_rect,
+                        );
+                    }
+                    (Err(error), _) | (_, Err(error)) => {
+                        tracing::warn!(%error, %app_id, "floating geometry rejected")
+                    }
+                },
+                ui::floating_surface::FloatingSurfaceClientMessage::SourceCleared { id } => {
+                    changed |= state.mark_floating_source_cleared(connection, &id);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::DestinationPresented { id } => {
+                    changed |= state.mark_floating_destination_presented(connection, &id);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::Suspend {
+                    id,
+                    rect,
+                    content_rect,
+                } => {
+                    if let (Ok(window_rect), Ok(content_rect)) = (
+                        ui::floating_surface::protocol_rect(rect),
+                        ui::floating_surface::protocol_rect(content_rect),
+                    ) {
+                        let (rect, content_rect) = clamp_external_floating_geometry_to_outputs(
+                            window_rect,
+                            content_rect,
+                            outputs,
+                            fallback_size,
+                        );
+                        changed |= state.update_floating_toplevel_rect(
+                            connection,
+                            &id,
+                            rect,
+                            content_rect,
+                        );
+                    }
+                    let return_frame = state
+                        .floating_toplevels
+                        .iter()
+                        .find(|surface| surface.connection == connection && surface.public_id == id)
+                        .and_then(|surface| frozen_floating_return_frame(surface.surface_id));
+                    changed |= state.suspend_floating_toplevel(connection, &id, return_frame);
+                    service.send(
+                        connection,
+                        &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
+                    let internal = external_floating_id(connection, &id);
+                    capture.dismiss_external_floating(internal.clone());
+                    if let Some(ids) = connection_ids.get_mut(&connection) {
+                        ids.retain(|candidate| candidate != &internal);
+                    }
+                    changed |= state.dismiss_floating_toplevel(connection, &id);
+                    service.send(
+                        connection,
+                        &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
+                    );
+                }
+            },
+            FloatingServiceEvent::Disconnected { connection, app_id } => {
+                for id in connection_ids.remove(&connection).unwrap_or_default() {
+                    capture.dismiss_external_floating(id);
+                }
+                state.dismiss_floating_connection(connection);
+                tracing::debug!(connection, %app_id, "shell-ui client disconnected");
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
+    let mut offset = vello::kurbo::Vec2::ZERO;
+    let reachable = 64.0;
+    if rect.x1 < bounds.x0 + reachable {
+        offset.x = bounds.x0 + reachable - rect.x1;
+    } else if rect.x0 > bounds.x1 - reachable {
+        offset.x = bounds.x1 - reachable - rect.x0;
+    }
+    if rect.y1 < bounds.y0 + reachable {
+        offset.y = bounds.y0 + reachable - rect.y1;
+    } else if rect.y0 > bounds.y1 - reachable {
+        offset.y = bounds.y1 - reachable - rect.y0;
+    }
+    rect + offset
+}
+
+fn clamp_external_floating_geometry(
+    window_rect: Rect,
+    content_rect: Rect,
+    bounds: Rect,
+) -> (Rect, Rect) {
+    let union = window_rect.union(content_rect);
+    let rect = clamp_external_floating_rect(union, bounds);
+    let offset = rect.origin() - union.origin();
+    (rect, content_rect + offset)
+}
+
+fn floating_output_rects(outputs: &[Output], fallback_size: (u32, u32)) -> Vec<Rect> {
+    let mut rects = outputs
+        .iter()
+        .filter(|output| output.size.0 > 0 && output.size.1 > 0)
+        .map(|output| {
+            Rect::from_origin_size(
+                vello::kurbo::Point::new(
+                    f64::from(output.position.0),
+                    f64::from(output.position.1),
+                ),
+                vello::kurbo::Size::new(f64::from(output.size.0), f64::from(output.size.1)),
+            )
+        })
+        .collect::<Vec<_>>();
+    if rects.is_empty() {
+        rects.push(Rect::new(
+            0.0,
+            0.0,
+            f64::from(fallback_size.0.max(1)),
+            f64::from(fallback_size.1.max(1)),
+        ));
+    }
+    rects
+}
+
+fn floating_desktop_bounds(outputs: &[Output], fallback_size: (u32, u32)) -> Rect {
+    let mut rects = floating_output_rects(outputs, fallback_size).into_iter();
+    let first = rects.next().expect("floating output fallback is non-empty");
+    rects.fold(first, |bounds, rect| bounds.union(rect))
+}
+
+/// Preserve free movement across touching displays while preventing a float
+/// from becoming stranded in a hole inside the desktop's bounding box. A
+/// reachable 64×64 patch on any real output is enough; otherwise the nearest
+/// output receives the same clamp used at the outside desktop edge.
+fn clamp_external_floating_geometry_to_outputs(
+    window_rect: Rect,
+    content_rect: Rect,
+    outputs: &[Output],
+    fallback_size: (u32, u32),
+) -> (Rect, Rect) {
+    let union = window_rect.union(content_rect);
+    let output_rects = floating_output_rects(outputs, fallback_size);
+    let reachable = output_rects.iter().any(|output| {
+        let visible = union.intersect(*output);
+        visible.width() >= 64.0 && visible.height() >= 64.0
+    });
+    if reachable {
+        return (union, content_rect);
+    }
+
+    let center = union.center();
+    let target = output_rects
+        .iter()
+        .min_by(|a, b| {
+            let distance = |output: &&Rect| {
+                let nearest = vello::kurbo::Point::new(
+                    center.x.clamp(output.x0, output.x1),
+                    center.y.clamp(output.y0, output.y1),
+                );
+                (nearest - center).hypot2()
+            };
+            distance(a).total_cmp(&distance(b))
+        })
+        .copied()
+        .unwrap_or_else(|| floating_desktop_bounds(outputs, fallback_size));
+    clamp_external_floating_geometry(window_rect, content_rect, target)
+}
+
+fn rehome_native_floating_surfaces(
+    state: &mut State,
+    outputs: &[Output],
+    fallback_size: (u32, u32),
+) -> bool {
+    let mut changed = false;
+    for surface in &mut state.pending_floating_toplevels {
+        let previous = surface.rect;
+        let (rect, content_rect) = clamp_external_floating_geometry_to_outputs(
+            surface.rect,
+            surface.content_rect,
+            outputs,
+            fallback_size,
+        );
+        let offset = rect.origin() - previous.origin();
+        changed |= rect != surface.rect || content_rect != surface.content_rect;
+        surface.rect = rect;
+        surface.content_rect = content_rect;
+        if let Some(source) = surface.transfer_source.as_mut() {
+            source.rect = source.rect + offset;
+        }
+    }
+    for surface in &mut state.floating_toplevels {
+        let previous = surface.rect;
+        let (rect, content_rect) = clamp_external_floating_geometry_to_outputs(
+            surface.rect,
+            surface.content_rect,
+            outputs,
+            fallback_size,
+        );
+        let offset = rect.origin() - previous.origin();
+        changed |= rect != surface.rect || content_rect != surface.content_rect;
+        surface.rect = rect;
+        surface.content_rect = content_rect;
+        if let Some(source) = surface.transfer_source.as_mut() {
+            source.rect = source.rect + offset;
+        }
+    }
+    changed
+}
+
+fn pump_floating_toplevel_events(service: &FloatingSurfaceService, state: &mut State) -> bool {
+    let events = state.take_floating_toplevel_events();
+    let changed = !events.is_empty();
+    for event in events {
+        match event {
+            crate::compositor::state::FloatingToplevelEvent::Mapped(surface) => {
+                service.send(
+                    surface.connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                        id: surface.public_id,
+                        rect: ui::floating_surface::protocol_rect_array(surface.content_rect),
+                    },
+                );
+            }
+            crate::compositor::state::FloatingToplevelEvent::Destroyed {
+                connection,
+                public_id,
+            } => {
+                service.send(
+                    connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: public_id },
+                );
+            }
+        }
+    }
+    changed
+}
 
 /// Env var for the CI test-introspection hook: when set, [`run`] serializes
 /// the shell `WorkspaceTree` to that path each frame tick as compact JSON;
@@ -2044,6 +2728,17 @@ pub fn run() -> ! {
         crate::shell::session_record_store(),
     );
     frame_builder.enable_configured_theme();
+    let mut capture_executor = CaptureExecutor::default();
+    let floating_surface_service = match FloatingSurfaceService::start() {
+        Ok(service) => Some(service),
+        Err(error) => {
+            tracing::warn!(%error, "shell-ui floating-surface service unavailable");
+            None
+        }
+    };
+    let mut external_floating_ids: HashMap<u64, Vec<String>> = HashMap::new();
+    let (system_audio, microphone) = crate::compositor::capture::recording_audio_availability();
+    frame_builder.set_capture_audio_available(system_audio, microphone);
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
     }
@@ -2479,6 +3174,24 @@ pub fn run() -> ! {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        if let Some(service) = floating_surface_service.as_ref()
+            && pump_floating_surface_service(
+                service,
+                &mut state,
+                &mut frame_builder,
+                &mut capture_executor,
+                &mut external_floating_ids,
+                backend.outputs(),
+                initial_size,
+            )
+        {
+            force_first_paint = true;
+        }
+        if let Some(service) = floating_surface_service.as_ref()
+            && pump_floating_toplevel_events(service, &mut state)
+        {
+            force_first_paint = true;
+        }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
         // compositor-thread owned.
@@ -2507,6 +3220,7 @@ pub fn run() -> ! {
                     scale: _,
                 } => {
                     if size.0 > 0 && size.1 > 0 {
+                        outputs_dirty = true;
                         frame_builder.set_viewport(size);
                         // A resize is also how the compositor learns a monitor changed, so
                         // re-derive per-display widths alongside the scene extent.
@@ -2739,6 +3453,19 @@ pub fn run() -> ! {
             // Windows aren't pinned to an output; re-pushing geometry re-homes
             // everything on a display that went away, so nothing's left with no panel behind it.
             frame_builder.set_output_geometry(output_geometry(&outs));
+            if rehome_native_floating_surfaces(&mut state, &outs, initial_size) {
+                force_first_paint = true;
+            }
+            if let Some(service) = floating_surface_service.as_ref() {
+                service.broadcast(
+                    &ui::floating_surface::FloatingSurfaceHostMessage::DesktopBounds {
+                        bounds: ui::floating_surface::protocol_rect_array(floating_desktop_bounds(
+                            &outs,
+                            initial_size,
+                        )),
+                    },
+                );
+            }
             // Per-output scale: `wp_fractional_scale` is the scale of the output a
             // surface is on, so a changed layout changes what each client renders at.
             state.set_output_layout(&outs);
@@ -2894,6 +3621,19 @@ pub fn run() -> ! {
             state.client_input.keyboard_focus(),
             state.text_input_active(),
         );
+        let floating_surfaces = state
+            .floating_toplevels
+            .iter()
+            .filter(|surface| {
+                !surface.suspended && surface.presented && surface.transfer_source.is_none()
+            })
+            .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
+            .collect::<Vec<_>>();
+        frame_builder.set_floating_surfaces(&floating_surfaces);
+        frame_builder.set_floating_transfer_surfaces(
+            &state.pending_floating_toplevels,
+            &state.floating_toplevels,
+        );
 
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &frame_builder);
@@ -2905,7 +3645,7 @@ pub fn run() -> ! {
         // Per-output HiDPI: tell each client the scale of its current display.
         // Every tick, since a window dragged to another monitor's density is otherwise unobserved.
         {
-            let placements: Vec<(u64, (f64, f64))> = state
+            let mut placements: Vec<(u64, (f64, f64))> = state
                 .client_input
                 .placements()
                 .filter_map(|(surface_id, group)| {
@@ -2913,6 +3653,10 @@ pub fn run() -> ! {
                     Some((surface_id, (rect.x0, rect.y0)))
                 })
                 .collect();
+            placements.extend(state.floating_toplevels.iter().map(|surface| {
+                let center = surface.content_rect.center();
+                (surface.surface_id, (center.x, center.y))
+            }));
             state.update_surface_scales(&placements);
         }
 
@@ -2991,6 +3735,8 @@ pub fn run() -> ! {
             || animating
             || apps_changed
             || peers_moved
+            || capture_executor.has_live_mirrors()
+            || capture_executor.is_recording()
             || keepalive_due;
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
@@ -3067,7 +3813,7 @@ pub fn run() -> ! {
             metrics.mark_layout(layout_took);
             let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
-            let scene = if session.is_locked() {
+            let mut scene = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
                 // The lock overlay covers every known output, centred on each (single on
                 // winit/headless; DRM lays monitors side-by-side); falls back to one output spanning the viewport if none reported yet.
@@ -3127,6 +3873,118 @@ pub fn run() -> ! {
                 scene
             };
             metrics.mark_scene(t_scene_start.elapsed());
+            // The selector queued semantic work and closed before this clean
+            // scene was built. Execute screenshots here, before ownership of
+            // the scene moves to the presentation thread; this is the only
+            // point shared by winit, DRM and headless backends with both live
+            // widget geometry and GPU-readable pixels available.
+            if !session.is_locked() {
+                let outcomes = capture_executor.execute_ready(&mut frame_builder, &mut scene);
+                for outcome in outcomes {
+                    match outcome {
+                        CaptureOutcome::Saved(path) => {
+                            // The captured miniature moves into a non-modal
+                            // shell receipt, so a second notification would
+                            // obscure work and split the next action.
+                            tracing::info!(path = %path.display(), "screenshot saved");
+                        }
+                        CaptureOutcome::Copied { width, height } => {
+                            tracing::info!(width, height, "screenshot copied");
+                        }
+                        CaptureOutcome::Floated { id } => {
+                            tracing::debug!(%id, "live capture mirror created");
+                        }
+                        CaptureOutcome::Pinned { id } => {
+                            tracing::debug!(%id, "screenshot pinned as a frozen reference");
+                        }
+                        CaptureOutcome::FloatingClosed { id } => {
+                            if let Some((connection, public_id)) = external_floating_parts(&id) {
+                                if let Some(service) = floating_surface_service.as_ref() {
+                                    service.send(
+                                        connection,
+                                        &ui::floating_surface::FloatingSurfaceHostMessage::Closed {
+                                            id: public_id.to_string(),
+                                        },
+                                    );
+                                }
+                                if let Some(ids) = external_floating_ids.get_mut(&connection) {
+                                    ids.retain(|candidate| candidate != &id);
+                                }
+                            }
+                            tracing::debug!(%id, "live capture mirror closed");
+                        }
+                        CaptureOutcome::RecordingStarted(path) => {
+                            // The compositor-owned pill supplies immediate,
+                            // spatial confirmation and then settles into the
+                            // top bar. A toast here would duplicate it and
+                            // unnecessarily cover application content.
+                            tracing::debug!(path = %path.display(), "recording started");
+                        }
+                        CaptureOutcome::RecordingPaused { path, paused } => {
+                            tracing::debug!(
+                                path = %path.display(),
+                                paused,
+                                "recording state changed"
+                            );
+                        }
+                        CaptureOutcome::RecordingAudioLost { path, reason } => {
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.push_notification(
+                                    "Recording continues without audio",
+                                    format!("{} · {reason}", path.display()),
+                                );
+                            });
+                        }
+                        CaptureOutcome::RecordingStopped { path, frames } => {
+                            // The recording pill morphs in-place into a
+                            // clickable saved receipt. Avoid a second surface
+                            // competing for attention in the top-right corner.
+                            tracing::info!(path = %path.display(), frames, "recording saved");
+                        }
+                        CaptureOutcome::RecordingOpened(path) => {
+                            tracing::debug!(path = %path.display(), "recording opened");
+                        }
+                        CaptureOutcome::RecordingRevealed(path) => {
+                            tracing::debug!(path = %path.display(), "recording folder opened");
+                        }
+                        CaptureOutcome::ReplayStarted => {
+                            tracing::info!("recent capture enabled");
+                        }
+                        CaptureOutcome::ReplaySaved { path, seconds } => {
+                            tracing::info!(path = %path.display(), seconds, "recent capture saved");
+                        }
+                        CaptureOutcome::ReplayStopped => {
+                            tracing::info!("recent capture disabled");
+                        }
+                        CaptureOutcome::ReplayAudioLost(reason) => {
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.push_warning_notification(
+                                    "Recent capture continues without audio",
+                                    reason,
+                                );
+                            });
+                        }
+                        CaptureOutcome::ScreenshotOpened(path) => {
+                            tracing::debug!(path = %path.display(), "screenshot opened");
+                        }
+                        CaptureOutcome::ScreenshotMarkupOpened(path) => {
+                            tracing::debug!(path = %path.display(), "screenshot markup opened");
+                        }
+                        CaptureOutcome::ScreenshotMarkupClosed => {
+                            tracing::debug!("screenshot markup closed");
+                        }
+                        CaptureOutcome::ScreenshotRevealed(path) => {
+                            tracing::debug!(path = %path.display(), "screenshot folder opened");
+                        }
+                        CaptureOutcome::Failed(error) => {
+                            tracing::warn!(%error, "capture failed");
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.push_error_notification("Capture failed", error);
+                            });
+                        }
+                    }
+                }
+            }
             // The lock screen is never transmitted: a receiver session may
             // remain connected while the seat locks, but remote observers do
             // not get password entry, notification counts, or unlock timing.
@@ -4427,5 +5285,233 @@ mod output_geometry_tests {
             Output::new(OutputId(1), (0, 0), 1.0),
         ];
         assert_eq!(output_geometry(&outs).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod external_floating_security_tests {
+    use super::{
+        app_local_to_desktop, app_owned_source_region, app_owned_transfer_region,
+        clamp_external_floating_geometry, clamp_external_floating_geometry_to_outputs,
+        external_floating_id, external_floating_parts, translate_external_source,
+        validate_app_owned_source,
+    };
+    use crate::compositor::backend::{Output, OutputId};
+    use ui::floating_surface::FloatingSource;
+    use vello::kurbo::Rect;
+
+    fn output(id: u32, position: (i32, i32), size: (u32, u32), scale: f32) -> Output {
+        Output {
+            id: OutputId(id),
+            position,
+            size,
+            scale,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
+        }
+    }
+
+    #[test]
+    fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
+        let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
+        let source = FloatingSource::AppRegion {
+            app_id: "dev.qos.chat".into(),
+            region: Rect::new(720.0, 20.0, 880.0, 220.0),
+        };
+        let translated = translate_external_source(source, "dev.qos.chat", app).unwrap();
+        let FloatingSource::AppRegion { region, .. } = translated else {
+            panic!("app region must remain an app region");
+        };
+        assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
+
+        let semantic = FloatingSource::AppElement {
+            app_id: "dev.qos.chat".into(),
+            element_id: "call:shared-screen".into(),
+            region: Rect::new(40.0, 30.0, 440.0, 280.0),
+        };
+        let translated = translate_external_source(semantic, "dev.qos.chat", app).unwrap();
+        let FloatingSource::AppElement {
+            app_id,
+            element_id,
+            region,
+        } = translated
+        else {
+            panic!("semantic app element must retain its identity");
+        };
+        assert_eq!(app_id, "dev.qos.chat");
+        assert_eq!(element_id, "call:shared-screen");
+        assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
+    }
+
+    #[test]
+    fn external_mirror_identity_round_trips_connection_and_public_id() {
+        let internal = external_floating_id(42, "browser.media-pip:main");
+        assert_eq!(
+            external_floating_parts(&internal),
+            Some((42, "browser.media-pip:main"))
+        );
+        assert!(external_floating_parts("capture-mirror:7").is_none());
+    }
+
+    #[test]
+    fn external_client_cannot_spoof_another_app_or_surface_id() {
+        let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
+        assert!(
+            translate_external_source(
+                FloatingSource::AppRegion {
+                    app_id: "dev.qos.mail".into(),
+                    region: Rect::new(0.0, 0.0, 200.0, 120.0),
+                },
+                "dev.qos.chat",
+                app,
+            )
+            .is_err()
+        );
+        assert!(
+            translate_external_source(
+                FloatingSource::Surface { surface_id: 42 },
+                "dev.qos.chat",
+                app,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
+        let source = FloatingSource::AppRegion {
+            app_id: "dev.qos.chat".into(),
+            region: Rect::new(420.0, 80.0, 780.0, 300.0),
+        };
+        assert!(validate_app_owned_source(&source, "dev.qos.chat").is_ok());
+        assert_eq!(
+            app_owned_source_region(
+                &source,
+                "dev.qos.chat",
+                vello::kurbo::Size::new(1_000.0, 700.0)
+            ),
+            Some(Rect::new(420.0, 80.0, 780.0, 300.0))
+        );
+        assert!(validate_app_owned_source(&source, "dev.qos.maps").is_err());
+        assert!(
+            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.qos.chat")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
+        let source = FloatingSource::AppElement {
+            app_id: "dev.qos.chat".into(),
+            element_id: "active-call".into(),
+            // A live drag has already carried most of the content beyond the
+            // primary window. Its final visible strip is still a valid source
+            // and must not make the transfer proxy disappear altogether.
+            region: Rect::new(1_180.0, 80.0, 1_420.0, 260.0),
+        };
+        let presentation = Rect::new(1_156.0, 32.0, 1_444.0, 352.0);
+        let visible = app_owned_transfer_region(
+            &source,
+            Some(presentation),
+            "dev.qos.chat",
+            vello::kurbo::Size::new(1_200.0, 700.0),
+        )
+        .expect("the visible decorated edge becomes the warm-up proxy");
+        assert_eq!(visible, Rect::new(1_156.0, 32.0, 1_200.0, 352.0));
+    }
+
+    #[test]
+    fn app_owned_transfer_prefers_decoration_over_content_only_source() {
+        let source = FloatingSource::AppRegion {
+            app_id: "dev.qos.maps".into(),
+            region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
+        };
+        let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
+        assert_eq!(
+            app_owned_transfer_region(
+                &source,
+                Some(window),
+                "dev.qos.maps",
+                vello::kurbo::Size::new(1_280.0, 720.0),
+            ),
+            Some(window),
+            "title, controls, silhouette and shadow must not vanish during adoption"
+        );
+    }
+
+    #[test]
+    fn app_owned_handoff_translates_content_and_soft_window_without_a_jump() {
+        let app = Rect::new(262.0, 124.0, 1_572.0, 892.0);
+        let local_content = Rect::new(938.0, 56.0, 1_266.0, 233.0);
+        let local_window = Rect::new(918.0, 8.0, 1_286.0, 397.0);
+        let desktop_content = app_local_to_desktop(local_content, app);
+        let desktop_window = app_local_to_desktop(local_window, app);
+        assert_eq!(
+            desktop_content.origin(),
+            vello::kurbo::Point::new(1_200.0, 180.0)
+        );
+        assert_eq!(
+            desktop_window.origin(),
+            vello::kurbo::Point::new(1_180.0, 132.0)
+        );
+        assert_eq!(desktop_content.size(), local_content.size());
+        assert_eq!(desktop_window.size(), local_window.size());
+    }
+
+    #[test]
+    fn clamping_moves_soft_window_and_interactive_content_as_one_shape() {
+        let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
+        let window = Rect::new(1_700.0, 40.0, 2_092.0, 292.0);
+        let content = Rect::new(1_708.0, 48.0, 2_084.0, 284.0);
+        let (clamped_window, clamped_content) =
+            clamp_external_floating_geometry(window, content, desktop);
+        assert_eq!(
+            clamped_window.origin() - window.origin(),
+            clamped_content.origin() - content.origin()
+        );
+        assert_eq!(
+            clamped_content - clamped_window.origin().to_vec2(),
+            Rect::new(8.0, 8.0, 384.0, 244.0)
+        );
+        assert_eq!(clamped_window.x0, desktop.x1 - 64.0);
+    }
+
+    #[test]
+    fn touching_outputs_remain_one_continuous_drag_surface() {
+        let outputs = [
+            output(0, (0, 0), (1_920, 1_080), 2.0),
+            output(1, (1_920, 0), (2_560, 1_440), 1.0),
+        ];
+        let window = Rect::new(1_760.0, 220.0, 2_160.0, 480.0);
+        let content = Rect::new(1_768.0, 228.0, 2_152.0, 472.0);
+        assert_eq!(
+            clamp_external_floating_geometry_to_outputs(window, content, &outputs, (4_480, 1_440),),
+            (window, content),
+            "crossing a real shared edge must not magnetise the float to either display"
+        );
+    }
+
+    #[test]
+    fn l_shaped_desktop_gap_cannot_swallow_a_floating_surface() {
+        let outputs = [
+            output(0, (0, 0), (1_920, 1_080), 2.0),
+            output(1, (1_920, 400), (2_560, 1_440), 1.0),
+        ];
+        let window = Rect::new(2_050.0, 100.0, 2_450.0, 280.0);
+        let content = Rect::new(2_058.0, 108.0, 2_442.0, 272.0);
+        let (clamped_window, clamped_content) =
+            clamp_external_floating_geometry_to_outputs(window, content, &outputs, (4_480, 1_840));
+        assert_eq!(clamped_window.y1, 464.0);
+        assert_eq!(
+            clamped_window
+                .intersect(Rect::new(1_920.0, 400.0, 4_480.0, 1_840.0))
+                .height(),
+            64.0
+        );
+        assert_eq!(
+            clamped_window.origin() - window.origin(),
+            clamped_content.origin() - content.origin(),
+            "soft chrome and its interactive content must re-home as one shape"
+        );
     }
 }

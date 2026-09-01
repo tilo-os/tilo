@@ -71,7 +71,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let mut app = chat::ChatApp::new_ephemeral();
         app.seed_shot_scenario(&scenario);
-        render_shot_to_png(app, viewport, &out)?;
+        render_shot_to_png(app, viewport, &out, &scenario)?;
         return Ok(());
     }
 
@@ -142,6 +142,7 @@ fn render_shot_to_png(
     mut app: chat::ChatApp,
     viewport: (u32, u32),
     out: &std::path::Path,
+    scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
@@ -193,6 +194,8 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+    app.debug_stage_floating_call_for_shot(scenario);
+    let widget: &mut dyn Widget = &mut app;
 
     let mut scene = Scene::new();
     widget.draw_with_presence(
@@ -202,6 +205,13 @@ fn render_shot_to_png(
         &theme,
         &presence,
         &permission,
+    );
+    widget.draw_floating_surfaces(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
     );
 
     if let Some(parent) = out.parent() {
