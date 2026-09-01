@@ -95,7 +95,7 @@ or locally cached role is not evidence by itself.
 | Malicious qpkg reads host files | qpkg launch defaults to mandatory Landlock V4 and refuses execution on partial/unsupported enforcement; namespace/mount/seccomp policy adds defence in depth. | Landlock is path access control, not a complete sandbox. Kernel bugs, permitted-path parser exploits, inherited descriptors, ioctls and covert channels need continuing review. |
 | Malicious qpkg gets network access | Network is absent unless explicitly granted by package/runtime policy and enforced by the namespace/broker boundary. | Broker bugs and confused-deputy paths are in scope for fuzzing and integration tests. |
 | Package/manifest parser exploit | Signed root and semantic manifest validators have coverage-guided fuzz targets with bounded hostile input; daily CI preserves regressions. | Fuzzing proves neither completeness nor memory safety in native dependencies. Corpus quality and sanitizer coverage must be monitored. |
-| Stolen invite link | Preferred invites sign the recipient person key, role, name, room and expiry. Redemption requires a certified device for that person. Pending state stores only a BLAKE3 digest at mode 0600. | The current ordinary name-only UI can still mint compatibility bearer invites until it collects/selects a recipient identity key. Treat those links as credentials. |
+| Stolen invite link | Ordinary qOS invite UI requires a pasted person identity key and signs that key, role, name, room and expiry. Redemption requires a certified device for that person. Pending state stores only a BLAKE3 digest at mode 0600. | Compatibility APIs can still mint bearer invites for the qDesktop/legacy tier. Treat those links as credentials and never present that path as hardened qOS. |
 | Invite replay or restart race | Admission is single-use and atomically consumed from a durable ledger; invalid/duplicate ledger data fails closed. Administrators can revoke by digest. | Authority-offline admission is not complete: a host cannot safely invent durable governance without a verifiable admission proof. |
 | Collaborator self-promotes or writes outside role | Room governance, live certified identity, role/action checks and authority-pinned document merge reject local or remote capability widening. | Full multi-machine reconnect/concurrency and revocation campaigns remain incomplete. MLS member removal is not end-to-end. |
 | Accidental/hostile ownership transfer | Invite roles exclude owner. Dedicated transfer requires the exact structural owner and a recipient already promoted to Admin; replacement removes the old root capability. | User-visible confirmation and dual acceptance by the incoming owner are not implemented. Root-key-signed governance log and recovery require integration with shell state. |
@@ -138,8 +138,8 @@ delegated admin. “Could not observe” is failure, not skip.
    attestations, not just two invocations on one runner.
 3. Complete root-key-signed collaboration governance, incoming-owner acceptance,
    MLS removal/rekey, and authority-offline admission proofs.
-4. Make recipient-bound invites the ordinary UI path and surface list/revoke/
-   expiry management without ever storing the bearer.
+4. Surface the implemented pending-invite list/revoke/expiry backend in settings,
+   add first-class identity-card/QR exchange, and keep bearers out of storage.
 5. Build a multi-machine adversarial campaign: three peers, host-only routing,
    concurrent edits/grants, restart, partition, revoke, reconnect and stale op.
 6. Execute the TPM2/Secure Boot/PIN/firmware-update/rollback matrix on supported
