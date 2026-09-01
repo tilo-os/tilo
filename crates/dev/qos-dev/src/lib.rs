@@ -1270,28 +1270,20 @@ fn form_screen_content(
             description.reference(localized),
             qos_ui_graph::UiTextRole::Body,
         ),
-        screen_text(
-            "name-label",
-            name_label.reference(localized),
-            qos_ui_graph::UiTextRole::Label,
-        ),
         qos_ui_graph::UiNode::TextInput {
             id: "name-input".into(),
-            accessible_name: name_label.reference(localized),
+            label: Some(name_label.reference(localized)),
+            accessible_name: String::new(),
             placeholder: name_placeholder.reference(localized),
             value_path: Some(format!("{name}-draft-name")),
             initial_value: String::new(),
             multiline: false,
             disabled: false,
         },
-        screen_text(
-            "details-label",
-            details_label.reference(localized),
-            qos_ui_graph::UiTextRole::Label,
-        ),
         qos_ui_graph::UiNode::TextInput {
             id: "details-input".into(),
-            accessible_name: details_label.reference(localized),
+            label: Some(details_label.reference(localized)),
+            accessible_name: String::new(),
             placeholder: details_placeholder.reference(localized),
             value_path: Some(format!("{name}-draft-details")),
             initial_value: String::new(),
@@ -5188,7 +5180,8 @@ fn graph_document(spec: &AppSpec) -> Result<String> {
             },
             qos_ui_graph::UiNode::TextInput {
                 id: "name-input".into(),
-                accessible_name: "graph-project-name".into(),
+                label: Some("graph-project-name".into()),
+                accessible_name: String::new(),
                 placeholder: "graph-project-name".into(),
                 value_path: Some("name".into()),
                 initial_value: String::new(),
@@ -5404,6 +5397,17 @@ mod tests {
                     ..
                 }) if value == "account-title"
             ));
+            if template == ScreenTemplate::Form {
+                assert!(matches!(
+                    document.node("name-input"),
+                    Some(qos_ui_graph::UiNode::TextInput {
+                        label: Some(label),
+                        accessible_name,
+                        ..
+                    }) if label == "account-name-label" && accessible_name.is_empty()
+                ));
+                assert!(document.node("name-label").is_none());
+            }
         }
     }
 
