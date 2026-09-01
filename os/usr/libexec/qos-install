@@ -491,13 +491,15 @@ fi
 # bootc above; restoring greetd and removing the transient privilege drop-in
 # completes the boundary between installer and target.
 install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
+printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
+  "$USERNAME" >> "$DEPLOY_ETC/greetd/config.toml"
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base qOS image
 # leaves sshd disabled but unmasked.
 rm -f "$DEPLOY_ETC/systemd/system/sshd.service" \
       "$DEPLOY_ETC/systemd/system/multi-user.target.wants/sshd.service"
-log "  restored the normal greeter configuration"
+log "  configured encrypted-startup handoff to the '$USERNAME' session"
 
 # NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
 # files in the live medium. Preserve those profiles so a connection made in
