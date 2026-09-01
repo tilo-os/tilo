@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn identity_handoff_is_bound_to_launcher_app_and_workspace_context() {
         use std::io::Read;
 
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn optional_service_whose_socket_refuses_is_skipped_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn required_service_whose_socket_refuses_is_still_an_error() {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn a_live_optional_socket_is_handed_over() {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
@@ -467,7 +467,7 @@ mod tests {
     /// cycle at the only part that touches descriptors: resolve, read the
     /// numbers the fork will need, let the resolution go.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn a_finished_launch_leaves_no_descriptor_behind() {
         const LAUNCHES: usize = 8;
 
@@ -517,7 +517,7 @@ mod tests {
     /// nothing owned or closed this descriptor, so every caller held a live
     /// connection nothing would ever release.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn the_launchers_end_is_released_when_the_launch_is_over() {
         use std::io::Read;
 
@@ -564,7 +564,7 @@ mod tests {
     /// it was handed over, and a test only watching for EOF would call
     /// that a pass.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn the_apps_copy_outlives_the_launchers() {
         use std::io::Read;
         use std::os::fd::FromRawFd;
@@ -622,7 +622,7 @@ mod tests {
     /// would hold a live connection to a session service opened on an
     /// app's behalf.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn the_launchers_copy_is_not_inherited_by_the_next_child() {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn required_missing_returns_required_missing_error() {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), "required@1".to_string());
