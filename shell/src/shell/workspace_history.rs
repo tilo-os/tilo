@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use automerge::ChangeHash;
+use automerge::{AutoCommit, ChangeHash};
 use collab_types::ArtifactKind;
 use ui::history_source::{AuthorDirectory, HistorySource};
 use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore, home};
@@ -20,6 +20,16 @@ use crate::shell::state::{RoomId, WorkspaceTree};
 /// from turning opening History into an unbounded allocation.
 pub const MAX_FEED_ENTRIES: usize = 2_000;
 pub const MAX_INDEXED_RECORDS: usize = 512;
+
+/// A read-only source for referenced record documents which are local on disk
+/// but are not mounted in the live [`RecordStore`]. Implementations must not
+/// acquire a writer lock or add the document to the live/open record set.
+pub trait PersistedRecordHistory {
+    /// Load one complete document. `None` means missing, corrupt, too large, or
+    /// no longer at the validated location; all are reported as unavailable by
+    /// [`FeedCoverage`] rather than silently disappearing.
+    fn load_record(&self, id: &RecordId) -> Option<AutoCommit>;
+}
 
 /// Which collaborative document produced a history row.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -323,6 +333,28 @@ impl WorkspaceHistoryIndex {
         tree: &mut WorkspaceTree,
         records: &RecordStore,
     ) -> Vec<&'a WorkspaceHistoryEntry> {
+        self.unseen_inner(frontier, tree, records, None)
+    }
+
+    /// The causal unread reduction including referenced local records which
+    /// are not mounted in the live store.
+    pub fn unseen_with_local_records<'a>(
+        &'a self,
+        frontier: &WorkspaceSeenFrontier,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        local: &dyn PersistedRecordHistory,
+    ) -> Vec<&'a WorkspaceHistoryEntry> {
+        self.unseen_inner(frontier, tree, records, Some(local))
+    }
+
+    fn unseen_inner<'a>(
+        &'a self,
+        frontier: &WorkspaceSeenFrontier,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        local: Option<&dyn PersistedRecordHistory>,
+    ) -> Vec<&'a WorkspaceHistoryEntry> {
         let mut after: BTreeMap<String, HashSet<HistoryEntryId>> = BTreeMap::new();
         for (origin, state) in &frontier.documents {
             let heads: Vec<ChangeHash> = state
@@ -342,11 +374,22 @@ impl WorkspaceHistoryIndex {
                 let Some(record) = origin.strip_prefix("record:").and_then(RecordId::parse) else {
                     continue;
                 };
-                let Some(Some(changes)) = records.with(&record, |doc| {
+                let changes = records.with(&record, |doc| {
                     doc.get_missing_deps(&heads)
                         .is_empty()
                         .then(|| doc.get_changes(&heads))
-                }) else {
+                });
+                let changes = match changes {
+                    Some(Some(changes)) => Some(changes),
+                    Some(None) => None,
+                    None => local.and_then(|source| {
+                        let mut doc = source.load_record(&record)?;
+                        doc.get_missing_deps(&heads)
+                            .is_empty()
+                            .then(|| doc.get_changes(&heads))
+                    }),
+                };
+                let Some(changes) = changes else {
                     continue;
                 };
                 changes
@@ -390,7 +433,19 @@ impl WorkspaceHistoryIndex {
         records: &RecordStore,
         query: WorkspaceHistoryQuery,
     ) -> bool {
-        self.refresh_inner(tree, records, query, None)
+        self.refresh_inner(tree, records, query, None, None)
+    }
+
+    /// Build a feed which also reads referenced, persisted records without
+    /// opening them in the app's live [`RecordStore`].
+    pub fn refresh_with_local_records(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        local: &dyn PersistedRecordHistory,
+        query: WorkspaceHistoryQuery,
+    ) -> bool {
+        self.refresh_inner(tree, records, query, None, Some(local))
     }
 
     /// Join a caller's room-scoped tree rows with all records reachable from
@@ -403,7 +458,19 @@ impl WorkspaceHistoryIndex {
         query: WorkspaceHistoryQuery,
         workspace_entries: &[HistoryEntry],
     ) -> bool {
-        self.refresh_inner(tree, records, query, Some(workspace_entries))
+        self.refresh_inner(tree, records, query, Some(workspace_entries), None)
+    }
+
+    /// Join pre-scoped workspace rows with both live and cold local records.
+    pub fn refresh_with_workspace_entries_and_local_records(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        local: &dyn PersistedRecordHistory,
+        query: WorkspaceHistoryQuery,
+        workspace_entries: &[HistoryEntry],
+    ) -> bool {
+        self.refresh_inner(tree, records, query, Some(workspace_entries), Some(local))
     }
 
     fn refresh_inner(
@@ -412,6 +479,7 @@ impl WorkspaceHistoryIndex {
         records: &RecordStore,
         query: WorkspaceHistoryQuery,
         supplied: Option<&[HistoryEntry]>,
+        local: Option<&dyn PersistedRecordHistory>,
     ) -> bool {
         let limit = query.bounded_limit();
         let referenced = query.rooms.as_ref().map_or_else(
@@ -427,7 +495,7 @@ impl WorkspaceHistoryIndex {
             referenced.iter().map(|record| record.id.clone()).collect();
         let open = records.open_records();
 
-        let mut included = Vec::new();
+        let mut candidates = BTreeMap::new();
         for checkout in &open {
             let belongs = if let Some(rooms) = query.rooms.as_ref() {
                 referenced_ids.contains(&checkout.id)
@@ -445,19 +513,41 @@ impl WorkspaceHistoryIndex {
                     }) == Some(true)
             };
             if belongs {
-                included.push(checkout.clone());
+                candidates.insert(checkout.id.clone(), checkout.clone());
             }
         }
-        included.sort();
+        for checkout in &referenced {
+            candidates
+                .entry(checkout.id.clone())
+                .or_insert_with(|| checkout.clone());
+        }
+        let mut candidates: Vec<_> = candidates.into_values().collect();
+        candidates.sort();
 
-        let capped_records = included.len().saturating_sub(MAX_INDEXED_RECORDS);
-        included.truncate(MAX_INDEXED_RECORDS);
+        let capped_records = candidates.len().saturating_sub(MAX_INDEXED_RECORDS);
+        candidates.truncate(MAX_INDEXED_RECORDS);
+        let mut cold = BTreeMap::new();
+        let mut included = Vec::new();
+        for checkout in candidates {
+            if records.read(&checkout.id, |_| ()).is_some() {
+                included.push(checkout);
+            } else if let Some(mut doc) = local.and_then(|source| source.load_record(&checkout.id))
+            {
+                // Force pending observer state before capturing heads below.
+                let _ = doc.get_heads();
+                cold.insert(checkout.id.clone(), doc);
+                included.push(checkout);
+            }
+        }
         let included_ids: BTreeSet<RecordId> =
             included.iter().map(|record| record.id.clone()).collect();
 
         let mut documents = vec![("workspace-tree".to_string(), tree.doc.get_heads())];
         for record in &included {
-            if let Some(heads) = records.with(&record.id, |doc| doc.get_heads()) {
+            if let Some(heads) = records
+                .with(&record.id, |doc| doc.get_heads())
+                .or_else(|| cold.get_mut(&record.id).map(AutoCommit::get_heads))
+            {
                 documents.push((format!("record:{}", record.id), heads));
             }
         }
@@ -496,14 +586,24 @@ impl WorkspaceHistoryIndex {
                 kind: record.kind.clone(),
             };
             let authors = self.authors.clone();
-            let _ = records.with(&record.id, |doc| {
+            let inserted_live = records.with(&record.id, |doc| {
                 let rows = HistorySource::new()
                     .with_authors(authors)
                     .with_artifact_kind(kind)
                     .with_max_entries(limit)
                     .entries(doc);
-                insert_rows(&mut by_id, origin, rows);
+                insert_rows(&mut by_id, origin.clone(), rows);
             });
+            if inserted_live.is_none()
+                && let Some(doc) = cold.get_mut(&record.id)
+            {
+                let rows = HistorySource::new()
+                    .with_authors(self.authors.clone())
+                    .with_artifact_kind(kind)
+                    .with_max_entries(limit)
+                    .entries(doc);
+                insert_rows(&mut by_id, origin, rows);
+            }
         }
 
         let mut entries: Vec<_> = by_id.into_values().collect();
@@ -588,12 +688,26 @@ fn artifact_kind(kind: &RecordKind) -> ArtifactKind {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use automerge::ROOT;
     use automerge::transaction::{CommitOptions, Transactable};
     use ui::qos_actions::ActionContext;
 
     use super::*;
     use crate::shell::state::{Workspace, WorkspaceId};
+
+    struct ColdRecords {
+        documents: BTreeMap<RecordId, Vec<u8>>,
+        loads: Cell<usize>,
+    }
+
+    impl PersistedRecordHistory for ColdRecords {
+        fn load_record(&self, id: &RecordId) -> Option<AutoCommit> {
+            self.loads.set(self.loads.get().saturating_add(1));
+            AutoCommit::load(self.documents.get(id)?).ok()
+        }
+    }
 
     fn tree_and_room() -> (WorkspaceTree, RoomId) {
         let workspace = Workspace::new(WorkspaceId::new(), "Research");
@@ -713,6 +827,68 @@ mod tests {
         );
         assert!(!index.coverage().is_complete());
         assert_eq!(index.coverage().unavailable_records, vec![missing]);
+    }
+
+    #[test]
+    fn indexes_cold_local_history_without_opening_the_record_store() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::for_file("cold.md"), RecordKind::new("note"));
+        let mut doc = AutoCommit::new();
+        ui::record::init(&mut doc, &checkout.id, &checkout.kind, &room.to_string());
+        doc.put(&ROOT, "body", "Persisted but not mounted").unwrap();
+        doc.commit_with(CommitOptions::default().with_time(25));
+        let cold = ColdRecords {
+            documents: [(checkout.id.clone(), doc.save())].into_iter().collect(),
+            loads: Cell::new(0),
+        };
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(checkout.id.to_string(), checkout.kind.to_string());
+
+        assert!(records.open_records().is_empty());
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh_with_local_records(
+            &mut tree,
+            &records,
+            &cold,
+            WorkspaceHistoryQuery::for_room(room),
+        );
+
+        assert!(records.open_records().is_empty());
+        assert!(cold.loads.get() > 0);
+        assert!(index.coverage().is_complete());
+        assert!(index.entries().iter().any(|row| {
+            matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &checkout.id)
+        }));
+    }
+
+    #[test]
+    fn corrupt_cold_record_remains_explicitly_unavailable() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let cold = ColdRecords {
+            documents: [(checkout.id.clone(), b"not automerge".to_vec())]
+                .into_iter()
+                .collect(),
+            loads: Cell::new(0),
+        };
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(checkout.id.to_string(), checkout.kind.to_string());
+
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh_with_local_records(
+            &mut tree,
+            &records,
+            &cold,
+            WorkspaceHistoryQuery::for_room(room),
+        );
+        assert_eq!(index.coverage().unavailable_records, vec![checkout]);
+        assert!(records.open_records().is_empty());
     }
 
     #[test]
