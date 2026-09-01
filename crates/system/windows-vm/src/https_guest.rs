@@ -447,8 +447,13 @@ struct WireLaunchRequest<'a> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WireLaunch {
     endpoint: String,
-    username: String,
-    password: String,
+    /// Native RAIL returns a one-use RDP account. Focused SPICE attaches to
+    /// the already-running singleton display and therefore returns no RDP
+    /// credentials at all.
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
     remote_app_alias: String,
     launch_nonce: String,
     certificate_sha256: String,
@@ -470,9 +475,6 @@ impl WireLaunch {
             || self.remote_app_alias != application_id
             || !valid_identifier(&self.launch_nonce)
             || self.launch_nonce.len() < 16
-            || !valid_username(&self.username)
-            || self.password.is_empty()
-            || self.password.len() > 512
             || !is_sha256(&self.certificate_sha256)
         {
             return Err(AgentError::Authentication);
@@ -492,13 +494,32 @@ impl WireLaunch {
                 ));
             }
         };
+        let (username, password) = match presentation {
+            ApplicationPresentation::NativeRail => {
+                let username = self.username.ok_or(AgentError::Authentication)?;
+                let password = self.password.ok_or(AgentError::Authentication)?;
+                if !valid_username(&username) || password.is_empty() || password.len() > 512 {
+                    return Err(AgentError::Authentication);
+                }
+                (username, password)
+            }
+            ApplicationPresentation::AppFocusedSpice => {
+                // SPICE does not use the guest RDP listener. Rejecting
+                // credentials here prevents an accidentally retained account
+                // from becoming an unexpected second access path.
+                if self.username.is_some() || self.password.is_some() {
+                    return Err(AgentError::Authentication);
+                }
+                (String::new(), String::new())
+            }
+        };
         Ok(GuestLaunch {
             endpoint: RdpEndpoint {
                 address: endpoint,
-                username: self.username,
+                username,
                 certificate_sha256: self.certificate_sha256,
             },
-            password: Secret::new(self.password.into_bytes()),
+            password: Secret::new(password.into_bytes()),
             remote_app_alias: self.remote_app_alias,
             launch_nonce: self.launch_nonce,
             presentation,
@@ -696,12 +717,66 @@ mod tests {
     fn launch_rejects_a_guest_that_changes_selected_presentation() {
         let launch = WireLaunch {
             endpoint: "192.168.251.2:3389".to_string(),
-            username: "qra123".to_string(),
-            password: "secret".to_string(),
+            username: Some("qra123".to_string()),
+            password: Some("secret".to_string()),
             remote_app_alias: "published.app".to_string(),
             launch_nonce: "0123456789abcdef".to_string(),
             certificate_sha256: "a".repeat(64),
             presentation_backend: "app_focused_spice".to_string(),
+        };
+        assert!(
+            launch
+                .into_guest_launch("published.app", ApplicationPresentation::NativeRail)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn focused_spice_launch_has_no_rdp_credentials() {
+        let launch = WireLaunch {
+            endpoint: "192.168.251.2:3389".to_string(),
+            username: None,
+            password: None,
+            remote_app_alias: "published.app".to_string(),
+            launch_nonce: "0123456789abcdef".to_string(),
+            certificate_sha256: "a".repeat(64),
+            presentation_backend: "app_focused_spice".to_string(),
+        };
+        let launch = launch
+            .into_guest_launch("published.app", ApplicationPresentation::AppFocusedSpice)
+            .expect("focused SPICE does not require an RDP account");
+        assert!(launch.endpoint.username.is_empty());
+        assert!(launch.password.expose().is_empty());
+    }
+
+    #[test]
+    fn focused_spice_rejects_rdp_credentials_if_guest_sends_them() {
+        let launch = WireLaunch {
+            endpoint: "192.168.251.2:3389".to_string(),
+            username: Some("unexpected-account".to_string()),
+            password: Some("unexpected-password".to_string()),
+            remote_app_alias: "published.app".to_string(),
+            launch_nonce: "0123456789abcdef".to_string(),
+            certificate_sha256: "a".repeat(64),
+            presentation_backend: "app_focused_spice".to_string(),
+        };
+        assert!(
+            launch
+                .into_guest_launch("published.app", ApplicationPresentation::AppFocusedSpice)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_rail_launch_still_requires_rdp_credentials() {
+        let launch = WireLaunch {
+            endpoint: "192.168.251.2:3389".to_string(),
+            username: None,
+            password: None,
+            remote_app_alias: "published.app".to_string(),
+            launch_nonce: "0123456789abcdef".to_string(),
+            certificate_sha256: "a".repeat(64),
+            presentation_backend: "native_rail_rds".to_string(),
         };
         assert!(
             launch
