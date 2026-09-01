@@ -177,6 +177,7 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        self.keyboard_target = None;
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
                 // Begin dragging the overlay (only meaningful docked).
@@ -284,7 +285,24 @@ impl ChatApp {
             return;
         }
 
-        let composer_owns = self.menu.is_none()
+        // Tab walks Chat's real primary-control inventory. Enter/Space then
+        // activates the same `Hit` path as a pointer, including the composers.
+        // This check deliberately precedes composer routing: a multiline input
+        // must not swallow the application's navigation key.
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            self.move_keyboard_target(modifiers.state().shift_key());
+            *handled = true;
+            return;
+        }
+        let activates = matches!(logical_key, Key::Named(NamedKey::Enter))
+            || matches!(logical_key, Key::Character(value) if value.as_str() == " ");
+        if self.keyboard_target.is_some() && activates && self.activate_keyboard_target(doc) {
+            *handled = true;
+            return;
+        }
+
+        let composer_owns = self.can_participate()
+            && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.attach_open
@@ -313,7 +331,8 @@ impl ChatApp {
         } else if self.editing.is_some() {
             self.route_edit_input(event, scale, modifiers, doc);
             true
-        } else if self.menu.is_none()
+        } else if self.can_participate()
+            && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.attach_open
@@ -481,37 +500,41 @@ impl ChatApp {
             .map(|(_, h)| h.clone())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
+    )]
     fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
         // Any click dismisses an open context menu unless it's a menu action.
         if !matches!(hit, Hit::MenuAction { .. }) {
             self.menu = None;
         }
         match hit {
-            Hit::Workspace(id) => self.on_hit_workspace(id),
+            Hit::Inbox => {
+                self.inbox_open = true;
+                self.thread_open = None;
+                self.focus = Focus::Main;
+            }
+            Hit::CurrentContext => {
+                self.inbox_open = false;
+                self.on_hit_workspace(self.context_ws.clone());
+            }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
-            Hit::CategoryToggle(id) => {
+            Hit::CategoryToggle(id) if self.can_participate() => {
                 ChatDoc::toggle_category_collapsed(doc, &id);
             }
-            // Left-click on your own message body is a no-op — the edit menu
-            // is a right-click affordance (see `on_right_click`). The call
-            // drag handle is also a no-op here — it's handled at press time.
-            Hit::MessageMenu { .. } | Hit::CallDragHandle => {}
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
-            Hit::MenuAction { target, action } => {
+            Hit::MenuAction { target, action } if self.can_participate() => {
                 self.menu = None;
                 self.apply_menu_action(target, action, doc);
             }
             Hit::AddChannel {
                 workspace,
                 category,
-            } => self.on_hit_add_channel(&workspace, &category, doc),
-            Hit::AddCategory(ws) => self.on_hit_add_category(&ws, doc),
-            // Create a real, usable workspace (a general text channel + a
-            // voice channel) and switch to it — the rail "+" is a live
-            // create action, not decoration.
-            Hit::AddWorkspace => self.on_hit_add_workspace(doc),
+            } if self.can_participate() => self.on_hit_add_channel(&workspace, &category, doc),
+            Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_category(&ws, doc),
             Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => {
@@ -534,17 +557,17 @@ impl ChatApp {
                 self.set_composer_focus();
             }
             Hit::Send => self.send_focused(doc),
-            Hit::ComposerEmoji(anchor) => {
+            Hit::ComposerEmoji(anchor) if self.can_participate() => {
                 self.emoji_open = true;
                 self.emoji_target = None;
                 self.emoji_anchor = anchor;
             }
-            Hit::Attach => self.open_attach_picker(),
+            Hit::Attach if self.can_participate() => self.open_attach_picker(),
             Hit::AttachPick(path) => {
                 self.attach_open = false;
                 self.attach_file(doc, std::path::Path::new(&path));
             }
-            Hit::StartCall => self.on_hit_start_call(doc),
+            Hit::StartCall if self.can_participate() => self.on_hit_start_call(doc),
             Hit::CloseThread => {
                 self.thread_open = None;
                 self.focus = Focus::Main;
@@ -559,8 +582,10 @@ impl ChatApp {
                 }
             }
             Hit::CallDeafen => {
-                self.call.toggle_deafen();
-                self.sync_local_voice(doc);
+                if self.call_allows(CallAction::Speak) {
+                    self.call.toggle_deafen();
+                    self.sync_local_voice(doc);
+                }
             }
             Hit::CallAudioOnly => {
                 if self.call_allows(CallAction::Camera) {
@@ -577,6 +602,9 @@ impl ChatApp {
             Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
             Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
             Hit::Dismiss => self.on_hit_dismiss(),
+            // MessageMenu is a right-click affordance and CallDragHandle is
+            // handled at press time; permission-gated fallthroughs are no-ops.
+            _ => {}
         }
         // Whatever the interaction resolved to, the channel now in view is
         // read: advance its watermark so its unread badge stays cleared once
@@ -600,6 +628,9 @@ impl ChatApp {
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
         } else {
+            if let Some(workspace) = self.channel(&id).map(|channel| channel.workspace.clone()) {
+                self.active_ws = workspace;
+            }
             self.active_channel = id;
             self.thread_open = None;
             self.scroll = 0.0;
@@ -629,15 +660,6 @@ impl ChatApp {
     fn on_hit_add_category(&mut self, ws: &str, doc: &mut AutoCommit) {
         let id = ChatDoc::create_category(doc, ws, "New Category");
         self.begin_rename(MenuTarget::Category(id));
-    }
-
-    fn on_hit_add_workspace(&mut self, doc: &mut AutoCommit) {
-        let id = ChatDoc::create_workspace(doc, "New Workspace");
-        self.active_ws = id;
-        self.thread_open = None;
-        self.scroll = 0.0;
-        self.focus = Focus::Main;
-        self.active_channel.clear(); // reload picks the new ws's first text channel
     }
 
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut AutoCommit) {
@@ -802,6 +824,13 @@ impl ChatApp {
     /// re-slots the participant tiles (and the host video node).
     fn toggle_screen_share(&mut self, doc: &mut AutoCommit) {
         if !self.call.active {
+            return;
+        }
+        // A peer may always stop an already-live share (including after a
+        // permission downgrade), but starting capture/transmission is a new
+        // workspace write and must pass the same call-action gate as joining
+        // or enabling a camera.
+        if !self.call.sharing && !self.call_allows(CallAction::ShareScreen) {
             return;
         }
         if self.call.sharing {
@@ -1069,6 +1098,58 @@ impl ChatApp {
         }
     }
 
+    /// Move synthetic focus over the controls that were actually painted in
+    /// the previous frame. The compositor has its own retained-widget focus;
+    /// Chat's immediate-mode children need this small local equivalent.
+    fn move_keyboard_target(&mut self, backwards: bool) {
+        let targets = self.semantic_hits();
+        if targets.is_empty() {
+            self.keyboard_target = None;
+            return;
+        }
+        let next = match self.keyboard_target {
+            Some(current) if backwards => current.checked_sub(1).unwrap_or(targets.len() - 1),
+            Some(current) => (current + 1) % targets.len(),
+            None if backwards => targets.len() - 1,
+            None => 0,
+        };
+        self.keyboard_target = Some(next);
+        let Some((_, hit, ..)) = targets.get(next) else {
+            self.keyboard_target = None;
+            return;
+        };
+        match hit {
+            Hit::FocusMain => {
+                self.focus = Focus::Main;
+                ui::Widget::set_focus(&mut self.composer_main, true);
+                ui::Widget::set_focus(&mut self.composer_thread, false);
+            }
+            Hit::FocusThread => {
+                self.focus = Focus::Thread;
+                ui::Widget::set_focus(&mut self.composer_main, false);
+                ui::Widget::set_focus(&mut self.composer_thread, true);
+            }
+            _ => {
+                ui::Widget::set_focus(&mut self.composer_main, false);
+                ui::Widget::set_focus(&mut self.composer_thread, false);
+            }
+        }
+    }
+
+    fn activate_keyboard_target(&mut self, doc: &mut AutoCommit) -> bool {
+        let targets = self.semantic_hits();
+        let Some((_, hit, ..)) = self
+            .keyboard_target
+            .and_then(|index| targets.get(index))
+            .cloned()
+        else {
+            self.keyboard_target = None;
+            return false;
+        };
+        self.on_hit(hit, doc);
+        true
+    }
+
     fn draft_key(&self) -> String {
         match self.focus {
             Focus::Thread => self
@@ -1084,6 +1165,9 @@ impl ChatApp {
     /// if typed. Composer keystrokes themselves go straight to the widget via
     /// [`route_composer_key`].
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
+        if !self.can_participate() {
+            return;
+        }
         if self.editing.is_some() {
             self.edit_input.insert_at_cursor(s);
             let _ = self.edit_input.take_dirty();
@@ -1101,6 +1185,9 @@ impl ChatApp {
     /// the inline editor with the caret at the end. Only your own messages are
     /// editable; a foreign id is ignored. Closes any open popover.
     pub(crate) fn begin_edit(&mut self, id: Id) {
+        if !self.can_participate() {
+            return;
+        }
         let Some(m) = self.message(&id) else { return };
         if m.author != self.me.id {
             return;
@@ -1143,6 +1230,9 @@ impl ChatApp {
     /// message's history and flags it edited), then close the editor. An
     /// edit that empties the message is discarded rather than blanking it.
     fn commit_edit(&mut self, doc: &mut AutoCommit) {
+        if !self.can_participate() {
+            return;
+        }
         let Some(id) = self.editing.take() else {
             return;
         };
@@ -2219,26 +2309,81 @@ mod tests {
         );
     }
 
-    // --- add-workspace "+" (was a dead button) --------------------------
+    // --- contextual channels + cross-workspace Inbox -------------------
 
     #[test]
-    fn add_workspace_button_creates_and_switches_to_it() {
+    fn inbox_opens_cross_workspace_conversation_without_losing_context() {
         let (mut app, mut doc) = app_with_doc();
-        let before = app.workspaces.len();
-        app.on_hit(Hit::AddWorkspace, &mut doc);
-        assert_eq!(
-            app.workspaces.len(),
-            before + 1,
-            "the rail '+' created a workspace"
+        let context = app.context_ws.clone();
+        let cross_workspace = app
+            .channels
+            .iter()
+            .find(|channel| channel.workspace != context && channel.kind == ChannelKind::Text)
+            .expect("demo data has a cross-workspace conversation")
+            .clone();
+
+        app.on_hit(Hit::Inbox, &mut doc);
+        app.on_hit(Hit::Channel(cross_workspace.id), &mut doc);
+        assert!(app.inbox_open);
+        assert_eq!(app.active_ws, cross_workspace.workspace);
+        assert_eq!(app.context_ws, context, "Inbox never rewrites OS context");
+
+        app.on_hit(Hit::CurrentContext, &mut doc);
+        assert!(!app.inbox_open);
+        assert_eq!(app.active_ws, context);
+    }
+
+    #[test]
+    fn tab_and_enter_activate_the_visible_inbox_control() {
+        let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+
+        let inbox_index = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
+            .expect("Inbox is in the visible keyboard inventory");
+        for _ in 0..=inbox_index {
+            feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        }
+        assert_eq!(app.keyboard_target, Some(inbox_index));
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+
+        assert!(app.inbox_open, "Enter follows the first visible Tab target");
+    }
+
+    #[test]
+    fn accessibility_names_contextual_navigation_and_conversation_content() {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 720.0);
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        assert_eq!(root.role, ui::a11y::Role::Group);
+        assert_eq!(root.name.as_deref(), Some("Chat"));
+        assert!(root.children.iter().any(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Inbox"))
+        }));
+        assert!(
+            root.children.iter().any(|node| {
+                node.name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("current workspace"))
+            }),
+            "the OS context is explicitly named"
         );
-        // Switched to the new workspace and landed on a real text channel in it.
-        assert_ne!(app.active_ws, "ws_acme");
-        assert!(app.workspaces.iter().any(|w| w.id == app.active_ws));
-        let ch = app
-            .channel(&app.active_channel)
-            .expect("landed on a real channel");
-        assert_eq!(ch.workspace, app.active_ws);
-        assert_eq!(ch.kind, ChannelKind::Text);
+        assert!(
+            root.children
+                .iter()
+                .all(|node| node.name.as_deref() != Some("New Workspace")),
+            "Chat never exposes a second workspace creation concept"
+        );
+        let messages = root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Messages"))
+            .expect("conversation content is exposed as a list");
+        assert!(!messages.children.is_empty());
     }
 
     // --- members roster (right flap "members" half was unimplemented) ---
@@ -2271,6 +2416,40 @@ mod tests {
     }
 
     #[test]
+    fn workspace_people_do_not_leak_from_the_global_identity_directory() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(
+            app.users.iter().any(|user| user.id == "u_aria"),
+            "demo precondition: the first workspace has other known people"
+        );
+
+        // A fresh workspace owns empty text/voice channels but shares the
+        // document's identity directory. Its People/call chrome must stay
+        // quiet until someone actually participates in one of its channels.
+        let fresh = ChatDoc::create_workspace(&mut doc, "Private draft");
+        app.active_ws = fresh;
+        app.active_channel.clear();
+        app.thread_open = None;
+        app.reload(&doc);
+
+        assert!(
+            app.users.iter().all(|user| app.is_me(&user.id)),
+            "only the local identity is evidenced in the fresh workspace; got {:?}",
+            app.users.iter().map(|user| &user.id).collect::<Vec<_>>()
+        );
+        assert!(!app.has_other_collaborator());
+        render_frame(&mut app, 1280.0, 720.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::StartCall | Hit::ToggleRightFlap
+            )),
+            0,
+            "global directory entries must not surface People/call controls in a private workspace"
+        );
+    }
+
+    #[test]
     fn members_pill_reveals_the_roster_not_a_blank_column() {
         let (mut app, mut doc) = app_with_doc();
         app.thread_open = None; // no thread → the flap's other half is members
@@ -2292,6 +2471,50 @@ mod tests {
             count_hits(&app, |h| matches!(h, Hit::CloseThread)),
             0,
             "no thread panel is shown when no thread is open"
+        );
+    }
+
+    #[test]
+    fn private_workspace_keeps_collaboration_controls_out_of_the_header() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, model::ME, "You", "QD");
+        let mut app = ChatApp::new_ephemeral();
+        app.active_ws = "ws_home".into();
+        app.active_channel = "c_general".into();
+        app.thread_open = None;
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::StartCall | Hit::ToggleRightFlap)),
+            0,
+            "a private workspace has no People or call controls in its resting header"
+        );
+    }
+
+    #[test]
+    fn narrow_thread_is_a_full_detail_view_with_back_navigation() {
+        let (mut app, _doc) = app_with_doc();
+        app.thread_open = Some("m_concept".into());
+        app.right_mode = crate::responsive::FlapMode::Overlay;
+        app.right_flap.snap(true);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 390.0, 844.0);
+
+        assert_eq!(
+            app.thread_rect(),
+            app.rect,
+            "a phone-width thread fills the content view rather than floating at desktop width"
+        );
+        render_frame(&mut app, 390.0, 844.0);
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::CloseThread)),
+            1,
+            "the detail header supplies one Back control"
+        );
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::ToggleLeftFlap)),
+            0,
+            "the navigation drawer does not float over pushed thread content"
         );
     }
 
@@ -2461,6 +2684,63 @@ mod tests {
     }
 
     #[test]
+    fn restricted_peer_cannot_start_screen_share_but_can_stop_one_after_downgrade() {
+        use ui::permissions::{Actor, PermissionContext, Role};
+
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
+            node: 99,
+            width: 1280,
+            height: 720,
+        })));
+
+        // Model a permission downgrade during an already active call. The
+        // portal is deliberately ready, so only the workspace permission can
+        // be responsible for blocking a new transmission.
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Viewer), model::ME),
+                vec![],
+            ),
+        );
+        let (_, controls) = app.overlay_controls_layout();
+        let share = controls
+            .iter()
+            .find(|(_, _, _, _, hit, _)| matches!(hit, Hit::CallShareScreen))
+            .expect("expanded call has a share control");
+        assert!(!share.3, "a denied new share is visibly disabled");
+
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(
+            !app.sharing_screen(),
+            "restricted peer cannot start capture"
+        );
+        assert!(
+            !me_sharing(&doc, "c_huddle"),
+            "blocked capture publishes no sharing state"
+        );
+
+        // Stopping is deliberately allowed after a downgrade so a person can
+        // always end an already-running transmission.
+        app.call.sharing = true;
+        app.sync_local_sharing(&mut doc);
+        let (_, controls) = app.overlay_controls_layout();
+        let share = controls
+            .iter()
+            .find(|(_, _, _, _, hit, _)| matches!(hit, Hit::CallShareScreen))
+            .expect("expanded call retains Stop share");
+        assert!(share.3, "Stop share remains available after downgrade");
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen());
+        assert!(
+            !me_sharing(&doc, "c_huddle"),
+            "stopping clears the shared state after a downgrade"
+        );
+    }
+
+    #[test]
     fn a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage() {
         use crate::render_call::CallStage;
         use vello::kurbo::Rect;
@@ -2522,7 +2802,7 @@ mod tests {
         let (_, buttons) = app.overlay_controls_layout();
         let share = buttons
             .iter()
-            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen));
+            .find(|(_, _, _, _, h, _)| matches!(h, Hit::CallShareScreen));
         let (label, active, ..) =
             share.expect("the expanded controls include a screen-share button");
         assert_eq!(*label, "Share screen");
@@ -2539,7 +2819,7 @@ mod tests {
         let (_, buttons) = app.overlay_controls_layout();
         let (label, active, ..) = buttons
             .iter()
-            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen))
+            .find(|(_, _, _, _, h, _)| matches!(h, Hit::CallShareScreen))
             .expect("share button present");
         assert_eq!(
             *label, "Stop share",
@@ -2553,7 +2833,8 @@ mod tests {
     #[test]
     fn start_call_creates_a_voice_channel_when_the_workspace_has_none() {
         let (mut app, mut doc) = app_with_doc();
-        app.on_hit(Hit::Workspace("ws_jam".into()), &mut doc);
+        app.on_hit_workspace("ws_jam".into());
+        app.reload(&doc);
         assert_eq!(app.active_ws, "ws_jam");
         assert!(
             !app.channels
@@ -2785,11 +3066,12 @@ mod tests {
 
     #[test]
     fn workspace_switch_resets_view_state() {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, doc) = app_with_doc();
         app.thread_open = Some("m_concept".into());
         app.scroll = -250.0;
         app.focus = Focus::Thread;
-        app.on_hit(Hit::Workspace("ws_qos".into()), &mut doc);
+        app.on_hit_workspace("ws_qos".into());
+        app.reload(&doc);
         assert_eq!(app.active_ws, "ws_qos");
         assert!(
             app.thread_open.is_none(),
@@ -3132,6 +3414,15 @@ mod tests {
             !app.can_participate(),
             "a member without admin can't write to the workspace"
         );
+        render_frame(&mut app, 1280.0, 720.0);
+        assert_eq!(
+            count_hits(&app, |h| matches!(
+                h,
+                Hit::FocusMain | Hit::Send | Hit::Attach
+            )),
+            0,
+            "a viewer sees an honest non-interactive composer, not controls that fail silently"
+        );
         assert!(
             !app.embed_allowed("/var/workspace/secret.png"),
             "an ungranted embed is gated"
@@ -3141,6 +3432,11 @@ mod tests {
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
         app.insert_text(&mut doc, "should not post");
         app.send_focused(&mut doc);
+        app.begin_edit("m_me1".into());
+        assert!(
+            app.editing.is_none(),
+            "a viewer cannot open an editor for an existing message"
+        );
         assert_eq!(
             ChatDoc::list_messages(&doc, "c_crit").len(),
             before,

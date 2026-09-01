@@ -1,8 +1,8 @@
 //! Headless end-to-end snapshot harness for nirios-shell flows. Drives the
 //! real widget tree through synthesised `winit::WindowEvent`s and a full
 //! build/layout/draw cycle (no window, no compositor), writing frames to
-//! `target/nirios-screenshots/e2e-*.png`; only existence/PNG validity are
-//! asserted, no pixel-diff yet.
+//! `target/nirios-screenshots/e2e-*.png`. Captures decode to real pixels;
+//! settled decision states are checked against committed goldens.
 //!
 //! No clock test hook, so animations are driven by sleeping past
 //! `OVERVIEW_TRANSITION_MS` between click and "settled" render.
@@ -34,7 +34,8 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-use shell::shell::build_nirios_root_with_chrome;
+use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::room_activity::RoomActivityPane;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::TopBarChrome;
 
@@ -128,8 +129,16 @@ impl Harness {
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
         owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
-        let tree = &owned;
-        let (root, chrome) = build_nirios_root_with_chrome(tree);
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&owned);
+        // Headless snapshots must not inherit the developer machine's persisted
+        // seen-frontier. That changes the activity-glance headline while leaving
+        // the UI under test untouched, producing a machine- and run-dependent
+        // golden. Production still uses the persistent pane.
+        *host.room_activity_mut() = RoomActivityPane::new();
+        let active_workspace = owned.active.raw();
+        host.room_activity_mut().refresh(&mut owned);
+        host.room_activity_mut().finish_view(active_workspace);
+        let root = Box::new(host) as Box<dyn Widget>;
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -367,8 +376,9 @@ fn e2e_open_close_overview() {
         &out_dir.join("e2e-03-overview-closed.png"),
     );
 
-    // With a renderer, verify the PNGs landed (non-empty + PNG signature);
-    // without one, only the state transitions above are asserted.
+    // With a renderer, decode every frame and prove the overview transition
+    // changed a meaningful region; without one, only state transitions above
+    // are asserted.
     if renderer_opt.is_some() {
         for name in [
             "e2e-01-desktop.png",
@@ -377,6 +387,10 @@ fn e2e_open_close_overview() {
         ] {
             assert_png_nonempty(&out_dir.join(name));
         }
+        assert_frames_visibly_differ(
+            &out_dir.join("e2e-01-desktop.png"),
+            &out_dir.join("e2e-02-overview-open.png"),
+        );
         // Only the settled open-overview frame is pinned — pre-click and post-Esc
         // are the same desktop steady state.
         let rendered = out_dir.join("e2e-02-overview-open.png");
@@ -724,6 +738,10 @@ fn assert_drag_reorder_goldens(renderer_opt: Option<&OffscreenRenderer>, out_dir
         ] {
             assert_png_nonempty(&out_dir.join(name));
         }
+        assert_frames_visibly_differ(
+            &out_dir.join("e2e-04-tabs-initial.png"),
+            &out_dir.join("e2e-06-tabs-reordered.png"),
+        );
         // Only the post-spring frame is pinned — midway is frame-timer driven and
         // inherently flaky.
         let rendered = out_dir.join("e2e-06-tabs-reordered.png");
@@ -1247,7 +1265,6 @@ fn pump(
 }
 
 fn assert_png_nonempty(path: &Path) {
-    use std::io::Read;
     let meta = std::fs::metadata(path)
         .unwrap_or_else(|e| panic!("expected PNG at {}: {e}", path.display()));
     assert!(
@@ -1255,14 +1272,79 @@ fn assert_png_nonempty(path: &Path) {
         "PNG at {} should be non-empty",
         path.display()
     );
-    let mut file = std::fs::File::open(path).unwrap();
-    let mut sig = [0u8; 8];
-    file.read_exact(&mut sig).unwrap();
+    let image = decode_rgba(path);
+    assert!(
+        image.width > 16 && image.height > 16,
+        "{} decoded to an implausibly small frame ({}x{})",
+        path.display(),
+        image.width,
+        image.height,
+    );
+    let first = image
+        .rgba
+        .chunks_exact(4)
+        .next()
+        .expect("decoded PNG has pixels");
+    assert!(
+        image
+            .rgba
+            .chunks_exact(4)
+            .any(|pixel| pixel[..3] != first[..3]),
+        "{} decoded but contains only one RGB colour; expected a rendered UI",
+        path.display(),
+    );
+}
+
+struct DecodedRgba {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+fn decode_rgba(path: &Path) -> DecodedRgba {
+    let file =
+        std::fs::File::open(path).unwrap_or_else(|e| panic!("open PNG {}: {e}", path.display()));
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder
+        .read_info()
+        .unwrap_or_else(|e| panic!("read PNG header {}: {e}", path.display()));
+    let mut bytes = vec![0; reader.output_buffer_size().expect("PNG output size")];
+    let info = reader
+        .next_frame(&mut bytes)
+        .unwrap_or_else(|e| panic!("decode PNG {}: {e}", path.display()));
+    bytes.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => bytes,
+        png::ColorType::Rgb => bytes
+            .chunks_exact(3)
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect(),
+        other => panic!("unexpected PNG format {other:?} in {}", path.display()),
+    };
+    DecodedRgba {
+        width: info.width,
+        height: info.height,
+        rgba,
+    }
+}
+
+fn assert_frames_visibly_differ(before: &Path, after: &Path) {
+    let before = decode_rgba(before);
+    let after = decode_rgba(after);
     assert_eq!(
-        &sig[..4],
-        b"\x89PNG",
-        "{} missing PNG signature",
-        path.display()
+        (before.width, before.height),
+        (after.width, after.height),
+        "state-changing frames must have matching dimensions",
+    );
+    let changed = before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .filter(|(left, right)| left[..3] != right[..3])
+        .count();
+    assert!(
+        changed > 100,
+        "state-changing frames differ by only {changed} pixels; expected a visible UI transition",
     );
 }
 

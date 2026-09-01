@@ -98,6 +98,14 @@ pub mod generated_display_component {
     include!(concat!(env!("OUT_DIR"), "/activity_card.rs"));
 }
 
+pub mod generated_tree_component {
+    include!(concat!(env!("OUT_DIR"), "/project_tree.rs"));
+}
+
+pub mod generated_list_component {
+    include!(concat!(env!("OUT_DIR"), "/activity_list.rs"));
+}
+
 pub mod screens {
     use ui::widget::Widget;
     use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};

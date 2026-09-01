@@ -200,17 +200,25 @@ impl SettingsApp {
         )
     }
 
-    /// Build the content pane: the selected category's body, wrapped in a
-    /// vertical [`Scrollable`] so tall panes scroll with a real overlay
-    /// scrollbar instead of being clipped. There is **no app-drawn title
-    /// header** here — the category's identity is carried by its active sidebar
-    /// row and the OS window-group pill, not by a duplicated in-pane title. The
-    /// pane starts directly with its first section card, inset from the top.
+    /// Build the content pane: an unboxed category heading followed by the
+    /// selected category's body, wrapped in a vertical [`Scrollable`] so tall
+    /// panes scroll with a real overlay scrollbar instead of being clipped.
+    ///
+    /// This intentionally does *not* redraw the app name: the OS owns window
+    /// chrome. It does establish the current Settings destination, though.
+    /// That is important on wide screens (where the detail needs an entry
+    /// point) and on narrow screens (where the shell's back arrow returns to
+    /// the Settings list).
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
         let inner = Column::new()
             .with_intrinsic_height()
-            .push(crate::widgets::vgap(6.0))
+            .push(crate::widgets::vgap(14.0))
+            .push(crate::widgets::page_heading(
+                self.selected.label(),
+                self.selected.subtitle(),
+            ))
+            .push(crate::widgets::vgap(28.0))
             .push(body);
         let scroll = Scrollable::new_vertical().with_child(Box::new(inner));
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
@@ -725,6 +733,35 @@ mod tests {
         assert!(
             app.back_button_rect().width() > 0.0,
             "the content screen carries a back-arrow button"
+        );
+    }
+
+    #[test]
+    fn narrow_page_heading_explains_the_back_arrow_destination_without_overlap() {
+        fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
+            if out.is_none()
+                && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
+            {
+                *out = Some(w.get_rect());
+            }
+            for child in w.children() {
+                named_rect(child, name, out);
+            }
+        }
+
+        let selected = Category::RegionFormats;
+        let mut app = SettingsApp::with_selected(selected)
+            .with_width_hint(440.0)
+            .with_narrow_content_shot();
+        layout_at(&mut app, 440.0, 820.0);
+
+        let mut heading = None;
+        named_rect(&app, selected.label(), &mut heading);
+        let heading = heading.expect("the content page names the selected destination");
+        let back = app.back_button_rect();
+        assert!(
+            heading.y0 >= back.y1,
+            "the destination heading begins below the back band, so the back arrow remains obvious"
         );
     }
 

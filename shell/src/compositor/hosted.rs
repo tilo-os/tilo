@@ -84,6 +84,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // merged state with no copy-back. Held alive for the life of `run` so the actor's tokio runtime
     // doesn't drop mid-session; a load failure is logged and treated as "peer-sync stays off".
     let peer_sync = spawn_peer_sync(enable_peer_sync, tree_handle.clone());
+    // Spawn before boxing the shell root so Follow can retain a cloneable
+    // session-control dispatcher into the same broker local apps use.
+    let collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
     qos_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
@@ -101,19 +104,23 @@ pub fn run_with_full_options(opts: HostedOptions) {
     host.room_records().borrow_mut().attach_store();
     // Give the palette's `/invite` and `/connect` rows something that actually performs them —
     // without this the host records an intent and drops it: reachable in the palette, inert in a running session.
-    let host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
+    let mut host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
+    if let Some(broker) = collab_broker.as_ref() {
+        let dispatcher = broker.follow_dispatcher();
+        host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+            dispatcher.set(&room.to_string(), peer_id);
+        }));
+    }
 
     // The portal's two queues, made here (before the host is boxed into the app, since attaching
     // them needs the concrete type) and unconditionally — two cheap handles, and an unfilled queue costs nothing to hold.
     let portal_prompts =
         crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
     let portal_pickers = crate::portal::FilePickerQueue::new();
-    let mut host = host;
     host.set_portal_queues(portal_prompts.clone(), portal_pickers.clone());
     // Bind before erasing the concrete host behind `dyn Widget`, so the
     // same live app-action provider exists in hosted and native sessions.
-    let _collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
-    if let Some(action_broker) = _collab_broker
+    if let Some(action_broker) = collab_broker
         .as_ref()
         .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker)
     {
@@ -294,10 +301,12 @@ fn attach_peer_sync_bridge(
         crate::shell::overlay_host::PeerSyncRequest::IssueInvite => {
             let active = tree_for_bridge.read().active;
             net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::ExportIdentity => {
             let active = tree_for_bridge.read().active;
             net.person_identity_card(active)
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor {
             name,
@@ -312,11 +321,47 @@ fn attach_peer_sync_bridge(
                 recipient_user_public_key,
                 role,
             )
+            .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().active;
             net.accept_invite(active, &token)
                 .map(|room| room.to_string())
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::ListPendingInvitations => {
+            let room = tree_for_bridge
+                .read()
+                .active_workspace()
+                .map(|workspace| workspace.room)
+                .ok_or_else(|| "no active workspace".to_string())?;
+            Ok(
+                crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                    net.pending_invitations(room)
+                        .into_iter()
+                        .map(
+                            |invite| crate::shell::overlay_host::PendingInvitationSummary {
+                                id: invite.id,
+                                name: invite.name,
+                                role: invite.role,
+                                expiry_unix_seconds: invite.expiry_unix_seconds,
+                            },
+                        )
+                        .collect(),
+                ),
+            )
+        }
+        crate::shell::overlay_host::PeerSyncRequest::ResendInvitation(id) => net
+            .resend_invitation(&id)
+            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+        crate::shell::overlay_host::PeerSyncRequest::CancelInvitation(id) => {
+            if net.cancel_invitation(&id) {
+                Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                    "canceled".into(),
+                ))
+            } else {
+                Err("invitation is no longer pending".into())
+            }
         }
     }))
 }

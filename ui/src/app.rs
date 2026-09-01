@@ -1581,6 +1581,10 @@ impl App {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
                 }
+                CollabEvent::FollowChanged { peer_id } => match peer_id {
+                    Some(peer_id) => self.follow(peer_id),
+                    None => self.unfollow(),
+                },
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
                         cursor.x = x;
@@ -1715,6 +1719,10 @@ impl App {
             CollabEvent::Document { envelope, .. } => {
                 self.apply_signed_document_envelope(&envelope);
             }
+            CollabEvent::FollowChanged { peer_id } => match peer_id {
+                Some(peer_id) => self.follow(peer_id),
+                None => self.unfollow(),
+            },
             CollabEvent::Invocation {
                 id,
                 resource,
