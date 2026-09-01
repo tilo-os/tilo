@@ -75,18 +75,37 @@ impl<R> FreeRdpLauncher<R> {
             ))
             .arg(format!("/app:program:{}", guest.remote_app_alias))
             .arg("/dynamic-resolution")
-            .arg("/network:auto")
+            // This is always a host-only, single-hop connection. Advertising
+            // LAN characteristics avoids FreeRDP's WAN-oriented visual and
+            // latency trade-offs while dynamic resolution lets every RAIL
+            // toplevel follow the qOS tile size.
+            .arg("/network:lan")
             .arg("/gfx:AVC444")
-            .arg("/rfx")
+            .arg("/compression-level:2")
+            .arg("+window-drag")
+            .arg("+fonts")
+            .arg("+themes")
+            .arg("+aero")
+            .arg("-wallpaper")
+            .arg("-grab-keyboard")
+            .arg(format!("/wm-class:qos-windows-{}", guest.remote_app_alias))
+            // Playback is output-only; the Pulse endpoint may itself be a
+            // short-lived qOS proxy. Capture remains a separate redirector.
+            .arg("/sound:sys:pulse,latency:50,quality:high")
             // RAIL is an application surface, not a hidden full-desktop
-            // session. Audio redirection is enabled by the capability-aware
-            // session adapter when it supplies the corresponding FreeRDP
-            // option; this low-level launcher keeps the conservative default.
+            // session. Audio output is safe by default; input is not.
             .arg("/audio-mode:0")
+            // Make every broad FreeRDP redirector opt-in below. In particular
+            // never inherit FreeRDP distribution defaults for host drives.
+            .arg("-drives")
+            .arg("-home-drive")
             .stdin_secret(&stdin);
 
         if brokered.clipboard {
-            request = request.arg("+clipboard");
+            // Text/image clipboard follows the canonical clipboard grant.
+            // File clipboard stays off until selections are represented by
+            // opaque portal document handles rather than ambient host paths.
+            request = request.arg("/clipboard:direction-to:all,files-to:off");
         } else {
             request = request.arg("-clipboard");
         }
@@ -173,7 +192,16 @@ impl<R> AppFocusedSpiceLauncher<R> {
             return Err(RemoteAppError::SpiceCapabilityRequiresRail);
         }
         Ok(CommandRequest::new(self.binary.clone())
-            .args(["--connect", "qemu:///system", "--attach", "--wait"])
+            .args([
+                "--connect",
+                "qemu:///system",
+                "--attach",
+                "--wait",
+                "--reconnect",
+                "--auto-resize=always",
+                "--zoom=100",
+                "--cursor=local",
+            ])
             .arg(format!("--title=qOS — {}", guest.remote_app_alias))
             .arg(crate::APPLIANCE_DOMAIN_NAME))
     }
@@ -343,9 +371,14 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string_lossy())
             .collect::<Vec<_>>();
-        assert!(args.iter().any(|arg| arg == "+clipboard"));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "/clipboard:direction-to:all,files-to:off")
+        );
         assert!(args.iter().any(|arg| arg.starts_with("/drive:QOS1,")));
         assert!(args.iter().any(|arg| arg.starts_with("/microphone:")));
+        assert!(args.iter().any(|arg| arg.starts_with("/sound:sys:pulse")));
+        assert!(args.iter().any(|arg| arg == "/network:lan"));
     }
 
     #[test]
@@ -378,6 +411,8 @@ mod tests {
             .map(|arg| arg.to_string_lossy())
             .collect::<Vec<_>>();
         assert!(args.iter().any(|arg| arg == "--attach"));
+        assert!(args.iter().any(|arg| arg == "--auto-resize=always"));
+        assert!(args.iter().any(|arg| arg == "--cursor=local"));
         assert!(args.iter().any(|arg| arg == crate::APPLIANCE_DOMAIN_NAME));
         assert!(!args.iter().any(|arg| arg.contains("/app")));
     }

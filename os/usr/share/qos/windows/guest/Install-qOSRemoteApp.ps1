@@ -15,7 +15,9 @@ param(
     [string]$BootstrapRoot,
     [Parameter(Mandatory = $true)]
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
-    [string]$ApplicationsPath
+    [string]$ApplicationsPath,
+    [Parameter(Mandatory = $false)]
+    [switch]$RotateManagedSessionCredential
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,6 +80,56 @@ foreach ($principal in @('SYSTEM', 'BUILTIN\Administrators')) {
     [void]$acl.AddAccessRule($rule)
 }
 Set-Acl -LiteralPath $root -AclObject $acl
+
+# qOS has exactly one persistent Windows identity and one interactive session.
+# It is a service identity, not a user-selectable Windows account: setup never
+# prompts for its name or secret and normal applications never receive either.
+# The generated credential is held only in this SYSTEM/Administrators directory
+# so the authenticated host bridge can reconnect FreeRDP to the same session.
+$managedUser = 'qos-user'
+$managedSessionPath = Join-Path $root 'managed-session.json'
+$managedPassword = $null
+if (-not $RotateManagedSessionCredential -and (Test-Path -LiteralPath $managedSessionPath -PathType Leaf)) {
+    try {
+        $existingManagedSession = Get-Content -Raw -LiteralPath $managedSessionPath | ConvertFrom-Json
+        if ([int]$existingManagedSession.schemaVersion -eq 1 -and
+            [string]$existingManagedSession.username -ceq $managedUser -and
+            -not [string]::IsNullOrWhiteSpace([string]$existingManagedSession.password) -and
+            ([string]$existingManagedSession.password).Length -le 256) {
+            $managedPassword = [string]$existingManagedSession.password
+        }
+    } catch {
+        # A damaged private state file is recovered by rotating the credential.
+        $managedPassword = $null
+    }
+}
+if ($null -eq $managedPassword) {
+    $randomBytes = New-Object byte[] 32
+    $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $random.GetBytes($randomBytes) }
+    finally { $random.Dispose() }
+    # Fixed character classes satisfy normal Windows complexity policy; 256
+    # random bits remain in the base64 suffix.
+    $managedPassword = 'qOS!7aZ-' + [Convert]::ToBase64String($randomBytes)
+    [Array]::Clear($randomBytes, 0, $randomBytes.Length)
+}
+$managedSecurePassword = ConvertTo-SecureString $managedPassword -AsPlainText -Force
+$managedAccount = Get-LocalUser -Name $managedUser -ErrorAction SilentlyContinue
+if ($null -eq $managedAccount) {
+    New-LocalUser -Name $managedUser -Password $managedSecurePassword -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+} else {
+    if ($managedAccount.SID.Value -match '-(500|501|503|504)$') { throw 'A built-in Windows account cannot own the qOS session.' }
+    Set-LocalUser -Name $managedUser -Password $managedSecurePassword -AccountNeverExpires -PasswordNeverExpires $true -UserMayChangePassword $false
+    if (-not $managedAccount.Enabled) { Enable-LocalUser -Name $managedUser }
+}
+Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $managedUser -ErrorAction SilentlyContinue
+[IO.File]::WriteAllText(
+    $managedSessionPath,
+    (@{ schemaVersion = 1; username = $managedUser; password = $managedPassword } | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false)
+)
+$managedPassword = $null
+$managedSecurePassword = $null
 Copy-Item -LiteralPath $bridgeScript -Destination (Join-Path $root 'Start-qOSGuestBridge.ps1') -Force
 Copy-Item -LiteralPath $focusedScript -Destination (Join-Path $focusRoot 'Start-qOSFocusedApp.ps1') -Force
 Copy-Item -LiteralPath $processJobScript -Destination (Join-Path $focusRoot 'qOS-ProcessJob.ps1') -Force
@@ -128,11 +180,14 @@ New-ItemProperty -Path $allowList -Name fDisabledAllowList -PropertyType DWord -
 # has materialised a short lease.
 $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
 New-Item -Path $ts -Force | Out-Null
-New-ItemProperty -Path $ts -Name fDisableCdm -PropertyType DWord -Value 1 -Force | Out-Null
-New-ItemProperty -Path $ts -Name fDisableClip -PropertyType DWord -Value 1 -Force | Out-Null
-New-ItemProperty -Path $ts -Name fDisableAudioCapture -PropertyType DWord -Value 1 -Force | Out-Null
+# Server policy permits these standard RDP virtual channels, but the qOS host
+# client opens none by default. An explicit shared-session capability lease is
+# therefore the sole source of a clipboard, portal drive, or microphone.
+New-ItemProperty -Path $ts -Name fDisableCdm -PropertyType DWord -Value 0 -Force | Out-Null
+New-ItemProperty -Path $ts -Name fDisableClip -PropertyType DWord -Value 0 -Force | Out-Null
+New-ItemProperty -Path $ts -Name fDisableAudioCapture -PropertyType DWord -Value 0 -Force | Out-Null
 New-ItemProperty -Path $ts -Name UserAuthentication -PropertyType DWord -Value 1 -Force | Out-Null
-New-ItemProperty -Path $ts -Name fSingleSessionPerUser -PropertyType DWord -Value 0 -Force | Out-Null
+New-ItemProperty -Path $ts -Name fSingleSessionPerUser -PropertyType DWord -Value 1 -Force | Out-Null
 
 # Never allow RDP from arbitrary LAN peers. The libvirt bridge has no forward,
 # and this additionally admits only its host-side address.
@@ -167,4 +222,4 @@ $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccou
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
 $mode = if ($isServer) { 'official RDS RemoteApp' } else { 'native client RAIL (best effort)' }
-Write-Output "qOS application publication installed using $mode. The Windows desktop remains a recovery-only surface."
+Write-Output "qOS application publication installed using $mode for its private persistent application session. The service-session credential is managed automatically; the Windows desktop remains recovery-only."
