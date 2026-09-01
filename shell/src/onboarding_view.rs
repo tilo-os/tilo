@@ -37,6 +37,19 @@ const PANEL_MAX_WIDTH: f32 = 720.0;
 const PANEL_MAX_HEIGHT: f32 = 620.0;
 const VIEWPORT_GUTTER: f32 = 32.0;
 
+/// Context for the compositor-owned identity ceremony. Both variants keep
+/// the same security gates; the host version only makes clear that qOS is not
+/// replacing the login/account setup the surrounding Linux system completed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OnboardingContext {
+    #[default]
+    FullSystem,
+    HostDesktop,
+}
+
+pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your qOS identity";
+pub const HOST_DESKTOP_INTRO_BODY: &str = "You are already signed in to this computer. Before the qOS desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.";
+
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_CONNECT: &str = "onboarding.connect";
 pub const KEY_BACK: &str = "onboarding.back";
@@ -60,6 +73,7 @@ enum PickerPurpose {
 
 pub struct OnboardingView {
     flow: Onboarding,
+    context: OnboardingContext,
     minter: Minter,
     importer: Importer,
     exporter: Exporter,
@@ -75,6 +89,9 @@ pub struct OnboardingView {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     transition_started: Instant,
+    transition_duration: Duration,
+    transition_direction: f64,
+    reduce_motion: bool,
     picker: Option<(PickerPurpose, FilePicker)>,
     connect_passphrase: Arc<Mutex<String>>,
     backup_passphrase: Arc<Mutex<String>>,
@@ -84,9 +101,19 @@ pub struct OnboardingView {
 impl OnboardingView {
     /// Build a ceremony that mints into `identity_dir`.
     pub fn new(identity_dir: PathBuf) -> Self {
+        Self::new_in_context(identity_dir, OnboardingContext::FullSystem)
+    }
+
+    /// Build the reduced identity-only ceremony for qOS installed as a
+    /// desktop session on an existing Linux host.
+    pub fn new_for_host_desktop(identity_dir: PathBuf) -> Self {
+        Self::new_in_context(identity_dir, OnboardingContext::HostDesktop)
+    }
+
+    fn new_in_context(identity_dir: PathBuf, context: OnboardingContext) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir;
-        Self::with_all_handlers(
+        Self::with_all_handlers_in_context(
             Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string())),
             Box::new(move |source, passphrase| {
                 let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
@@ -132,6 +159,7 @@ impl OnboardingView {
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             }),
+            context,
         )
     }
 
@@ -152,8 +180,23 @@ impl OnboardingView {
     }
 
     fn with_all_handlers(minter: Minter, importer: Importer, exporter: Exporter) -> Self {
+        Self::with_all_handlers_in_context(
+            minter,
+            importer,
+            exporter,
+            OnboardingContext::FullSystem,
+        )
+    }
+
+    fn with_all_handlers_in_context(
+        minter: Minter,
+        importer: Importer,
+        exporter: Exporter,
+        context: OnboardingContext,
+    ) -> Self {
         Self {
             flow: Onboarding::new(),
+            context,
             minter,
             importer,
             exporter,
@@ -166,6 +209,9 @@ impl OnboardingView {
             composed: None,
             rect: Rect::ZERO,
             transition_started: Instant::now(),
+            transition_duration: ui::tokens::motion::Motion::default().durations.slow(),
+            transition_direction: 1.0,
+            reduce_motion: false,
             picker: None,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
@@ -202,7 +248,7 @@ impl OnboardingView {
             Screen::Done => (3, "Ready"),
         };
         let body: Box<dyn Widget> = match self.flow.screen() {
-            Screen::Intro => Self::intro(theme),
+            Screen::Intro => self.intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
             Screen::Done => self.done(theme),
@@ -247,19 +293,23 @@ impl OnboardingView {
         )
     }
 
-    fn intro(theme: &Theme) -> Box<dyn Widget> {
+    fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
         let mut list = Column::new().with_no_padding().with_gap(spacing.s3);
         for point in INTRO_POINTS {
             list = list.push(bullet(point, theme));
         }
+        let (title, body) = match self.context {
+            OnboardingContext::FullSystem => (INTRO_TITLE, INTRO_BODY),
+            OnboardingContext::HostDesktop => (HOST_DESKTOP_INTRO_TITLE, HOST_DESKTOP_INTRO_BODY),
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(spacing.s6)
-                .push(heading(INTRO_TITLE, theme))
-                .push(paragraph(INTRO_BODY, theme))
+                .push(heading(title, theme))
+                .push(paragraph(body, theme))
                 .push(Box::new(Card::titled("What it is for", Box::new(list))))
                 .push(actions(vec![
                     Box::new(
@@ -468,19 +518,29 @@ impl OnboardingView {
             backup_button = backup_button.with_style(ui::widget::ButtonStyle::Primary);
         }
         backup = backup.push(actions(vec![Box::new(backup_button)]));
-        let mut finish = Button::new(
-            "onboarding.finish.button",
-            if self.backup_saved.is_some() {
-                "Enter qOS"
-            } else {
-                "Skip for now"
-            },
-            Some(KEY_FINISH),
-        )
-        .with_icon(ui::icons::Icon::ArrowRight);
+        let finish_label = if self.backup_saved.is_some() {
+            match self.context {
+                OnboardingContext::FullSystem => "Enter qOS",
+                OnboardingContext::HostDesktop => "Open qOS desktop",
+            }
+        } else {
+            "Skip for now"
+        };
+        let mut finish = Button::new("onboarding.finish.button", finish_label, Some(KEY_FINISH))
+            .with_icon(ui::icons::Icon::ArrowRight);
         if self.backup_saved.is_some() {
             finish = finish.with_style(ui::widget::ButtonStyle::Primary);
         }
+        let system_care = match self.context {
+            OnboardingContext::FullSystem => {
+                "qOS checks signed system updates automatically after setup when the machine is \
+                 online. You can check, stage, and roll back releases in Settings."
+            }
+            OnboardingContext::HostDesktop => {
+                "Your Linux distribution remains responsible for OS updates and system time. \
+                 This host-session package does not install or run qOS bootc update services."
+            }
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -488,10 +548,20 @@ impl OnboardingView {
                 .with_gap(theme.tokens.spacing.s6)
                 .push(heading(DONE_TITLE, theme))
                 .push(Box::new(
-                    Banner::success("Identity secured on this device")
+                    Banner::success("Identity stored on this device")
                         .with_icon(ui::icons::Icon::Check),
                 ))
                 .push(paragraph(DONE_BODY, theme))
+                .push(paragraph(
+                    "The desktop can open now. Device-to-device sharing stays off unless you \
+                     explicitly enable peer sync; after enabling it, sign out and back in once \
+                     to start the peer session.",
+                    theme,
+                ))
+                .push(Box::new(Card::titled(
+                    "System care",
+                    paragraph(system_care, theme),
+                )))
                 .push(Box::new(Card::titled("Your fingerprint", Box::new(detail))))
                 .push(Box::new(Card::titled(
                     "Make a portable backup",
@@ -788,6 +858,11 @@ impl Widget for OnboardingView {
         }
 
         if self.flow.screen() != before {
+            self.transition_direction = if screen_order(self.flow.screen()) < screen_order(before) {
+                -1.0
+            } else {
+                1.0
+            };
             self.structure_dirty = true;
             self.focus_reset = true;
             self.transition_started = Instant::now();
@@ -800,6 +875,8 @@ impl Widget for OnboardingView {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.reduce_motion = theme.reduce_motion;
+        self.transition_duration = theme.tokens.motion.durations.slow();
         let mut composed = self.build_composition(theme, PANEL_MAX_HEIGHT);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
@@ -866,39 +943,42 @@ impl Widget for OnboardingView {
         let colors = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
 
-        // Quiet, theme-derived depth: two broad accent blooms make the setup
-        // feel like a first-class OS surface without turning security setup
-        // into branded illustration. High contrast naturally suppresses them
-        // because transparent accent washes resolve near the ground.
-        let bloom = colors.accent[5].with_alpha_factor(0.10);
-        let radius = self.rect.width().max(self.rect.height()) * 0.34;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            bloom,
-            None,
-            &Circle::new(Point::new(self.rect.x0, self.rect.y0), radius),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[3].with_alpha_factor(0.07),
-            None,
-            &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
-        );
+        let high_contrast = theme.name.eq_ignore_ascii_case("high contrast");
+        if !high_contrast {
+            // Quiet, theme-derived depth: two broad accent blooms make the
+            // trusted setup surface distinct without becoming illustration.
+            let bloom = colors.accent[5].with_alpha_factor(0.10);
+            let radius = self.rect.width().max(self.rect.height()) * 0.34;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bloom,
+                None,
+                &Circle::new(Point::new(self.rect.x0, self.rect.y0), radius),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[3].with_alpha_factor(0.07),
+                None,
+                &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
+            );
+        }
 
         if let Some(c) = &mut self.composed {
             let panel = c.get_rect();
             if panel.area() > 0.0 {
-                ui::surface::soft_shadow(
-                    scene,
-                    transform,
-                    panel,
-                    colors.neutral[0],
-                    42.0,
-                    18.0,
-                    0.42,
-                );
+                if !high_contrast {
+                    ui::surface::soft_shadow(
+                        scene,
+                        transform,
+                        panel,
+                        colors.neutral[0],
+                        42.0,
+                        18.0,
+                        0.42,
+                    );
+                }
                 let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
                 scene.fill(
                     Fill::NonZero,
@@ -916,7 +996,9 @@ impl Widget for OnboardingView {
                 );
             }
 
-            let duration = theme.tokens.motion.durations.slow();
+            self.reduce_motion = theme.reduce_motion;
+            self.transition_duration = theme.tokens.motion.durations.slow();
+            let duration = self.transition_duration;
             let elapsed = self.transition_started.elapsed();
             let raw = if duration.is_zero() {
                 1.0
@@ -943,7 +1025,15 @@ impl Widget for OnboardingView {
             );
             scene.append(
                 &local,
-                Some(transform.pre_translate((0.0, f64::from(1.0 - reveal) * 18.0).into())),
+                Some(
+                    transform.pre_translate(
+                        (
+                            self.transition_direction * f64::from(1.0 - reveal) * 22.0,
+                            f64::from(1.0 - reveal) * 8.0,
+                        )
+                            .into(),
+                    ),
+                ),
             );
             scene.pop_layer();
         }
@@ -1059,7 +1149,7 @@ impl Widget for OnboardingView {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.transition_started.elapsed() < ui::tokens::motion::Motion::default().durations.slow()
+        (!self.reduce_motion && self.transition_started.elapsed() < self.transition_duration)
             || self
                 .picker
                 .as_ref()
@@ -1068,6 +1158,14 @@ impl Widget for OnboardingView {
                 .composed
                 .as_ref()
                 .is_some_and(|child| child.needs_animation_frame())
+    }
+}
+
+fn screen_order(screen: Screen) -> u8 {
+    match screen {
+        Screen::Intro => 0,
+        Screen::Connect | Screen::NoRecovery => 1,
+        Screen::Done => 2,
     }
 }
 
@@ -1244,6 +1342,59 @@ mod tests {
         press(&mut doc, KEY_FINISH);
         v.sync(&mut doc, &automerge::ROOT);
         assert!(v.finished());
+    }
+
+    #[test]
+    fn host_desktop_context_keeps_the_identity_creation_gate() {
+        let mut view = OnboardingView::with_all_handlers_in_context(
+            Box::new(|| {
+                Ok(MintedIdentity {
+                    fingerprint: "ab".repeat(32),
+                    path: PathBuf::from("/identity/primary.json"),
+                })
+            }),
+            Box::new(|_, _| Err("unused".into())),
+            Box::new(|_, _, _| Err("unused".into())),
+            OnboardingContext::HostDesktop,
+        );
+        assert_eq!(view.context, OnboardingContext::HostDesktop);
+        assert!(!view.flow.can_create());
+        view.flow.begin();
+        assert!(!view.flow.can_create());
+        view.flow.set_acknowledged(true);
+        assert!(view.flow.can_create());
+    }
+
+    #[test]
+    fn host_desktop_copy_does_not_claim_to_replace_the_linux_login() {
+        let copy = HOST_DESKTOP_INTRO_BODY.to_ascii_lowercase();
+        assert!(copy.contains("already signed in"));
+        assert!(copy.contains("does not replace your linux login"));
+        assert!(copy.contains("does not") && copy.contains("online account"));
+        assert!(copy.contains("not all cryptographically signed"));
+    }
+
+    #[test]
+    fn screen_transitions_track_forward_and_back_direction() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        view.sync(&mut doc, &root);
+        let _ = doc.put(&root, KEY_BEGIN, true);
+        view.sync(&mut doc, &root);
+        assert_eq!(view.transition_direction, 1.0);
+        let _ = doc.put(&root, KEY_BACK, true);
+        view.sync(&mut doc, &root);
+        assert_eq!(view.transition_direction, -1.0);
+    }
+
+    #[test]
+    fn reduced_motion_does_not_request_transition_frames() {
+        let (mut view, _) = view();
+        view.reduce_motion = true;
+        view.composed = None;
+        view.picker = None;
+        assert!(!view.needs_animation_frame());
     }
 
     #[test]

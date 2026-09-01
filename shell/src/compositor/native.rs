@@ -2219,7 +2219,13 @@ pub fn run() -> ! {
     // ceremony in trusted compositor chrome and withhold every desktop
     // affordance until it has produced a real identity.
     if let Some(identity_dir) = onboarding_identity_dir {
-        frame_builder.enable_onboarding(identity_dir);
+        if crate::compositor::parse_install_mode_from_args()
+            == crate::compositor::InstallMode::HostDesktop
+        {
+            frame_builder.enable_host_desktop_onboarding(identity_dir);
+        } else {
+            frame_builder.enable_onboarding(identity_dir);
+        }
     }
     frame_builder.enable_configured_theme();
     if let Some(notice) = &state_notice {

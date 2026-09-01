@@ -10,6 +10,8 @@
 #     podman build -t localhost/qos-installer:latest -f os/Containerfile.installer os/
 FROM localhost/qos:latest
 
+ARG QOS_INSTALLER_DEV_SSH=0
+
 # The graphical installer UI (a ui::App; staged into os/ by
 # build-custom-installer.sh — either the real release binary or a --stub-ui
 # placeholder for testing OS plumbing without the toolkit).
@@ -41,7 +43,10 @@ COPY usr/share/qos/installer-sudoers /usr/share/qos/installer-sudoers
 # instead of enforcing=0. See os/usr/share/qos/selinux/qos-installer.cil.
 COPY usr/share/qos/selinux/qos-installer.cil /usr/share/qos/selinux/qos-installer.cil
 
-# Point greetd at the session selector (installer-vs-greeter by cmdline).
+# Keep the normal installed-system greeter config available outside /etc, then
+# point the live medium at the installer selector. qos-install restores the
+# normal config into the target deployment's writable /etc before first boot.
+COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml
 COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 
 # `qos.installer=1` — the one thing that distinguishes the live medium from a
@@ -50,7 +55,8 @@ COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 #   * qos-install refuses to run without it (a safety guard).
 #   * qos-installer-setup.service (ConditionKernelCommandLine=qos.installer)
 #     drops in the passwordless sudoers rule only here.
-# The INSTALLED system has no such argument, so it boots straight to the desktop.
+# qos-install explicitly deletes this argument from the target deployment, so
+# the installed system boots the normal greeter rather than re-entering setup.
 #
 # It belongs to the image rather than to the disk-image step. It used to be
 # bootc-image-builder's `[customizations.kernel] append` in os/installer-disk.toml,
@@ -65,6 +71,16 @@ RUN printf 'kargs = ["qos.installer=1"]\n' \
 # Enable the two new units. greetd / graphical.target are already enabled by
 # the base qOS image.
 RUN systemctl enable qos-firstboot-user.service qos-installer-setup.service
+
+# Release media have no remote-login surface. A developer can opt in while
+# building a local diagnostic image, paired with an explicitly supplied
+# non-default password in build-custom-installer.sh.
+RUN if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
+      systemctl unmask sshd.service && systemctl enable sshd.service; \
+    else \
+      systemctl disable sshd.service 2>/dev/null || true; \
+      systemctl mask sshd.service; \
+    fi
 
 # Validate the layered image.
 RUN bootc container lint
