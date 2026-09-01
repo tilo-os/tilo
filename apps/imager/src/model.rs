@@ -905,17 +905,18 @@ mod tests {
     }
 
     #[test]
-    fn headless_config_has_all_sections_and_masks_secrets() {
+    fn embedded_profile_contains_only_applied_non_secret_fields() {
         let prof = InstallProfile::sample_workstation();
         let src = sample_source();
         let tgt = sample_targets()[1].clone();
         let cfg = prof.to_headless_config(Some(&src), Some(&tgt));
-        for section in ["[image]", "[target]", "[install]", "[disk]", "[user]"] {
-            assert!(cfg.contains(section), "missing {section}");
-        }
-        // The real passphrase / password must NOT leak into the exported file.
-        assert!(cfg.contains("$QOS_LUKS_PASSPHRASE"));
-        assert!(cfg.contains("$QOS_USER_PASSWORD"));
+        assert!(cfg.contains("\"schema\": 1"));
+        assert!(cfg.contains("\"hostname\": \"qos-workstation\""));
+        assert!(cfg.contains("\"username\": \"quinten\""));
+        assert!(!cfg.contains(&src.path));
+        assert!(!cfg.contains(&tgt.dev_path()));
+        assert!(!cfg.contains("password"));
+        assert!(!cfg.contains("passphrase"));
         assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
     }
 

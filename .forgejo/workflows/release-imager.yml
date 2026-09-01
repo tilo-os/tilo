@@ -33,6 +33,9 @@ concurrency:
 
 jobs:
   linux:
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         include:
@@ -47,7 +50,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Configure release signing
         env:
           SIGNING_KEY_B64: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_B64 }}
@@ -68,7 +71,7 @@ jobs:
       - run: cargo test -p imager --lib --locked
       - run: apps/imager/packaging/package-host.sh
       # Forgejo does not implement the Artifact API v2 used by v4.
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-imager-linux-${{ matrix.arch }}
           path: |
@@ -82,25 +85,33 @@ jobs:
           if-no-files-found: ignore
 
   windows:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: windows
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Configure release signing
         shell: powershell
         env:
           CERT_PFX_B64: ${{ secrets.IMAGER_WINDOWS_CERT_PFX_B64 }}
           CERT_PASSWORD: ${{ secrets.IMAGER_WINDOWS_CERT_PASSWORD }}
+          EXTERNAL_SIGNER: ${{ vars.IMAGER_WINDOWS_SIGNER }}
         run: |
           if ($env:GITHUB_REF -like "refs/tags/imager-v*") {
-            if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) {
-              throw "Windows release signing secrets are missing"
+            if (-not $env:EXTERNAL_SIGNER -and (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD)) {
+              throw "Configure the OIDC-backed Windows signer or bootstrap PFX secrets"
             }
-            $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
-            [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+            if ($env:EXTERNAL_SIGNER) {
+              "QOS_WINDOWS_SIGNER=$env:EXTERNAL_SIGNER" | Out-File -FilePath $env:GITHUB_ENV -Append
+            } else {
+              $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
+              [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+              "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+            }
             "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
             "QOS_RELEASE_BASE_URL=https://code.podesta.ai/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
@@ -108,7 +119,7 @@ jobs:
         run: cargo test -p imager --lib --locked
       - shell: powershell
         run: apps/imager/packaging/package-host.ps1
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-imager-windows
           path: |
@@ -121,6 +132,9 @@ jobs:
             dist/qos-imager/winget/*.yaml
 
   macos:
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         include:
@@ -130,7 +144,7 @@ jobs:
             runner: macos-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Configure release signing
         env:
           CERT_P12_B64: ${{ secrets.IMAGER_MAC_CERT_P12_B64 }}
@@ -165,7 +179,7 @@ jobs:
           esac
       - run: cargo test -p imager --lib --locked
       - run: apps/imager/packaging/package-host.sh
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-imager-macos-${{ matrix.arch }}
           path: |
@@ -181,11 +195,40 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release-assets
       - name: Publish signed downloads to the tag release
         env:
           FORGEJO_TOKEN: ${{ github.token }}
         run: apps/imager/packaging/publish-forgejo-release.sh release-assets
+
+  homebrew:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: publish
+    runs-on: macos-arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-assets
+      - name: Publish the qOS Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: apps/imager/packaging/publish-homebrew-tap.sh release-assets
+
+  winget:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: publish
+    runs-on: runner
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-assets
+      - name: Submit qOS Imager to the public WinGet index
+        env:
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          WINGET_GITHUB_USER: ${{ vars.WINGET_GITHUB_USER }}
+        run: apps/imager/packaging/publish-winget.sh release-assets
