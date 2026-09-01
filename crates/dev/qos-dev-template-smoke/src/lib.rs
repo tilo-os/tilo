@@ -62,6 +62,10 @@ fn install_catalog() {
     locales::install();
 }
 
+pub mod resource_actions {
+    include!("../../qos-dev/templates/resource_actions.rs");
+}
+
 pub mod starter {
     include!("../../qos-dev/templates/starter.rs");
 }
@@ -233,8 +237,12 @@ pub mod graph {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use ui::a11y::{Action, Role};
+    use ui::automerge::{AutoCommit, ObjId};
     use ui::headless::SemanticExpectation;
+    use ui::qos_actions::{InvocationId, InvocationUpdate, OperationKind};
 
     #[test]
     fn every_generated_template_has_a_clean_initial_accessibility_audit() {
@@ -253,6 +261,65 @@ mod tests {
             let driver = ui::headless::Driver::new(ui::State::new(), root, viewport);
             let audit = driver.accessibility_audit();
             assert!(audit.is_clean(), "{name}: {:#?}", audit.issues);
+        }
+    }
+
+    #[test]
+    fn every_generated_template_publishes_an_invocable_resource_action() {
+        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8]); 7] = [
+            (super::starter::app_root(), br#"{"name":"Ada","updates":true,"refresh":30.0,"volume":0.5,"region":"Europe/Berlin"}"#),
+            (super::data::app_root(), br#"{"id":3}"#),
+            (super::list::app_root(), br#"{"id":3}"#),
+            (super::tree::app_root(), br#"{"id":3}"#),
+            (super::graph::app_root(), br#"{"name":"Atlas"}"#),
+            (super::document::app_root(), b"null"),
+            (super::qr::app_root(), br#"{"payload":"https://qos.dev"}"#),
+        ];
+        let doc = AutoCommit::new();
+        for (root, payload) in &mut templates {
+            let resources = root.resources(&doc);
+            assert_eq!(resources.len(), 1);
+            assert!(!resources[0].actions.is_empty());
+            let result = root
+                .invoke_resource_operation_v2(
+                    OperationKind::Effect,
+                    super::resource_actions::OPERATION_TYPE,
+                    payload,
+                    &doc,
+                    &ObjId::Root,
+                )
+                .expect("generated operation succeeds");
+            assert!(result.is_some(), "published operation has a live handler");
+        }
+    }
+
+    #[test]
+    fn generated_async_action_is_accepted_before_terminal_completion() {
+        let mut root = super::async_task::app_root();
+        let doc = AutoCommit::new();
+        let invocation = InvocationId::new();
+        let started = root
+            .start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                super::resource_actions::OPERATION_TYPE,
+                b"null",
+                &doc,
+                &ObjId::Root,
+            )
+            .expect("background operation starts");
+        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(update) =
+                root.poll_resource_operation(invocation, false, &doc, &ObjId::Root)
+            {
+                assert!(matches!(update, InvocationUpdate::Succeeded { .. }));
+                break;
+            }
+            assert!(Instant::now() < deadline, "background operation timed out");
+            std::thread::yield_now();
         }
     }
 
