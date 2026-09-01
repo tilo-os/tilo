@@ -1,0 +1,36 @@
+[package]
+name = "windows-app"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "windows"
+path = "src/lib.rs"
+
+[[bin]]
+name = "windows"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { path = "../../ui", features = ["portal"] }
+qos-actions = { path = "../../crates/collab/actions" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+compat-service = { path = "../../crates/windows/compat-service" }
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

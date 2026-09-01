@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>qOS</vendor>
+  <vendor_url>https://qos.dev</vendor_url>
+
+  <action id="org.qos.windows.import-iso">
+    <description>Prepare the managed Windows appliance</description>
+    <message>Authentication is required to prepare the managed Windows appliance.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">import-iso</annotate>
+  </action>
+
+  <action id="org.qos.windows.recovery-start">
+    <description>Open Windows setup or recovery</description>
+    <message>Authentication is required to start Windows setup or recovery.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">recovery-start</annotate>
+    <!-- An authorization for starting this one recovery flow also covers its
+         immediate, one-shot proof consumption by the same active session. -->
+    <annotate key="org.freedesktop.policykit.imply">org.qos.windows.recovery-consume</annotate>
+  </action>
+
+  <action id="org.qos.windows.recovery-consume">
+    <description>Open the authorized Windows recovery viewer</description>
+    <message>Authentication is required to open the authorized Windows recovery viewer.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">consume-recovery</annotate>
+  </action>
+
+  <action id="org.qos.windows.lifecycle">
+    <description>Manage the Windows compatibility appliance</description>
+    <message>Authentication is required to manage the Windows compatibility appliance.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">lifecycle</annotate>
+  </action>
+
+  <action id="org.qos.windows.egress-open">
+    <description>Temporarily allow Windows activation or updates</description>
+    <message>Authentication is required to temporarily connect Windows to the internet.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">egress-open</annotate>
+  </action>
+
+  <action id="org.qos.windows.egress-close">
+    <description>Close the temporary Windows internet connection</description>
+    <message>Authentication is required to close the Windows internet connection.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">egress-close</annotate>
+  </action>
+
+  <action id="org.qos.windows.graphics-attach">
+    <description>Attach a prepared graphics partition to Windows</description>
+    <message>Authentication is required to attach a prepared graphics partition to Windows.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">graphics-attach</annotate>
+  </action>
+
+  <action id="org.qos.windows.graphics-detach">
+    <description>Detach the qOS-managed graphics partition from Windows</description>
+    <message>Authentication is required to detach the graphics partition from Windows.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">graphics-detach</annotate>
+  </action>
+</policyconfig>
