@@ -109,14 +109,19 @@ impl<T> LocalState<T> {
 
     /// Replace the value and invalidate widgets bound to this handle.
     pub fn set(&self, value: T) {
+        let _ = self.replace(value);
+    }
+
+    fn replace(&self, value: T) -> u64 {
         let mut current = self
             .inner
             .value
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = value;
+        let revision = self.advance_revision();
         drop(current);
-        self.advance_revision();
+        revision
     }
 
     /// Mutate the value and invalidate widgets bound to this handle once.
@@ -127,16 +132,19 @@ impl<T> LocalState<T> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         update(&mut value);
-        drop(value);
         self.advance_revision();
+        drop(value);
     }
 
     pub(crate) fn revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Acquire)
     }
 
-    fn advance_revision(&self) {
-        self.inner.revision.fetch_add(1, Ordering::Release);
+    fn advance_revision(&self) -> u64 {
+        self.inner
+            .revision
+            .fetch_add(1, Ordering::Release)
+            .wrapping_add(1)
     }
 
     /// Create a thread-safe writer that wakes the application after mutation.
@@ -151,6 +159,50 @@ impl<T> LocalState<T> {
         LocalStateWriter {
             state: self.clone(),
             wake: Arc::new(wake_app),
+        }
+    }
+}
+
+/// Revision-aware widget-side half of a [`LocalState`] binding.
+///
+/// Kept crate-private so every retained control shares identical polling and
+/// publication semantics without exposing implementation machinery to apps.
+pub(crate) struct LocalBinding<T> {
+    state: LocalState<T>,
+    observed_revision: u64,
+}
+
+impl<T: Clone> LocalBinding<T> {
+    pub(crate) fn new(state: &LocalState<T>) -> (T, Self) {
+        // Read the revision first. If a worker mutates between these reads,
+        // the value is already current and the next poll is merely redundant;
+        // the reverse order could pair an old value with a new revision and
+        // miss that mutation entirely.
+        let observed_revision = state.revision();
+        let value = state.with(Clone::clone);
+        (
+            value,
+            Self {
+                state: state.clone(),
+                observed_revision,
+            },
+        )
+    }
+
+    pub(crate) fn poll(&mut self) -> Option<T> {
+        let revision = self.state.revision();
+        if revision == self.observed_revision {
+            return None;
+        }
+        self.observed_revision = revision;
+        Some(self.state.with(Clone::clone))
+    }
+}
+
+impl<T: Clone + PartialEq> LocalBinding<T> {
+    pub(crate) fn publish(&mut self, value: &T) {
+        if self.state.with(|current| current != value) {
+            self.observed_revision = self.state.replace(value.clone());
         }
     }
 }
@@ -451,6 +503,22 @@ mod tests {
         let mut sink = state.text_sink();
         sink("漢字");
         assert_eq!(state.get(), "漢字");
+    }
+
+    #[test]
+    fn widget_binding_polls_and_publishes_without_echoing_its_own_write() {
+        let state = LocalState::new(String::from("one"));
+        let (initial, mut binding) = LocalBinding::new(&state);
+        assert_eq!(initial, "one");
+        assert_eq!(binding.poll(), None);
+
+        state.set(String::from("two"));
+        assert_eq!(binding.poll().as_deref(), Some("two"));
+        assert_eq!(binding.poll(), None);
+
+        binding.publish(&String::from("three"));
+        assert_eq!(state.get(), "three");
+        assert_eq!(binding.poll(), None, "a widget does not echo its own write");
     }
 
     #[test]
