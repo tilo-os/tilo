@@ -58,6 +58,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns an error when `--shots` or `--bench-interact` fails to build or
 /// lay out the offscreen widget tree (a Taffy tree-construction or
 /// layout-compute failure).
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     // `--bench-interact` drives real input events (clicks, tab switches,
