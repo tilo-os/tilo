@@ -37,7 +37,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, TextInput};
+use ui::widget::{BlockEditor, TextInput, Toggle, ToggleFace};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
@@ -3385,7 +3385,12 @@ impl CalendarApp {
             f.allday.x1,
             f.allday.center().y + 12.0,
         );
-        draw_switch(scene, t, theme, sw, e.all_day);
+        Toggle::paint(
+            scene,
+            t,
+            theme,
+            &ToggleFace::new(sw, e.all_day).hovered(sw.contains(mouse)),
+        );
         hits.push((f.allday, Action::ToggleAllDay));
 
         self.draw_event_form_dates(scene, t, tr, theme, &f, &e, mouse, label_x, &mut hits);
@@ -5071,27 +5076,6 @@ fn draw_field_button(
             true,
         );
     }
-}
-
-/// A pill switch (used for the all-day toggle). Filled accent track + white
-/// knob when on; muted track with the knob on the left when off.
-fn draw_switch(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
-    let c = &theme.tokens.colors;
-    let track = if on { c.accent[5] } else { c.neutral[4] };
-    fill_round(scene, t, track, r, r.height() / 2.0);
-    let knob_r = r.height() / 2.0 - 3.0;
-    let cx = if on {
-        r.x1 - knob_r - 3.0
-    } else {
-        r.x0 + knob_r + 3.0
-    };
-    scene.fill(
-        Fill::NonZero,
-        t,
-        Color::WHITE,
-        None,
-        &Circle::new(Point::new(cx, r.center().y), knob_r),
-    );
 }
 
 /// Draw a small pill chip and return its rect.
