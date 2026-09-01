@@ -34,35 +34,68 @@ use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider,
 };
 
 use crate::doc;
+use crate::model::{CaptureMode, Facing};
 
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
+pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CameraOperation {
+    Capture,
+    ToggleRecording,
+    Share { id: String },
+    Delete { id: String },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<CameraOperation>, String> {
+    if type_id != CAMERA_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 /// Every collaborative operation Camera exports on its shared gallery/scan
 /// metadata. The pixels and the decode are external; these are the doc writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraAction {
+    SetMode {
+        mode: CaptureMode,
+    },
+    SetFacing {
+        facing: Facing,
+    },
     /// Star / unstar a gallery shot by id (its file name). The pixels live on
     /// disk (external); only the collaborative "favorited" bit is this action.
     /// Explicit (`on`) rather than a toggle so a delete can also clear the flag
     /// unconditionally, and so replay is a plain deterministic set.
-    SetFavorite { id: String, on: bool },
+    SetFavorite {
+        id: String,
+        on: bool,
+    },
     /// Record a decoded code into the shared scan history. The QR/barcode
     /// decode is device I/O (external); this metadata row-insert is the
     /// replayable action. `ts` is minted at authoring time and carried here so
     /// `apply` stays pure; the insert deduplicates and caps deterministically
     /// against the replay base.
-    RecordScan { raw: String, ts: i64 },
+    RecordScan {
+        raw: String,
+        ts: i64,
+    },
 }
 
 impl Action for CameraAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
+            CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
             CameraAction::SetFavorite { id, on } => {
                 // An empty id is never produced by our own builder; no-op.
                 if !id.is_empty() {
@@ -137,9 +170,23 @@ pub struct GalleryItem {
 /// The presentation context Camera hands [`provide_resources`]: the gallery
 /// shots currently in the library cache (itself re-projected from disk / the
 /// sample source, with favorite state from the document).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CameraResourceCtx {
     pub items: Vec<GalleryItem>,
+    pub mode: CaptureMode,
+    pub facing: Facing,
+    pub recording: bool,
+}
+
+impl Default for CameraResourceCtx {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            mode: CaptureMode::Photo,
+            facing: Facing::Back,
+            recording: false,
+        }
+    }
 }
 
 /// Builds the palette spec for `action`, or `None` if it fails to encode (it
@@ -168,6 +215,67 @@ fn item_label(it: &GalleryItem) -> String {
 /// dispatch the identical [`EncodedAction`].
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("camera.gallery", "camera.gallery", "Gallery");
+    if let Ok(spec) = ActionSpec::operation(
+        "capture",
+        "Capture photo",
+        OperationKind::Effect,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::Capture,
+    ) {
+        root = root.with_action(if ctx.mode == CaptureMode::Photo && !ctx.recording {
+            spec
+        } else {
+            spec.unavailable(
+                "photo_mode_required",
+                "Switch to photo mode before capturing",
+            )
+        });
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "record",
+        if ctx.recording {
+            "Stop recording"
+        } else {
+            "Start recording"
+        },
+        OperationKind::Effect,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::ToggleRecording,
+    ) {
+        root = root.with_action(if ctx.mode == CaptureMode::Video {
+            spec
+        } else {
+            spec.unavailable(
+                "video_mode_required",
+                "Switch to video mode before recording",
+            )
+        });
+    }
+    for (id, label, mode) in [
+        ("photo-mode", "Use photo mode", CaptureMode::Photo),
+        ("video-mode", "Use video mode", CaptureMode::Video),
+    ] {
+        if let Some(spec) = immediate_spec(id, label, &CameraAction::SetMode { mode }) {
+            root = root.with_action(if ctx.recording {
+                spec.unavailable("recording_active", "Stop recording before changing mode")
+            } else {
+                spec
+            });
+        }
+    }
+    for facing in Facing::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("lens-{}", facing.as_str()),
+            &format!("Use {} lens", facing.label()),
+            &CameraAction::SetFacing { facing },
+        ) {
+            root = root.with_action(if facing == ctx.facing {
+                spec.unavailable("already_selected", "This lens is already selected")
+            } else {
+                spec
+            });
+        }
+    }
     for it in &ctx.items {
         let kind = if it.is_video {
             "camera.video"
@@ -184,6 +292,31 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         let mut child = Resource::new(format!("{kind}:{}", it.id), kind, item_label(it));
         if let Some(spec) = immediate_spec("favorite", label, &set_favorite_action(&it.id, on)) {
             child = child.with_action(spec);
+        }
+        if let Ok(spec) = ActionSpec::operation(
+            "share",
+            "Share capture",
+            OperationKind::Effect,
+            CAMERA_OPERATION_TYPE,
+            &CameraOperation::Share { id: it.id.clone() },
+        ) {
+            child = child.with_action(spec);
+        }
+        // File deletion also has to clear collaborative favourite metadata.
+        // The current immutable effect adapter cannot dispatch that document
+        // follow-up, so publish the operation honestly instead of offering a
+        // half-delete that leaves stale shared state.
+        if let Ok(spec) = ActionSpec::operation(
+            "delete-file",
+            "Delete capture from disk",
+            OperationKind::Effect,
+            CAMERA_OPERATION_TYPE,
+            &CameraOperation::Delete { id: it.id.clone() },
+        ) {
+            child = child.with_action(spec.destructive().unavailable(
+                "document_followup_required",
+                "Deletion is available in Camera until effect completion can dispatch its metadata action",
+            ));
         }
         root = root.with_child(child);
     }
@@ -392,5 +525,34 @@ mod tests {
             from_spec.payload, from_button.payload,
             "one source of truth"
         );
+    }
+
+    #[test]
+    fn device_effects_are_canonical_and_delete_is_honestly_blocked() {
+        let resources = provide_resources(
+            &CameraResourceCtx {
+                items: vec![GalleryItem {
+                    id: "IMG_1.jpg".into(),
+                    label: "Capture".into(),
+                    favorite: false,
+                    is_video: false,
+                }],
+                ..CameraResourceCtx::default()
+            },
+            &AutoCommit::new(),
+        );
+        let capture = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "capture")
+            .unwrap();
+        assert_eq!(capture.kind, OperationKind::Effect);
+        let delete = resources[0].children[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "delete-file")
+            .unwrap();
+        assert!(!delete.contract.availability.is_available());
+        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
     }
 }
