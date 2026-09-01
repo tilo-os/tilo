@@ -39,6 +39,17 @@ grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
   && ok 'release signing requires a non-exportable KMS/HSM key' \
   || bad 'release signing still accepts an exportable private key secret'
 
+if grep -Eq -- '--tlog-upload=false|--insecure-ignore-tlog' "$workflow"; then
+  bad 'OS release disables transparency-log publication or verification'
+else
+  ok 'release signatures and attestations require transparency-log evidence'
+fi
+
+grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq 'latest does not point at signed gen$current' "$repo/os/dev/next-generation.sh" \
+  && ok 'generation allocation authenticates provenance and the latest channel' \
+  || bad 'generation allocation still trusts registry tags alone'
+
 if grep -E 'uses: [^#[:space:]]+@(v[0-9]|main|master)([[:space:]#]|$)' "$workflow"; then
   bad 'OS release workflow executes a mutable third-party action reference'
 else

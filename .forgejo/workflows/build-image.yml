@@ -76,6 +76,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      # Generation selection trusts signed provenance, never registry tag text.
+      # Install on build-only runs too so every CI build exercises that check.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+
       # Pin the base image the build starts FROM. It is a mirror in our own
       # registry rather than quay.io because upstream deletes the manifest a
       # digest points at within about a day — see os/base-snapshot.env.
@@ -382,10 +387,6 @@ jobs:
       # an image (see os/etc/containers/policy.json + the update path). Signs by
       # digest so the signature is bound to the exact image, not a mutable tag.
       # Skipped on PRs (the image isn't pushed; nothing to sign).
-      - name: Install cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
-
       - name: Sign the published image
         if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         env:
@@ -398,7 +399,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
-          cosign sign --yes --tlog-upload=false --key "$COSIGN_KEY_REF" \
+          cosign sign --yes --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
       # SBOM (security plan §9): generate an SPDX inventory of the image and
@@ -424,7 +425,7 @@ jobs:
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
-          cosign attest --yes --tlog-upload=false \
+          cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
             --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
@@ -436,7 +437,7 @@ jobs:
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
         run: |
           ./os/dev/release-provenance.sh provenance.json
-          cosign attest --yes --tlog-upload=false \
+          cosign attest --yes \
             --predicate provenance.json --type slsaprovenance \
             --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
@@ -446,10 +447,10 @@ jobs:
         run: |
           set -euo pipefail
           image="code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
-          cosign verify --insecure-ignore-tlog --key keys/cosign.pub "$image" >/dev/null
-          cosign verify-attestation --insecure-ignore-tlog --key keys/cosign.pub \
+          cosign verify --key keys/cosign.pub "$image" >/dev/null
+          cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
-          cosign verify-attestation --insecure-ignore-tlog --key keys/cosign.pub \
+          cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance "$image" >/dev/null
           while IFS= read -r tag; do
             test -n "$tag" || continue
