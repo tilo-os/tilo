@@ -2799,7 +2799,7 @@ impl ShellOverlayHost {
                 .iter()
                 .find(|participant| participant.id == peer_id && !participant.invited)
                 .and_then(|participant| participant.active_tab);
-            tab.and_then(|tab| {
+            let target = tab.and_then(|tab| {
                 tree.active_workspace()?.strips.iter().find_map(|strip| {
                     strip.window_groups.iter().find_map(|group| {
                         group
@@ -2809,7 +2809,9 @@ impl ShellOverlayHost {
                             .then_some((strip.id, group.id, tab))
                     })
                 })
-            })
+            });
+            drop(tree);
+            target
         };
         let Some((strip, group, tab)) = target else {
             return false;
@@ -4649,73 +4651,84 @@ impl ShellOverlayHost {
                     Some(&records),
                 )
             };
-            if outcome.reverted {
-                let mut st = chrome.borrow_mut();
-                st.bump();
-                if outcome.undo_partial {
-                    st.push_notification(
-                        "Partially undid the selected work",
-                        "Later collaborator edits were preserved. History shows which parts were left intact.",
-                    );
-                } else {
-                    st.push_notification(
-                        "Reverted a room change",
-                        "Written forward: the version you reverted from is still in the history.",
-                    );
-                }
-            }
-            if let Some(target) = outcome.open_target {
-                let app_id = target.app_id.as_deref();
-                let workspace = chrome.borrow().tree().active_workspace().cloned();
-                if let (Some(app_id), Some(workspace)) = (app_id, workspace) {
-                    let result = match history_target_address(&target) {
-                        HistoryTargetAddress::File(path) => {
-                            crate::shell::launcher::launch_document_in_workspace(
-                                app_id,
-                                &workspace,
-                                Some(&path),
-                            )
-                        }
-                        HistoryTargetAddress::Uri(uri) => {
-                            crate::shell::launcher::launch_uri_in_workspace(
-                                app_id, &workspace, &uri,
-                            )
-                        }
-                        HistoryTargetAddress::App => {
-                            crate::shell::launcher::launch_in_workspace(app_id, &workspace)
-                        }
-                    };
-                    if let Err(error) = result {
-                        chrome.borrow_mut().push_notification(
-                            format!("Couldn't open {}", target.label),
-                            error.to_string(),
-                        );
-                    }
-                }
-            }
-            if outcome.compared {
-                chrome.borrow_mut().push_notification(
-                    "Comparison ready",
-                    "The exact causal before/after state is shown in History.",
-                );
-            }
-            if outcome.named {
-                let mut st = chrome.borrow_mut();
-                st.bump();
-                st.push_notification(
-                    "Named a version",
-                    "Saved in this room's history, so everyone here sees it.",
-                );
-            }
+            let consumed = outcome.handled || (pointer_inside && !is_key);
+            Self::apply_room_activity_outcome(&chrome, outcome);
             // Pointer events over the sheet absorb regardless; keys
             // only when consumed, or an arrow key with the cursor
             // resting over the sheet would vanish.
-            if outcome.handled || (pointer_inside && !is_key) {
+            if consumed {
                 *handled = true;
                 return true;
             }
         }
         false
+    }
+
+    fn apply_room_activity_outcome(
+        chrome: &Chrome,
+        outcome: crate::shell::room_activity::RoomActivityOutcome,
+    ) {
+        if outcome.reverted {
+            let mut state = chrome.borrow_mut();
+            state.bump();
+            if outcome.undo_partial {
+                state.push_notification(
+                    "Partially undid the selected work",
+                    "Later collaborator edits were preserved. History shows which parts were left intact.",
+                );
+            } else {
+                state.push_notification(
+                    "Reverted a room change",
+                    "Written forward: the version you reverted from is still in the history.",
+                );
+            }
+        }
+        if let Some(target) = outcome.open_target {
+            Self::open_room_activity_target(chrome, &target);
+        }
+        if outcome.compared {
+            chrome.borrow_mut().push_notification(
+                "Comparison ready",
+                "The exact causal before/after state is shown in History.",
+            );
+        }
+        if outcome.named {
+            let mut state = chrome.borrow_mut();
+            state.bump();
+            state.push_notification(
+                "Named a version",
+                "Saved in this room's history, so everyone here sees it.",
+            );
+        }
+    }
+
+    fn open_room_activity_target(chrome: &Chrome, target: &ui::HistoryResourceTarget) {
+        let Some(app_id) = target.app_id.as_deref() else {
+            return;
+        };
+        let Some(workspace) = chrome.borrow().tree().active_workspace().cloned() else {
+            return;
+        };
+        let result = match history_target_address(target) {
+            HistoryTargetAddress::File(path) => {
+                crate::shell::launcher::launch_document_in_workspace(
+                    app_id,
+                    &workspace,
+                    Some(&path),
+                )
+            }
+            HistoryTargetAddress::Uri(uri) => {
+                crate::shell::launcher::launch_uri_in_workspace(app_id, &workspace, &uri)
+            }
+            HistoryTargetAddress::App => {
+                crate::shell::launcher::launch_in_workspace(app_id, &workspace)
+            }
+        };
+        if let Err(error) = result {
+            chrome
+                .borrow_mut()
+                .push_notification(format!("Couldn't open {}", target.label), error.to_string());
+        }
     }
 
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
@@ -5526,86 +5539,19 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return false;
         };
-        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+        if self.handle_workspace_navigation_click(p) {
             *handled = true;
             return true;
         }
-        // Following is a viewing mode, not a lock. The first deliberate
-        // click back into the workspace hands control to the local user and
-        // continues routing that very click to its intended target.
-        if self.followed_peer.is_some()
-            && !self.cursor_over_open_overlay(p)
-            && !self.follow_chip_rect.contains(p)
-        {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
-        }
-        // Gated on no overlay owning the pointer, so a click
-        // under an open panel goes to the panel.
-        if !self.overlay_flags().overview
-            && !self.cursor_over_open_overlay(p)
-            && let Some(i) = self.strip_ribbon().hit(p)
-            && let Some(chrome) = self.chrome.clone()
-        {
-            chrome.borrow_mut().focus_strip_index(i);
+        if self.palette_visible && self.handle_palette_pointer_click(p) {
             *handled = true;
             return true;
         }
-        // The rail addresses windows off screen, so this is the
-        // one pointer path that also pans the strip.
-        if !self.overlay_flags().overview
-            && !self.cursor_over_open_overlay(p)
-            && let Some(i) = self.strip_rail().hit(p)
-            && let Some((strip, group)) = self.strip_rail_target(i)
-        {
-            self.focus_group_on_strip(strip, group);
+        if self.handle_power_menu_click(p) {
             *handled = true;
             return true;
-        }
-        if self.palette_visible {
-            // Before outside-click so scope can be swapped
-            // without dismissing the palette.
-            let scopes = self.search_scope_list();
-            for (idx, scope) in scopes.iter().enumerate() {
-                if self.search_scope_pill_rect(idx).contains(p) {
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        st.search_scope = *scope;
-                        st.bump();
-                    }
-                    *handled = true;
-                    return true;
-                }
-            }
-            let palette_rect = self.palette.get_rect();
-            if !palette_rect.contains(p) {
-                self.palette_visible = false;
-                *handled = true;
-                return true;
-            }
         }
         let flags = self.overlay_flags();
-        match self.power_menu.click(self.rect, p) {
-            PowerMenuClick::Ignored => {}
-            PowerMenuClick::Consumed => {
-                *handled = true;
-                return true;
-            }
-            PowerMenuClick::Execute(action) => {
-                std::thread::spawn(move || {
-                    os_actions::log_result(
-                        "session_action",
-                        os_actions::perform_session_action(action),
-                    );
-                });
-                *handled = true;
-                return true;
-            }
-        }
         if flags.room_activity && !self.room_activity.rect().contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
@@ -5635,6 +5581,82 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
+        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
+            self.followed_peer = None;
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+            return true;
+        }
+        // Following is a viewing mode, not a lock. The first deliberate
+        // click back into the workspace hands control to the local user and
+        // continues routing that very click to its intended target.
+        if self.followed_peer.is_some()
+            && !self.cursor_over_open_overlay(p)
+            && !self.follow_chip_rect.contains(p)
+        {
+            self.followed_peer = None;
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+        }
+        // Gated on no overlay owning the pointer, so a click
+        // under an open panel goes to the panel.
+        if !self.overlay_flags().overview
+            && !self.cursor_over_open_overlay(p)
+            && let Some(i) = self.strip_ribbon().hit(p)
+            && let Some(chrome) = self.chrome.clone()
+        {
+            chrome.borrow_mut().focus_strip_index(i);
+            return true;
+        }
+        // The rail addresses windows off screen, so this is the
+        // one pointer path that also pans the strip.
+        if !self.overlay_flags().overview
+            && !self.cursor_over_open_overlay(p)
+            && let Some(i) = self.strip_rail().hit(p)
+            && let Some((strip, group)) = self.strip_rail_target(i)
+        {
+            self.focus_group_on_strip(strip, group);
+            return true;
+        }
+        false
+    }
+
+    fn handle_palette_pointer_click(&mut self, p: Point) -> bool {
+        // Scope can be swapped without dismissing the palette.
+        for (idx, scope) in self.search_scope_list().iter().enumerate() {
+            if self.search_scope_pill_rect(idx).contains(p) {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    state.search_scope = *scope;
+                    state.bump();
+                }
+                return true;
+            }
+        }
+        if !self.palette.get_rect().contains(p) {
+            self.palette_visible = false;
+            return true;
+        }
+        false
+    }
+
+    fn handle_power_menu_click(&mut self, p: Point) -> bool {
+        match self.power_menu.click(self.rect, p) {
+            PowerMenuClick::Ignored => false,
+            PowerMenuClick::Consumed => true,
+            PowerMenuClick::Execute(action) => {
+                std::thread::spawn(move || {
+                    os_actions::log_result(
+                        "session_action",
+                        os_actions::perform_session_action(action),
+                    );
+                });
+                true
+            }
+        }
     }
 
     /// Clicks inside the open collaborators dropdown: invite, join,
@@ -5685,8 +5707,7 @@ impl ShellOverlayHost {
                     state.overlays.collaborators = false;
                     state.bump();
                 }
-                CollaboratorsHit::ToggleFollow(_) => {}
-                CollaboratorsHit::Absorb => {}
+                CollaboratorsHit::ToggleFollow(_) | CollaboratorsHit::Absorb => {}
             }
         }
         *handled = true;
@@ -7968,6 +7989,19 @@ impl ShellOverlayHost {
         self.power_menu
             .draw(self.rect, scene, transform, text_renderer, theme);
 
+        self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, flags);
+        self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
+        self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+    }
+
+    fn draw_collaborators_dropdown(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        flags: crate::shell::chrome_state::OverlayFlags,
+    ) {
         if flags.collaborators {
             let (rows, unavailable) = self.chrome.as_ref().map_or_else(
                 || (Vec::new(), None),
@@ -7997,7 +8031,17 @@ impl ShellOverlayHost {
         } else {
             self.collaborators_overlay.clear();
         }
+    }
 
+    fn draw_room_activity_sheet(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        flags: crate::shell::chrome_state::OverlayFlags,
+    ) {
         // Above the dropdowns, below the palette (which must stay reachable).
         self.refresh_room_activity_awareness();
         if flags.room_activity && !self.room_activity_was_open {
@@ -8072,8 +8116,6 @@ impl ShellOverlayHost {
                 scene.pop_layer();
             }
         }
-
-        self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
     }
 
     /// The quick-settings dropdown: no scrim, so it reads as a dropdown
