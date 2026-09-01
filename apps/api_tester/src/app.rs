@@ -586,7 +586,12 @@ impl ApiTesterApp {
     /// document agree on a single source of truth.
     fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: &ApiTesterAction) {
         self.persist(state, path);
-        self.actions.dispatch(state, API_TESTER_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            API_TESTER_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.ApiTester", "API Tester", action),
+        );
         self.adopt_workspace(state, path);
         self.dirty = true;
     }

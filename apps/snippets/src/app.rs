@@ -261,8 +261,12 @@ impl SnippetsApp {
     /// just before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &SnippetsAction) {
-        self.actions
-            .dispatch(doc, actions::SNIPPETS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::SNIPPETS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Snippets", "Snippets", action),
+        );
         self.refresh_from_doc(doc);
     }
 

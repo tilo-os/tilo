@@ -11,6 +11,7 @@
 //! event so typing and Enter work without the desktop stealing focus.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
@@ -60,6 +61,27 @@ use crate::shell::workspace_settings::{
     CapEdit, DefaultAppsCtx, EXPIRY_CHOICES, default_app_rows, draw_default_apps_pane,
     draw_members_pane, draw_permissions_pane, members_pane_rows, permissions_pane_layout,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HistoryTargetAddress {
+    File(PathBuf),
+    Uri(String),
+    App,
+}
+
+/// Resolve only addresses the action explicitly declared. Semantic resource
+/// ids such as `notes.page:abc` are labels within an app, not record ids or
+/// URIs; treating them as either would make History's Open control navigate
+/// somewhere other than the selected action.
+fn history_target_address(target: &ui::HistoryResourceTarget) -> HistoryTargetAddress {
+    if let Some(path) = target.id.strip_prefix("file:") {
+        return HistoryTargetAddress::File(PathBuf::from(path));
+    }
+    if target.id.contains("://") && crate::shell::uri_open::resource_for_uri(&target.id).is_ok() {
+        return HistoryTargetAddress::Uri(target.id.clone());
+    }
+    HistoryTargetAddress::App
+}
 
 /// The Permissions tab's grant-composer controls, as painted. Cached on
 /// the host each frame the composer is on screen so the click router
@@ -940,7 +962,7 @@ impl ShellOverlayHost {
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
-            room_activity: crate::shell::room_activity::RoomActivityPane::new(),
+            room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             collaborators_overlay: CollaboratorsOverlay::default(),
@@ -3907,9 +3929,46 @@ impl ShellOverlayHost {
         self.room_activity.layout(viewport);
         if let Some(chrome) = self.chrome.clone() {
             let st = chrome.borrow();
+            let records = st.records().clone();
             let mut tree = st.tree_mut();
+            let local = self.room_records.borrow();
             self.room_activity.refresh(&mut tree);
+            self.room_activity
+                .refresh_records_with_local(&mut tree, &records, &*local);
         }
+    }
+
+    /// Keep passive chrome truthful while the sheet is closed. The source's
+    /// heads check makes the resting path constant-time; publishing is also a
+    /// no-op unless headline, unread count, or latest content id changed.
+    fn refresh_room_activity_awareness(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let workspace = {
+            let st = chrome.borrow();
+            let records = st.records().clone();
+            let mut tree = st.tree_mut();
+            let local = self.room_records.borrow();
+            self.room_activity.refresh(&mut tree);
+            self.room_activity
+                .refresh_records_with_local(&mut tree, &records, &*local);
+            tree.active.raw()
+        };
+        let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
+        let passive_digest = self.room_activity.digest_for_workspace(workspace);
+        let focus =
+            passive_digest
+                .briefs
+                .first()
+                .map(|brief| crate::shell::chrome_state::ActivityFocus {
+                    author: brief.authors.first().map(|author| author.name.clone()),
+                    group_id: brief.group_id.clone(),
+                    entry_id: None,
+                });
+        chrome
+            .borrow_mut()
+            .publish_activity_glance(headline, unread, pulse, focus);
     }
 
     /// The room-activity sheet, for tests and for the shots driver.
@@ -4569,16 +4628,65 @@ impl ShellOverlayHost {
             let cursor = self.last_cursor;
             let outcome = {
                 let st = chrome.borrow();
+                let records = st.records().clone();
                 let mut tree = st.tree_mut();
-                self.room_activity
-                    .handle_event(event, scale_factor, &modifiers, cursor, &mut tree)
+                self.room_activity.handle_event_with_records(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    cursor,
+                    &mut tree,
+                    Some(&records),
+                )
             };
             if outcome.reverted {
                 let mut st = chrome.borrow_mut();
                 st.bump();
-                st.push_notification(
-                    "Reverted a room change",
-                    "Written forward: the version you reverted from is still in the history.",
+                if outcome.undo_partial {
+                    st.push_notification(
+                        "Partially undid the selected work",
+                        "Later collaborator edits were preserved. History shows which parts were left intact.",
+                    );
+                } else {
+                    st.push_notification(
+                        "Reverted a room change",
+                        "Written forward: the version you reverted from is still in the history.",
+                    );
+                }
+            }
+            if let Some(target) = outcome.open_target {
+                let app_id = target.app_id.as_deref();
+                let workspace = chrome.borrow().tree().active_workspace().cloned();
+                if let (Some(app_id), Some(workspace)) = (app_id, workspace) {
+                    let result = match history_target_address(&target) {
+                        HistoryTargetAddress::File(path) => {
+                            crate::shell::launcher::launch_document_in_workspace(
+                                app_id,
+                                &workspace,
+                                Some(&path),
+                            )
+                        }
+                        HistoryTargetAddress::Uri(uri) => {
+                            crate::shell::launcher::launch_uri_in_workspace(
+                                app_id, &workspace, &uri,
+                            )
+                        }
+                        HistoryTargetAddress::App => {
+                            crate::shell::launcher::launch_in_workspace(app_id, &workspace)
+                        }
+                    };
+                    if let Err(error) = result {
+                        chrome.borrow_mut().push_notification(
+                            format!("Couldn't open {}", target.label),
+                            error.to_string(),
+                        );
+                    }
+                }
+            }
+            if outcome.compared {
+                chrome.borrow_mut().push_notification(
+                    "Comparison ready",
+                    "The exact causal before/after state is shown in History.",
                 );
             }
             if outcome.named {
@@ -7053,6 +7161,28 @@ impl Widget for ShellOverlayHost {
         "ShellOverlayHost"
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+
+        let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
+        if self.overlay_flags().room_activity {
+            root.children
+                .push(self.room_activity.accessibility_snapshot());
+        }
+        Some(root)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        self.overlay_flags()
+            .room_activity
+            .then(|| self.room_activity.accessibility_rect_for_path(path))
+            .flatten()
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        self.overlay_flags().room_activity && self.room_activity.focus_accessibility_path(path)
+    }
+
     /// Expose content + palette + sidebar as direct children so trait
     /// walkers can recurse into the live tree, in `build_layout`'s
     /// child-node order (sidebar last so it paints over the chrome).
@@ -7859,14 +7989,36 @@ impl ShellOverlayHost {
         }
 
         // Above the dropdowns, below the palette (which must stay reachable).
+        self.refresh_room_activity_awareness();
         if flags.room_activity && !self.room_activity_was_open {
             // Room may have changed while closed — drop stale derived rows.
             self.room_activity.invalidate();
+            if let Some(chrome) = self.chrome.as_ref() {
+                let (workspace, focus) = {
+                    let mut state = chrome.borrow_mut();
+                    let workspace = state.tree().active.raw();
+                    (workspace, state.take_activity_focus_request())
+                };
+                self.room_activity.begin_view(workspace);
+                if let Some(focus) = focus {
+                    self.room_activity.apply_deep_link(focus);
+                }
+            }
+        } else if !flags.room_activity
+            && self.room_activity_was_open
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            let workspace = chrome.borrow().tree().active.raw();
+            self.room_activity.finish_view(workspace);
         }
         self.room_activity_was_open = flags.room_activity;
         self.room_activity_transition.set_open(
             flags.room_activity,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let ra_now = Instant::now();
@@ -13707,6 +13859,32 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::{ChromeState, WsTab};
     use crate::shell::state::WorkspaceTree;
+
+    fn history_target(id: &str) -> ui::HistoryResourceTarget {
+        ui::HistoryResourceTarget {
+            app_id: Some("org.qos.Notes".to_string()),
+            app_label: Some("Notes".to_string()),
+            id: id.to_string(),
+            kind: "page".to_string(),
+            label: "Launch notes".to_string(),
+        }
+    }
+
+    #[test]
+    fn history_open_distinguishes_files_links_and_semantic_ids() {
+        assert_eq!(
+            history_target_address(&history_target("file:/workspace/brief.md")),
+            HistoryTargetAddress::File(PathBuf::from("/workspace/brief.md"))
+        );
+        assert_eq!(
+            history_target_address(&history_target("tube://watch/launch")),
+            HistoryTargetAddress::Uri("tube://watch/launch".to_string())
+        );
+        assert_eq!(
+            history_target_address(&history_target("notes.page:launch")),
+            HistoryTargetAddress::App
+        );
+    }
     use std::collections::HashMap as StdHashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;

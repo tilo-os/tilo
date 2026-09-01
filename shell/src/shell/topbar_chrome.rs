@@ -103,8 +103,12 @@ struct CacheFingerprint {
     workspace_index: usize,
     workspace_total: usize,
     collaborator_initials: Vec<char>,
+    collaborator_names: Vec<String>,
     collaborator_overflow: usize,
     center_widget: CenterWidget,
+    activity_headline: Option<String>,
+    activity_unread: usize,
+    activity_visible: bool,
     time_bucket: u64,
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32`
     /// volume that would never match frame to frame at full precision.
@@ -248,6 +252,7 @@ pub struct TopBarChrome {
     /// [`TopBarChrome::current_fingerprint`].
     cache_fp: CacheFingerprint,
     collaborator_initials: Vec<char>,
+    collaborator_names: Vec<String>,
     /// Same index as `collaborator_initials`. Resolved from
     /// `cursor_color` when present, else [`ui::presence::user_color`].
     collaborator_colors: Vec<Color>,
@@ -272,8 +277,13 @@ pub struct TopBarChrome {
     notification_badge: u32,
     /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
+    avatar_chip_rects: Vec<(String, Rect)>,
     /// Scroll over `center_rect` cycles it, dots jump directly.
     center_widget: CenterWidget,
+    activity_headline: Option<String>,
+    activity_unread: usize,
+    activity_pulse: u64,
+    activity_started: Option<Instant>,
     center_rect: Rect,
     center_dot_rects: [Rect; 3],
     /// Matches the sidebar-wheel's scroll contract. `f64` so pixel-delta
@@ -348,6 +358,7 @@ impl TopBarChrome {
             cached: Scene::new(),
             cache_fp: CacheFingerprint::default(),
             collaborator_initials: Vec::new(),
+            collaborator_names: Vec::new(),
             collaborator_colors: Vec::new(),
             collaborator_overflow: 0,
             status: crate::shell::status::SystemStatus::default(),
@@ -364,7 +375,12 @@ impl TopBarChrome {
             media_expanded: false,
             notification_badge: 0,
             avatar_stack_rect: Rect::ZERO,
+            avatar_chip_rects: Vec::new(),
             center_widget: CenterWidget::Clock,
+            activity_headline: None,
+            activity_unread: 0,
+            activity_pulse: 0,
+            activity_started: None,
             center_rect: Rect::ZERO,
             center_dot_rects: [Rect::ZERO; 3],
             center_scroll_accum: 0.0,
@@ -381,19 +397,24 @@ impl TopBarChrome {
         let y0 = fingerprint_i64(self.rect.y0);
         let w = fingerprint_u64(self.rect.width());
         let h = fingerprint_u64(self.rect.height());
-        let time_bucket = match self.center_widget {
-            CenterWidget::Clock => {
-                // Minute granularity: Clock paints `HH:MM`.
-                let t = chrono::Local::now();
-                timestamp_bucket(t.timestamp()) / 60
-            }
-            CenterWidget::SystemMonitor => {
-                // Second granularity: sparkline derives from `seconds % N`.
-                timestamp_bucket(chrono::Local::now().timestamp())
-            }
-            CenterWidget::Calendar => {
-                // Day granularity: cache must drop at midnight.
-                timestamp_bucket(chrono::Local::now().timestamp()) / 86_400
+        let activity_visible = self.activity_is_visible();
+        let time_bucket = if activity_visible {
+            timestamp_bucket(chrono::Local::now().timestamp())
+        } else {
+            match self.center_widget {
+                CenterWidget::Clock => {
+                    // Minute granularity: Clock paints `HH:MM`.
+                    let t = chrono::Local::now();
+                    timestamp_bucket(t.timestamp()) / 60
+                }
+                CenterWidget::SystemMonitor => {
+                    // Second granularity: sparkline derives from `seconds % N`.
+                    timestamp_bucket(chrono::Local::now().timestamp())
+                }
+                CenterWidget::Calendar => {
+                    // Day granularity: cache must drop at midnight.
+                    timestamp_bucket(chrono::Local::now().timestamp()) / 86_400
+                }
             }
         };
         CacheFingerprint {
@@ -402,8 +423,12 @@ impl TopBarChrome {
             workspace_index: self.workspace_index,
             workspace_total: self.workspace_total,
             collaborator_initials: self.collaborator_initials.clone(),
+            collaborator_names: self.collaborator_names.clone(),
             collaborator_overflow: self.collaborator_overflow,
             center_widget: self.center_widget,
+            activity_headline: self.activity_headline.clone(),
+            activity_unread: self.activity_unread,
+            activity_visible,
             time_bucket,
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
@@ -469,6 +494,7 @@ impl TopBarChrome {
         // An invited-but-not-arrived peer doesn't count as present.
         let present = |c: &&crate::shell::state::Collaborator| c.id != "me" && !c.invited;
         self.collaborator_initials.clear();
+        self.collaborator_names.clear();
         self.collaborator_colors.clear();
         // Shared helper so the overflow chip and the wheel-disc's
         // active-card dot count agree.
@@ -481,6 +507,7 @@ impl TopBarChrome {
                 continue;
             };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
+            self.collaborator_names.push(c.name.clone());
             let (r, g, b) = colors
                 .get(&c.id)
                 .copied()
@@ -1712,7 +1739,7 @@ impl TopBarChrome {
     /// leftward from `stack_right_x`. Returns how many circles were
     /// actually drawn (chips + the overflow chip, if any).
     fn draw_avatar_chips(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -1721,6 +1748,7 @@ impl TopBarChrome {
         stack_right_x: f64,
     ) -> usize {
         let colors = &theme.tokens.colors;
+        self.avatar_chip_rects.clear();
         // Up to 3 chips, overlapping by 4px, newest on top. Routed
         // through `ui::Avatar` so the roster stays pixel-identical to
         // app rosters.
@@ -1739,6 +1767,9 @@ impl TopBarChrome {
                 .get(i)
                 .copied()
                 .unwrap_or(colors.accent[5]);
+            if let Some(name) = self.collaborator_names.get(i) {
+                self.avatar_chip_rects.push((name.clone(), rect));
+            }
             ui::widget::Avatar::draw_ringed_at(
                 scene,
                 transform,
@@ -1860,6 +1891,19 @@ impl TopBarChrome {
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
     /// branch, split out to keep that function under the line budget.
     fn handle_left_click(&mut self, handled: &mut bool) {
+        if self.activity_is_visible()
+            && self
+                .last_cursor
+                .is_some_and(|p| self.center_rect.contains(p))
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            let mut state = chrome.borrow_mut();
+            let focus = state.activity_glance.focus.clone();
+            state.open_room_activity(focus);
+            self.activity_started = None;
+            *handled = true;
+            return;
+        }
         // Dot clicks jump directly — local widget state, no chrome needed.
         if let Some(p) = self.last_cursor {
             for (i, rect) in self.center_dot_rects.iter().enumerate() {
@@ -1878,6 +1922,19 @@ impl TopBarChrome {
             return;
         };
         let mut state = chrome.borrow_mut();
+        if let Some((author, _)) = self
+            .avatar_chip_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(p))
+        {
+            state.open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
+                author: Some(author.clone()),
+                group_id: None,
+                entry_id: None,
+            }));
+            *handled = true;
+            return;
+        }
         if self.overview_btn_rect.contains(p) {
             state.overlays.overview = !state.overlays.overview;
             state.bump();
@@ -1930,6 +1987,19 @@ impl TopBarChrome {
             .chrome
             .as_ref()
             .map_or(0, |chrome| chrome.borrow().notification_badge_total());
+        if let Some(chrome) = self.chrome.as_ref() {
+            let glance = chrome.borrow().activity_glance.clone();
+            if glance.pulse != self.activity_pulse {
+                self.activity_pulse = glance.pulse;
+                self.activity_started =
+                    (glance.unread > 0 && glance.headline.is_some()).then(Instant::now);
+            }
+            if glance.unread == 0 {
+                self.activity_started = None;
+            }
+            self.activity_headline = glance.headline;
+            self.activity_unread = glance.unread;
+        }
         let signature: Vec<(u32, u8, String)> = self
             .status
             .media
@@ -1973,6 +2043,10 @@ impl TopBarChrome {
     ) {
         let (content_x0, content_x1, content_cx) =
             self.draw_center_band(scene, transform, theme, center_y);
+        if self.activity_is_visible() {
+            self.draw_activity_widget(scene, transform, theme, text_renderer, center_y, content_cx);
+            return;
+        }
         match self.center_widget {
             CenterWidget::Clock => {
                 self.draw_clock_widget(
@@ -2005,6 +2079,86 @@ impl TopBarChrome {
                 );
             }
         }
+    }
+
+    fn activity_is_visible(&self) -> bool {
+        self.activity_headline.is_some()
+            && self
+                .activity_started
+                .is_some_and(|started| started.elapsed() < Duration::from_secs(6))
+    }
+
+    fn draw_activity_widget(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        center_x: f64,
+    ) {
+        let Some(headline) = self.activity_headline.as_deref() else {
+            return;
+        };
+        let label = if self.activity_unread == 0 {
+            headline.to_string()
+        } else {
+            format!("{}  ·  {} new", headline, self.activity_unread)
+        };
+        let size = theme.tokens.typography.scale.sm;
+        let max_width = (self.center_rect.width() - 36.0).max(80.0) as f32;
+        let (w, h) = text_renderer.measure(&label, size, Some(max_width));
+        text_renderer.draw_text_weighted(
+            scene,
+            &label,
+            size,
+            theme.tokens.colors.text_primary,
+            at(
+                transform,
+                (center_x - f64::from(w) / 2.0, center_y - f64::from(h) / 2.0),
+            ),
+            Some(max_width),
+            TextWeight::Medium,
+        );
+    }
+
+    fn draw_activity_badge(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if self.activity_unread == 0 || self.avatar_stack_rect.is_zero_area() {
+            return;
+        }
+        let label = self.activity_unread.min(99).to_string();
+        let radius = 8.0;
+        let center = Point::new(
+            self.avatar_stack_rect.x1 - 2.0,
+            self.avatar_stack_rect.y0 + 2.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[5],
+            None,
+            &vello::kurbo::Circle::new(center, radius),
+        );
+        let size = (theme.tokens.typography.scale.sm - 2.0).max(8.0);
+        let (w, h) = text_renderer.measure(&label, size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            &label,
+            size,
+            theme.tokens.colors.text_primary,
+            at(
+                transform,
+                (center.x - f64::from(w) / 2.0, center.y - f64::from(h) / 2.0),
+            ),
+            None,
+            TextWeight::Medium,
+        );
     }
 }
 
@@ -2168,6 +2322,7 @@ impl Widget for TopBarChrome {
             (center_y, stack_right_x),
             slot_count,
         );
+        self.draw_activity_badge(scene, transform, theme, text_renderer);
 
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
@@ -2388,6 +2543,72 @@ mod tests {
             (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
             "active dot radius should be 1.6× the base size",
         );
+    }
+
+    #[test]
+    fn new_activity_temporarily_overrides_but_does_not_replace_the_chosen_widget() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        bar.center_widget = CenterWidget::Calendar;
+
+        chrome.borrow_mut().publish_activity_glance(
+            Some("Ada · Prepared launch brief".to_string()),
+            3,
+            42,
+            Some(crate::shell::chrome_state::ActivityFocus {
+                author: Some("Ada".into()),
+                group_id: Some("issue:42".into()),
+                entry_id: None,
+            }),
+        );
+        bar.refresh_status_and_media_state();
+        assert!(bar.activity_is_visible());
+        assert_eq!(bar.center_widget(), CenterWidget::Calendar);
+
+        chrome.borrow_mut().publish_activity_glance(
+            Some("Ada · Prepared launch brief".to_string()),
+            0,
+            42,
+            None,
+        );
+        bar.refresh_status_and_media_state();
+        assert!(!bar.activity_is_visible());
+        assert_eq!(bar.center_widget(), CenterWidget::Calendar);
+    }
+
+    #[test]
+    fn clicking_a_person_deep_links_history_to_that_person() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
+        bar.avatar_chip_rects.push(("Ada".into(), chip));
+        bar.avatar_stack_rect = chip;
+        bar.last_cursor = Some(chip.center());
+
+        let mut handled = false;
+        bar.handle_left_click(&mut handled);
+        assert!(handled);
+        assert!(chrome.borrow().overlays.room_activity);
+        let focus = chrome.borrow_mut().take_activity_focus_request().unwrap();
+        assert_eq!(focus.author.as_deref(), Some("Ada"));
     }
 
     /// Asserts the colours differ AND move with the theme, which a
