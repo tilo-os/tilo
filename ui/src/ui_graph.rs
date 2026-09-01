@@ -89,9 +89,13 @@ impl UiDocumentExt for UiDocument {
         self.build_with(theme, &UiBuildContext::default())
     }
 
-    fn build_with(&self, theme: &Theme, context: &UiBuildContext) -> Result<Element, UiGraphError> {
+    fn build_with(
+        &self,
+        _theme: &Theme,
+        context: &UiBuildContext,
+    ) -> Result<Element, UiGraphError> {
         self.validate()?;
-        Ok(build_node(&self.root, theme, context))
+        Ok(build_node(&self.root, context))
     }
 }
 
@@ -99,7 +103,7 @@ impl UiDocumentExt for UiDocument {
     clippy::too_many_lines,
     reason = "one exhaustive source-node-to-widget match keeps graph construction reviewable and compiler-checked"
 )]
-fn build_node(node: &UiNode, theme: &Theme, context: &UiBuildContext) -> Element {
+fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
     match node {
         UiNode::Column {
             children,
@@ -123,7 +127,7 @@ fn build_node(node: &UiNode, theme: &Theme, context: &UiBuildContext) -> Element
                 column = column.with_fill_remaining_height();
             }
             Box::new(children.iter().fold(column, |column, child| {
-                column.push(build_node(child, theme, context))
+                column.push(build_node(child, context))
             }))
         }
         UiNode::Row {
@@ -139,9 +143,11 @@ fn build_node(node: &UiNode, theme: &Theme, context: &UiBuildContext) -> Element
             if *fill_remaining_height {
                 row = row.with_fill_remaining_height();
             }
-            Box::new(children.iter().fold(row, |row, child| {
-                row.push(build_node(child, theme, context))
-            }))
+            Box::new(
+                children
+                    .iter()
+                    .fold(row, |row, child| row.push(build_node(child, context))),
+            )
         }
         UiNode::Container {
             child,
@@ -152,7 +158,7 @@ fn build_node(node: &UiNode, theme: &Theme, context: &UiBuildContext) -> Element
             height,
             ..
         } => {
-            let mut container = Container::new().with_child(build_node(child, theme, context));
+            let mut container = Container::new().with_child(build_node(child, context));
             if *background {
                 container = container.with_background();
             }
@@ -180,7 +186,7 @@ fn build_node(node: &UiNode, theme: &Theme, context: &UiBuildContext) -> Element
                 UiTextSource::Static { value } => Text::new(value),
                 UiTextSource::Document { path } => Text::from_document_string(path),
             };
-            let mut text = text.with_role((*role).into(), theme).with_id(id);
+            let mut text = text.with_role((*role).into()).with_id(id);
             if let Some(size) = size {
                 text = text.with_size(*size);
             }

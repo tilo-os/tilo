@@ -912,6 +912,22 @@ queue, and wire format while supplying different transport implementations.
 
 ## Text layout and typography
 
+For ordinary application text, select intent and let the retained widget
+follow live theme and scale changes:
+
+```rust
+use ui::tokens::TextRole;
+use ui::widget::Text;
+
+let title = Text::new("projects-title").with_role(TextRole::Title);
+let field_label = Text::new("project-name-label").with_role(TextRole::Label);
+```
+
+Use raw sizes only for content with an actual custom typographic contract.
+Semantic roles keep generated and hand-written app chrome consistent without
+passing a `Theme` through every app builder. See [Typography](typography.md)
+for the role set and advanced text layout controls.
+
 `TextStyle` is shared by measurement and painting. Kerning, tracking,
 OpenType features, variable-font axes, wrapping, alignment, line height, and
 hyphenation therefore cannot silently differ between the two passes:
