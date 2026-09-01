@@ -1570,6 +1570,13 @@ pub struct VideoEditorApp {
     /// sources this device cannot read says which. Carries its own severity —
     /// see [`NoticeLevel`].
     project_notice: Option<Notice>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_operation: Option<crate::actions::VideoEditorOperation>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_pending_operation: Option<(
+        qos_actions::InvocationId,
+        crate::actions::VideoEditorOperation,
+    )>,
     /// The project menu (Open / Save / Save As / recents), on the shared
     /// [`ContextMenu`] every other menu in the app uses.
     project_menu: ContextMenu,
@@ -1780,6 +1787,10 @@ impl VideoEditorApp {
             saved_heads: None,
             project_rx: None,
             project_notice: None,
+            resource_invocation: None,
+            resource_operation: None,
+            resource_result: None,
+            resource_pending_operation: None,
             project_menu: ContextMenu::new(),
             project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
@@ -5003,11 +5014,22 @@ impl VideoEditorApp {
     ) -> Result<(), String> {
         use crate::actions::VideoEditorOperation;
         match operation {
-            VideoEditorOperation::ImportMedia => self.trigger_import(),
-            VideoEditorOperation::OpenProject => self.request_open_project(),
-            VideoEditorOperation::SaveProject => self.queue_save_project(),
-            VideoEditorOperation::SaveProjectAs => self.request_save_as(),
-            VideoEditorOperation::Export => self.request_export(),
+            VideoEditorOperation::ImportMedia { path: None } => self.trigger_import(),
+            VideoEditorOperation::OpenProject { path: None } => self.request_open_project(),
+            VideoEditorOperation::SaveProject { path: None } => self.queue_save_project(),
+            VideoEditorOperation::SaveProjectAs { path: None } => self.request_save_as(),
+            VideoEditorOperation::Export { path: None } => self.request_export(),
+            VideoEditorOperation::ImportMedia { path: Some(path) } => {
+                self.pending_imports.push(PathBuf::from(path))
+            }
+            VideoEditorOperation::Export { path: Some(path) } => {
+                self.begin_export_to(PathBuf::from(path))
+            }
+            VideoEditorOperation::OpenProject { path: Some(_) }
+            | VideoEditorOperation::SaveProject { path: Some(_) }
+            | VideoEditorOperation::SaveProjectAs { path: Some(_) } => {
+                return Err("direct project I/O requires lifecycle dispatch".into());
+            }
             VideoEditorOperation::CancelExport => {
                 let Some(job) = self.export_job.as_ref() else {
                     return Err("no export is running".into());
@@ -5016,6 +5038,66 @@ impl VideoEditorApp {
             }
         }
         Ok(())
+    }
+
+    fn finish_resource_file_operation_if_ready(&mut self) {
+        use crate::actions::VideoEditorOperation;
+        let Some(operation) = self.resource_operation.as_ref() else {
+            return;
+        };
+        let outcome: Option<Result<(), String>> = match operation {
+            VideoEditorOperation::ImportMedia { .. }
+                if self.import_rx.is_none() && self.pending_imports.is_empty() =>
+            {
+                self.import_notice.as_ref().map(|notice| {
+                    if notice.level == NoticeLevel::Failed {
+                        Err(notice.text.clone())
+                    } else {
+                        Ok(())
+                    }
+                })
+            }
+            VideoEditorOperation::OpenProject { .. }
+            | VideoEditorOperation::SaveProject { .. }
+            | VideoEditorOperation::SaveProjectAs { .. }
+                if self.project_rx.is_none()
+                    && self.resource_pending_operation.is_none()
+                    && self.pending_open.is_none() =>
+            {
+                self.project_notice.as_ref().map(|notice| {
+                    if notice.level == NoticeLevel::Failed {
+                        Err(notice.text.clone())
+                    } else {
+                        Ok(())
+                    }
+                })
+            }
+            VideoEditorOperation::Export { .. } => match &self.export_status {
+                ExportStatus::Done { .. } => Some(Ok(())),
+                ExportStatus::Failed { reason } => Some(Err(reason.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        let (Some(invocation), Some(outcome)) = (self.resource_invocation.take(), outcome) else {
+            return;
+        };
+        self.resource_operation = None;
+        self.resource_result = Some(match outcome {
+            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+            Err(message) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "video_editor.operation_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        });
     }
 
     /// Drain any pending imports (queued deterministic files first, then a
@@ -5051,7 +5133,16 @@ impl VideoEditorApp {
                 let report = self.import_files(doc, &paths);
                 self.import_notice = Some(import_report_notice(&report));
             }
-            Some(ImportOutcome::Cancelled) => self.import_notice = None,
+            Some(ImportOutcome::Cancelled) => {
+                self.import_notice = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_operation = None;
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("media selection was cancelled".into()),
+                    });
+                }
+            }
             // The picker itself refused. Its wording ("the file picker needs
             // the real-desktop build") is nothing like a probe's, which is
             // exactly why the tint cannot be read back out of the words.
@@ -7401,6 +7492,20 @@ impl Widget for VideoEditorApp {
             }
             self.seeded = true;
         }
+        if let Some((invocation, operation)) = self.resource_pending_operation.take() {
+            use crate::actions::VideoEditorOperation;
+            match &operation {
+                VideoEditorOperation::OpenProject { path: Some(path) } => {
+                    self.begin_open(state, PathBuf::from(path))
+                }
+                VideoEditorOperation::SaveProject { path: Some(path) }
+                | VideoEditorOperation::SaveProjectAs { path: Some(path) } => {
+                    self.write_project_to(state, PathBuf::from(path))
+                }
+                _ => {}
+            }
+            self.resource_invocation = Some(invocation);
+        }
         // The document's heads are the cheap "something actually changed"
         // signal. Reloading the model every frame says nothing; a new head
         // means a real edit, local or from a peer.
@@ -7436,6 +7541,7 @@ impl Widget for VideoEditorApp {
         // model load above so an Open replaces a project that is current, and
         // before the passes below so they see what was opened.
         self.drain_project_portal(state);
+        self.finish_resource_file_operation_if_ready();
         // Drop selected clips that vanished (e.g. a remote delete), keeping
         // whatever is left selected rather than clearing the lot.
         self.selection.retain_existing(&self.project);
@@ -8410,6 +8516,63 @@ impl Widget for VideoEditorApp {
         };
         self.perform_resource_operation(operation)?;
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if matches!(
+            operation,
+            crate::actions::VideoEditorOperation::CancelExport
+        ) {
+            self.invoke_resource_operation(kind, type_id, payload, doc, path)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )));
+        }
+        if matches!(
+            operation,
+            crate::actions::VideoEditorOperation::OpenProject { path: Some(_) }
+                | crate::actions::VideoEditorOperation::SaveProject { path: Some(_) }
+                | crate::actions::VideoEditorOperation::SaveProjectAs { path: Some(_) }
+        ) {
+            self.resource_operation = Some(operation.clone());
+            self.resource_pending_operation = Some((invocation, operation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        self.perform_resource_operation(operation)?;
+        self.resource_operation = crate::actions::decode_operation(type_id, payload)?;
+        self.resource_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.poll_export();
+        self.finish_resource_file_operation_if_ready();
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
     }
 
     /// Fold the open project into qOS global search: every marker, title and
@@ -12393,6 +12556,13 @@ impl VideoEditorApp {
             Some(portal::ProjectOutcome::Cancelled) => {
                 self.save_then_open = None;
                 self.project_notice = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_operation = None;
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("project file selection was cancelled".into()),
+                    });
+                }
             }
             Some(portal::ProjectOutcome::Failed(reason)) => {
                 // A portal that refused is a failure, tinted as one. Its own
@@ -12564,7 +12734,16 @@ impl VideoEditorApp {
         }
         match outcome {
             Some(portal::ExportDestOutcome::Opened(path)) => self.begin_export_to(path),
-            Some(portal::ExportDestOutcome::Cancelled) => self.export_notice = None,
+            Some(portal::ExportDestOutcome::Cancelled) => {
+                self.export_notice = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_operation = None;
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("export destination selection was cancelled".into()),
+                    });
+                }
+            }
             Some(portal::ExportDestOutcome::Failed(reason)) => {
                 // No portal on this box. Say where the file will go rather than
                 // silently dropping it somewhere the user will never look.
