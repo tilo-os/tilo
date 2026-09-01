@@ -2713,9 +2713,12 @@ fn tree_component_source(
     type_name: &str,
 ) -> (String, Vec<ScreenMessage>) {
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let loading = ScreenMessage::new(name, "loading", "Loading…");
+    let load_error = ScreenMessage::new(name, "load-error", "Could not load. Activate to retry");
     let mut source = format!(
         r#"use ui::selection::KeySelection;
-use ui::widget::tree_view::{{NodeId, TreeModel, TreeView}};
+use ui::widget::Text;
+use ui::widget::tree_view::{{NodeId, TreeModel, TreeSlotState, TreeView}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Config {{
@@ -2756,11 +2759,18 @@ pub fn {module_name}<M: TreeModel>(
         .multi_select(config.multi_select)
         .with_viewport(config.viewport_height, config.estimated_row_height)
         .with_accessible_name(&config.accessible_name)
+        .with_slot_delegate(|_, _, _, state| {{
+            let message = match state {{
+                TreeSlotState::Loading => "{name}-loading",
+                TreeSlotState::Error {{ .. }} => "{name}-load-error",
+            }};
+            Box::new(Text::new(message))
+        }})
 }}
 "#
     );
     source.push_str(&tree_component_test_source(module_name, type_name));
-    (source, vec![accessible_name])
+    (source, vec![accessible_name, loading, load_error])
 }
 
 fn tree_component_test_source(module_name: &str, type_name: &str) -> String {
@@ -7339,6 +7349,21 @@ mod tests {
         }
     }
 
+    fn assert_generated_tree_source(source: &str) {
+        syn::parse_file(source).unwrap();
+        for needle in [
+            "pub struct ProjectTreeConfig",
+            "M: TreeModel",
+            "TreeView::from_model(model)",
+            ".with_slot_delegate(",
+            "TreeSlotState::Error",
+            ".with_row_delegate(",
+            ".reorderable()",
+        ] {
+            assert!(source.contains(needle), "missing {needle:?}");
+        }
+    }
+
     fn minimal_app(root: &Path) {
         std::fs::create_dir_all(root.join("src/nested")).unwrap();
         std::fs::write(
@@ -8004,12 +8029,7 @@ mod tests {
         .unwrap();
         let tree_source =
             std::fs::read_to_string(app.join("src/components/project_tree.rs")).unwrap();
-        syn::parse_file(&tree_source).unwrap();
-        assert!(tree_source.contains("pub struct ProjectTreeConfig"));
-        assert!(tree_source.contains("M: TreeModel"));
-        assert!(tree_source.contains("TreeView::from_model(model)"));
-        assert!(tree_source.contains(".with_row_delegate("));
-        assert!(tree_source.contains(".reorderable()"));
+        assert_generated_tree_source(&tree_source);
 
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
@@ -8499,6 +8519,10 @@ mod tests {
         assert!(
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
             "{catalog}"
+        );
+        assert!(catalog.contains("project-tree-loading = { \"Loading…\" }"));
+        assert!(
+            catalog.contains("project-tree-load-error = { \"Could not load. Activate to retry\" }")
         );
 
         add_app_artifact(AddRequest {

@@ -118,7 +118,7 @@ impl BrokeredLaunch {
         {
             return Err(RemoteAppError::InvalidLease);
         }
-        let lease_root = PathBuf::from("/run/qos/windows-vm/leases").join(&self.lease_id);
+        let lease_root = crate::portal_lease_root().join(&self.lease_id);
         if self.network != self.network_binding.is_some() {
             return Err(RemoteAppError::InvalidNetworkLease);
         }
@@ -826,7 +826,7 @@ mod tests {
                 shares: vec![ShareBinding {
                     drive_name: "QOS1".to_string(),
                     portal_document_id: "portal-document".to_string(),
-                    host_path: "/run/qos/windows-vm/leases/lease/document".into(),
+                    host_path: crate::portal_lease_root().join("lease/document"),
                     read_only: false,
                 }],
             },

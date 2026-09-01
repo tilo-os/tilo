@@ -4,13 +4,16 @@
 //! proxy connects to this host-only listener and authenticates with the
 //! unguessable capability lease token below.  The relay checks the original
 //! `NetHost` name before resolving it, so a guest application cannot turn a
-//! name grant into arbitrary-address access.  Dropping the lease closes the
-//! listener; existing and new proxy connections then fail closed.
+//! name grant into arbitrary-address access. Dropping the lease closes the
+//! listener; existing and new proxy connections then fail closed. This is a
+//! host-side grant boundary, not a claim that arbitrary processes in the one
+//! persistent Windows user session are mutually isolated.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -60,8 +63,10 @@ pub enum GuestNetworkError {
 /// host makes exactly one name-based decision before every TCP connection.
 pub struct GuestNetworkProxy {
     binding: GuestNetworkBinding,
-    hosts: Arc<std::sync::Mutex<Vec<String>>>,
     shutdown: Arc<AtomicBool>,
+    /// Duplicates held solely so revocation can interrupt already-established
+    /// tunnels, not just stop accepting a new CONNECT request.
+    active_connections: Arc<ActiveTunnels>,
 }
 
 impl GuestNetworkProxy {
@@ -91,9 +96,11 @@ impl GuestNetworkProxy {
         let binding = GuestNetworkBinding { endpoint, token };
         let hosts = Arc::new(std::sync::Mutex::new(hosts));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let active_connections = Arc::new(ActiveTunnels::default());
         let worker_shutdown = Arc::clone(&shutdown);
         let worker_token = binding.token.clone();
         let worker_hosts = Arc::clone(&hosts);
+        let worker_connections = Arc::clone(&active_connections);
         thread::spawn(move || {
             serve(
                 listener,
@@ -101,12 +108,13 @@ impl GuestNetworkProxy {
                 worker_token,
                 require_guest_peer,
                 worker_shutdown,
+                worker_connections,
             );
         });
         Ok(Self {
             binding,
-            hosts,
             shutdown,
+            active_connections,
         })
     }
 
@@ -115,20 +123,20 @@ impl GuestNetworkProxy {
         &self.binding
     }
 
-    pub fn replace_hosts(&self, hosts: Vec<String>) -> Result<(), GuestNetworkError> {
-        validate_hosts(&hosts)?;
-        *self
-            .hosts
-            .lock()
-            .map_err(|_| GuestNetworkError::PolicyUnavailable)? = hosts;
-        Ok(())
+    /// Tear down every tunnel immediately. This is idempotent and is called
+    /// by both explicit lease revocation and `Drop`.
+    pub fn revoke(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        self.active_connections.shutdown_all();
+        // Wake `incoming` so the worker observes shutdown without waiting for
+        // another guest request.
+        let _ = TcpStream::connect(self.binding.endpoint);
     }
 }
 
 impl Drop for GuestNetworkProxy {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
-        let _ = TcpStream::connect(self.binding.endpoint);
+        self.revoke();
     }
 }
 
@@ -159,6 +167,7 @@ fn serve(
     token: String,
     require_guest_peer: bool,
     shutdown: Arc<AtomicBool>,
+    active_connections: Arc<ActiveTunnels>,
 ) {
     for incoming in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
@@ -173,8 +182,9 @@ fn serve(
         let hosts = Arc::clone(&hosts);
         let token = token.clone();
         let shutdown = Arc::clone(&shutdown);
+        let active_connections = Arc::clone(&active_connections);
         thread::spawn(move || {
-            let _ = serve_connect(stream, &hosts, &token, &shutdown);
+            let _ = serve_connect(stream, &hosts, &token, &shutdown, &active_connections);
         });
     }
 }
@@ -184,6 +194,7 @@ fn serve_connect(
     hosts: &std::sync::Mutex<Vec<String>>,
     token: &str,
     shutdown: &AtomicBool,
+    active_connections: &ActiveTunnels,
 ) -> io::Result<()> {
     client.set_read_timeout(Some(Duration::from_secs(30)))?;
     client.set_write_timeout(Some(Duration::from_secs(30)))?;
@@ -212,6 +223,11 @@ fn serve_connect(
     if shutdown.load(Ordering::Acquire) {
         return write_response(&mut client, "502 Bad Gateway");
     }
+    // Keep independent descriptor references in the lease.  Closing these on
+    // revoke causes both halves of the bidirectional copy to unblock.
+    let client_control = client.try_clone()?;
+    let upstream_control = upstream.try_clone()?;
+    let _tunnel = active_connections.register(client_control, upstream_control, shutdown)?;
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.set_read_timeout(None)?;
     client.set_write_timeout(None)?;
@@ -223,6 +239,65 @@ fn serve_connect(
     let _ = io::copy(&mut upstream, &mut client);
     let _ = copy.join();
     Ok(())
+}
+
+#[derive(Default)]
+struct ActiveTunnels {
+    next: AtomicU64,
+    tunnels: Mutex<HashMap<u64, [TcpStream; 2]>>,
+}
+
+impl ActiveTunnels {
+    fn register(
+        &self,
+        client: TcpStream,
+        upstream: TcpStream,
+        shutdown: &AtomicBool,
+    ) -> io::Result<TunnelRegistration<'_>> {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let mut tunnels = self
+            .tunnels
+            .lock()
+            .map_err(|_| io::Error::other("network lease connection state unavailable"))?;
+        // Registration and `shutdown_all` use the same mutex. If revocation
+        // wins first, refuse the tunnel; if registration wins first, revoke
+        // necessarily observes and closes it. This removes the check/insert
+        // gap that could otherwise leave one post-revoke CONNECT alive.
+        if shutdown.load(Ordering::Acquire) {
+            return Err(io::Error::other("network lease was revoked"));
+        }
+        tunnels.insert(id, [client, upstream]);
+        drop(tunnels);
+        Ok(TunnelRegistration { tunnels: self, id })
+    }
+
+    fn shutdown_all(&self) {
+        if let Ok(tunnels) = self.tunnels.lock() {
+            for tunnel in tunnels.values().flatten() {
+                let _ = tunnel.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tunnels.lock().map_or(0, |tunnels| tunnels.len())
+    }
+}
+
+/// An active CONNECT tunnel is removed even when either copy path errors or
+/// panics while unwinding. The retained descriptors exist only for revocation.
+struct TunnelRegistration<'a> {
+    tunnels: &'a ActiveTunnels,
+    id: u64,
+}
+
+impl Drop for TunnelRegistration<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut tunnels) = self.tunnels.tunnels.lock() {
+            tunnels.remove(&self.id);
+        }
+    }
 }
 
 fn read_head(stream: &mut TcpStream) -> io::Result<String> {
@@ -317,5 +392,60 @@ mod tests {
             .map(|value| value.0),
             Some("example.test".into())
         );
+    }
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn active_tunnel_registration_is_removed_when_the_copy_finishes() {
+        let tunnels = ActiveTunnels::default();
+        let (client, server) = connected_pair();
+        let shutdown = AtomicBool::new(false);
+        let registration = tunnels.register(client, server, &shutdown).unwrap();
+        assert_eq!(tunnels.len(), 1);
+        drop(registration);
+        assert_eq!(tunnels.len(), 0, "completed tunnels retain no descriptors");
+    }
+
+    #[test]
+    fn revocation_interrupts_an_active_tunnel_immediately() {
+        let proxy = GuestNetworkProxy::start_at(
+            "127.0.0.1:0".parse().unwrap(),
+            vec!["example.test".into()],
+            false,
+        )
+        .unwrap();
+        let (client, mut peer) = connected_pair();
+        let _registration = proxy
+            .active_connections
+            .register(client, peer.try_clone().unwrap(), &proxy.shutdown)
+            .unwrap();
+        proxy.revoke();
+        peer.set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        match peer.read(&mut byte) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                ) => {}
+            result => panic!("active tunnel survived revoke: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn revoked_lease_rejects_late_tunnel_registration() {
+        let tunnels = ActiveTunnels::default();
+        let shutdown = AtomicBool::new(true);
+        let (client, server) = connected_pair();
+        assert!(tunnels.register(client, server, &shutdown).is_err());
+        assert_eq!(tunnels.len(), 0);
     }
 }
