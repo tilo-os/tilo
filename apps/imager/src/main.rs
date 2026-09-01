@@ -42,6 +42,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -59,8 +60,6 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1180, 820);
 /// Returns an error if a `--shots`/`--shots-dir` render fails: computing the
 /// offscreen layout for a scenario, or writing its PNG to disk.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
     let args: Vec<String> = std::env::args().collect();
     let viewport = parse_value_arg(&args, "--viewport")
         .and_then(|s| parse_viewport(&s))
@@ -77,58 +76,45 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Single-shot PNG.
-    if let Some(out) = parse_shots_arg(&args) {
-        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_else(|| "source".to_string());
-        render_scenario(&scenario, viewport, &out)?;
-        return Ok(());
-    }
-
-    // `--demo`: seed sample content (drives, a qOS image, recent history) for a
-    // walkthrough or review, instead of probing real hardware. The default live
-    // run stays blank and enumerates real write targets (lsblk).
-    let demo = args.iter().any(|a| a == "--demo");
-    if !demo {
-        // SAFETY: set once at startup before any threads read the environment.
-        unsafe {
-            std::env::set_var("IMAGER_LIVE", "1");
-        }
-    }
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            imager::app_root(),
-            "dev.qos.imager",
-        ));
-    }
-
-    let (mut state, autosave) = ui::persist::open("dev.qos.imager");
-    if demo {
-        imager::doc::ImagerDoc::seed_demo(&mut state.doc);
-    }
-    let mut app = ui::App::new(state, imager::app_root()).with_autosave(autosave);
-    // Register the imager's install-profile actions so the shell's Ctrl+K palette
-    // can decode + replay the same profile-customization actions the on-screen
-    // toggles and fields dispatch.
-    imager::actions::register(app.action_registry_mut());
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new_with_args("dev.qos.imager", live_root)
+            .shot_handler(render_shot)
+            .allowed_live_flags(&["--demo"])
+            .scenarios(imager::SHOT_SCENARIOS)
+            .open_state_with_args(open_state)
+            .configure_app(|app| imager::actions::register(app.action_registry_mut())),
+    )?;
     Ok(())
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by LaunchSpec::new_with_args"
+)]
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    if !args.has("--demo") {
+        // Set once at startup, before the drive probe can start worker threads.
+        unsafe { std::env::set_var("IMAGER_LIVE", "1") };
     }
-    None
+    Ok(imager::app_root())
+}
+
+fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    let (mut state, autosave) = ui::persist::open(app_id);
+    if args.has("--demo") {
+        imager::doc::ImagerDoc::seed_demo(&mut state.doc);
+    }
+    (state, autosave)
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    render_scenario(
+        args.scenario.as_deref().unwrap_or("source"),
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Parse a `--key VALUE` or `--key=VALUE` flag.
