@@ -204,8 +204,9 @@ pub fn kind_color(theme: &Theme, kind: ChangeKind) -> Color {
 
 /// A stable, theme-anchored colour for an author, derived from a hash of
 /// their email so the same person keeps the same hue across views. Uses
-/// the accent ramp + a couple of semantic anchors so colours stay in
-/// palette.
+/// the theme's categorical accent series rather than semantic
+/// success/warning/danger colours: an author's identity should never read
+/// like a file state.
 pub fn author_color(theme: &Theme, email: &str) -> Color {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -213,17 +214,20 @@ pub fn author_color(theme: &Theme, email: &str) -> Color {
     email.hash(&mut h);
     let c = &theme.tokens.colors;
     let palette = [
-        c.accent[5],
-        c.semantic.success,
-        c.semantic.warning,
-        c.semantic.info,
-        c.accent[6],
-        c.semantic.danger,
+        c.categorical(0),
+        c.categorical(1),
+        c.categorical(2),
+        c.categorical(3),
+        c.categorical(4),
+        c.categorical(5),
     ];
     // `palette` is a fixed non-empty array, so the modulo below always lands
     // in bounds; the fallback is unreachable in practice.
     let idx = (h.finish() % palette.len() as u64) as usize;
-    palette.get(idx).copied().unwrap_or(c.semantic.danger)
+    palette
+        .get(idx)
+        .copied()
+        .unwrap_or_else(|| c.categorical(0))
 }
 
 /// Lane colour for the commit graph — cycles through accent + semantic

@@ -134,13 +134,13 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
 /// docs for why this is asked of the room's owner and with this verb.
 fn admits(ws: &Workspace, app_id: &str) -> Result<(), String> {
     let Some(owner) = ws.owner.clone() else {
-        return Err("This room has not said who governs it".to_string());
+        return Err("This workspace has no owner yet".to_string());
     };
     let actor = ws.actor_for_person(&owner);
     if ws.allows(&actor, &ResourceRef::App(app_id.to_string()), Verb::Write) {
         return Ok(());
     }
-    Err("This room does not permit opening it here".to_string())
+    Err("This workspace does not permit opening it here".to_string())
 }
 
 /// Write `note` onto the peer window in `tab`. Returns whether it landed —
@@ -412,10 +412,7 @@ mod tests {
         let mut ws = room_owned_by("ada");
         ws.owner = None;
         let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
-        assert!(
-            refusal.contains("governs"),
-            "the card has to say why; got {refusal:?}"
-        );
+        assert_eq!(refusal, "This workspace has no owner yet");
     }
 
     /// Goes *through* the capability model rather than around it —
