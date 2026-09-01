@@ -103,6 +103,7 @@ pub fn build_launch_command(
             "XDG_RUNTIME_DIR".to_string(),
             launcher::runtime_dir().display().to_string(),
         )],
+        service_identity: None,
     }
 }
 
