@@ -78,16 +78,21 @@ session-wide union of redirects and are not mutually isolated.
 
 SPICE remains stricter. Libvirt blocks SPICE clipboard and file transfer in
 the server XML, has no USB redirection device, and exposes only a local
-libvirt-attached display. The spicevmc channel exists for cursor and arbitrary
-resolution support, but those features remain gated until the immutable guest
-tools media carries and installs a reviewed Windows SPICE agent. The viewer
-already requests auto-resize, local cursor rendering, 100% zoom, and reconnect.
+libvirt-attached display. Provisioning installs the SPICE vdagent from Fedora's
+attached, versioned `virtio-win` media only after verifying both the host-pinned
+SHA-256 and a Windows-valid Authenticode publisher signature, then verifies its `vdservice`;
+qOS never downloads a mutable guest-tools executable. The explicit
+virtio-serial/spicevmc channel then carries cursor and arbitrary-resolution
+requests. The viewer requests auto-resize, local cursor rendering, 100% zoom,
+and reconnect. The server-side clipboard/file blocks remain authoritative even
+when vdagent is running.
 
 ## Latency, scaling, and graphics
 
-The local RAIL connection uses LAN tuning, AVC444 graphics, dynamic resolution,
-full window drag, font/theme composition, ungrabbed qOS keyboard handling, and
-low-latency Pulse output. `xwayland-satellite` handles compositor scaling and
+The local RAIL connection uses the required `||alias` RemoteApp form, LAN
+tuning, AVC444 graphics, bounded automatic reconnect, ungrabbed qOS keyboard
+handling, and low-latency Pulse output. Desktop-only dynamic-resolution and
+appearance flags are not sent to RAIL. `xwayland-satellite` handles compositor scaling and
 fractional-scale/viewport protocols when available; mixed-DPI behavior remains
 limited by its smallest-output DPI policy and the Windows application's DPI
 awareness.
@@ -98,8 +103,14 @@ machine with one ordinary GPU, RDP AVC444 or the 2D SPICE fallback is the safe
 default: Windows has no production virgl/virtio-gpu 3D path equivalent to a
 Linux guest, and passing the only GPU through would remove it from qOS.
 Hardware 3D remains gated on an independently assignable second GPU or a
-hardware/driver-supported SR-IOV mediated function. Looking Glass is useful
-only after such assignment and is still a whole framebuffer, not RAIL.
+hardware/driver-supported SR-IOV VF or mediated device. The read-only
+`qos-windows-vm-control graphics-capabilities` probe reports those kernel
+interfaces but never creates or automatically assigns a partition. A separate
+polkit owner action can persistently attach only an already-created,
+IOMMU-isolated, vfio-bound partition while the singleton is off; detach uses
+qOS's exact root-only record. Looking Glass is useful only after such
+assignment and is still a whole framebuffer, not RAIL. See
+`windows-presentation-capabilities.md` for the exact probe and source contracts.
 
 ## Live versus gated
 
@@ -110,6 +121,8 @@ Live in the shipped image:
 - rootless native RAIL when client Windows/Server accepts RAIL;
 - native qOS toplevels, resize requests, normal keyboard/pointer input, HiDPI
   mediation, output-only audio, and focused SPICE fallback;
+- signed Fedora virtio-win guest tools, Windows vdagent-backed SPICE resize and
+  cursor integration, with clipboard/file transfer still blocked in libvirt;
 - server-derived shared-session permission reporting; and
 - KVM/host-passthrough storage and CPU tuning.
 
