@@ -11,15 +11,15 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use compat_service::{
-    BwrapExecutor, CapabilityAuthority, CapsuleStore, CompatSessionHandle,
-    DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession, LauncherAuthenticator,
-    LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths, SystemResourceBroker,
-    SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability, VmDelegate, VmRouteRequest,
-    load_shipped_catalogue, spawn_session_service,
+    AudioIsolatedSpiceLauncher, BwrapExecutor, CapabilityAuthority, CapsuleStore,
+    CompatSessionHandle, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession,
+    LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths,
+    SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
+    VmDelegate, VmRouteRequest, load_shipped_catalogue, spawn_session_service,
 };
 use windows_vm::{
-    AppFocusedSpiceLauncher, ApplianceConfig, ApplicationPresentation, GuestBridgeConfig,
-    HttpsGuestBridge, LibvirtBackend, ProvisioningStore, StdCommandRunner, WindowsAppliance,
+    ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
+    ProvisioningStore, StdCommandRunner, WindowsAppliance,
 };
 
 use crate::shell::state::WorkspaceTreeHandle;
@@ -121,7 +121,7 @@ fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
         LibvirtBackend::new(runner),
         bridge,
         DenyAllVmCapabilityBroker::default(),
-        AppFocusedSpiceLauncher::new(runner),
+        AudioIsolatedSpiceLauncher::new(runner),
     );
     Ok(Arc::new(LiveVmDelegate::new(
         appliance,
