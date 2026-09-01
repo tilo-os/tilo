@@ -13,6 +13,9 @@ pub struct CommandRequest {
     pub program: OsString,
     pub args: Vec<OsString>,
     pub stdin: Vec<u8>,
+    /// Host-selected environment overrides. Values are omitted from `Debug`
+    /// because future adapters may carry private endpoint information here.
+    pub environment: Vec<(OsString, OsString)>,
 }
 
 impl CommandRequest {
@@ -22,6 +25,7 @@ impl CommandRequest {
             program: program.into(),
             args: Vec::new(),
             stdin: Vec::new(),
+            environment: Vec::new(),
         }
     }
 
@@ -46,6 +50,12 @@ impl CommandRequest {
         self.stdin.extend_from_slice(secret);
         self
     }
+
+    #[must_use]
+    pub fn env(mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.environment.push((name.into(), value.into()));
+        self
+    }
 }
 
 impl fmt::Debug for CommandRequest {
@@ -56,6 +66,14 @@ impl fmt::Debug for CommandRequest {
             .field(
                 "stdin",
                 &format_args!("<redacted: {} bytes>", self.stdin.len()),
+            )
+            .field(
+                "environment",
+                &self
+                    .environment
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
             )
             .finish()
     }
@@ -117,6 +135,12 @@ impl CommandRunner for StdCommandRunner {
         let mut command = Command::new(&request.program);
         command
             .args(request.args.iter().map(OsStr::new))
+            .envs(
+                request
+                    .environment
+                    .iter()
+                    .map(|(name, value)| (name, value)),
+            )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if request.stdin.is_empty() {
@@ -162,9 +186,13 @@ mod tests {
 
     #[test]
     fn debug_never_contains_stdin_secret() {
-        let request = CommandRequest::new("program").stdin_secret(b"do-not-log-me");
+        let request = CommandRequest::new("program")
+            .stdin_secret(b"do-not-log-me")
+            .env("SECRET_ENV", "do-not-log-env");
         let debug = format!("{request:?}");
         assert!(!debug.contains("do-not-log-me"));
+        assert!(!debug.contains("do-not-log-env"));
+        assert!(debug.contains("SECRET_ENV"));
         assert!(debug.contains("redacted"));
     }
 }
