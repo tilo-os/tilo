@@ -912,7 +912,12 @@ impl CustomizePanel {
     }
 
     fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
-        host.dispatch(doc, IMAGER_ACTION_TYPE, action);
+        host.dispatch_with_context(
+            doc,
+            IMAGER_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", action),
+        );
     }
 
     /// The password field itself, for the never-leak-the-secret a11y test.

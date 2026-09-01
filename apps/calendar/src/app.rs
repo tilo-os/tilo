@@ -911,8 +911,12 @@ impl CalendarApp {
     /// feedback and reconciled from the document on the next `sync`. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CALENDAR_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CALENDAR_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
