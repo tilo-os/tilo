@@ -4,14 +4,14 @@ class QosImager < Formula
   version "@VERSION@"
   license "AGPL-3.0-only"
 
-  on_linux do
-    if Hardware::CPU.arm?
-      url "@BASE_URL@/qos-imager-linux-aarch64.tar.gz"
-      sha256 "@LINUX_ARM64_SHA256@"
-    else
-      url "@BASE_URL@/qos-imager-linux-x86_64.tar.gz"
-      sha256 "@LINUX_X86_64_SHA256@"
-    end
+  depends_on :linux
+
+  if Hardware::CPU.arm?
+    url "@BASE_URL@/qos-imager-linux-aarch64.tar.gz"
+    sha256 "@LINUX_ARM64_SHA256@"
+  else
+    url "@BASE_URL@/qos-imager-linux-x86_64.tar.gz"
+    sha256 "@LINUX_X86_64_SHA256@"
   end
 
   def install

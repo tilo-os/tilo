@@ -15,35 +15,14 @@ ARG QOS_INSTALLER_DEV_SSH=0
 # The graphical installer UI (a ui::App; staged into os/ by
 # build-custom-installer.sh — either the real release binary or a --stub-ui
 # placeholder for testing OS plumbing without the toolkit).
-COPY qos-installer /usr/bin/qos-installer
-RUN chmod 755 /usr/bin/qos-installer
+COPY --chmod=0755 qos-installer /usr/bin/qos-installer
 
-# Privileged install + power backends + greetd session selector + first-boot
-# user setup.
-COPY usr/libexec/qos-install /usr/libexec/qos-install
-COPY usr/libexec/qos-power /usr/libexec/qos-power
-COPY usr/libexec/qos-session-select /usr/libexec/qos-session-select
-COPY usr/libexec/qos-firstboot-user /usr/libexec/qos-firstboot-user
-RUN chmod 755 /usr/libexec/qos-install \
-              /usr/libexec/qos-power \
-              /usr/libexec/qos-session-select \
-              /usr/libexec/qos-firstboot-user
-
-# systemd units: first-boot user creation (runs on the INSTALLED system) and
-# live-medium sudoers setup (runs only when qos.installer is on the cmdline).
-COPY usr/lib/systemd/system/qos-firstboot-user.service /usr/lib/systemd/system/qos-firstboot-user.service
-COPY usr/lib/systemd/system/qos-installer-setup.service /usr/lib/systemd/system/qos-installer-setup.service
-COPY usr/libexec/qos-installer-profile-extract /usr/libexec/qos-installer-profile-extract
-RUN chmod 0755 /usr/libexec/qos-installer-profile-extract
-
-# Inactive-until-runtime sudoers rule (qos-installer-setup.service installs it).
-COPY usr/share/qos/installer-sudoers /usr/share/qos/installer-sudoers
-
-# Live-medium SELinux module (qos-installer-setup.service `semodule -i`s it at
-# boot): lets the greeter session domain launch the privileged install backend
-# as a transient system unit, so the live medium can boot SELinux-ENFORCING
-# instead of enforcing=0. See os/usr/share/qos/selinux/qos-installer.cil.
-COPY usr/share/qos/selinux/qos-installer.cil /usr/share/qos/selinux/qos-installer.cil
+# Overlay the complete, tiny qOS /usr payload in one layer. This includes the
+# privileged install/power backends, first-boot and live-media units, profile
+# extractor, inactive sudoers source and installer SELinux policy. Keeping this
+# as one COPY avoids repeatedly snapshotting the multi-gigabyte base image for
+# every individual 1–10 KiB file during local and CI installer builds.
+COPY usr/ /usr/
 
 # Keep the normal installed-system greeter config available outside /etc, then
 # point the live medium at the installer selector. qos-install restores the
@@ -67,22 +46,17 @@ COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 # is read by every install path AND by `bootc container ukify`, so the same two
 # lines put the argument on an unsealed command line today and inside the signed,
 # measured one the moment this image grows a UKI.
+# Enable the new units, apply the live-only kernel argument, remove the remote
+# login surface from release media, and validate the result in one final layer.
+# A developer can opt in to SSH only for a local diagnostic image paired with
+# the explicit non-default password required by build-custom-installer.sh.
 RUN printf 'kargs = ["qos.installer=1"]\n' \
-      > /usr/lib/bootc/kargs.d/50-installer.toml
-
-# Enable the two new units. greetd / graphical.target are already enabled by
-# the base qOS image.
-RUN systemctl enable qos-firstboot-user.service qos-installer-setup.service
-
-# Release media have no remote-login surface. A developer can opt in while
-# building a local diagnostic image, paired with an explicitly supplied
-# non-default password in build-custom-installer.sh.
-RUN if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
-      systemctl unmask sshd.service && systemctl enable sshd.service; \
-    else \
-      systemctl disable sshd.service 2>/dev/null || true; \
-      systemctl mask sshd.service; \
-    fi
-
-# Validate the layered image.
-RUN bootc container lint
+      > /usr/lib/bootc/kargs.d/50-installer.toml \
+    && systemctl enable qos-firstboot-user.service qos-installer-setup.service \
+    && if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
+         systemctl unmask sshd.service && systemctl enable sshd.service; \
+       else \
+         systemctl disable sshd.service 2>/dev/null || true; \
+         systemctl mask sshd.service; \
+       fi \
+    && bootc container lint
