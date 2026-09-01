@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run one packaging target in its own architecture-specific CI container.
-# The outer mode is invoked by Forgejo on the existing runner. ARM jobs install
-# a pinned QEMU binfmt handler inside this same step before starting the target
-# container; a separate setup-action step lands in the wrong Kata namespace.
+# Run one packaging target in its own architecture-specific CI userspace.
+# amd64 starts the target container normally. ARM is exported and run through
+# per-job PRoot/QEMU because this runner isolates binfmt_misc registration from
+# the Docker daemon that starts target containers.
 set -euo pipefail
 
 usage() {
@@ -24,50 +24,43 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     mkdir -p "$output"
     log_dir=$(mktemp -d)
     container=
+    tool_container=
+    rootfs=
     cleanup_container() {
+        local cleanup_paths=("$log_dir")
         if [[ -n $container ]]; then
             docker rm --force "$container" >/dev/null 2>&1 || true
         fi
-        rm -rf -- "$log_dir"
+        if [[ -n $tool_container ]]; then
+            docker rm --force "$tool_container" >/dev/null 2>&1 || true
+        fi
+        [[ -z $rootfs ]] || cleanup_paths+=("$rootfs")
+        rm -rf -- "${cleanup_paths[@]}"
     }
     trap cleanup_container EXIT
 
     inner_command='
         set -eu
-        mkdir /artifacts
+        mkdir -p /artifacts
         cd /workspace
         exec dist/ci/run-package-job.sh
     '
-    entrypoint=/bin/sh
-    container_args=(-c "$inner_command")
-    if [[ $arch == arm64 ]]; then
-        qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-        binfmt_log=$log_dir/binfmt.log
-        set +e
-        docker run --rm --privileged --platform linux/amd64 \
-            "$qemu_image" --install arm64 2>&1 | tee "$binfmt_log"
-        binfmt_status=${PIPESTATUS[0]}
-        set -e
-        if (( binfmt_status != 0 )); then
-            {
-                printf 'stage=install-binfmt status=%s\n' "$binfmt_status"
-                tail -n 8 "$binfmt_log"
-            } > "$output/CI_FAILURE"
-            exit "$binfmt_status"
-        fi
-    fi
-
     create_log=$log_dir/create.log
     set +e
-    container=$(docker create --platform "linux/$arch" \
-        --entrypoint "$entrypoint" \
-        --env QOS_IN_PACKAGE_CONTAINER=1 \
-        --env QOS_PACKAGE_DISTRO="$distro" \
-        --env QOS_EXPECT_ARCH="$arch" \
-        --env QOS_DEB_REVISION="$revision" \
-        --env CARGO_INCREMENTAL=0 \
-        --env CARGO_TERM_COLOR=never \
-        "$image" "${container_args[@]}" 2> >(tee "$create_log" >&2))
+    if [[ $arch == amd64 ]]; then
+        container=$(docker create --platform linux/amd64 \
+            --entrypoint /bin/sh \
+            --env QOS_IN_PACKAGE_CONTAINER=1 \
+            --env QOS_PACKAGE_DISTRO="$distro" \
+            --env QOS_EXPECT_ARCH="$arch" \
+            --env QOS_DEB_REVISION="$revision" \
+            --env CARGO_INCREMENTAL=0 \
+            --env CARGO_TERM_COLOR=never \
+            "$image" -c "$inner_command" 2> >(tee "$create_log" >&2))
+    else
+        container=$(docker create --platform linux/arm64 "$image" \
+            2> >(tee "$create_log" >&2))
+    fi
     container_status=$?
     set -e
     if (( container_status != 0 )); then
@@ -92,15 +85,77 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         exit "$container_status"
     fi
     start_log=$log_dir/start.log
-    set +e
-    docker start --attach "$container" 2>&1 | tee "$start_log"
-    container_status=${PIPESTATUS[0]}
-    set -e
-    copy_out_log=$log_dir/copy-out.log
-    set +e
-    docker cp "$container:/artifacts/." "$output/" 2>&1 | tee "$copy_out_log"
-    copy_status=${PIPESTATUS[0]}
-    set -e
+    if [[ $arch == arm64 ]]; then
+        qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+        proot_sha=b7f2adf5a225000a164f4905aabefeebe11c4c1d5bedff5e1fe8866c48dd70d2
+        tools_dir=$log_dir/tools
+        rootfs=$(mktemp -d)
+        mkdir -p "$tools_dir"
+
+        stage_log=$log_dir/emulator-tools.log
+        set +e
+        (
+            set -e
+            curl --proto '=https' --tlsv1.2 -fsSL \
+                https://proot.gitlab.io/proot/bin/proot -o "$tools_dir/proot"
+            printf '%s  %s\n' "$proot_sha" "$tools_dir/proot" | sha256sum --check --status
+            chmod +x "$tools_dir/proot"
+            docker create --platform linux/amd64 "$qemu_image" \
+                > "$log_dir/tool-container-id"
+            tool_container=$(<"$log_dir/tool-container-id")
+            docker cp "$tool_container:/usr/bin/qemu-aarch64" "$tools_dir/qemu-aarch64"
+            cc -O2 -Wall -Wextra -o "$tools_dir/qemu-argv0-wrapper" \
+                "$repo_root/dist/ci/qemu-argv0-wrapper.c"
+            docker export "$container" | tar --extract --directory "$rootfs"
+            mkdir -p "$rootfs/artifacts"
+            if [[ $distro == ubuntu-24.04 || $distro == debian-13 ]]; then
+                install -Dm755 "$repo_root/dist/ci/proot-apt-key" \
+                    "$rootfs/usr/local/libexec/qos-proot-apt-key"
+                printf 'Dir::Bin::apt-key "/usr/local/libexec/qos-proot-apt-key";\n' \
+                    > "$rootfs/etc/apt/apt.conf.d/00qos-proot"
+            fi
+        ) > >(tee "$stage_log") 2>&1
+        tool_status=$?
+        set -e
+        if [[ -s $log_dir/tool-container-id ]]; then
+            tool_container=$(<"$log_dir/tool-container-id")
+        fi
+        if (( tool_status != 0 )); then
+            {
+                printf 'stage=prepare-user-emulation status=%s\n' "$tool_status"
+                tail -n 8 "$stage_log"
+            } > "$output/CI_FAILURE"
+            exit "$tool_status"
+        fi
+
+        export QOS_IN_PACKAGE_CONTAINER=1
+        export QOS_PACKAGE_DISTRO="$distro"
+        export QOS_EXPECT_ARCH="$arch"
+        export QOS_DEB_REVISION="$revision"
+        export CARGO_INCREMENTAL=0 CARGO_TERM_COLOR=never
+        export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
+        set +e
+        "$tools_dir/proot" -0 -q "$tools_dir/qemu-argv0-wrapper" \
+            -r "$rootfs" -b /proc -b /dev -b /sys -b /etc/resolv.conf \
+            -w /workspace /bin/sh -c "$inner_command" 2>&1 | tee "$start_log"
+        container_status=${PIPESTATUS[0]}
+        set -e
+        copy_out_log=$log_dir/copy-out.log
+        set +e
+        cp -a "$rootfs/artifacts/." "$output/" 2>&1 | tee "$copy_out_log"
+        copy_status=${PIPESTATUS[0]}
+        set -e
+    else
+        set +e
+        docker start --attach "$container" 2>&1 | tee "$start_log"
+        container_status=${PIPESTATUS[0]}
+        set -e
+        copy_out_log=$log_dir/copy-out.log
+        set +e
+        docker cp "$container:/artifacts/." "$output/" 2>&1 | tee "$copy_out_log"
+        copy_status=${PIPESTATUS[0]}
+        set -e
+    fi
     if (( copy_status != 0 )); then
         {
             printf 'stage=copy-artifacts status=%s\n' "$copy_status"
@@ -190,7 +245,7 @@ arch)
     cp dist/arch/build/*.pkg.tar.zst /artifacts/
     ;;
 nix)
-    export NIX_CONFIG='experimental-features = nix-command flakes'
+    export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false'
     stage=install-nix-tools
     nix-env -iA nixpkgs.gzip nixpkgs.file
     stage=build-nix
