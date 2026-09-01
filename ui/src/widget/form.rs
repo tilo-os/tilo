@@ -83,7 +83,8 @@ impl CheckControl for Toggle {}
 /// `label` is normally a Fluent message key. Both the [`Text`] and control
 /// resolve that same key through the live localization catalog, preventing the
 /// visible copy and accessibility name from drifting. The returned ordinary
-/// [`Column`] remains chainable and participates in the standard retained
+/// [`Column`] hugs the label and control rather than claiming the form's full
+/// height; it remains chainable and participates in the standard retained
 /// lifecycle.
 ///
 /// ```
@@ -102,7 +103,9 @@ where
 {
     let label = label.into();
     let control = control.with_form_accessible_name(&label);
-    crate::column![Text::new(&label).with_role(TextRole::Label), control,].with_no_padding()
+    crate::column![Text::new(&label).with_role(TextRole::Label), control,]
+        .with_no_padding()
+        .with_intrinsic_height()
 }
 
 /// Compose a checkbox or toggle with one inline visible and accessible label.
@@ -153,6 +156,30 @@ mod tests {
         assert_eq!(label.name.as_deref(), Some("profile-name-label"));
         assert_eq!(input.role, Role::TextInput);
         assert_eq!(input.name.as_deref(), Some("profile-name-label"));
+    }
+
+    #[test]
+    fn labeled_field_hugs_its_content_inside_a_tall_form() {
+        let field = labeled_field(
+            "profile-name-label",
+            TextInput::local().with_id("profile-name"),
+        );
+        let app = crate::headless::Driver::new(
+            crate::State::new(),
+            Box::new(crate::column![field]),
+            (400, 600),
+        );
+        let targets = app.targets();
+        let field = targets
+            .get("Column[0]/Column[0]")
+            .expect("field wrapper target");
+        let input = targets.get("profile-name").expect("field input target");
+
+        assert!(field.height() < 120.0, "field filled the form: {field:?}");
+        assert!(
+            field.height() >= input.height(),
+            "field clipped input: {field:?}"
+        );
     }
 
     #[test]
