@@ -793,6 +793,7 @@ fn sample_postgres_logs() -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 
