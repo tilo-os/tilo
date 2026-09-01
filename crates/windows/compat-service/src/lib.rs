@@ -27,12 +27,18 @@
     reason = "boundary errors are represented by and documented on typed error enums"
 )]
 
+mod catalogue;
 mod execute;
 mod plan;
 mod protocol;
+mod resources;
 mod service;
+mod session;
 mod store;
 
+pub use catalogue::{
+    CatalogueLoadError, CatalogueLoadReport, ShippedCataloguePaths, load_shipped_catalogue,
+};
 pub use execute::{
     BwrapExecutor, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD, SandboxExecutor,
 };
@@ -42,10 +48,19 @@ pub use plan::{
     RuntimeRegistry, SandboxPlanner, SystemRuntimeRegistry,
 };
 pub use protocol::{
-    PROTOCOL_VERSION, ProtocolError, ProtocolRequest, ProtocolResponse, ResolveRequest,
+    ManagedApplication, PROTOCOL_VERSION, ProtocolError, ProtocolRequest, ProtocolResponse,
+    ResolveRequest,
 };
+pub use resources::SystemResourceBroker;
 pub use service::{
     AccessSummary, CompatibilityService, ExplainStatus, LaunchInput, LaunchReceipt, MatchReason,
     RouteKind, ServiceError, VmDelegate, VmRouteRequest,
 };
-pub use store::{CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore};
+pub use session::{
+    CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
+    SessionClient, SessionError, SessionHandoff, TrustedLauncherRegistry, spawn_session_service,
+};
+pub use store::{
+    CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
+    RegisteredProgram,
+};

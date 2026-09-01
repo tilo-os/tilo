@@ -698,7 +698,9 @@ pub enum PlanError {
 
 #[cfg(test)]
 mod tests {
-    use compat_catalogue::{MatchKind, RunnerSettings, Runtime, SecurityProfileRef};
+    use compat_catalogue::{
+        ApplicationQuery, MatchKind, RunnerSettings, Runtime, SecurityProfileRef,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -735,6 +737,7 @@ mod tests {
             id: "program".to_string(),
             display_name: "Program".to_string(),
             prefix_relative_executable: PathBuf::from("drive_c/Program Files/App/app.exe"),
+            query: ApplicationQuery::executable("app.exe"),
         };
         let state = store.register_program(&state.id, program.clone()).unwrap();
         (directory, store, state, program)
