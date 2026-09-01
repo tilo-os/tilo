@@ -211,6 +211,8 @@ pub struct ApiTesterApp {
     // --- Worker plumbing ---
     tx: Sender<SendOutcome>,
     rx: Receiver<SendOutcome>,
+    resource_send_invocation: Option<qos_actions::InvocationId>,
+    resource_send_result: Option<qos_actions::InvocationUpdate>,
 
     // --- Adaptive chrome: the shared collapsible sidebar/drawer controller
     // (docked-vs-overlay decision, eased reveal, and dimming scrim). ---
@@ -311,6 +313,8 @@ impl ApiTesterApp {
             actions: ui::ActionHost::new(),
             tx,
             rx,
+            resource_send_invocation: None,
+            resource_send_result: None,
             rail: SidebarDrawer::new()
                 .left()
                 .docked_width(SIDEBAR_W)
@@ -485,6 +489,13 @@ impl ApiTesterApp {
             self.dirty = true;
             match outcome {
                 SendOutcome::Ok(resp) => {
+                    if let Some(invocation) = self.resource_send_invocation.take() {
+                        self.resource_send_result =
+                            Some(qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: qos_actions::ActionOutput::default(),
+                            });
+                    }
                     let out = self.outgoing();
                     self.history.insert(
                         0,
@@ -506,6 +517,17 @@ impl ApiTesterApp {
                     self.rebuild_nav();
                 }
                 SendOutcome::Err(e) => {
+                    if let Some(invocation) = self.resource_send_invocation.take() {
+                        self.resource_send_result = Some(qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "api_tester.request_failed".into(),
+                                message: e.clone(),
+                                details: None,
+                                retryable: false,
+                            },
+                        });
+                    }
                     self.error = Some(e);
                 }
             }
@@ -2371,6 +2393,49 @@ impl Widget for ApiTesterApp {
         Ok(true)
     }
 
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::API_TESTER_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.sending || self.resource_send_invocation.is_some() {
+            return Err("another API request is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_send_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.poll_worker();
+        if self
+            .resource_send_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_send_result.take()
+        } else {
+            None
+        }
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         // Drain child structure-dirty flags per the trait contract, then add
         // our own child-set changes. A plain loop, not `.any()`: every child
@@ -2575,5 +2640,23 @@ mod tests {
             "sidebar rows are real focusable widgets"
         );
         assert_eq!(a.nav_rows.len(), a.nav_meta.len());
+    }
+
+    #[test]
+    fn resource_send_reports_worker_completion_instead_of_queue_success() {
+        let mut a = app();
+        let invocation = qos_actions::InvocationId::new();
+        a.resource_send_invocation = Some(invocation);
+        a.tx.send(SendOutcome::Ok(http::sample_response())).unwrap();
+        let doc = AutoCommit::new();
+        assert!(matches!(
+            a.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert!(
+            a.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none(),
+            "terminal delivery is at most once"
+        );
     }
 }
