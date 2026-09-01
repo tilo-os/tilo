@@ -90,12 +90,141 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PendingIdentityAdmission {
     room: crate::shell::state::RoomId,
     name: String,
     role: crate::network::invite::InviteRole,
     expiry_unix_seconds: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InviteAdmissionLedgerFile {
+    version: u32,
+    entries: Vec<InviteAdmissionLedgerEntry>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InviteAdmissionLedgerEntry {
+    invite_id: [u8; 32],
+    admission: PendingIdentityAdmission,
+}
+
+/// Durable authority-side correlation for outstanding bearer hashes.
+///
+/// The signed bearer itself never touches disk. Possession remains with the
+/// inviter/recipient; this file holds only its one-way identifier and the
+/// bounded decision the governing user made. Atomic replacement means a crash
+/// cannot resurrect a consumed invite from a partially written JSON file.
+#[derive(Debug)]
+struct InviteAdmissionLedger {
+    entries: std::collections::HashMap<[u8; 32], PendingIdentityAdmission>,
+    path: Option<std::path::PathBuf>,
+}
+
+impl InviteAdmissionLedger {
+    const VERSION: u32 = 1;
+
+    #[cfg(test)]
+    fn memory() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            path: None,
+        }
+    }
+
+    fn load(path: std::path::PathBuf) -> std::io::Result<Self> {
+        let entries = match std::fs::read(&path) {
+            Ok(bytes) => {
+                let file: InviteAdmissionLedgerFile = serde_json::from_slice(&bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                if file.version != Self::VERSION {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("unsupported invite ledger version {}", file.version),
+                    ));
+                }
+                let mut entries = std::collections::HashMap::new();
+                for entry in file.entries {
+                    if entries.insert(entry.invite_id, entry.admission).is_some() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "duplicate invite id in admission ledger",
+                        ));
+                    }
+                }
+                entries
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::collections::HashMap::new()
+            }
+            Err(error) => return Err(error),
+        };
+        let mut ledger = Self {
+            entries,
+            path: Some(path),
+        };
+        ledger.prune_expired();
+        ledger.persist()?;
+        Ok(ledger)
+    }
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs())
+    }
+
+    fn prune_expired(&mut self) {
+        let now = Self::now();
+        self.entries
+            .retain(|_, admission| admission.expiry_unix_seconds >= now);
+    }
+
+    fn persist(&self) -> std::io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|(invite_id, admission)| InviteAdmissionLedgerEntry {
+                invite_id: *invite_id,
+                admission: admission.clone(),
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.invite_id);
+        let bytes = serde_json::to_vec(&InviteAdmissionLedgerFile {
+            version: Self::VERSION,
+            entries,
+        })
+        .map_err(std::io::Error::other)?;
+        atomic_file::write_with_mode(path, &bytes, 0o600)
+    }
+
+    fn insert(&mut self, id: [u8; 32], admission: PendingIdentityAdmission) -> std::io::Result<()> {
+        self.prune_expired();
+        self.entries.insert(id, admission);
+        self.persist()
+    }
+
+    fn consume(&mut self, id: &[u8; 32]) -> std::io::Result<Option<PendingIdentityAdmission>> {
+        let removed = self.entries.remove(id);
+        self.prune_expired();
+        self.persist()?;
+        Ok(removed)
+    }
+
+    fn get(&self, id: &[u8; 32]) -> Option<&PendingIdentityAdmission> {
+        self.entries.get(id)
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
@@ -146,8 +275,7 @@ pub struct ShellNetwork {
     /// Exact signed invitations awaiting a certificate-bearing person.
     /// Keying by the invite hash permits concurrent invites without letting
     /// one bearer receive another invite's name or role.
-    pending_identity_admissions:
-        Mutex<std::collections::HashMap<[u8; 32], PendingIdentityAdmission>>,
+    pending_identity_admissions: Mutex<InviteAdmissionLedger>,
     /// Invite ids this guest must attach to anti-entropy requests until the
     /// authority's first governance response proves redemption completed.
     pending_redemptions: Mutex<std::collections::HashMap<crate::shell::state::RoomId, [u8; 32]>>,
@@ -361,6 +489,23 @@ impl ShellNetwork {
         // Capacity matches `Actor::spawn`'s command-channel default.
         let (event_tx, event_rx) = mpsc::channel(64);
 
+        let invite_ledger_path = keypair_path.with_extension("pending-invites.json");
+        let invite_ledger =
+            InviteAdmissionLedger::load(invite_ledger_path.clone()).unwrap_or_else(|error| {
+                tracing::error!(
+                    %error,
+                    path = %invite_ledger_path.display(),
+                    "refusing persisted invite admissions because the ledger is invalid"
+                );
+                // Corruption loses pending invitations; it never broadens
+                // admission. Keep the path so the next legitimate invite
+                // atomically replaces the invalid file.
+                InviteAdmissionLedger {
+                    entries: std::collections::HashMap::new(),
+                    path: Some(invite_ledger_path),
+                }
+            });
+
         Ok(Self {
             cmd_tx,
             replica,
@@ -377,7 +522,7 @@ impl ShellNetwork {
             last_sync_kick: Mutex::new(None),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
-            pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+            pending_identity_admissions: Mutex::new(invite_ledger),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
@@ -923,7 +1068,8 @@ impl ShellNetwork {
                     role,
                     expiry_unix_seconds: parsed.expiry_unix_seconds,
                 },
-            );
+            )
+            .map_err(|error| format!("could not persist invite admission: {error}"))?;
         Ok(token)
     }
 
@@ -1569,8 +1715,10 @@ impl ShellNetwork {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
         if admission.room != room || admission.expiry_unix_seconds < now {
-            if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-                pending.remove(&invite_id);
+            if let Ok(mut pending) = self.pending_identity_admissions.lock()
+                && let Err(error) = pending.consume(&invite_id)
+            {
+                tracing::error!(%error, "could not persist expired invite removal");
             }
             return;
         }
@@ -1630,8 +1778,10 @@ impl ShellNetwork {
         tree.flush_to_disk();
         drop(tree);
         drop(replica);
-        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-            pending.remove(&invite_id);
+        if let Ok(mut pending) = self.pending_identity_admissions.lock()
+            && let Err(error) = pending.consume(&invite_id)
+        {
+            tracing::error!(%error, "could not persist consumed invite removal");
         }
         // The guest's first announcement can arrive before exact-token
         // redemption and is therefore refused. Retry certification now that
@@ -1854,7 +2004,7 @@ pub(crate) fn shell_network_for_test(
         last_sync_kick: Mutex::new(None),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
-        pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+        pending_identity_admissions: Mutex::new(InviteAdmissionLedger::memory()),
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
@@ -1868,6 +2018,61 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_admission_ledger_survives_restart_without_storing_bearer() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("pending-invites.json");
+        let id = [0x5a; 32];
+        let admission = PendingIdentityAdmission {
+            room: RoomId::new(),
+            name: "Ada".into(),
+            role: crate::network::invite::InviteRole::Commenter,
+            expiry_unix_seconds: InviteAdmissionLedger::now() + 600,
+        };
+        let mut ledger = InviteAdmissionLedger::load(path.clone()).expect("new ledger");
+        ledger
+            .insert(id, admission.clone())
+            .expect("persist invite");
+        drop(ledger);
+
+        let encoded = std::fs::read(&path).expect("ledger bytes");
+        assert!(!encoded.windows(4).any(|window| window == b"qos-"));
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let restored = InviteAdmissionLedger::load(path).expect("restart load");
+        assert_eq!(restored.get(&id), Some(&admission));
+    }
+
+    #[test]
+    fn consuming_an_invite_is_durable_across_restart() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("pending-invites.json");
+        let id = [0x7b; 32];
+        let admission = PendingIdentityAdmission {
+            room: RoomId::new(),
+            name: "Lin".into(),
+            role: crate::network::invite::InviteRole::Viewer,
+            expiry_unix_seconds: InviteAdmissionLedger::now() + 600,
+        };
+        let mut ledger = InviteAdmissionLedger::load(path.clone()).expect("new ledger");
+        ledger
+            .insert(id, admission.clone())
+            .expect("persist invite");
+        assert_eq!(ledger.consume(&id).expect("consume"), Some(admission));
+        drop(ledger);
+
+        let restored = InviteAdmissionLedger::load(path).expect("restart load");
+        assert!(restored.get(&id).is_none(), "consumed bearer resurrected");
+    }
 
     #[test]
     fn live_session_claims_are_identified_before_dispatch() {
@@ -1963,7 +2168,8 @@ mod tests {
                     role: crate::network::invite::InviteRole::Editor,
                     expiry_unix_seconds: u64::MAX,
                 },
-            );
+            )
+            .expect("persist pending invite");
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.event_tx
@@ -2241,7 +2447,8 @@ mod tests {
                     role: crate::network::invite::InviteRole::Viewer,
                     expiry_unix_seconds: u64::MAX,
                 },
-            );
+            )
+            .expect("persist pending invite");
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
@@ -2418,7 +2625,8 @@ mod tests {
         };
         let (viewer_device, viewer_cert) = make_guest(31, "Viewer device");
         let (editor_device, editor_cert) = make_guest(41, "Editor device");
-        net.pending_identity_admissions.lock().unwrap().extend([
+        let mut pending = net.pending_identity_admissions.lock().unwrap();
+        for (id, admission) in [
             (
                 [11; 32],
                 PendingIdentityAdmission {
@@ -2437,7 +2645,12 @@ mod tests {
                     expiry_unix_seconds: u64::MAX,
                 },
             ),
-        ]);
+        ] {
+            pending
+                .insert(id, admission)
+                .expect("persist pending invite");
+        }
+        drop(pending);
 
         net.redeem_invited_identity(
             room_topic_id(room),
@@ -2623,7 +2836,8 @@ mod tests {
                     role: crate::network::invite::InviteRole::Editor,
                     expiry_unix_seconds: u64::MAX,
                 },
-            );
+            )
+            .expect("persist pending invite");
         net.event_tx
             .try_send(NetEvent::Msg {
                 ws: room_topic_id(our_room),
