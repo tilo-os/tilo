@@ -81,13 +81,15 @@ cargo run -p qos-dev -- new project-workspace --template workspace
 ```
 
 Use `--template workspace` for a composed professional starting point rather
-than an isolated widget example. It creates a resizable master-detail shell
+than an isolated widget example. It creates a responsive master-detail shell
 with stable tree selection, a keyed detail view, and directly document-bound
-fields for each item. Switching items preserves independent edits, while the
-standard app document supplies persistence, collaboration, inspection, and
-undo without app-owned synchronization callbacks. The generated headless
-scenario exercises navigation and editing, and the normal generated test
-includes the initial accessibility audit.
+fields for each item. Wide windows show both panes; compact windows switch
+between full-width navigation and detail panes with an accessible Back action.
+Switching items preserves independent edits, while the standard app document
+supplies persistence, collaboration, inspection, and undo without app-owned
+synchronization callbacks. The generated headless scenario exercises
+navigation and editing, and the normal generated test covers wide and compact
+geometry plus the initial accessibility audit.
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
