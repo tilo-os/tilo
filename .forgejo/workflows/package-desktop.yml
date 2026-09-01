@@ -95,7 +95,7 @@ jobs:
           - arch: arm64
             targets: |-
               arch|docker.io/menci/archlinuxarm@sha256:e08f0be5d8da6c22c165026036508aabd91b004f972dd84799d76a7fdb911ccb|
-              nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
+              nix|docker.io/nixos/nix@sha256:6cda09ae2a6c6c234c5be16dbb196a08d7e07dd74e6246baabc37a81cc2db87e|
               ubuntu-24.04|docker.io/library/ubuntu@sha256:95fa486768020359141f1318720f43e7982ef926c792891d984aef9aaf05e7ea|1+ubuntu24.04
               debian-13|docker.io/library/debian@sha256:0aa0908407cce3da2a90c1d80acc6ca5ca57401ed63eecfa8149b7ba3cc40829|1+deb13
               fedora-44|registry.fedoraproject.org/fedora@sha256:260eeddffc3fa8c1ba71b31cabe08a8b635cbc52d1559e536fca13b2bb9e1721|
