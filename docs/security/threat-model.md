@@ -104,6 +104,8 @@ or locally cached role is not evidence by itself.
 | Parser/resource exhaustion over network | Protocol, invite chain and identity wire formats have bounded inputs and fuzz targets; queues and roles are checked before application. | Sustained bandwidth/CPU/storage denial of service is only partially bounded. |
 | Compromised qDesktop-on-Linux host | Compatibility identity associates with the existing Unix account and creates no second credential. | The host distro, account, boot, disk, session and ambient apps are trusted. This tier is explicitly not a hardened qOS installation. |
 | Recovery abuse or loss | Recovery key is independent of TPM state; destructive rollback-floor/keyslot operations require proof another unlock path works. | Lost recovery material plus lost credential can mean permanent data loss; social/recovery UX needs dedicated tests. |
+| Sleeping or unattended device is reopened | The compositor locks after five idle minutes by default, and the power service requests a lock on every pre-sleep notification. Explicit owner policy may disable idle locking but never the sleep lock. | A software test proves the decision and compositor path; real machines still need timing tests showing the lock is painted before firmware sleep and before post-resume content can scan out. |
+| Authenticator vault copied or read by another app | TOTP secrets are AEAD-sealed and the normal-session key lives in Secret Service, not beside the ciphertext. A legacy local key is deleted only after a verified migration. | Headless/compatibility sessions without Secret Service retain a clearly logged owner-only local fallback. Backups need an explicit recovery/export ceremony rather than copying `vault.enc` alone. |
 
 ## Release decision and evidence levels
 
