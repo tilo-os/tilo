@@ -45,8 +45,8 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 use ui::doc::{put_if_changed, put_text_diffed};
 
@@ -54,6 +54,26 @@ use crate::model::{HistoryEntry, Mode, PlotFn};
 
 /// Registry `type_id` for every calculator action.
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
+pub const CALCULATOR_OPERATION_TYPE: &str = "calculator.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CalculatorOperation {
+    ShowCalculator,
+    ShowGraph2d,
+    ShowGraph3d,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<CalculatorOperation>, String> {
+    if type_id != CALCULATOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
 
 /// The most recent evaluated computations kept in the shared history list. The
 /// front is the newest; overflow is dropped from the tail. Mirrors the model's
@@ -358,8 +378,14 @@ fn graph_label(kind: GraphKind, f: &PlotFn) -> String {
     reason = "mirrors encode()'s always-serializable invariant"
 )]
 fn immediate_spec(id: &str, label: &str, action: &CalculatorAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CALCULATOR_ACTION_TYPE, action)
+    let spec = ActionSpec::immediate(id, label, CALCULATOR_ACTION_TYPE, action)
         .expect("encode calculator action")
+        .reversible();
+    if id.contains("delete") || id.contains("clear") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// Build one graph list's resources (one `calculator.graph` per row).
@@ -404,6 +430,35 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn]) -> Vec<Resource> {
 /// operation is exported as the same action its on-screen affordance dispatches.
 pub fn provide_resources(ctx: &CalcResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calculator.workspace", "calculator.workspace", "Calculator");
+
+    for (id, label, operation) in [
+        (
+            "show-calculator",
+            "Show calculator",
+            CalculatorOperation::ShowCalculator,
+        ),
+        (
+            "show-graph-2d",
+            "Show 2D graph",
+            CalculatorOperation::ShowGraph2d,
+        ),
+        (
+            "show-graph-3d",
+            "Show 3D graph",
+            CalculatorOperation::ShowGraph3d,
+        ),
+    ] {
+        let spec = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::View,
+            CALCULATOR_OPERATION_TYPE,
+            &operation,
+        )
+        .expect("CalculatorOperation is always serializable")
+        .retry_policy(RetryPolicy::Idempotent);
+        root = root.with_action(spec);
+    }
 
     // Workspace-level: add a graph formula (prompted). Offer the kind matching
     // the current mode first; both remain reachable so Ctrl+K can add to either.
@@ -858,6 +913,8 @@ mod tests {
             labels.iter().any(|l| l.contains("Clear history")),
             "{labels:?}"
         );
+        palette.set_query("Delete formula");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete formula")),
             "{labels:?}"

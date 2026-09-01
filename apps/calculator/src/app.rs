@@ -891,6 +891,28 @@ fn field_accepts(ch: char) -> bool {
 }
 
 impl Widget for CalculatorApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.set_mode(match operation {
+            actions::CalculatorOperation::ShowCalculator => Mode::Calc,
+            actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
+            actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
+        });
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if crate::doc::is_seeded(state) {

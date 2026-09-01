@@ -23,8 +23,7 @@ use std::rc::Rc;
 use ui::PathSegment;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionSpec, ExecutionMode, OperationKind, PermissionRequirement, Resource, ResultSpec,
-    RetryPolicy,
+    ActionSpec, OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1007,10 +1006,7 @@ impl Widget for ContainersApp {
                     "containers.container",
                     &payload,
                 ) {
-                    let mut spec = spec
-                        .requiring(PermissionRequirement::Admin)
-                        .privileged()
-                        .execution(ExecutionMode::Background { cancellable: false });
+                    let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
                     if *verb == "remove" {
                         spec = spec.destructive();
                     } else if *verb != "restart" && *verb != "shell" {
@@ -1047,8 +1043,7 @@ impl Widget for ContainersApp {
                 let mut spec = spec
                     .requiring(PermissionRequirement::Admin)
                     .privileged()
-                    .destructive()
-                    .execution(ExecutionMode::Background { cancellable: false });
+                    .destructive();
                 if !self.live {
                     spec = spec.unavailable(
                         "engine_offline",
@@ -1076,8 +1071,7 @@ impl Widget for ContainersApp {
                 let mut spec = spec
                     .requiring(PermissionRequirement::Admin)
                     .privileged()
-                    .destructive()
-                    .execution(ExecutionMode::Background { cancellable: false });
+                    .destructive();
                 if !self.live {
                     spec = spec.unavailable(
                         "engine_offline",

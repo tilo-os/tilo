@@ -878,6 +878,7 @@ impl PdfApp {
             doc_id,
             title,
             page: self.current_page,
+            page_count: self.doc.page_count(),
             author: self.author.clone(),
             created_seed: self.created_counter,
         })
@@ -2506,6 +2507,35 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::PdfOperation;
+        match operation {
+            PdfOperation::PreviousPage => self.prev_page(),
+            PdfOperation::NextPage => self.next_page(),
+            PdfOperation::ZoomIn => self.zoom_by(1.15),
+            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
+            PdfOperation::FitPage => self.fit_page(),
+            PdfOperation::FitWidth => self.fit_width(),
+            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
+            PdfOperation::Open => self.request_open_via_portal(),
+            PdfOperation::SaveAs => self.request_save_via_portal(),
+        }
+        Ok(true)
+    }
+
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.markup_record.clone()
     }
