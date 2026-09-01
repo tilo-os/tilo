@@ -17,6 +17,31 @@ pub trait CompatibilityProvider: Send {
     fn reset_route_override(&mut self, app_id: &str) -> Result<(), String>;
 }
 
+/// Safe live fallback until the compatibility service endpoint is available.
+/// A control-plane UI must never make fixture software look installed.
+pub struct EmptyProvider;
+
+impl CompatibilityProvider for EmptyProvider {
+    fn catalogue(&self) -> Catalogue {
+        Catalogue {
+            apps: Vec::new(),
+            vm: ApplianceState {
+                ready: false,
+                detail: "Waiting for the qOS compatibility service.".into(),
+                running_apps: 0,
+            },
+        }
+    }
+
+    fn set_route_override(&mut self, _app_id: &str, _route: Route) -> Result<(), String> {
+        Err("The qOS compatibility service is not connected.".into())
+    }
+
+    fn reset_route_override(&mut self, _app_id: &str) -> Result<(), String> {
+        Err("The qOS compatibility service is not connected.".into())
+    }
+}
+
 /// Predictable fixture. It deliberately looks like the service response, not a
 /// mock of Wine: code depending on it cannot accidentally gain host execution.
 pub struct SampleProvider {
