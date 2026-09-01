@@ -4567,6 +4567,32 @@ fn write_demo_image() -> Option<PathBuf> {
 }
 
 impl Widget for SlidesApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::SlidesOperation;
+        match operation {
+            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
+            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
+            SlidesOperation::StartPresentation => self.enter_present(),
+            SlidesOperation::EndPresentation => self.exit_present(),
+            SlidesOperation::Open => self.request_odp_open(),
+            SlidesOperation::SaveAs => self.request_odp_save(),
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if SlidesDoc::is_empty(state) {

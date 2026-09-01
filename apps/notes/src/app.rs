@@ -1369,6 +1369,33 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
 }
 
 impl Widget for NotesApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            actions::NotesOperation::OpenPage { page } => {
+                if self.workspace.get(page).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                self.workspace.set_selected(Some(page));
+                self.bound_page = None;
+                self.sidebar.sync_from_workspace(&self.workspace);
+            }
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_empty_note_request(state);
         // Bridge the in-memory workspace to the shared CRDT document:

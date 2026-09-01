@@ -33,9 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use qos_actions::{
-    ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec, RetryPolicy,
-};
+use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, ResultSpec, RetryPolicy};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -447,7 +445,6 @@ impl Widget for DbClientApp {
             OperationKind::Effect,
             |sql| EncodedAction::encode_operation("db_client.query", &sql).expect("string payload"),
         )
-        .execution(ExecutionMode::Background { cancellable: false })
         .returns(ResultSpec::Json {
             schema: serde_json::json!({"type":"object","description":"tabular query result"}),
         });
@@ -469,10 +466,9 @@ impl Widget for DbClientApp {
                 "db_client.connect",
                 &id.to_string(),
             ) {
-                resource.actions.push(
-                    spec.execution(ExecutionMode::Background { cancellable: false })
-                        .retry_policy(RetryPolicy::Idempotent),
-                );
+                resource
+                    .actions
+                    .push(spec.retry_policy(RetryPolicy::Idempotent));
             }
             if !self.demo {
                 let remove = crate::actions::remove_connection_action(id);

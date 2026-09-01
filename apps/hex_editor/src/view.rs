@@ -248,6 +248,7 @@ impl HexView {
             cursor: self.model.cursor(),
             len: self.model.len(),
             selection: self.model.selection(),
+            has_file: self.has_file,
         }
     }
 
@@ -1590,6 +1591,40 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::HexOperation;
+        match operation {
+            HexOperation::Open => self.begin_open(),
+            HexOperation::Save if self.has_file => self.begin_save(),
+            HexOperation::Search if self.has_file => {
+                self.overlay = Overlay::Search;
+                self.search_input.set_focus(true);
+                self.recompute_matches();
+                self.dirty = true;
+            }
+            HexOperation::GotoOffset if self.has_file => {
+                self.overlay = Overlay::Goto;
+                self.goto_input.set_focus(true);
+                self.dirty = true;
+            }
+            _ => return Err("open a file first".into()),
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         // Drain any completed file open/save picks first, so a freshly opened
         // buffer is in place before this frame lays out.
