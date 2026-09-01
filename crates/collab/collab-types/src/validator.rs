@@ -78,6 +78,12 @@ pub enum ValidationError {
     #[error("capability override denies this op class within its scope")]
     CapabilityDenied,
 
+    /// The signed document envelope does not match the app/workspace/record
+    /// route on which it arrived, or does not carry the typed document
+    /// operation shape required by that route.
+    #[error("signed document envelope does not match its collaboration route")]
+    DocumentRouteMismatch,
+
     /// Step 5 sub-case: `op.artifact` is unknown to the validator — without
     /// a kind the role-table lookup is undefined, so we reject.
     #[error("unknown artifact id: {0:?}")]
