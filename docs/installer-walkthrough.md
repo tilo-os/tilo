@@ -57,14 +57,13 @@ Everything currently on the selected installation medium is erased.
 
 For a qOS image, Customize collects the non-destructive install profile before
 the medium is written: account name, host name, locale, keyboard, time zone and
-storage preferences. Exported unattended configuration references secrets
-through `QOS_USER_PASSWORD` and `QOS_LUKS_PASSPHRASE`; it never embeds them.
-Disk selection, destructive confirmation, a fresh startup secret and recovery-
-key acknowledgement remain local to the target computer. The profile transport
-from the host imager into the live installer is still a release blocker: today
-the profile can be exported and audited, but it is not silently embedded into
-the installation medium. That limitation prevents the UI from claiming a
-nearly unattended run before the receiving path exists.
+filesystem. The imager writes a checksummed, secret-free profile into a fixed
+reserved block on the medium and reads it back during verification. Before the
+live UI starts, a privileged one-shot service extracts and verifies that block;
+the installer validates every field again, applies it, and starts at the first
+local decision. Disk selection, erase/alongside choice, a fresh account/startup
+secret and recovery-key acknowledgement remain on the target computer. The
+Review screen shows the resulting choices before any destructive operation.
 
 The current host bundles elevate the imager process for raw-device access; the
 application still has its typed target gate, system-disk acknowledgement, and

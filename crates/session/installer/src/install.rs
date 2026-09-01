@@ -123,7 +123,7 @@ impl Default for InstallOptions {
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             full_name: String::new(),
-            locale: "en_US.UTF-8".to_string(),
+            locale: String::new(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),

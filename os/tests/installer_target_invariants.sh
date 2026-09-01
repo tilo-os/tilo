@@ -10,6 +10,7 @@ encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 containerfile="$repo_root/os/Containerfile.installer"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
+profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
 preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
 fail=0
 
@@ -116,6 +117,24 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
   ok "installer refuses reserved and pre-existing system accounts"
 else
   bad "installer can reset a privileged or pre-existing account"
+fi
+
+if [ -x "$profile_extractor" ] \
+   && grep -Fq 'QOS_INSTALL_PROFILE_V1' "$profile_extractor" \
+   && grep -Fq 'sha256sum "$payload"' "$profile_extractor" \
+   && grep -Fq 'ExecStart=/usr/libexec/qos-installer-profile-extract' \
+      "$repo_root/os/usr/lib/systemd/system/qos-installer-setup.service"; then
+  ok "live installer extracts and verifies the embedded setup profile before greetd"
+else
+  bad "host setup profile is not securely transported into the live installer"
+fi
+
+if grep -Fq -- '--full-name' "$backend" \
+   && grep -Fq -- '--locale' "$backend" \
+   && grep -Fq 'install-user-full-name' "$firstboot_user"; then
+  ok "preconfigured identity and locale reach the installed account"
+else
+  bad "profile identity or locale is dropped before first boot"
 fi
 
 if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \

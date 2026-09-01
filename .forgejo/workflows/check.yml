@@ -105,6 +105,8 @@ jobs:
           bash os/tests/release_security_invariants.sh
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
+          bash os/tests/installer_profile_transport.sh
+          bash os/tests/imager_release_invariants.sh
           bash os/tests/generation_series_security.sh
 
       - name: Select and balance affected packages
