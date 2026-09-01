@@ -120,14 +120,14 @@ jobs:
             image: docker.io/library/debian:13
             revision: 1+deb13
             arch: arm64
-          - id: fedora-42
-            distro: fedora-42
-            image: registry.fedoraproject.org/fedora:42
+          - id: fedora-44
+            distro: fedora-44
+            image: registry.fedoraproject.org/fedora:44
             revision: ""
             arch: amd64
-          - id: fedora-42
-            distro: fedora-42
-            image: registry.fedoraproject.org/fedora:42
+          - id: fedora-44
+            distro: fedora-44
+            image: registry.fedoraproject.org/fedora:44
             revision: ""
             arch: arm64
           - id: arch
