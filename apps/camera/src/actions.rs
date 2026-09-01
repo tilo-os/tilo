@@ -146,7 +146,9 @@ pub struct CameraResourceCtx {
 /// does not for today's plain string/bool/i64 `CameraAction` fields) — a
 /// resource simply drops the action rather than crashing the palette.
 fn immediate_spec(id: &str, label: &str, action: &CameraAction) -> Option<ActionSpec> {
-    ActionSpec::immediate(id, label, CAMERA_ACTION_TYPE, action).ok()
+    ActionSpec::immediate(id, label, CAMERA_ACTION_TYPE, action)
+        .ok()
+        .map(ActionSpec::reversible)
 }
 
 fn item_label(it: &GalleryItem) -> String {
@@ -242,6 +244,7 @@ mod tests {
             .expect("a photo resource");
         let ids: Vec<&str> = photo.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"favorite"), "{ids:?}");
+        assert!(photo.actions[0].contract.reversible);
         assert!(
             gallery.children.iter().any(|r| r.kind == "camera.video"),
             "a video resource"
