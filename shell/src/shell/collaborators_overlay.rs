@@ -34,6 +34,8 @@ pub enum CollaboratorsHit {
     Invite,
     Join,
     RoomActivity,
+    /// Toggle follow for the row at this index.
+    ToggleFollow(usize),
     /// Inside the card, but not on an action.
     Absorb,
     /// Outside the card; the host should close it.
@@ -44,12 +46,16 @@ pub enum CollaboratorsHit {
 /// together, but tagged apart so an agent is never reported as a person.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RosterRow {
+    pub id: String,
     pub label: String,
     pub initial: char,
     pub color: Color,
     pub is_agent: bool,
     pub role: Option<String>,
     pub invited: bool,
+    /// Ephemeral current location, never a history summary.
+    pub activity: Option<String>,
+    pub followable: bool,
 }
 
 /// Immutable data and policy decisions needed to paint one frame.
@@ -58,6 +64,7 @@ pub struct CollaboratorsModel<'a> {
     pub rows: &'a [RosterRow],
     pub unavailable: Option<&'a str>,
     pub may_invite: bool,
+    pub followed_id: Option<&'a str>,
 }
 
 /// The complete interactive surface of the collaborator popover.
@@ -67,6 +74,7 @@ pub struct CollaboratorsOverlay {
     invite: Rect,
     join: Rect,
     activity: Rect,
+    row_actions: Vec<Rect>,
 }
 
 impl CollaboratorsOverlay {
@@ -85,6 +93,11 @@ impl CollaboratorsOverlay {
             model.unavailable.is_some(),
             model.may_invite,
         );
+        for (target, row) in self.row_actions.iter_mut().zip(model.rows) {
+            if !row.followable || target.y1 > self.activity.y0 - 4.0 {
+                *target = Rect::ZERO;
+            }
+        }
         let rect = self.panel;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -145,7 +158,9 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 row,
-                list_top + row_count_as_f64(index) * 36.0,
+                list_top + row_count_as_f64(index) * 48.0,
+                model.followed_id == Some(row.id.as_str()),
+                cursor,
             );
         }
         self.draw_footer(scene, transform, text_renderer, theme, cursor);
@@ -168,6 +183,11 @@ impl CollaboratorsOverlay {
         self.activity
     }
 
+    #[cfg(test)]
+    pub fn row_action_rects(&self) -> &[Rect] {
+        &self.row_actions
+    }
+
     pub fn contains(&self, point: Point) -> bool {
         self.panel.area() > 0.0 && self.panel.contains(point)
     }
@@ -179,6 +199,12 @@ impl CollaboratorsOverlay {
             CollaboratorsHit::Join
         } else if self.activity.area() > 0.0 && self.activity.contains(point) {
             CollaboratorsHit::RoomActivity
+        } else if let Some(index) = self
+            .row_actions
+            .iter()
+            .position(|rect| rect.area() > 0.0 && rect.contains(point))
+        {
+            CollaboratorsHit::ToggleFollow(index)
         } else if self.contains(point) {
             CollaboratorsHit::Absorb
         } else {
@@ -194,11 +220,11 @@ impl CollaboratorsOverlay {
             0.0
         };
         let actions_h = if may_invite { ACTIONS_H } else { 0.0 };
-        let height = 48.0 + warning_h + rows * 36.0 + 16.0 + actions_h + FOOTER_H;
+        let height = 48.0 + warning_h + rows * 48.0 + 16.0 + actions_h + FOOTER_H;
         let x1 = host.x1 - 16.0;
         let y0 = host.y0 + 48.0;
         self.panel = Rect::new(
-            x1 - 260.0,
+            x1 - 320.0,
             y0,
             x1,
             y0 + height.min(420.0 + actions_h + FOOTER_H),
@@ -209,6 +235,17 @@ impl CollaboratorsOverlay {
             self.panel.x1 - 8.0,
             self.panel.y1 - 8.0,
         );
+        self.row_actions = (0..member_count)
+            .map(|index| {
+                let y = self.panel.y0 + 48.0 + warning_h + row_count_as_f64(index) * 48.0;
+                Rect::new(
+                    self.panel.x1 - 88.0,
+                    y + 8.0,
+                    self.panel.x1 - 12.0,
+                    y + 36.0,
+                )
+            })
+            .collect();
         if may_invite {
             let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + 6.0;
             let gap = 8.0;
@@ -234,10 +271,41 @@ impl CollaboratorsOverlay {
         theme: &Theme,
         row: &RosterRow,
         row_y: f64,
+        followed: bool,
+        cursor: Option<Point>,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let center = Point::new(self.panel.x0 + 28.0, row_y + 14.0);
+        let center = Point::new(self.panel.x0 + 28.0, row_y + 24.0);
+        if followed {
+            let active = RoundedRect::new(
+                self.panel.x0 + 8.0,
+                row_y + 3.0,
+                self.panel.x1 - 8.0,
+                row_y + 45.0,
+                f64::from(tokens.radii.md),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                row.color.multiply_alpha(0.12),
+                None,
+                &active,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                row.color,
+                None,
+                &RoundedRect::new(
+                    self.panel.x0 + 8.0,
+                    row_y + 11.0,
+                    self.panel.x0 + 11.0,
+                    row_y + 37.0,
+                    1.5,
+                ),
+            );
+        }
         let avatar_rect = Rect::new(
             center.x - 11.0,
             center.y - 11.0,
@@ -282,17 +350,45 @@ impl CollaboratorsOverlay {
                 theme,
                 text_renderer,
             );
+            // A live spark belongs on the identity itself: it reads as
+            // "here now" without turning the row into a status report.
+            let spark = vello::kurbo::Circle::new(Point::new(center.x + 8.0, center.y + 8.0), 3.5);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                ui::chrome::shell::panel_ground(theme),
+                None,
+                &spark,
+            );
+            scene.fill(Fill::NonZero, transform, row.color, None, &spark);
         }
+        let text_x = self.panel.x0 + 44.0;
+        let label_x1 = if row.is_agent {
+            self.panel.x1 - 142.0
+        } else if row.followable {
+            self.panel.x1 - 96.0
+        } else {
+            self.panel.x1 - 12.0
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the collaborator popover is only a few hundred logical pixels wide"
+        )]
+        let shown_label = text_renderer.elide_to_width(
+            &row.label,
+            tokens.typography.scale.sm,
+            (label_x1 - text_x).max(0.0) as f32,
+        );
         text_renderer.draw_text(
             scene,
-            &row.label,
+            &shown_label,
             tokens.typography.scale.sm,
             if row.invited {
                 colors.text_dim
             } else {
                 colors.text_primary
             },
-            transform.pre_translate((self.panel.x0 + 44.0, row_y + 7.0).into()),
+            transform.pre_translate((text_x, row_y + 8.0).into()),
             None,
         );
         if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
@@ -301,31 +397,57 @@ impl CollaboratorsOverlay {
                 "agent",
                 tokens.typography.scale.xs,
                 colors.text_dim,
-                transform.pre_translate((self.panel.x1 - 56.0, row_y + 9.0).into()),
+                transform.pre_translate((self.panel.x1 - 136.0, row_y + 9.0).into()),
                 None,
             );
         }
         let subtitle = if row.invited {
             Some(INVITED_TAG.to_string())
+        } else if followed {
+            row.activity.as_ref().map_or_else(
+                || Some("Following".to_string()),
+                |activity| Some(format!("Following · {activity}")),
+            )
+        } else if let Some(activity) = &row.activity {
+            Some(activity.clone())
         } else {
             row.role.clone()
         };
         if let Some(subtitle) = subtitle {
-            let (width, _) = text_renderer.measure_weighted(
+            let subtitle_x1 = if row.followable {
+                self.panel.x1 - 96.0
+            } else {
+                self.panel.x1 - 12.0
+            };
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the collaborator popover is only a few hundred logical pixels wide"
+            )]
+            let subtitle = text_renderer.elide_to_width(
                 &subtitle,
                 tokens.typography.scale.xs,
-                None,
-                TextWeight::Regular,
+                (subtitle_x1 - text_x).max(0.0) as f32,
             );
             text_renderer.draw_text(
                 scene,
                 &subtitle,
                 tokens.typography.scale.xs,
                 colors.text_dim,
-                transform
-                    .pre_translate((self.panel.x1 - 16.0 - f64::from(width), row_y + 21.0).into()),
+                transform.pre_translate((text_x, row_y + 27.0).into()),
                 None,
             );
+        }
+        if row.followable {
+            let action = Rect::new(
+                self.panel.x1 - 88.0,
+                row_y + 8.0,
+                self.panel.x1 - 12.0,
+                row_y + 36.0,
+            );
+            let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
+                .radius(f64::from(tokens.radii.sm))
+                .hovered(cursor.is_some_and(|point| action.contains(point)));
+            Button::paint(scene, transform, text_renderer, theme, &face);
         }
     }
 
@@ -420,36 +542,53 @@ pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
         _ => &tree.collaborators,
     };
     let colors = crate::shell::state::roster_colors(roster);
-    let mut rows: Vec<RosterRow> = roster
+    let agent_members = tree
+        .active_workspace()
+        .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
+    let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
+            let agent_role = agent_members
+                .iter()
+                .find(|(agent, _)| agent.eq_ignore_ascii_case(&participant.name))
+                .map(|(_, role)| *role);
+            let is_agent = agent_role.is_some();
             let (red, green, blue) = colors
                 .get(&participant.id)
                 .copied()
                 .unwrap_or_else(|| ui::presence::user_color(&participant.id));
             RosterRow {
+                id: participant.id.clone(),
                 initial: roster_initial(&participant.name),
                 label: participant.name.clone(),
                 color: Color::from_rgb8(red, green, blue),
-                is_agent: false,
-                role: participant.role_id.clone(),
+                is_agent,
+                role: agent_role
+                    .map(|role| crate::shell::state::role_label(role).to_string())
+                    .or_else(|| participant.role_id.clone()),
                 invited: participant.invited,
+                activity: participant
+                    .active_tab
+                    .and_then(|tab| active_tab_title(tree, tab))
+                    .map(|title| format!("Viewing {title}"))
+                    .or_else(|| {
+                        (!participant.invited).then(|| {
+                            if is_agent {
+                                "Working now".to_string()
+                            } else {
+                                "Here now".to_string()
+                            }
+                        })
+                    }),
+                followable: !participant.invited,
             }
         })
         .collect();
-    if let Some(workspace) = tree.active_workspace() {
-        for (agent, role) in workspace.agent_members() {
-            let (red, green, blue) = ui::presence::user_color(&agent);
-            rows.push(RosterRow {
-                initial: roster_initial(&agent),
-                label: agent,
-                color: Color::from_rgb8(red, green, blue),
-                is_agent: true,
-                role: Some(crate::shell::state::role_label(role).to_string()),
-                invited: false,
-            });
-        }
-    }
+    // The collaborators popover is immediate presence, not membership
+    // administration. An agent granted access but not connected belongs in
+    // Members; once its live session arrives in `roster`, the name match
+    // above tags it as an agent and exposes the same cursor/follow affordance
+    // as any other collaborator.
     rows
 }
 
@@ -457,6 +596,18 @@ fn roster_initial(name: &str) -> char {
     name.chars()
         .next()
         .map_or('\u{2022}', |character| character.to_ascii_uppercase())
+}
+
+fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
+    tree.active_workspace()?
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find(|tab| tab.id == tab_id)
+        .map(|tab| tab.title.trim())
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]
@@ -470,6 +621,10 @@ mod tests {
         let (invite, join) = overlay.action_rects();
         assert_eq!(overlay.hit_test(invite.center()), CollaboratorsHit::Invite);
         assert_eq!(overlay.hit_test(join.center()), CollaboratorsHit::Join);
+        assert_eq!(
+            overlay.hit_test(overlay.row_action_rects()[0].center()),
+            CollaboratorsHit::ToggleFollow(0),
+        );
         assert_eq!(
             overlay.hit_test(overlay.activity_rect().center()),
             CollaboratorsHit::RoomActivity
@@ -499,5 +654,6 @@ mod tests {
         assert_eq!(overlay.panel_rect(), Rect::ZERO);
         assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
         assert_eq!(overlay.activity_rect(), Rect::ZERO);
+        assert!(overlay.row_action_rects().is_empty());
     }
 }
