@@ -1,7 +1,14 @@
-# Windows compatibility
+# Windows compatibility: design target and status
 
-qOS presents Windows programs as applications, not as prefixes, compatibility
-tools, or a second desktop.  The implementation has three execution layers:
+> **Status (2026-09): partial implementation.** The catalogue, deterministic
+> route resolver, metadata adapters, capsule/broker core, VM boundary, and
+> provisioning/guest-payload scaffolding exist. The Windows Apps UI still uses
+> an empty live provider until a session daemon is wired to the broker, so the
+> end-to-end launch, RemoteApp publication, and catalogue update flows below
+> are design targets unless explicitly marked current.
+
+qOS is intended to present Windows programs as applications, not as prefixes,
+compatibility tools, or a second desktop. The target has three execution layers:
 
 1. Wine for ordinary desktop programs.
 2. Proton through UMU for games whose catalogue record asks for it.
@@ -50,7 +57,7 @@ directory. It is launched through the existing per-workspace confinement:
 Wine file pickers do not constitute authority to browse the host. qOS grants
 the containing sandbox access; a Windows path alone never does.
 
-## Explainable catalogue resolution
+## Explainable catalogue resolution (implemented core; fallback ordering is roadmap)
 
 Resolution is deterministic and returns an explanation with the launch plan.
 Records match from strongest to weakest identity:
@@ -67,10 +74,12 @@ host paths, preload libraries, environment injection, or commands.
 Unknown desktop software defaults to a fresh Wine capsule. Unknown games do
 not silently use Proton, and no unknown program silently enters the appliance.
 An appliance fallback must be explicit in a trusted record or chosen by the
-user after a failed local launch. The resolver provides an ordered fallback
-plan; the broker records the user's decision before advancing it.
+user after a failed local launch. The resolver currently returns one
+deterministic launch plan. A broker-managed ordered fallback plan, with an
+explicit decision recorded before advancing, is a target behavior rather than
+an automatic live flow.
 
-## The Windows appliance
+## The Windows appliance (design target)
 
 There is exactly one appliance per qOS user. It is a compatibility fallback,
 not an alternative session.
@@ -103,19 +112,21 @@ or unrestricted bridged network.
 
 Per-program launches receive short-lived capability leases from the qOS
 broker. The presentation/file-transfer channel exposes only the resources in
-the lease, and all leases are revoked when the RemoteApp session ends. Network
-uses NAT through the qOS egress policy rather than a host bridge. Clipboard is
-off unless the workspace grant permits it and its enabled state is visible in
-window chrome.
+the lease, and all leases are revoked when the RemoteApp session ends.
+The shipped appliance network is host-only with forwarding disabled; it has no
+NAT or physical-network access by default. Any future egress must be a separate
+brokered capability lease and remain visible in the existing qOS policy
+surface. Clipboard is off unless the workspace grant permits it and its enabled
+state is visible in window chrome.
 
 Guest compromise remains possible, so the appliance is treated as one shared
 security domain: programs inside it can potentially influence each other. The
 UI says this plainly. Programs requiring mutually hostile isolation are not a
 fit for the singleton appliance.
 
-## Management experience
+## Management experience (design target)
 
-The Windows Apps system application lists installed programs and exposes:
+The target Windows Apps system application lists installed programs and exposes:
 
 - current layer, capsule/appliance identity, and catalogue explanation;
 - runner and Windows compatibility settings;
@@ -124,11 +135,11 @@ The Windows Apps system application lists installed programs and exposes:
 - snapshot, repair, duplicate, export, reset, and delete actions;
 - an explicit route override and a reset-to-catalogue action.
 
-Every operation also exists as a qOS action/resource. Accessibility tools,
+The eventual operations should exist as qOS actions/resources. Accessibility tools,
 automation, collaborators, and tests therefore use the same semantic surface
 as the visual UI.
 
-## Updates and rollback
+## Updates and rollback (design target)
 
 The image ships one pinned Wine runner and one pinned UMU/Proton runtime so a
 fresh installation works offline after initial application acquisition.
