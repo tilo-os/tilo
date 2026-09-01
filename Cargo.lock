@@ -2334,7 +2334,10 @@ name = "collab-probe"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "collab-types",
+ "postcard",
  "runtime-collab",
+ "runtime-identity",
  "runtime-portal",
  "tokio",
 ]
