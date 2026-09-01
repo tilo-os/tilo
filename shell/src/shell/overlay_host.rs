@@ -1206,7 +1206,13 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(&PeerSyncRequest::IssueInviteFor(name), copy);
+                    self.run_peer_sync_request(
+                        &PeerSyncRequest::IssueInviteFor {
+                            name,
+                            role: crate::network::invite::InviteRole::Editor,
+                        },
+                        copy,
+                    );
                 }
                 PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
@@ -3820,22 +3826,17 @@ impl ShellOverlayHost {
         Some((sid, group))
     }
 
-    /// The workspace-settings "Copy" button next to the invite link.
+    /// The workspace-settings button that opens the signed invite composer.
     ///
     /// Shared by the draw pass and the click router, so the rect that
     /// paints the button is the rect that can be clicked.
-    fn ws_settings_copy_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::copy_rect_for(self.ws_settings_rect())
+    fn ws_settings_invite_rect(&self) -> Rect {
+        WorkspaceSettingsOverlay::invite_rect_for(self.ws_settings_rect())
     }
 
-    /// Copy-button geometry for integration tests.
-    pub fn ws_settings_copy_rect_for_tests(&self) -> Rect {
-        self.ws_settings_copy_rect()
-    }
-
-    /// When the invite link was last copied, for integration tests.
-    pub fn ws_invite_copied_at_for_tests(&self) -> Option<Instant> {
-        self.workspace_settings_overlay.invite_copied_at()
+    /// Signed-invite button geometry for integration tests.
+    pub fn ws_settings_invite_rect_for_tests(&self) -> Rect {
+        self.ws_settings_invite_rect()
     }
 
     /// Public alias for [`Self::quick_settings_rect`] so integration
@@ -5960,8 +5961,15 @@ impl ShellOverlayHost {
                     st.bump();
                 }
             }
-            WorkspaceSettingsOutcome::CopyInvite => {
-                self.copy_workspace_invite();
+            WorkspaceSettingsOutcome::CreateInvite => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.ws_settings = false;
+                        state.bump();
+                    }
+                    self.peer_sync_overlay.prompt_invite();
+                }
             }
             WorkspaceSettingsOutcome::EditName => {
                 if let Some(chrome) = self.chrome.clone() {
@@ -5985,29 +5993,6 @@ impl ShellOverlayHost {
                     chrome.borrow_mut().commit_workspace_name();
                 }
             }
-        }
-    }
-
-    fn copy_workspace_invite(&mut self) {
-        let link = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| {
-                chrome
-                    .borrow()
-                    .tree()
-                    .active_workspace()
-                    .map(crate::shell::workspace_settings::invite_link)
-            })
-            .unwrap_or_default();
-        if link.is_empty() {
-            return;
-        }
-        ui::text_selection::clipboard_copy(&link);
-        self.workspace_settings_overlay
-            .mark_invite_copied(Instant::now());
-        if let Some(chrome) = self.chrome.clone() {
-            chrome.borrow_mut().bump();
         }
     }
 
@@ -7089,10 +7074,9 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
         return forced;
     }
     let user = state.active_local_user();
-    state
-        .tree()
-        .active_workspace()
-        .is_some_and(|ws| ws.may_administer(&user))
+    let tree = state.tree();
+    tree.active_workspace()
+        .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
 /// Records an app's capability grant on the active workspace: written
@@ -7108,6 +7092,12 @@ fn record_app_grant(
     let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
         return;
     };
+    let Some(room) = tree.active_workspace().map(|w| w.room) else {
+        return;
+    };
+    if !tree.governs_room(room) {
+        return;
+    }
     let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
         return;
     };
@@ -7145,6 +7135,12 @@ where
         let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
             return false;
         };
+        let Some(room) = tree.active_workspace().map(|w| w.room) else {
+            return false;
+        };
+        if !tree.governs_room(room) {
+            return false;
+        }
         let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
             return false;
         };
@@ -10751,7 +10747,7 @@ mod palette_dispatch_tests {
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
         let (mut h, chrome) = host_with_chrome();
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
-            PeerSyncRequest::IssueInviteFor(name) => Ok(format!("token-for-{name}")),
+            PeerSyncRequest::IssueInviteFor { name, .. } => Ok(format!("token-for-{name}")),
             PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
         }));
