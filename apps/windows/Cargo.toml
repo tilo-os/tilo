@@ -29,5 +29,8 @@ taffy.workspace = true
 compat-service = { path = "../../crates/windows/compat-service" }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

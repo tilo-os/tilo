@@ -17,7 +17,7 @@ use compat_service::{
     LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths,
     SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
     VmCandidatePublication, VmDelegate, VmInstallation, VmInstallerInput, VmInventory,
-    VmRouteRequest, load_shipped_catalogue, spawn_session_service,
+    VmRouteRequest, VmUninstallation, load_shipped_catalogue, spawn_session_service,
 };
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
@@ -210,6 +210,21 @@ impl VmDelegate for SessionVmDelegate {
             .publish_install_candidate(workspace_id, entry_id)
     }
 
+    fn uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
+        self.get()
+            .ok()
+            .and_then(|delegate| delegate.uninstallation_status(workspace_id))
+    }
+
+    fn refresh_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .refresh_uninstallation_status(workspace_id)
+    }
+
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
         self.get()
             .map_err(windows_vm::AgentError::Transport)?
@@ -218,11 +233,12 @@ impl VmDelegate for SessionVmDelegate {
 
     fn uninstall_published_application(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<(), windows_vm::LaunchError> {
+    ) -> Result<VmUninstallation, windows_vm::LaunchError> {
         self.get()
             .map_err(windows_vm::AgentError::Transport)?
-            .uninstall_published_application(entry_id)
+            .uninstall_published_application(workspace_id, entry_id)
     }
 
     fn launch(
@@ -375,6 +391,8 @@ mod tests {
     const PUBLISHED: u8 = 8;
     const REMOVED: u8 = 16;
     const UNINSTALLED: u8 = 32;
+    const UNINSTALL_STATUS: u8 = 64;
+    const UNINSTALL_REFRESHED: u8 = 128;
 
     struct RecordingVmDelegate {
         calls: AtomicU8,
@@ -427,6 +445,24 @@ mod tests {
             })
         }
 
+        fn uninstallation_status(&self, _workspace_id: &str) -> Option<VmUninstallation> {
+            self.calls.fetch_or(UNINSTALL_STATUS, Ordering::AcqRel);
+            Some(VmUninstallation {
+                entry_id: "windows-vm-published".to_string(),
+                detail: "test uninstall".to_string(),
+                phase: compat_service::VmInstallationPhase::Completed,
+                exit_code: Some(0),
+            })
+        }
+
+        fn refresh_uninstallation_status(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
+            self.calls.fetch_or(UNINSTALL_REFRESHED, Ordering::AcqRel);
+            Ok(self.uninstallation_status("workspace"))
+        }
+
         fn remove_published_application(
             &self,
             _entry_id: &str,
@@ -437,10 +473,11 @@ mod tests {
 
         fn uninstall_published_application(
             &self,
+            _workspace_id: &str,
             _entry_id: &str,
-        ) -> Result<(), windows_vm::LaunchError> {
+        ) -> Result<VmUninstallation, windows_vm::LaunchError> {
             self.calls.fetch_or(UNINSTALLED, Ordering::AcqRel);
-            Ok(())
+            Ok(self.uninstallation_status("workspace").unwrap())
         }
 
         fn launch(
@@ -477,6 +514,13 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        assert!(delegate.uninstallation_status("workspace").is_some());
+        assert!(
+            delegate
+                .refresh_uninstallation_status("workspace")
+                .unwrap()
+                .is_some()
+        );
         delegate
             .publish_install_candidate("workspace", "candidate")
             .unwrap();
@@ -484,12 +528,19 @@ mod tests {
             .remove_published_application("application")
             .unwrap();
         delegate
-            .uninstall_published_application("application")
+            .uninstall_published_application("workspace", "application")
             .unwrap();
 
         assert_eq!(
             inner.calls.load(Ordering::Acquire),
-            INSTALLED | STATUS | REFRESHED | PUBLISHED | REMOVED | UNINSTALLED
+            INSTALLED
+                | STATUS
+                | REFRESHED
+                | PUBLISHED
+                | REMOVED
+                | UNINSTALLED
+                | UNINSTALL_STATUS
+                | UNINSTALL_REFRESHED
         );
     }
 }

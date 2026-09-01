@@ -170,6 +170,14 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
     presentation: windows_vm::ApplicationPresentation,
     launch_gate: Mutex<()>,
     installer: Mutex<Option<ActiveVmInstallation>>,
+    uninstaller: Mutex<Option<ActiveVmUninstallation>>,
+}
+
+struct ActiveVmUninstallation {
+    workspace_id: String,
+    entry_id: String,
+    operation: windows_vm::UninstallationOperationId,
+    status: crate::VmUninstallation,
 }
 
 struct ActiveVmInstallation {
@@ -204,6 +212,19 @@ impl ActiveVmInstallation {
     }
 }
 
+impl ActiveVmUninstallation {
+    fn belongs_to(&self, workspace_id: &str) -> bool {
+        self.workspace_id == workspace_id
+    }
+
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self.status.phase,
+            VmInstallationPhase::Completed | VmInstallationPhase::Failed
+        )
+    }
+}
+
 impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
     #[must_use]
     pub fn new(
@@ -217,6 +238,7 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
             presentation,
             launch_gate: Mutex::new(()),
             installer: Mutex::new(None),
+            uninstaller: Mutex::new(None),
         }
     }
 
@@ -437,10 +459,72 @@ where
         Ok(())
     }
 
+    fn uninstallation_status(&self, workspace_id: &str) -> Option<crate::VmUninstallation> {
+        self.uninstaller.lock().ok().and_then(|active| {
+            active
+                .as_ref()
+                .filter(|active| active.belongs_to(workspace_id))
+                .map(|active| active.status.clone())
+        })
+    }
+
+    fn refresh_uninstallation_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<crate::VmUninstallation>, windows_vm::LaunchError> {
+        let active = self
+            .uninstaller
+            .lock()
+            .map_err(|_| {
+                windows_vm::LaunchError::CapabilityBroker(
+                    "Windows uninstaller state is unavailable".to_string(),
+                )
+            })?
+            .as_ref()
+            .filter(|active| active.belongs_to(workspace_id))
+            .map(|active| (active.operation.clone(), active.entry_id.clone()));
+        let Some((operation, entry_id)) = active else {
+            return Ok(None);
+        };
+        let guest_status = self.appliance.uninstallation_status(&operation)?;
+        let mut uninstaller = self.uninstaller.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows uninstaller state is unavailable".to_string(),
+            )
+        })?;
+        let active = uninstaller
+            .as_mut()
+            .filter(|active| {
+                active.operation == operation
+                    && active.entry_id == entry_id
+                    && active.belongs_to(workspace_id)
+            })
+            .ok_or(windows_vm::AgentError::InvalidInstaller)?;
+        active.status = vm_uninstallation_from_guest(&entry_id, &guest_status);
+        Ok(Some(active.status.clone()))
+    }
+
     fn uninstall_published_application(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<(), windows_vm::LaunchError> {
+    ) -> Result<crate::VmUninstallation, windows_vm::LaunchError> {
+        let uninstaller = self.uninstaller.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows uninstaller state is unavailable".to_string(),
+            )
+        })?;
+        if let Some(active) = uninstaller.as_ref() {
+            if !active.is_terminal() {
+                return if active.belongs_to(workspace_id) && active.entry_id == entry_id {
+                    Ok(active.status.clone())
+                } else {
+                    Err(windows_vm::AgentError::InvalidInstaller.into())
+                };
+            }
+        }
+        // Do not hold this state lock while presenting the guest surface.
+        drop(uninstaller);
         let catalog = self
             .appliance
             .cached_catalog()?
@@ -456,10 +540,22 @@ where
         // The uninstaller, like setup, is exposed only as a guest-authenticated
         // app-focused SPICE surface with deny-all brokered capabilities.
         self.appliance.present_uninstallation(&prepared)?;
-        let _status = self
+        let guest_status = self
             .appliance
             .uninstallation_status(&prepared.operation_id)?;
-        Ok(())
+        let status = vm_uninstallation_from_guest(entry_id, &guest_status);
+        let mut uninstaller = self.uninstaller.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows uninstaller state is unavailable".to_string(),
+            )
+        })?;
+        *uninstaller = Some(ActiveVmUninstallation {
+            workspace_id: workspace_id.to_string(),
+            entry_id: entry_id.to_string(),
+            operation: prepared.operation_id,
+            status: status.clone(),
+        });
+        Ok(status)
     }
 
     fn launch(
@@ -581,6 +677,32 @@ fn vm_installation_from_guest(
         phase,
         exit_code: status.exit_code,
         candidates,
+    }
+}
+
+fn vm_uninstallation_from_guest(
+    entry_id: &str,
+    status: &windows_vm::UninstallationStatus,
+) -> crate::VmUninstallation {
+    let phase = match status.state {
+        windows_vm::InstallationState::Starting => VmInstallationPhase::Starting,
+        windows_vm::InstallationState::Running => VmInstallationPhase::Running,
+        windows_vm::InstallationState::Completed => VmInstallationPhase::Completed,
+        windows_vm::InstallationState::Failed => VmInstallationPhase::Failed,
+    };
+    let detail = match phase {
+        VmInstallationPhase::Starting => "Windows vendor uninstall is starting.".to_string(),
+        VmInstallationPhase::Running => "Windows vendor uninstall is running.".to_string(),
+        VmInstallationPhase::Completed => "Windows vendor uninstall completed.".to_string(),
+        VmInstallationPhase::Failed => {
+            "Windows vendor uninstall failed; retry is available.".to_string()
+        }
+    };
+    crate::VmUninstallation {
+        entry_id: entry_id.to_string(),
+        detail,
+        phase,
+        exit_code: status.exit_code,
     }
 }
 
@@ -714,5 +836,35 @@ mod tests {
                 .candidate_for("workspace-b", &candidate_entry)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn guest_uninstall_status_preserves_running_and_failed_state() {
+        let operation =
+            windows_vm::UninstallationOperationId::parse("uninstall-operation-a").unwrap();
+        let running = vm_uninstallation_from_guest(
+            "windows-vm-entry",
+            &windows_vm::UninstallationStatus {
+                operation_id: operation.clone(),
+                state: windows_vm::InstallationState::Running,
+                exit_code: None,
+                catalog_generation: None,
+            },
+        );
+        assert_eq!(running.phase, VmInstallationPhase::Running);
+        assert!(running.detail.contains("running"));
+
+        let failed = vm_uninstallation_from_guest(
+            "windows-vm-entry",
+            &windows_vm::UninstallationStatus {
+                operation_id: operation,
+                state: windows_vm::InstallationState::Failed,
+                exit_code: Some(1),
+                catalog_generation: None,
+            },
+        );
+        assert_eq!(failed.phase, VmInstallationPhase::Failed);
+        assert_eq!(failed.exit_code, Some(1));
+        assert!(failed.detail.contains("retry"));
     }
 }
