@@ -425,7 +425,43 @@ impl SessionFollowDispatcher {
     }
 }
 
+/// Cloneable, transport-owning facade used by shell search providers. It
+/// keeps only the shared action directory alive, never the broker threads or
+/// socket owner.
+#[derive(Clone)]
+pub struct AppActionBroker {
+    state: Arc<CapnpBrokerState>,
+}
+
+impl AppActionBroker {
+    pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
+        self.state.published_surfaces()
+    }
+
+    pub fn invoke(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<
+        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
+        String,
+    > {
+        self.state
+            .invoke(peer_id, resource, action, argument, actor)
+    }
+}
+
 impl BrokerHandle {
+    /// Cloneable handle for the live resource/action search provider.
+    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
+        self.fanout
+            .capnp_state()
+            .map(|state| AppActionBroker { state })
+    }
+
     /// Number of typed connections accepted since this broker started.
     pub fn peer_count(&self) -> usize {
         // Saturates rather than truncates on a 32-bit target — this is a
@@ -481,6 +517,35 @@ impl BrokerHandle {
     /// to install a [`ChannelState`] before sending signed envelopes.
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
+    }
+
+    /// Snapshot the resource/action surfaces live applications published to
+    /// this session. The values are inert; invoking is a separate operation.
+    pub fn published_action_surfaces(
+        &self,
+    ) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
+        self.fanout
+            .capnp_state()
+            .map_or_else(Vec::new, |state| state.published_surfaces())
+    }
+
+    /// Direct one invocation to the exact application connection that
+    /// published the addressed operation.
+    pub fn invoke_published_action(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<
+        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
+        String,
+    > {
+        self.fanout
+            .capnp_state()
+            .ok_or_else(|| "the application action broker is unavailable".to_string())?
+            .invoke(peer_id, resource, action, argument, actor)
     }
 
     /// Install a populated [`ChannelState`] for one artifact id.

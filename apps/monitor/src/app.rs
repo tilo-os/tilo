@@ -29,6 +29,7 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -4171,6 +4172,64 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("processes", "monitor.processes", "Processes");
+        for process in &self.model.processes {
+            let mut resource = Resource::new(
+                format!("process:{}", process.pid),
+                "monitor.process",
+                format!("{} ({})", process.name, process.pid),
+            );
+            for (verb, label) in [("stop", "Stop process"), ("kill", "Force kill")] {
+                let payload = vec![verb.to_string(), process.pid.to_string()];
+                if let Ok(spec) = ActionSpec::operation(
+                    verb,
+                    label,
+                    OperationKind::Effect,
+                    "monitor.signal",
+                    &payload,
+                ) {
+                    resource.actions.push(spec);
+                }
+            }
+            root.children.push(resource);
+        }
+        vec![root]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "monitor.signal" {
+            return Ok(false);
+        }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let pid = args
+            .get(1)
+            .ok_or_else(|| "missing pid".to_string())?
+            .parse::<u32>()
+            .map_err(|e| e.to_string())?;
+        let signal = match args.first().map(String::as_str) {
+            Some("stop") => StopKind::Term,
+            Some("kill") => StopKind::Kill,
+            _ => return Ok(false),
+        };
+        if !self.model.processes.iter().any(|p| p.pid == pid) {
+            return Err("process is no longer running".into());
+        }
+        let _ = self.sampler.signal(pid, signal);
+        self.model.processes.retain(|p| p.pid != pid);
+        if self.selected_pid == Some(pid) {
+            self.selected_pid = None;
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Pull durable preferences out of the CRDT each sync.
         self.prefs = Prefs::load(state, path);

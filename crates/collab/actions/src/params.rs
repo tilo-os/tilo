@@ -31,6 +31,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Marks the legacy single-string invocation slot as carrying a canonical
+/// JSON argument object. The record-separator prefix cannot be produced by a
+/// normal palette text field, preserving unambiguous backward compatibility.
+pub const ARGUMENTS_JSON_PREFIX: &str = "\u{1e}qos-args:";
+
 /// A string that is either a `&'static str` (so a parameter list can be a
 /// `const`) or owned (so an app can build one per frame from its document).
 pub type Str = Cow<'static, str>;

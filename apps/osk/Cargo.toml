@@ -22,6 +22,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
+qos-actions = { path = "../../crates/collab/actions" }
 # Real FUTO swipe decoder (ExecuTorch over FFI). Builds a stub reporting
 # "unavailable" when the FUTO libs aren't linked, so the OSK falls back to
 # its geometric decoder — see src/futo.rs.
@@ -30,6 +31,7 @@ swipe = { path = "../../crates/system/swipe" }
 # impl can build a taffy node, draw into a vello `Scene`, react to winit
 # events, and (for tests/headless) carry an automerge handle.
 automerge.workspace = true
+serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

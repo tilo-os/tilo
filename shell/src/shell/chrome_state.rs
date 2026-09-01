@@ -774,6 +774,28 @@ impl ChromeState {
         self.active_tab_ref().map(|t| t.id)
     }
 
+    /// Canonical package/app id of the focused tab, used to scope dynamic
+    /// providers that can represent more than one application.
+    pub fn active_app_id(&self) -> Option<crate::shell::state::AppId> {
+        let tree = self.tree();
+        let ws_id = tree.active;
+        let strip_id = tree.active_strip.get(&ws_id).copied()?;
+        let group_id = tree.active_group.get(&strip_id).copied()?;
+        let tab_id = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == ws_id)?
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)?
+            .window_groups
+            .iter()
+            .find(|group| group.id == group_id)?
+            .active_tab;
+        drop(tree);
+        self.tab_app_id(strip_id, group_id, tab_id)
+    }
+
     /// `None` when no workspace/strip/group is tracked yet — the honest
     /// "no focused app" state rather than falling back to `.first()`.
     fn active_tab_ref(&self) -> Option<crate::shell::state::TabRef> {
