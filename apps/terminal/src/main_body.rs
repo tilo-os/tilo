@@ -21,8 +21,8 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
@@ -35,6 +35,8 @@ use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
+
+use crate::graphics::{GraphicsScanner, StreamEvent, TerminalImagePlacement, parse_kitty};
 
 /// Cell coordinate within the terminal buffer. `row` is an **absolute** index
 /// into the full `grid` (scrollback included), not a viewport-local row — the
@@ -260,11 +262,15 @@ pub struct TermModes {
     /// `?1` — arrow keys send `ESC O A` instead of `ESC [ A` (DECCKM).
     pub app_cursor_keys: bool,
     /// `?1000`/`?1002`/`?1003` — some form of mouse reporting requested.
-    /// Tracked so wheel scrolling can defer to the app; event forwarding
-    /// itself is intentionally a stub.
     pub mouse_report: bool,
+    /// The active xterm mouse tracking mode: 0, 1000 (buttons), 1002
+    /// (button-motion), or 1003 (all motion). Keeping the exact mode lets us
+    /// forward only the events the application requested.
+    pub mouse_tracking: u16,
     /// `?1006` — SGR-encoded mouse coordinates requested.
     pub mouse_sgr: bool,
+    /// `?1004` — report window focus in/out to the foreground application.
+    pub focus_report: bool,
 }
 
 impl Default for TermModes {
@@ -274,7 +280,9 @@ impl Default for TermModes {
             bracketed_paste: false,
             app_cursor_keys: false,
             mouse_report: false,
+            mouse_tracking: 0,
             mouse_sgr: false,
+            focus_report: false,
         }
     }
 }
@@ -494,6 +502,11 @@ pub struct TerminalWidget {
     /// every printed cell adopts it so a multi-cell link shares one id.
     /// Survives across `feed` calls so a link spanning PTY reads stays whole.
     current_link_id: u16,
+    /// Content-addressed graphics descriptors. Bytes live in qdoc's shared
+    /// blob substrate; only immutable hashes and cell placement ride Automerge.
+    images_id: Option<ObjId>,
+    image_placements: Vec<TerminalImagePlacement>,
+    graphics_scanner: GraphicsScanner,
 
     /// Stable per-instance id used to scope this terminal's collaboration
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
@@ -512,6 +525,11 @@ pub struct TerminalWidget {
     /// App delivers the resulting `External` event (`on_external_event`), so a
     /// burst of PTY reads sends at most one wake per processed frame.
     wake_pending: Arc<AtomicBool>,
+    /// Buttons currently held while an application has mouse tracking active.
+    /// Bits 0/1/2 are left/middle/right. This is local input state, never
+    /// replicated with the shared terminal screen.
+    mouse_buttons: u8,
+    focused: bool,
 }
 
 impl TerminalWidget {
@@ -589,9 +607,14 @@ impl TerminalWidget {
             links: HashMap::new(),
             next_link_id: 0,
             current_link_id: 0,
+            images_id: None,
+            image_placements: Vec::new(),
+            graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
             waker: Arc::new(Mutex::new(None)),
             wake_pending: Arc::new(AtomicBool::new(false)),
+            mouse_buttons: 0,
+            focused: false,
         }
     }
 
@@ -785,6 +808,13 @@ impl TerminalWidget {
         (self.width, self.height)
     }
 
+    /// Shared, content-addressed graphics placements discovered in the output
+    /// stream. Rendering is deliberately separate: callers can resolve `hash`
+    /// through qdoc's blob store once a decoder/renderer is available.
+    pub fn image_placements(&self) -> &[TerminalImagePlacement] {
+        &self.image_placements
+    }
+
     /// Number of grid rows currently visible, from the paint geometry.
     fn current_visible_rows(&self) -> usize {
         (self.grid_rect.height() / self.char_h.max(1.0))
@@ -908,12 +938,20 @@ impl TerminalWidget {
         // `init_crdt` just above always establishes these ids; if it somehow
         // bailed out early (a `put_object` failure on the underlying doc),
         // there is nothing to feed into.
-        let (Some(main_grid_id), Some(alt_grid_id), Some(cursor_id), Some(links_id)) = (
+        let (
+            Some(main_grid_id),
+            Some(alt_grid_id),
+            Some(cursor_id),
+            Some(links_id),
+            Some(images_id),
+        ) = (
             self.grid_id.clone(),
             self.alt_grid_id.clone(),
             self.cursor_id.clone(),
             self.links_id.clone(),
-        ) else {
+            self.images_id.clone(),
+        )
+        else {
             return;
         };
         let mut performer = TerminalPerformer {
@@ -922,6 +960,7 @@ impl TerminalWidget {
             alt_grid_id,
             cursor_id,
             links_id,
+            images_id,
             main_line_ids: &mut self.line_ids,
             alt_line_ids: &mut self.alt_line_ids,
             alt_active: &mut self.alt_active,
@@ -942,8 +981,15 @@ impl TerminalWidget {
             responses: &mut responses,
             print_buf: None,
         };
-        // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
-        self.parser.advance(&mut performer, bytes);
+        // vte deliberately discards APC payloads, while Kitty graphics uses
+        // APC (`ESC _ G … ESC \\`). A tiny streaming pre-parser extracts only
+        // that protocol and leaves every ordinary ANSI byte untouched.
+        for event in self.graphics_scanner.push(bytes) {
+            match event {
+                StreamEvent::Bytes(bytes) => self.parser.advance(&mut performer, &bytes),
+                StreamEvent::Kitty(payload) => performer.kitty_graphics(&payload),
+            }
+        }
         // Write the cursor into the CRDT exactly once per feed rather than on
         // every printed cell — the per-cell `put` was pure churn (the cursor
         // is read back only by `sync`/`init_crdt`).
@@ -955,6 +1001,9 @@ impl TerminalWidget {
         self.scroll_top = performer.scroll_top;
         self.scroll_bottom = performer.scroll_bottom;
         self.current_link_id = performer.current_link_id;
+        if !self.modes.mouse_report {
+            self.mouse_buttons = 0;
+        }
 
         // Answer any capability queries this batch raised. The performer's
         // borrow of `self` has ended, so we can take the PTY writer lock and
@@ -1123,6 +1172,17 @@ impl TerminalWidget {
                 self.links_id = Some(id);
             }
         }
+        if self.images_id.is_none() {
+            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_images")
+            {
+                self.images_id = Some(id);
+            } else {
+                let Ok(id) = state.put_object(root, "terminal_images", ObjType::List) else {
+                    return;
+                };
+                self.images_id = Some(id);
+            }
+        }
 
         // Adopt (or seed) a shared pane id so both peers of a shared terminal
         // scope their collaboration presence under the *same* `PresenceKey`,
@@ -1216,17 +1276,37 @@ impl Widget for TerminalWidget {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut terminal = Resource::new("terminal", "terminal.session", "Terminal session");
         terminal.actions.push(ActionSpec::prompted_operation(
-            "send", "Send text", "Text to send", "command", OperationKind::Effect,
+            "send",
+            "Send text",
+            "Text to send",
+            "command",
+            OperationKind::Effect,
             |text| EncodedAction::encode_operation("terminal.send", &text).expect("string payload"),
         ));
-        for (id, label) in [("interrupt", "Interrupt process"), ("clear", "Clear screen")] {
-            if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id) { terminal.actions.push(spec); }
+        for (id, label) in [
+            ("interrupt", "Interrupt process"),
+            ("clear", "Clear screen"),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
+            {
+                terminal.actions.push(spec);
+            }
         }
         vec![terminal]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
-        if kind != OperationKind::Effect { return Ok(false); }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
             "terminal.send" => self.write_input(value.as_bytes()),
@@ -1314,6 +1394,7 @@ impl Widget for TerminalWidget {
         let len = state.length(&grid_id);
         self.refresh_grid_mirror(state, &line_ids, len, full_reread);
         self.refresh_title_and_links(state, root);
+        self.refresh_image_placements(state);
         self.refresh_cursor_from_crdt(state, line_ids.len());
     }
 
@@ -1545,25 +1626,21 @@ impl Widget for TerminalWidget {
         self.init_crdt(state, root);
 
         match event {
-            WindowEvent::MouseWheel { delta, .. } => self.handle_wheel_event(delta, handled),
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.handle_wheel_event(delta, *modifiers, handled);
+            }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved_event(*position, scale_factor, handled);
+                self.handle_cursor_moved_event(*position, scale_factor, *modifiers, handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
-                button: MouseButton::Left,
+                button,
                 ..
-            } => self.handle_left_click_event(*element_state, *modifiers, handled),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Middle,
-                ..
-            } => self.handle_middle_click_event(handled),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => self.handle_right_click_event(handled),
+            } => self.handle_mouse_button_event(*element_state, *button, *modifiers, handled),
+            WindowEvent::Focused(focused) if self.modes.focus_report => {
+                self.write_input(if *focused { b"\x1b[I" } else { b"\x1b[O" });
+                *handled = true;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1588,6 +1665,56 @@ impl Widget for TerminalWidget {
     }
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.focused.then(|| {
+            let row = self
+                .grid
+                .len()
+                .saturating_sub(self.height)
+                .saturating_add(self.cursor_y)
+                .saturating_sub(self.viewport_start_y);
+            let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
+            let y = self.grid_rect.y0 + row as f64 * self.char_h;
+            Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
+        })
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let visible_rows = self.current_visible_rows();
+        let end = (self.viewport_start_y + visible_rows).min(self.grid.len());
+        let value = self
+            .grid
+            .get(self.viewport_start_y..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|row| row.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(
+            AccessNode::new(Role::MultilineTextInput)
+                .with_name(self.title.clone())
+                .with_description(
+                    "Interactive terminal session; output is shared with collaborators",
+                )
+                .with_value(value)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    multiline: true,
+                    ..Default::default()
+                }),
+        )
     }
 
     /// Scope this terminal's collaboration presence to a shared pane id (see
@@ -1662,7 +1789,12 @@ impl Widget for TerminalWidget {
 
 impl TerminalWidget {
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
-    fn handle_wheel_event(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
+    fn handle_wheel_event(
+        &mut self,
+        delta: &MouseScrollDelta,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
         if !self.rect.contains(self.last_cursor_pos) {
             return;
         }
@@ -1671,6 +1803,17 @@ impl TerminalWidget {
             MouseScrollDelta::PixelDelta(pos) => (pos.y / self.char_h.max(1.0)).round() as i32,
         };
         if lines == 0 {
+            return;
+        }
+        if self.modes.mouse_report
+            && !modifiers.state().shift_key()
+            && self.grid_rect.contains(self.last_cursor_pos)
+        {
+            // xterm encodes wheel up/down as virtual buttons 4/5. One report
+            // per platform wheel event avoids turning high-resolution touchpad
+            // deltas into an input flood; the application owns acceleration.
+            self.report_mouse(if lines > 0 { 64 } else { 65 }, true, modifiers);
+            *handled = true;
             return;
         }
         if self.alt_active && !self.modes.mouse_report {
@@ -1705,6 +1848,7 @@ impl TerminalWidget {
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
         scale_factor: f64,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         // Always cache pointer position so the next MouseInput::Pressed
@@ -1712,10 +1856,117 @@ impl TerminalWidget {
         // winit (Pressed arrives without coordinates).
         let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor_pos = logical;
+        if self.modes.mouse_report
+            && !modifiers.state().shift_key()
+            && (self.modes.mouse_tracking == 1003
+                || (self.modes.mouse_tracking == 1002 && self.mouse_buttons != 0))
+            && self.grid_rect.contains(logical)
+        {
+            let button = self.held_mouse_code().unwrap_or(3) + 32;
+            self.report_mouse(button, true, modifiers);
+            *handled = true;
+            return;
+        }
         if self.drag_select.is_dragging() && self.selection.is_some() {
             let pos = self.pos_from_logical(logical);
             self.extend_drag_to(pos);
             *handled = true;
+        }
+    }
+
+    fn handle_mouse_button_event(
+        &mut self,
+        element_state: ElementState,
+        button: MouseButton,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        let Some((mask, code)) = (match button {
+            MouseButton::Left => Some((1, 0)),
+            MouseButton::Middle => Some((2, 1)),
+            MouseButton::Right => Some((4, 2)),
+            _ => None,
+        }) else {
+            return;
+        };
+
+        // Shift is the conventional terminal-emulator override: it keeps
+        // selection, primary paste, and the context menu reachable while a TUI
+        // owns ordinary pointer input.
+        let pressed = matches!(element_state, ElementState::Pressed);
+        if self.modes.mouse_report
+            && !modifiers.state().shift_key()
+            && (self.grid_rect.contains(self.last_cursor_pos)
+                || (!pressed && self.mouse_buttons & mask != 0))
+        {
+            self.report_mouse(code, pressed, modifiers);
+            if pressed {
+                self.mouse_buttons |= mask;
+            } else {
+                self.mouse_buttons &= !mask;
+            }
+            *handled = true;
+            return;
+        }
+
+        match button {
+            MouseButton::Left => {
+                self.handle_left_click_event(element_state, modifiers, handled);
+            }
+            MouseButton::Middle if matches!(element_state, ElementState::Pressed) => {
+                self.handle_middle_click_event(handled);
+            }
+            MouseButton::Right if matches!(element_state, ElementState::Pressed) => {
+                self.handle_right_click_event(handled);
+            }
+            _ => {}
+        }
+    }
+
+    fn held_mouse_code(&self) -> Option<u8> {
+        if self.mouse_buttons & 1 != 0 {
+            Some(0)
+        } else if self.mouse_buttons & 2 != 0 {
+            Some(1)
+        } else if self.mouse_buttons & 4 != 0 {
+            Some(2)
+        } else {
+            None
+        }
+    }
+
+    /// Forward one xterm-compatible mouse report. SGR mode is preferred by
+    /// modern TUIs and has unbounded coordinates; the legacy X10 form remains
+    /// for older applications and is safely capped to its byte range.
+    fn report_mouse(&mut self, mut button: u8, pressed: bool, modifiers: winit::event::Modifiers) {
+        let mods = modifiers.state();
+        if mods.shift_key() {
+            button |= 4;
+        }
+        if mods.alt_key() {
+            button |= 8;
+        }
+        if mods.control_key() {
+            button |= 16;
+        }
+        let x = ((((self.last_cursor_pos.x - self.grid_rect.x0) / self.char_w.max(1.0))
+            .floor()
+            .max(0.0) as usize)
+            + 1)
+        .min(self.width.max(1));
+        let y = ((((self.last_cursor_pos.y - self.grid_rect.y0) / self.char_h.max(1.0))
+            .floor()
+            .max(0.0) as usize)
+            + 1)
+        .min(self.current_visible_rows());
+        if self.modes.mouse_sgr {
+            let final_byte = if pressed { 'M' } else { 'm' };
+            self.write_input(format!("\x1b[<{button};{x};{y}{final_byte}").as_bytes());
+        } else {
+            let legacy_button = if pressed { button } else { 3 | (button & 28) };
+            let x = x.min(223) as u8 + 32;
+            let y = y.min(223) as u8 + 32;
+            self.write_input(&[0x1b, b'[', b'M', legacy_button + 32, x, y]);
         }
     }
 
@@ -1817,6 +2068,16 @@ impl TerminalWidget {
                 *handled = true;
                 return;
             }
+        }
+        // Shift+Insert remains the broadly compatible terminal paste gesture
+        // (especially useful over remote-desktop/keymaps where Ctrl+Shift+V is
+        // intercepted). It uses the same bracketed-paste-safe path.
+        if mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::Insert)) {
+            if let Some(text) = clipboard_paste() {
+                self.paste(&text);
+            }
+            *handled = true;
+            return;
         }
 
         // Scrollback navigation — only intercepted for the main
@@ -1943,6 +2204,64 @@ impl TerminalWidget {
                 }
             }
         }
+    }
+
+    fn refresh_image_placements(&mut self, state: &AutoCommit) {
+        let Some(images_id) = &self.images_id else {
+            return;
+        };
+        let scalar_u64 = |id: &ObjId, key: &str| -> Option<u64> {
+            let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
+                return None;
+            };
+            value.to_u64()
+        };
+        let scalar_string = |id: &ObjId, key: &str| -> Option<String> {
+            let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
+                return None;
+            };
+            value.to_str().map(ToOwned::to_owned)
+        };
+        let scalar_bool = |id: &ObjId, key: &str| -> Option<bool> {
+            let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
+                return None;
+            };
+            match value.as_ref() {
+                automerge::ScalarValue::Boolean(value) => Some(*value),
+                _ => None,
+            }
+        };
+        let mut placements = Vec::with_capacity(state.length(images_id));
+        for index in 0..state.length(images_id) {
+            let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(images_id, index) else {
+                continue;
+            };
+            let (Some(hash), Some(mime)) = (scalar_string(&id, "hash"), scalar_string(&id, "mime"))
+            else {
+                continue;
+            };
+            placements.push(TerminalImagePlacement {
+                hash,
+                mime,
+                byte_len: scalar_u64(&id, "byte_len").unwrap_or(0),
+                row: scalar_u64(&id, "row")
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0),
+                col: scalar_u64(&id, "col")
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0),
+                columns: scalar_u64(&id, "columns")
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
+                rows: scalar_u64(&id, "rows")
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
+                protocol_id: scalar_u64(&id, "protocol_id")
+                    .and_then(|value| u32::try_from(value).ok()),
+                alternate_screen: scalar_bool(&id, "alternate_screen").unwrap_or(false),
+            });
+        }
+        self.image_placements = placements;
     }
 
     /// Refresh the cursor position from the CRDT, converting the
@@ -2338,7 +2657,7 @@ impl TerminalWidget {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surface_white_5,
+            theme.tokens.colors.lift(0.2),
             None,
             &track,
         );
@@ -2769,6 +3088,17 @@ impl TerminalWidget {
         let ctrl = mods.control_key();
         let mod_param = Self::key_mod_param(shift, alt, ctrl);
 
+        // GUI-terminal quality-of-life bindings that map to established shell
+        // editing bytes rather than inventing a qOS-only protocol.
+        if matches!(key, Key::Named(NamedKey::Backspace)) {
+            if ctrl && !alt {
+                return Some(vec![0x17]); // ^W: erase previous word
+            }
+            if alt && !ctrl {
+                return Some(vec![0x1b, 0x7f]); // Meta-DEL: backward-kill-word
+            }
+        }
+
         match key {
             Key::Named(named) => {
                 Self::map_named_key(*named, shift, mod_param, self.modes.app_cursor_keys)
@@ -2915,6 +3245,7 @@ pub struct TerminalPerformer<'a> {
     /// CRDT map (`terminal_links`) storing OSC 8 link id → URL, so hyperlinks
     /// resolve on every peer, not just the host that parsed the sequence.
     pub links_id: ObjId,
+    pub images_id: ObjId,
     pub main_line_ids: &'a mut Vec<ObjId>,
     pub alt_line_ids: &'a mut Vec<ObjId>,
     pub alt_active: &'a mut bool,
@@ -3235,6 +3566,46 @@ impl Perform for TerminalPerformer<'_> {
 }
 
 impl TerminalPerformer<'_> {
+    /// Persist a complete direct Kitty transmission as a content-addressed blob
+    /// plus a lightweight CRDT placement descriptor. There is intentionally no
+    /// success reply yet: accepting bytes is not the same promise as rendering
+    /// them, and applications must not be told graphics are visible until the
+    /// decode/paint path exists.
+    fn kitty_graphics(&mut self, payload: &[u8]) {
+        self.flush_print_buf();
+        let Some(image) = parse_kitty(payload) else {
+            return;
+        };
+        if image.mime == "image/png" && qdoc::blobstore::sniff(&image.bytes).mime != "image/png" {
+            return;
+        }
+        let hash = qdoc::blobstore::put(&image.bytes);
+        let index = self.state.length(&self.images_id);
+        let Ok(placement) = self
+            .state
+            .insert_object(&self.images_id, index, ObjType::Map)
+        else {
+            return;
+        };
+        let _ = self.state.put(&placement, "hash", hash);
+        let _ = self.state.put(&placement, "mime", image.mime);
+        let _ = self
+            .state
+            .put(&placement, "byte_len", image.bytes.len() as u64);
+        let _ = self.state.put(&placement, "row", self.absolute_y() as u64);
+        let _ = self.state.put(&placement, "col", self.cursor_x as u64);
+        let _ = self
+            .state
+            .put(&placement, "columns", u64::from(image.columns));
+        let _ = self.state.put(&placement, "rows", u64::from(image.rows));
+        let _ = self
+            .state
+            .put(&placement, "alternate_screen", *self.alt_active);
+        if let Some(id) = image.protocol_id {
+            let _ = self.state.put(&placement, "protocol_id", u64::from(id));
+        }
+    }
+
     fn csi_first(p: &vte::Params) -> u16 {
         p.iter()
             .next()
@@ -3453,7 +3824,47 @@ impl TerminalPerformer<'_> {
                     let _ = self.state.delete(&grid_id, 0);
                 }
                 self.main_line_ids.drain(0..overflow);
+                self.shift_main_image_placements(overflow);
                 *self.trimmed_front += overflow;
+            }
+        }
+    }
+
+    fn shift_main_image_placements(&mut self, removed_rows: usize) {
+        for index in (0..self.state.length(&self.images_id)).rev() {
+            let Ok(Some((Value::Object(ObjType::Map), placement))) =
+                self.state.get(&self.images_id, index)
+            else {
+                continue;
+            };
+            let alternate = self
+                .state
+                .get(&placement, "alternate_screen")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| match value.into_scalar()?.as_ref() {
+                    automerge::ScalarValue::Boolean(value) => Some(*value),
+                    _ => None,
+                })
+                .unwrap_or(false);
+            if alternate {
+                continue;
+            }
+            let row = self
+                .state
+                .get(&placement, "row")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_scalar())
+                .and_then(|value| value.to_u64())
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            if row < removed_rows {
+                let _ = self.state.delete(&self.images_id, index);
+            } else {
+                let _ = self
+                    .state
+                    .put(&placement, "row", (row - removed_rows) as u64);
             }
         }
     }
@@ -3699,7 +4110,16 @@ impl TerminalPerformer<'_> {
             match n {
                 1 => self.modes.app_cursor_keys = enable,
                 25 => self.modes.cursor_visible = enable,
-                1000 | 1002 | 1003 => self.modes.mouse_report = enable,
+                1000 | 1002 | 1003 => {
+                    if enable {
+                        self.modes.mouse_report = true;
+                        self.modes.mouse_tracking = n;
+                    } else if self.modes.mouse_tracking == n {
+                        self.modes.mouse_report = false;
+                        self.modes.mouse_tracking = 0;
+                    }
+                }
+                1004 => self.modes.focus_report = enable,
                 1006 => self.modes.mouse_sgr = enable,
                 2004 => self.modes.bracketed_paste = enable,
                 1048 => {
@@ -3987,7 +4407,8 @@ impl TerminalPerformer<'_> {
         let state = match mode {
             1 => Some(self.modes.app_cursor_keys),
             25 => Some(self.modes.cursor_visible),
-            1000 | 1002 | 1003 => Some(self.modes.mouse_report),
+            1000 | 1002 | 1003 => Some(self.modes.mouse_tracking == mode),
+            1004 => Some(self.modes.focus_report),
             1006 => Some(self.modes.mouse_sgr),
             2004 => Some(self.modes.bracketed_paste),
             47 | 1047 | 1049 => Some(*self.alt_active),
