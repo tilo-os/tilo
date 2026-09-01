@@ -430,6 +430,75 @@ fn ensure_device_certificate_for_identity(
     Ok(cert_path)
 }
 
+/// Verify the complete personal-root/device chain without changing it.
+///
+/// Login uses this after the human-facing ceremony. Every persisted secret,
+/// public key and certificate must describe the same root and device, and the
+/// certificate must be valid at `now_ns`. Missing, malformed, weakly-permissioned
+/// or mismatched state is an error; this function never creates or repairs it.
+///
+/// # Errors
+///
+/// Returns an I/O error when any identity artifact is missing, insecure,
+/// malformed, expired, or inconsistent with the root/device chain.
+pub fn verify_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> Result<(), io::Error> {
+    let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
+    #[cfg(unix)]
+    {
+        let dir_metadata = fs::metadata(identity_dir)?;
+        if !dir_metadata.is_dir() || dir_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "personal identity directory must not be accessible by group or other users",
+            ));
+        }
+        let primary_metadata = fs::symlink_metadata(&primary_path)?;
+        if !primary_metadata.file_type().is_file()
+            || primary_metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "primary identity must be a regular file with mode 0600",
+            ));
+        }
+    }
+    let identity = runtime_identity::load_from_path(primary_path)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if !identity.is_single_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "threshold identity requires the multi-device certificate ceremony",
+        ));
+    }
+    let root_public = persist::read_public_key(&paths.user_pubkey)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let device = persist::read_device_key(&paths.device_privkey)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let cert = persist::read_device_cert(&paths.device_cert)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    qos_user_identity::verify_device_cert_at(&cert, now_ns)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+
+    let expected_root = identity.group_public_key();
+    if root_public != expected_root || cert.user_public_key != expected_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "personal identity and persisted certification root do not match",
+        ));
+    }
+    if cert.device_public_key != device.verifying_key().to_bytes() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "certified device key does not match the persisted device secret",
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the system identity root, with the same test/development override
 /// used by the filesystem synchroniser.
 pub fn collaboration_identity_paths() -> IdentityPaths {
@@ -619,6 +688,55 @@ mod tests {
             ensure_collaboration_identity(&personal, &paths).unwrap(),
             ProvisionOutcome::Existing
         );
+        let before = [
+            std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+            std::fs::read(&paths.user_pubkey).unwrap(),
+            std::fs::read(&paths.device_privkey).unwrap(),
+            std::fs::read(&paths.device_cert).unwrap(),
+        ];
+        verify_collaboration_identity(&personal, &paths, cert.issued_at_ns)
+            .expect("complete chain verifies without mutation");
+        let after = [
+            std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+            std::fs::read(&paths.user_pubkey).unwrap(),
+            std::fs::read(&paths.device_privkey).unwrap(),
+            std::fs::read(&paths.device_cert).unwrap(),
+        ];
+        assert_eq!(before, after, "login verification must be read-only");
+    }
+
+    #[test]
+    fn collaboration_verifier_rejects_a_mismatched_personal_root() {
+        let tmp = TmpDir::new("collaboration-identity-mismatch");
+        let personal = tmp.path().join("config/qos/identity");
+        let other_personal = tmp.path().join("other/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_collaboration_identity(&personal, &paths).unwrap();
+        ensure_primary_identity(&other_personal).unwrap();
+        std::fs::copy(
+            other_personal.join(PRIMARY_IDENTITY_FILE),
+            personal.join(PRIMARY_IDENTITY_FILE),
+        )
+        .unwrap();
+
+        let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
+            .expect_err("a different personal root must not pass login");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collaboration_verifier_rejects_a_permissive_primary_secret() {
+        let tmp = TmpDir::new("collaboration-identity-permissions");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_collaboration_identity(&personal, &paths).unwrap();
+
+        let primary = personal.join(PRIMARY_IDENTITY_FILE);
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
+            .expect_err("a group-readable personal seed must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
