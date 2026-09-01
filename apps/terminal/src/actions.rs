@@ -5,9 +5,8 @@
 //! becomes an `Action` (`qos_actions::Action`) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
-//! app code. Applying that split to the terminal leaves **nothing** on the action
-//! side, and this module records that finding rather than fabricate a
-//! saved-profiles or named-sessions model just to have actions.
+//! app code. PTY input is therefore exported as an effect on the live terminal
+//! resource, without fabricating document actions or a saved-session model.
 //!
 //! ## Everything that changes the world is external
 //!
@@ -65,8 +64,7 @@
 //!
 //! ## Consequence
 //!
-//! The terminal exports **no** actions and publishes **no** Ctrl+K resource tree:
-//! [`Widget::resources`](ui::widget::Widget::resources) stays empty and
+//! The terminal publishes its live session with send/interrupt/clear effects;
 //! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
 //! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
 //! nothing for it to dispatch, and `main.rs` registers no action decoder). The
@@ -360,14 +358,10 @@ mod tests {
         );
     }
 
-    /// The honest steady state: the terminal fabricates no action or resource
-    /// surface. Exercised on the live widget *after* real interaction — program
-    /// output, a keystroke, and a stray click — `Widget::resources` is empty
-    /// (nothing to publish to Ctrl+K) and no action-host undo boundary is recorded
-    /// (`take_committed_action` is `None`). Both are toolkit defaults, because no
-    /// action is ever dispatched and no `ui::ActionHost` is embedded.
+    /// The live session exports PTY effects, but none creates a document undo
+    /// boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_terminal_effects_without_document_actions() {
         let (mut widget, _rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.init_crdt(&mut doc, &ROOT);
@@ -377,9 +371,19 @@ mod tests {
         send(&mut widget, &mut doc, &char_event("x"));
         send(&mut widget, &mut doc, &left_press());
 
+        let resources = Widget::resources(&widget, &doc);
+        assert_eq!(resources.len(), 1);
+        let ids: Vec<_> = resources[0]
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["send", "interrupt", "clear"]);
         assert!(
-            Widget::resources(&widget, &doc).is_empty(),
-            "the terminal publishes no Ctrl+K resource tree — its only doc state is the live screen",
+            resources[0]
+                .actions
+                .iter()
+                .all(|action| action.kind == ui::qos_actions::OperationKind::Effect)
         );
         assert!(
             widget.take_committed_action().is_none(),

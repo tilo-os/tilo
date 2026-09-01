@@ -993,6 +993,9 @@ impl CalendarApp {
             new_event: crate::actions::EventData::from_event(&template),
             events,
             tasks,
+            can_sync: self.demo || !self.accounts.is_empty(),
+            syncing: self.syncing,
+            can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
         }
     }
 
@@ -4051,6 +4054,48 @@ impl Widget for CalendarApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CALENDAR_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::CalendarOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
+                self.view = View::Month
+            }
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
+                self.view = View::Week
+            }
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
+                self.view = View::Day
+            }
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
+                self.view = View::Agenda
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
+                if self.syncing {
+                    return Err("calendar synchronization is already running".into());
+                }
+                let mut doc = doc.clone();
+                self.start_sync(&mut doc);
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
+                self.export_ics()
+            }
+            _ => return Err("operation kind does not match Calendar operation".into()),
+        }
+        self.dirty = true;
+        Ok(true)
     }
 
     /// Fold the calendar's events into the unified Ctrl+K palette: a snapshot
