@@ -311,6 +311,12 @@ mod tests {
         assert!(snapshot.contains("Deine erste qOS-App"), "{snapshot}");
         assert!(snapshot.contains("Dein Name"), "{snapshot}");
         assert!(snapshot.contains("Hallo, world!"), "{snapshot}");
+        app.expect(
+            &SemanticExpectation::named("name-input")
+                .role(Role::TextInput)
+                .name("Dein Name"),
+        )
+        .expect("the visible label and input name switch locale together");
     }
 
     #[test]

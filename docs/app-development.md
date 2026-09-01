@@ -313,12 +313,15 @@ writing one allocation step per child:
 
 ```rust
 use ui::tokens::TextRole;
-use ui::widget::{Button, Text, TextInput, Widget};
+use ui::widget::{Button, Text, TextInput, Widget, labeled_field};
 
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ui::column![
         Text::new("projects-title").with_role(TextRole::Title),
-        TextInput::local().with_accessible_name("project-name-label"),
+        labeled_field(
+            "project-name-label",
+            TextInput::local().with_id("project-name"),
+        ),
         ui::row![
             Button::new("cancel", "cancel-label", None),
             Button::new("save", "save-label", None).primary(),
@@ -333,6 +336,22 @@ chainable (`ui::column![...].with_gap(12.0)`), and every child keeps the same
 retained lifecycle, focus, accessibility, and inspection behavior. Use the
 ordinary `push` builder when adding an already type-erased
 `Box<dyn Widget>` conditionally.
+
+`labeled_field(label, control)` is the corresponding form primitive for
+`TextInput`, `Checkbox`, `Toggle`, and `Slider`. The label is rendered once as
+semantic `Label` text and the same Fluent key becomes the control's accessible
+name, so translation changes and refactors cannot leave visible and spoken
+labels out of sync. It returns an ordinary no-padding `Column`, which can be
+nested in `column!` or further styled like any other layout:
+
+```rust
+let email = labeled_field(
+    "account-email-label",
+    TextInput::local()
+        .with_id("account-email")
+        .with_placeholder("account-email-placeholder"),
+);
+```
 
 ### Pointer, touch, and keyboard
 
