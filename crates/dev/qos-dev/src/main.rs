@@ -470,6 +470,8 @@ enum ComponentTemplateArg {
     Tree,
     /// Source-agnostic sparse variable-height list with retained delegates.
     List,
+    /// Source-agnostic sparse table with app-defined columns and cells.
+    Table,
 }
 
 fn main() -> ExitCode {
@@ -637,6 +639,7 @@ fn run_add(args: AddArgs) -> Result<()> {
                     ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
                     ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
                     ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
+                    ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
                 },
             },
             options,
@@ -1051,6 +1054,29 @@ mod tests {
             Command::Add(AddArgs {
                 command: Some(AddCommand::Component {
                     template: ComponentTemplateArg::List,
+                    ..
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn add_command_exposes_the_reusable_table_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "results-table",
+            "--template",
+            "table",
+        ])
+        .expect("table component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::Table,
                     ..
                 })
             })
