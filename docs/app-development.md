@@ -682,6 +682,58 @@ bad number, duplicate id, empty required binding, or inaccessible control is
 reported in the inspector without partially changing the preview or saved
 document. Renaming a selected node keeps that node selected under its new id.
 
+App-owned reusable Rust components participate in the same object graph through
+a component node. The graph keeps only a stable factory name and serializable
+props:
+
+```json
+{
+  "type": "component",
+  "id": "account-profile",
+  "name": "profile-card",
+  "props": {
+    "title": "Ada",
+    "detail": "Workspace owner"
+  }
+}
+```
+
+Register the typed construction boundary once when building a screen or router:
+
+```rust
+use ui::widget::Element;
+use ui::{Theme, UiBuildContext, UiComponentRequest};
+
+fn profile_from_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {
+    let string = |key| {
+        request.props.get(key)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{key} must be a string"))
+    };
+    let props = ProfileCardProps::new(string("title")?, string("detail")?);
+    Ok(Box::new(profile_card(request.id, &props)))
+}
+
+let context = UiBuildContext::default()
+    .with_component("profile-card", profile_from_graph);
+let app = screens::router_with("main", &Theme::default(), context)?;
+```
+
+The factory returns an ordinary retained widget, so its child controls, model
+bindings, focus, accessibility, inspection, and headless scenarios work exactly
+as they do when the component is constructed directly in Rust. Keep the graph
+node id on the returned component's semantic root when the component itself is
+an addressable test target. Missing factories and invalid props are explicit
+construction errors containing the node id and component name; production never
+silently substitutes a placeholder.
+
+The standalone builder cannot load application code, so it displays a named,
+accessible placeholder while still allowing the component name and JSON props
+to be edited, moved, saved, undone, and inspected. The app replaces that
+placeholder through its `UiBuildContext` at runtime. Component names use the
+same lowercase kebab-case convention as `qos-dev add component`.
+
 The center preview is the real `LiveUi` widget tree, so focus, keyboard input,
 accessibility, bindings, layout, and theme behavior do not diverge from the
 app. In a source checkout, `qos-dev` builds the workspace builder on first use.
