@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
@@ -18,9 +18,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    CapsuleStore, CompatibilityService, HostSession, LaunchInput, LaunchResourceBroker,
-    ManagedApplication, PROTOCOL_VERSION, ProtocolError, ProtocolRequest, ProtocolResponse,
-    RegisteredProgram, RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
+    CapsuleStore, CompatibilityService, HostSession, InstallationStatus, LaunchInput,
+    LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramKind,
+    ProtocolError, ProtocolRequest, ProtocolResponse, RegisteredProgram, RouteKind,
+    RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
 };
 
 const MANAGER_APP_ID: &str = "dev.qos.windows";
@@ -100,6 +101,10 @@ where
         self.store.registered_programs().map_err(Into::into)
     }
 
+    fn installation_states(&self) -> Result<Vec<crate::CapsuleState>, SessionError> {
+        self.store.installations().map_err(Into::into)
+    }
+
     fn explain_entry(
         &self,
         entry: &RegisteredProgram,
@@ -147,6 +152,56 @@ where
                 now_unix: now_unix(),
             })
             .map_err(Into::into)
+    }
+
+    fn install(
+        &self,
+        mut source: File,
+        source_name: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        self.service
+            .install(
+                &mut source,
+                source_name,
+                workspace_id,
+                capabilities,
+                now_unix(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn retry_install(
+        &self,
+        capsule_id: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        self.service
+            .retry_install(capsule_id, workspace_id, capabilities, now_unix())
+            .map_err(Into::into)
+    }
+
+    fn remove_launcher(&self, entry: &RegisteredProgram) -> Result<(), SessionError> {
+        self.service
+            .remove_launcher(&entry.capsule_id, &entry.program.id)
+            .map_err(Into::into)
+    }
+
+    fn vendor_uninstall(
+        &self,
+        capsule_id: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        self.service
+            .vendor_uninstall(capsule_id, workspace_id, capabilities, now_unix())
+            .map_err(Into::into)
+    }
+
+    fn delete_data(&self, capsule_id: &str) -> Result<(), SessionError> {
+        self.service.delete_capsule(capsule_id).map_err(Into::into)
     }
 }
 
@@ -452,16 +507,23 @@ where
 {
     let handoff: SessionHandoff = read_frame(&mut stream, MAX_HANDOFF_BYTES)?;
     validate_handoff(&handoff)?;
-    let allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
+    let mut allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
     loop {
-        let request = match read_frame::<ProtocolRequest>(&mut stream, MAX_FRAME_BYTES) {
+        let (request, descriptor) = match read_request_frame(&mut stream, MAX_FRAME_BYTES) {
             Ok(request) => request,
             Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
                 return Ok(());
             }
             Err(error) => return Err(error),
         };
-        let response = handle_request(managed, authority, &handoff, &allowed_entry_ids, request);
+        let response = handle_request(
+            managed,
+            authority,
+            &handoff,
+            &mut allowed_entry_ids,
+            request,
+            descriptor,
+        );
         write_frame(&mut stream, &response, MAX_FRAME_BYTES)?;
     }
 }
@@ -480,8 +542,9 @@ fn handle_request<R, B, E, V>(
     managed: &ManagedCompatibility<R, B, E, V>,
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
-    allowed_entry_ids: &BTreeSet<String>,
+    allowed_entry_ids: &mut BTreeSet<String>,
     request: ProtocolRequest,
+    descriptor: Option<OwnedFd>,
 ) -> ProtocolResponse
 where
     R: RuntimeRegistry,
@@ -490,12 +553,28 @@ where
     V: VmDelegate,
 {
     let version = match &request {
-        ProtocolRequest::List { version } | ProtocolRequest::Launch { version, .. } => *version,
+        ProtocolRequest::List { version }
+        | ProtocolRequest::Launch { version, .. }
+        | ProtocolRequest::Install { version, .. }
+        | ProtocolRequest::RetryInstall { version, .. }
+        | ProtocolRequest::RemoveLauncher { version, .. }
+        | ProtocolRequest::VendorUninstall { version, .. }
+        | ProtocolRequest::DeleteData { version, .. } => *version,
         ProtocolRequest::Resolve(request) => request.version,
     };
     if version != PROTOCOL_VERSION {
         return ProtocolResponse::Error {
             error: ProtocolError::unsupported_version(version),
+        };
+    }
+    let has_descriptor = descriptor.is_some();
+    let expects_descriptor = matches!(&request, ProtocolRequest::Install { .. });
+    if has_descriptor != expects_descriptor {
+        return ProtocolResponse::Error {
+            error: ProtocolError::new(
+                "invalid_descriptor",
+                "only install requests accept exactly one portal file descriptor",
+            ),
         };
     }
     let result: Result<ProtocolResponse, SessionError> = (|| match request {
@@ -515,7 +594,9 @@ where
                 let entry = managed
                     .entries()?
                     .into_iter()
-                    .find(|entry| entry.entry_id == entry_id)
+                    .find(|entry| {
+                        entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
+                    })
                     .ok_or(SessionError::UnknownEntry)?;
                 let capabilities = authority
                     .capabilities_for(&handoff.workspace_id, &entry.app_id)
@@ -526,6 +607,65 @@ where
             } else {
                 Err(SessionError::UnknownEntry)
             }
+        }
+        ProtocolRequest::Install { source_name, .. } => {
+            let capabilities = authority
+                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .map_err(SessionError::Authority)?;
+            let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
+            let receipt =
+                managed.install(source, &source_name, &handoff.workspace_id, &capabilities)?;
+            authorize_capsule_entries(managed, allowed_entry_ids, &receipt.capsule_id)?;
+            Ok(ProtocolResponse::Installed { receipt })
+        }
+        ProtocolRequest::RetryInstall { capsule_id, .. } => {
+            require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
+            let capabilities = authority
+                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .map_err(SessionError::Authority)?;
+            let receipt =
+                managed.retry_install(&capsule_id, &handoff.workspace_id, &capabilities)?;
+            authorize_capsule_entries(managed, allowed_entry_ids, &capsule_id)?;
+            Ok(ProtocolResponse::Retried { receipt })
+        }
+        ProtocolRequest::RemoveLauncher { entry_id, .. } => {
+            if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
+                return Err(SessionError::UnknownEntry);
+            }
+            let entry = managed
+                .entries()?
+                .into_iter()
+                .find(|entry| {
+                    entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
+                })
+                .ok_or(SessionError::UnknownEntry)?;
+            managed.remove_launcher(&entry)?;
+            allowed_entry_ids.remove(&entry_id);
+            Ok(ProtocolResponse::LauncherRemoved { entry_id })
+        }
+        ProtocolRequest::VendorUninstall { capsule_id, .. } => {
+            require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
+            let capabilities = authority
+                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .map_err(SessionError::Authority)?;
+            let receipt =
+                managed.vendor_uninstall(&capsule_id, &handoff.workspace_id, &capabilities)?;
+            retain_capsule_control_entry(managed, allowed_entry_ids, &capsule_id)?;
+            Ok(ProtocolResponse::VendorUninstalled { receipt })
+        }
+        ProtocolRequest::DeleteData { capsule_id, .. } => {
+            require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
+            let retiring = managed
+                .entries()?
+                .into_iter()
+                .filter(|entry| entry.capsule_id == capsule_id)
+                .map(|entry| entry.entry_id)
+                .collect::<Vec<_>>();
+            managed.delete_data(&capsule_id)?;
+            for entry in retiring {
+                allowed_entry_ids.remove(&entry);
+            }
+            Ok(ProtocolResponse::DataDeleted { capsule_id })
         }
     })();
     result.unwrap_or_else(|error| ProtocolResponse::Error {
@@ -546,15 +686,19 @@ where
     V: VmDelegate,
 {
     let mut applications = Vec::new();
-    for entry in managed
-        .entries()?
-        .into_iter()
-        .filter(|entry| allowed_entry_ids.contains(&entry.entry_id))
-    {
+    for entry in managed.entries()?.into_iter().filter(|entry| {
+        allowed_entry_ids.contains(&entry.entry_id)
+            && entry.program.kind == ProgramKind::Application
+    }) {
         let capabilities = authority
             .capabilities_for(&handoff.workspace_id, &entry.app_id)
             .map_err(SessionError::Authority)?;
         let explanation = managed.explain_entry(&entry, &capabilities)?;
+        let installation_status = managed
+            .installation_states()?
+            .into_iter()
+            .find(|state| state.id == entry.capsule_id)
+            .and_then(|state| state.installation.map(|installation| installation.status));
         applications.push(ManagedApplication {
             id: entry.entry_id,
             app_id: entry.app_id,
@@ -574,9 +718,153 @@ where
             // launch error, not an imaginary unavailable feature in the UI.
             audio_output_available: true,
             audio_unavailable_reason: None,
+            installation_status,
+            remove_launcher_available: true,
         });
     }
-    Ok(ProtocolResponse::Listed { applications })
+    let authorized_capsules = authorized_capsules(managed, allowed_entry_ids)?;
+    let installations = managed
+        .installation_states()?
+        .into_iter()
+        .filter(|state| authorized_capsules.contains(&state.id))
+        .filter_map(|state| {
+            let installation = state.installation?;
+            let program_count = state
+                .programs
+                .values()
+                .filter(|program| program.kind == ProgramKind::Application)
+                .count();
+            let detail = installation.last_error.clone().unwrap_or_else(|| {
+                match installation.status {
+                    InstallationStatus::Installed => {
+                        format!("{program_count} application launcher(s) in this private capsule.")
+                    }
+                    InstallationStatus::NeedsAttention => {
+                        "Setup completed but no launcher was found; retry setup or delete its private data."
+                            .to_string()
+                    }
+                    InstallationStatus::Failed => {
+                        "Setup failed; the exact selected installer is retained for retry."
+                            .to_string()
+                    }
+                    InstallationStatus::Uninstalled => {
+                        "Vendor uninstall completed; private leftover data is retained."
+                            .to_string()
+                    }
+                    InstallationStatus::Installing => "Setup is running.".to_string(),
+                    InstallationStatus::Uninstalling => {
+                        "The vendor uninstaller is running.".to_string()
+                    }
+                }
+            });
+            Some(ManagedInstallation {
+                capsule_id: state.id,
+                display_name: installation.display_name,
+                route: RouteKind::from(state.layer),
+                runner: format!("{} {}", state.runner.family, state.runner.version),
+                status: installation.status,
+                program_count,
+                can_retry: matches!(
+                    installation.status,
+                    InstallationStatus::Failed | InstallationStatus::NeedsAttention
+                ),
+                can_vendor_uninstall: installation.uninstaller_relative_path.is_some()
+                    && !matches!(
+                        installation.status,
+                        InstallationStatus::Installing
+                            | InstallationStatus::Uninstalling
+                            | InstallationStatus::Uninstalled
+                    ),
+                can_delete_data: !matches!(
+                    installation.status,
+                    InstallationStatus::Installing | InstallationStatus::Uninstalling
+                ),
+                detail,
+            })
+        })
+        .collect();
+    Ok(ProtocolResponse::Listed {
+        applications,
+        installations,
+    })
+}
+
+fn authorized_capsules<R, B, E, V>(
+    managed: &ManagedCompatibility<R, B, E, V>,
+    allowed_entry_ids: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, SessionError>
+where
+    R: RuntimeRegistry,
+    B: LaunchResourceBroker,
+    E: SandboxExecutor,
+    V: VmDelegate,
+{
+    Ok(managed
+        .entries()?
+        .into_iter()
+        .filter(|entry| allowed_entry_ids.contains(&entry.entry_id))
+        .map(|entry| entry.capsule_id)
+        .collect())
+}
+
+fn require_authorized_capsule<R, B, E, V>(
+    managed: &ManagedCompatibility<R, B, E, V>,
+    allowed_entry_ids: &BTreeSet<String>,
+    capsule_id: &str,
+) -> Result<(), SessionError>
+where
+    R: RuntimeRegistry,
+    B: LaunchResourceBroker,
+    E: SandboxExecutor,
+    V: VmDelegate,
+{
+    if valid_id(capsule_id) && authorized_capsules(managed, allowed_entry_ids)?.contains(capsule_id)
+    {
+        Ok(())
+    } else {
+        Err(SessionError::UnknownEntry)
+    }
+}
+
+fn authorize_capsule_entries<R, B, E, V>(
+    managed: &ManagedCompatibility<R, B, E, V>,
+    allowed_entry_ids: &mut BTreeSet<String>,
+    capsule_id: &str,
+) -> Result<(), SessionError>
+where
+    R: RuntimeRegistry,
+    B: LaunchResourceBroker,
+    E: SandboxExecutor,
+    V: VmDelegate,
+{
+    allowed_entry_ids.extend(
+        managed
+            .entries()?
+            .into_iter()
+            .filter(|entry| entry.capsule_id == capsule_id)
+            .map(|entry| entry.entry_id),
+    );
+    Ok(())
+}
+
+fn retain_capsule_control_entry<R, B, E, V>(
+    managed: &ManagedCompatibility<R, B, E, V>,
+    allowed_entry_ids: &mut BTreeSet<String>,
+    capsule_id: &str,
+) -> Result<(), SessionError>
+where
+    R: RuntimeRegistry,
+    B: LaunchResourceBroker,
+    E: SandboxExecutor,
+    V: VmDelegate,
+{
+    let current = managed
+        .entries()?
+        .into_iter()
+        .map(|entry| entry.entry_id)
+        .collect::<BTreeSet<_>>();
+    allowed_entry_ids.retain(|entry| current.contains(entry));
+    authorize_capsule_entries(managed, allowed_entry_ids, capsule_id)
 }
 
 fn valid_id(value: &str) -> bool {
@@ -618,6 +906,164 @@ impl SessionClient {
         write_frame(&mut self.stream, request, MAX_FRAME_BYTES)?;
         read_frame(&mut self.stream, MAX_FRAME_BYTES)
     }
+
+    /// Send one request together with the already-open file selected by the
+    /// standard qOS/XDG portal. Ancillary data is accepted only by the
+    /// protocol's `install` method.
+    pub fn request_with_file(
+        &mut self,
+        request: &ProtocolRequest,
+        file: &File,
+    ) -> Result<ProtocolResponse, SessionError> {
+        if !matches!(request, ProtocolRequest::Install { .. }) {
+            return Err(SessionError::DescriptorInvalid);
+        }
+        write_frame_with_fd(&mut self.stream, request, MAX_FRAME_BYTES, file.as_raw_fd())?;
+        read_frame(&mut self.stream, MAX_FRAME_BYTES)
+    }
+}
+
+fn read_request_frame(
+    stream: &mut UnixStream,
+    max: usize,
+) -> Result<(ProtocolRequest, Option<OwnedFd>), SessionError> {
+    let (length, descriptor) = recv_length_with_fd(stream)?;
+    let length =
+        usize::try_from(u32::from_le_bytes(length)).map_err(|_| SessionError::FrameTooLarge)?;
+    if length == 0 || length > max {
+        return Err(SessionError::FrameTooLarge);
+    }
+    let mut bytes = vec![0_u8; length];
+    stream.read_exact(&mut bytes)?;
+    let request = serde_json::from_slice(&bytes)?;
+    Ok((request, descriptor))
+}
+
+fn recv_length_with_fd(stream: &UnixStream) -> Result<([u8; 4], Option<OwnedFd>), SessionError> {
+    let mut length = [0_u8; 4];
+    let mut iov = libc::iovec {
+        iov_base: length.as_mut_ptr().cast(),
+        iov_len: length.len(),
+    };
+    let control_bytes = cmsg_space_for_fd();
+    let mut control = vec![0 as libc::c_long; control_words(control_bytes)];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = std::ptr::addr_of_mut!(iov);
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control_bytes;
+    // SAFETY: every msghdr pointer names live writable storage, and the
+    // control allocation is aligned to `c_long`/cmsghdr requirements.
+    let received = unsafe {
+        libc::recvmsg(
+            stream.as_raw_fd(),
+            std::ptr::addr_of_mut!(message),
+            libc::MSG_WAITALL | libc::MSG_CMSG_CLOEXEC,
+        )
+    };
+    if received < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if received == 0 {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
+    if usize::try_from(received).ok() != Some(length.len())
+        || message.msg_flags & libc::MSG_CTRUNC != 0
+    {
+        return Err(SessionError::DescriptorInvalid);
+    }
+
+    let mut descriptor = None;
+    // SAFETY: `message` was initialized by recvmsg and its control buffer
+    // remains alive. We accept exactly one integer SCM_RIGHTS item.
+    unsafe {
+        let mut header = libc::CMSG_FIRSTHDR(std::ptr::addr_of!(message));
+        while !header.is_null() {
+            let expected = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
+            if (*header).cmsg_level != libc::SOL_SOCKET
+                || (*header).cmsg_type != libc::SCM_RIGHTS
+                || (*header).cmsg_len != expected
+                || descriptor.is_some()
+            {
+                return Err(SessionError::DescriptorInvalid);
+            }
+            let raw = std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<i32>());
+            if raw < 0 {
+                return Err(SessionError::DescriptorInvalid);
+            }
+            descriptor = Some(OwnedFd::from_raw_fd(raw));
+            header = libc::CMSG_NXTHDR(std::ptr::addr_of!(message), header);
+        }
+    }
+    Ok((length, descriptor))
+}
+
+fn write_frame_with_fd<T: Serialize>(
+    stream: &mut UnixStream,
+    value: &T,
+    max: usize,
+    descriptor: i32,
+) -> Result<(), SessionError> {
+    let bytes = serde_json::to_vec(value)?;
+    if bytes.is_empty() || bytes.len() > max || descriptor < 0 {
+        return Err(SessionError::FrameTooLarge);
+    }
+    let length = u32::try_from(bytes.len()).map_err(|_| SessionError::FrameTooLarge)?;
+    send_length_with_fd(stream, length.to_le_bytes(), descriptor)?;
+    stream.write_all(&bytes)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn send_length_with_fd(
+    stream: &UnixStream,
+    mut length: [u8; 4],
+    descriptor: i32,
+) -> Result<(), SessionError> {
+    let mut iov = libc::iovec {
+        iov_base: length.as_mut_ptr().cast(),
+        iov_len: length.len(),
+    };
+    let control_bytes = cmsg_space_for_fd();
+    let mut control = vec![0 as libc::c_long; control_words(control_bytes)];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = std::ptr::addr_of_mut!(iov);
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control_bytes;
+    // SAFETY: the control allocation is suitably aligned and sized for one
+    // cmsghdr plus one descriptor, and all referenced values outlive sendmsg.
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(std::ptr::addr_of!(message));
+        if header.is_null() {
+            return Err(SessionError::DescriptorInvalid);
+        }
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), descriptor);
+        let sent = libc::sendmsg(
+            stream.as_raw_fd(),
+            std::ptr::addr_of!(message),
+            libc::MSG_NOSIGNAL,
+        );
+        if sent < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if usize::try_from(sent).ok() != Some(length.len()) {
+            return Err(SessionError::DescriptorInvalid);
+        }
+    }
+    Ok(())
+}
+
+fn cmsg_space_for_fd() -> usize {
+    // SAFETY: CMSG_SPACE is a pure size/alignment calculation.
+    unsafe { libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) as usize }
+}
+
+fn control_words(bytes: usize) -> usize {
+    bytes.div_ceil(std::mem::size_of::<libc::c_long>())
 }
 
 fn read_frame<T: serde::de::DeserializeOwned>(
@@ -666,6 +1112,10 @@ pub enum SessionError {
     AlreadyRunning,
     #[error("managed Windows application is not registered")]
     UnknownEntry,
+    #[error("the install request did not carry one portal file descriptor")]
+    DescriptorMissing,
+    #[error("the compatibility request carried invalid ancillary data")]
+    DescriptorInvalid,
     #[error("workspace capability authority refused the request: {0}")]
     Authority(String),
     #[error(transparent)]
@@ -684,7 +1134,10 @@ impl SessionError {
             Self::ServiceFdMissing | Self::UnauthenticatedPeer | Self::InvalidHandoff => {
                 "unauthenticated"
             }
-            Self::FrameTooLarge | Self::Json(_) => "invalid_request",
+            Self::FrameTooLarge
+            | Self::Json(_)
+            | Self::DescriptorMissing
+            | Self::DescriptorInvalid => "invalid_request",
             Self::AlreadyRunning => "already_running",
             Self::UnknownEntry => "unknown_entry",
             Self::Authority(_) => "authority_unavailable",
