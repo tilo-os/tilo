@@ -33,7 +33,8 @@ $processJobScript = Join-Path $BootstrapRoot 'qOS-ProcessJob.ps1'
 $processJobBrokerScript = Join-Path $BootstrapRoot 'Start-qOSProcessJobBroker.ps1'
 $secretPath = Join-Path $BootstrapRoot 'qos-bridge.secret'
 $configPath = Join-Path $BootstrapRoot 'qos-bridge.json'
-foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript, $secretPath, $configPath, $ApplicationsPath)) {
+$virtioGuestToolsDigestPath = Join-Path $BootstrapRoot 'virtio-win-guest-tools.sha256'
+foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript, $secretPath, $configPath, $virtioGuestToolsDigestPath, $ApplicationsPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
