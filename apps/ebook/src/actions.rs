@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec,
 };
 
 use crate::doc::BooksDoc;
@@ -29,14 +30,41 @@ use crate::model::{AnnoKind, Annotation, HiColor};
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
 pub const EBOOK_OPERATION_TYPE: &str = "ebook.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EbookOperation {
     PreviousPage,
     NextPage,
     ToggleContents,
     ToggleNotes,
     OpenSettings,
-    OpenBook,
+    OpenBook { path: Option<String> },
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    use super::*;
+    #[test]
+    fn path_argument_binds_into_background_open() {
+        let spec = open_book_operation();
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"path":"/tmp/a.epub"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(EbookOperation::OpenBook {
+                path: Some("/tmp/a.epub".into())
+            })
+        );
+        assert!(matches!(
+            spec.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+    }
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOperation>, String> {
@@ -51,6 +79,37 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOpe
 fn operation(id: &str, label: &str, kind: OperationKind, value: EbookOperation) -> ActionSpec {
     ActionSpec::operation(id, label, kind, EBOOK_OPERATION_TYPE, &value)
         .expect("EbookOperation is always serializable")
+}
+
+fn open_book_operation() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "open-book",
+        "Open book",
+        "optional absolute path",
+        OperationKind::Effect,
+        EBOOK_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "EPUB path; omit to use the system picker",
+        )],
+        |args: &ActionArgs| {
+            let path = args
+                .text("path")
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string);
+            let operation = EbookOperation::OpenBook { path };
+            EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
+            }
+        },
+    )
+    .with_contract(qos_actions::ActionContract {
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        ..qos_actions::ActionContract::default()
+    })
 }
 
 /// One per-block piece of a ranged highlight. A selection that spans several
@@ -916,15 +975,10 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             OperationKind::View,
             EbookOperation::OpenSettings,
         ),
-        (
-            "open-book",
-            "Open book",
-            OperationKind::Effect,
-            EbookOperation::OpenBook,
-        ),
     ] {
         root = root.with_action(operation(id, label, kind, value));
     }
+    root = root.with_action(open_book_operation());
 
     let annos = BooksDoc::annotations_for(doc, &ctx.book_id);
     let (highlights, highlight_groups) = highlight_resources(&annos, &ctx.book_id);
