@@ -19,9 +19,9 @@ use thiserror::Error;
 
 use crate::service::published_vm_explanation;
 use crate::{
-    CapsuleStore, CompatibilityService, HostSession, InstallationStatus, LaunchInput,
-    LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramKind,
-    ProtocolError, ProtocolRequest, ProtocolResponse, RegisteredProgram, RouteKind,
+    CapsuleStore, CompatibilityService, HostSession, InstallOutcome, InstallationStatus,
+    LaunchInput, LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION,
+    ProgramKind, ProtocolError, ProtocolRequest, ProtocolResponse, RegisteredProgram, RouteKind,
     RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
 };
 
@@ -32,6 +32,12 @@ const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
 // An `i32` is exactly four bytes by definition; `SCM_RIGHTS` carries one raw fd.
 const SCM_RIGHTS_FD_BYTES: u32 = 4;
+const VM_INSTALL_CONFIRMATION_SECONDS: u64 = 5 * 60;
+
+struct PendingVmInstall {
+    input: crate::VmInstallerInput,
+    expires_at_unix: u64,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +114,18 @@ where
 
     fn vm_inventory(&self) -> crate::VmInventory {
         self.service.vm_inventory()
+    }
+
+    fn vm_installation_status(&self) -> Option<crate::VmInstallation> {
+        self.service.vm_installation_status()
+    }
+
+    fn refresh_vm_installation_status(
+        &self,
+    ) -> Result<Option<crate::VmInstallation>, SessionError> {
+        self.service
+            .refresh_vm_installation_status()
+            .map_err(Into::into)
     }
 
     fn explain_entry(
@@ -198,7 +216,7 @@ where
         source_name: &str,
         workspace_id: &str,
         capabilities: &[CapOverride],
-    ) -> Result<crate::InstallReceipt, SessionError> {
+    ) -> Result<InstallOutcome, SessionError> {
         self.service
             .install(
                 &mut source,
@@ -207,6 +225,56 @@ where
                 capabilities,
                 now_unix(),
             )
+            .map_err(Into::into)
+    }
+
+    fn install_in_capsule(
+        &self,
+        source: File,
+        source_name: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        expected: &crate::VmInstallerInput,
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        self.service
+            .install_in_capsule(
+                source,
+                source_name,
+                workspace_id,
+                capabilities,
+                now_unix(),
+                expected,
+            )
+            .map_err(Into::into)
+    }
+
+    fn install_in_vm(
+        &self,
+        source: File,
+        source_name: &str,
+        workspace_id: &str,
+        expected: &crate::VmInstallerInput,
+    ) -> Result<crate::VmInstallation, SessionError> {
+        self.service
+            .install_in_vm(source, source_name, workspace_id, expected)
+            .map_err(Into::into)
+    }
+
+    fn publish_vm_candidate(&self, entry_id: &str) -> Result<crate::VmInstallation, SessionError> {
+        self.service
+            .publish_vm_install_candidate(entry_id)
+            .map_err(Into::into)
+    }
+
+    fn remove_vm_published_application(&self, entry_id: &str) -> Result<(), SessionError> {
+        self.service
+            .remove_vm_published_application(entry_id)
+            .map_err(Into::into)
+    }
+
+    fn uninstall_vm_published_application(&self, entry_id: &str) -> Result<(), SessionError> {
+        self.service
+            .uninstall_vm_published_application(entry_id)
             .map_err(Into::into)
     }
 
@@ -546,6 +614,7 @@ where
     let handoff: SessionHandoff = read_frame(&mut stream, MAX_HANDOFF_BYTES)?;
     validate_handoff(&handoff)?;
     let mut allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
+    let mut pending_vm_install = None;
     loop {
         let (request, descriptor) = match read_request_frame(&mut stream, MAX_FRAME_BYTES) {
             Ok(request) => request,
@@ -559,6 +628,7 @@ where
             authority,
             &handoff,
             &mut allowed_entry_ids,
+            &mut pending_vm_install,
             request,
             descriptor,
         );
@@ -585,6 +655,7 @@ fn handle_request<R, B, E, V>(
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
     allowed_entry_ids: &mut BTreeSet<String>,
+    pending_vm_install: &mut Option<PendingVmInstall>,
     request: ProtocolRequest,
     descriptor: Option<OwnedFd>,
 ) -> ProtocolResponse
@@ -599,9 +670,14 @@ where
         | ProtocolRequest::Launch { version, .. }
         | ProtocolRequest::LaunchVmFallback { version, .. }
         | ProtocolRequest::Install { version, .. }
+        | ProtocolRequest::InstallInVm { version, .. }
+        | ProtocolRequest::InstallInCapsule { version, .. }
+        | ProtocolRequest::PublishVmCandidate { version, .. }
+        | ProtocolRequest::RefreshVmInstallation { version }
         | ProtocolRequest::RetryInstall { version, .. }
         | ProtocolRequest::RemoveLauncher { version, .. }
         | ProtocolRequest::VendorUninstall { version, .. }
+        | ProtocolRequest::VendorUninstallVm { version, .. }
         | ProtocolRequest::DeleteData { version, .. } => *version,
         ProtocolRequest::Resolve(request) => request.version,
     };
@@ -611,7 +687,12 @@ where
         };
     }
     let has_descriptor = descriptor.is_some();
-    let expects_descriptor = matches!(&request, ProtocolRequest::Install { .. });
+    let expects_descriptor = matches!(
+        &request,
+        ProtocolRequest::Install { .. }
+            | ProtocolRequest::InstallInVm { .. }
+            | ProtocolRequest::InstallInCapsule { .. }
+    );
     if has_descriptor != expects_descriptor {
         return ProtocolResponse::Error {
             error: ProtocolError::new(
@@ -690,10 +771,85 @@ where
                 .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
                 .map_err(SessionError::Authority)?;
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
-            let receipt =
-                managed.install(source, &source_name, &handoff.workspace_id, &capabilities)?;
+            match managed.install(source, &source_name, &handoff.workspace_id, &capabilities)? {
+                InstallOutcome::Confirmation {
+                    confirmation,
+                    input,
+                } => {
+                    let expires_at_unix = now_unix()
+                        .unwrap_or_default()
+                        .saturating_add(VM_INSTALL_CONFIRMATION_SECONDS);
+                    *pending_vm_install = Some(PendingVmInstall {
+                        input,
+                        expires_at_unix,
+                    });
+                    Ok(ProtocolResponse::VmInstallConfirmation { confirmation })
+                }
+            }
+        }
+        ProtocolRequest::InstallInCapsule { source_name, .. } => {
+            let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
+            let pending = pending_vm_install
+                .take()
+                .filter(|pending| now_unix().is_some_and(|now| now <= pending.expires_at_unix))
+                .ok_or(SessionError::VmInstallConfirmationExpired)?;
+            let capabilities = authority
+                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .map_err(SessionError::Authority)?;
+            let receipt = managed.install_in_capsule(
+                source,
+                &source_name,
+                &handoff.workspace_id,
+                &capabilities,
+                &pending.input,
+            )?;
             authorize_capsule_entries(managed, allowed_entry_ids, &receipt.capsule_id)?;
             Ok(ProtocolResponse::Installed { receipt })
+        }
+        ProtocolRequest::InstallInVm { source_name, .. } => {
+            let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
+            let pending = pending_vm_install
+                .take()
+                .filter(|pending| now_unix().is_some_and(|now| now <= pending.expires_at_unix))
+                .ok_or(SessionError::VmInstallConfirmationExpired)?;
+            let installation = managed.install_in_vm(
+                source,
+                &source_name,
+                &handoff.workspace_id,
+                &pending.input,
+            )?;
+            allowed_entry_ids.extend(
+                installation
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.entry_id.clone()),
+            );
+            Ok(ProtocolResponse::VmInstallStarted { installation })
+        }
+        ProtocolRequest::PublishVmCandidate { entry_id, .. } => {
+            if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
+                return Err(SessionError::UnknownEntry);
+            }
+            let installation = managed.publish_vm_candidate(&entry_id)?;
+            allowed_entry_ids.extend(
+                installation
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.entry_id.clone()),
+            );
+            Ok(ProtocolResponse::VmCandidatePublished { installation })
+        }
+        ProtocolRequest::RefreshVmInstallation { .. } => {
+            let installation = managed.refresh_vm_installation_status()?;
+            if let Some(installation) = &installation {
+                allowed_entry_ids.extend(
+                    installation
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.entry_id.clone()),
+                );
+            }
+            Ok(ProtocolResponse::VmInstallationRefreshed { installation })
         }
         ProtocolRequest::RetryInstall { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
@@ -708,6 +864,16 @@ where
         ProtocolRequest::RemoveLauncher { entry_id, .. } => {
             if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
                 return Err(SessionError::UnknownEntry);
+            }
+            if managed
+                .vm_inventory()
+                .applications
+                .iter()
+                .any(|application| application.entry_id == entry_id)
+            {
+                managed.remove_vm_published_application(&entry_id)?;
+                allowed_entry_ids.remove(&entry_id);
+                return Ok(ProtocolResponse::LauncherRemoved { entry_id });
             }
             let entry = managed
                 .entries()?
@@ -729,6 +895,21 @@ where
                 managed.vendor_uninstall(&capsule_id, &handoff.workspace_id, &capabilities)?;
             retain_capsule_control_entry(managed, allowed_entry_ids, &capsule_id)?;
             Ok(ProtocolResponse::VendorUninstalled { receipt })
+        }
+        ProtocolRequest::VendorUninstallVm { entry_id, .. } => {
+            let authorized = managed
+                .vm_inventory()
+                .applications
+                .iter()
+                .any(|application| {
+                    application.entry_id == entry_id && application.uninstall_available
+                });
+            if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) || !authorized {
+                return Err(SessionError::UnknownEntry);
+            }
+            managed.uninstall_vm_published_application(&entry_id)?;
+            allowed_entry_ids.remove(&entry_id);
+            Ok(ProtocolResponse::VmVendorUninstalled { entry_id })
         }
         ProtocolRequest::DeleteData { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
@@ -758,7 +939,7 @@ fn list_applications<R, B, E, V>(
     managed: &ManagedCompatibility<R, B, E, V>,
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
-    allowed_entry_ids: &BTreeSet<String>,
+    allowed_entry_ids: &mut BTreeSet<String>,
 ) -> Result<ProtocolResponse, SessionError>
 where
     R: RuntimeRegistry,
@@ -771,6 +952,15 @@ where
     // fallback appliance merely to draw a manager badge.
     let vm_inventory = managed.vm_inventory();
     let vm_availability = vm_inventory.availability.clone();
+    let vm_installation = managed.vm_installation_status();
+    if let Some(installation) = &vm_installation {
+        allowed_entry_ids.extend(
+            installation
+                .candidates
+                .iter()
+                .map(|candidate| candidate.entry_id.clone()),
+        );
+    }
     for entry in managed.entries()?.into_iter().filter(|entry| {
         allowed_entry_ids.contains(&entry.entry_id)
             && entry.program.kind == ProgramKind::Application
@@ -806,6 +996,7 @@ where
             audio_unavailable_reason: None,
             installation_status,
             remove_launcher_available: true,
+            vendor_uninstall_available: false,
         });
     }
     for application in vm_inventory
@@ -827,7 +1018,8 @@ where
             audio_output_available: true,
             audio_unavailable_reason: None,
             installation_status: None,
-            remove_launcher_available: false,
+            remove_launcher_available: true,
+            vendor_uninstall_available: application.uninstall_available,
         });
     }
     let authorized_capsules = authorized_capsules(managed, allowed_entry_ids)?;
@@ -895,6 +1087,7 @@ where
         applications,
         installations,
         vm_availability,
+        vm_installation,
     })
 }
 
@@ -1024,7 +1217,12 @@ impl SessionClient {
         request: &ProtocolRequest,
         file: &File,
     ) -> Result<ProtocolResponse, SessionError> {
-        if !matches!(request, ProtocolRequest::Install { .. }) {
+        if !matches!(
+            request,
+            ProtocolRequest::Install { .. }
+                | ProtocolRequest::InstallInVm { .. }
+                | ProtocolRequest::InstallInCapsule { .. }
+        ) {
             return Err(SessionError::DescriptorInvalid);
         }
         write_frame_with_fd(&mut self.stream, request, MAX_FRAME_BYTES, file.as_raw_fd())?;
@@ -1221,6 +1419,8 @@ pub enum SessionError {
     AlreadyRunning,
     #[error("managed Windows application is not registered")]
     UnknownEntry,
+    #[error("the Windows installer confirmation expired; inspect the portal file again")]
+    VmInstallConfirmationExpired,
     #[error("the install request did not carry one portal file descriptor")]
     DescriptorMissing,
     #[error("the compatibility request carried invalid ancillary data")]
@@ -1248,6 +1448,7 @@ impl SessionError {
             | Self::DescriptorMissing
             | Self::DescriptorInvalid => "invalid_request",
             Self::AlreadyRunning => "already_running",
+            Self::VmInstallConfirmationExpired => "confirmation_expired",
             Self::UnknownEntry => "unknown_entry",
             Self::Authority(_) => "authority_unavailable",
             Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
