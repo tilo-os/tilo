@@ -6,7 +6,7 @@
 //! document beside each change; a bare [`HistoryEntryId`] is only unique
 //! inside one Automerge graph and is therefore not safe as a workspace key.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use automerge::ChangeHash;
 use collab_types::ArtifactKind;
@@ -80,6 +80,54 @@ impl PartialOrd for WorkspaceHistoryId {
 pub struct WorkspaceHistoryEntry {
     pub id: WorkspaceHistoryId,
     pub entry: HistoryEntry,
+}
+
+/// Private read state for one collaborative document. Full Automerge heads
+/// define the causal past; exceptions acknowledge individual changes without
+/// claiming that their concurrent siblings were read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct DocumentSeenFrontier {
+    pub heads: Vec<String>,
+    pub exceptions: BTreeSet<String>,
+}
+
+/// Persistable causal read state, partitioned by full document origin.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct WorkspaceSeenFrontier {
+    pub documents: BTreeMap<String, DocumentSeenFrontier>,
+}
+
+impl WorkspaceSeenFrontier {
+    /// Replace this frontier with exactly what the current index exposed.
+    /// A room-scoped tree is only a projection of the global tree document, so
+    /// its visible changes are exceptions rather than an unsafe global head.
+    pub fn mark_seen(&mut self, index: &WorkspaceHistoryIndex) {
+        self.documents.clear();
+        let room_scoped = index.query.as_ref().is_some_and(|query| {
+            query.room.is_some() || query.rooms.as_ref().is_some_and(|rooms| rooms.len() == 1)
+        });
+        for (origin, heads) in &index.document_heads {
+            let state = self.documents.entry(origin.clone()).or_default();
+            if !(room_scoped && origin == "workspace-tree") {
+                state.heads = heads.iter().map(ToString::to_string).collect();
+            }
+        }
+        if room_scoped {
+            for row in &index.entries {
+                if row.id.origin == HistoryOrigin::WorkspaceTree {
+                    self.acknowledge(&row.id);
+                }
+            }
+        }
+    }
+
+    pub fn acknowledge(&mut self, id: &WorkspaceHistoryId) {
+        self.documents
+            .entry(id.origin.key())
+            .or_default()
+            .exceptions
+            .insert(ui::widget::history_group::hex16(&id.change));
+    }
 }
 
 impl WorkspaceHistoryEntry {
@@ -179,6 +227,8 @@ pub struct WorkspaceHistoryIndex {
     entries: Vec<WorkspaceHistoryEntry>,
     coverage: FeedCoverage,
     fingerprint: Option<Fingerprint>,
+    query: Option<WorkspaceHistoryQuery>,
+    document_heads: BTreeMap<String, Vec<ChangeHash>>,
     generation: u64,
 }
 
@@ -195,6 +245,8 @@ impl WorkspaceHistoryIndex {
             entries: Vec::new(),
             coverage: FeedCoverage::default(),
             fingerprint: None,
+            query: None,
+            document_heads: BTreeMap::new(),
             generation: 0,
         }
     }
@@ -223,6 +275,71 @@ impl WorkspaceHistoryIndex {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Return rows not causally covered by `frontier`. Persisted heads which
+    /// are malformed or absent from the local graph fail open as unread.
+    pub fn unseen<'a>(
+        &'a self,
+        frontier: &WorkspaceSeenFrontier,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+    ) -> Vec<&'a WorkspaceHistoryEntry> {
+        let mut after: BTreeMap<String, HashSet<HistoryEntryId>> = BTreeMap::new();
+        for (origin, state) in &frontier.documents {
+            let heads: Vec<ChangeHash> = state
+                .heads
+                .iter()
+                .filter_map(|encoded| encoded.parse().ok())
+                .collect();
+            if heads.is_empty() || heads.len() != state.heads.len() {
+                continue;
+            }
+            let changes = if origin == "workspace-tree" {
+                if !tree.doc.get_missing_deps(&heads).is_empty() {
+                    continue;
+                }
+                tree.doc.get_changes(&heads)
+            } else {
+                let Some(record) = origin.strip_prefix("record:").and_then(RecordId::parse) else {
+                    continue;
+                };
+                let Some(Some(changes)) = records.with(&record, |doc| {
+                    doc.get_missing_deps(&heads)
+                        .is_empty()
+                        .then(|| doc.get_changes(&heads))
+                }) else {
+                    continue;
+                };
+                changes
+            };
+            after.insert(
+                origin.clone(),
+                changes
+                    .iter()
+                    .map(|change| {
+                        ui::history_source::entry_id_from_hash(&change.hash().to_string())
+                    })
+                    .collect(),
+            );
+        }
+        self.entries
+            .iter()
+            .filter(|row| {
+                let key = row.id.origin.key();
+                let explicitly_seen = frontier.documents.get(&key).is_some_and(|state| {
+                    state
+                        .exceptions
+                        .contains(&ui::widget::history_group::hex16(&row.id.change))
+                });
+                if explicitly_seen {
+                    return false;
+                }
+                after
+                    .get(&key)
+                    .map_or(true, |changes| changes.contains(&row.id.change))
+            })
+            .collect()
     }
 
     /// Build from the tree's complete history.  A surface that already has a
@@ -377,6 +494,8 @@ impl WorkspaceHistoryIndex {
             capped_records,
         };
         self.entries = entries;
+        self.query = Some(query);
+        self.document_heads = fingerprint.documents.iter().cloned().collect();
         self.fingerprint = Some(fingerprint);
         self.generation = self.generation.wrapping_add(1);
         true
@@ -556,6 +675,56 @@ mod tests {
         );
         assert!(!index.coverage().is_complete());
         assert_eq!(index.coverage().unavailable_records, vec![missing]);
+    }
+
+    #[test]
+    fn causal_frontier_detects_new_record_changes_and_scoped_tree_exceptions() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let record = action_record(&records, RecordId::for_tab(44), room, 20);
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.id.to_string(), record.kind.to_string());
+        let query = WorkspaceHistoryQuery::for_room(room);
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(&mut tree, &records, query.clone());
+        let mut frontier = WorkspaceSeenFrontier::default();
+        frontier.mark_seen(&index);
+        assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
+
+        tree.doc.put(&ROOT, "status", "review").unwrap();
+        tree.doc.commit_with(CommitOptions::default().with_time(30));
+        records.with(&record.id, |doc| {
+            doc.put(&ROOT, "body", "A newer decision").unwrap();
+            doc.commit_with(CommitOptions::default().with_time(40));
+        });
+        index.refresh(&mut tree, &records, query);
+        let unseen = index.unseen(&frontier, &mut tree, &records);
+        assert_eq!(unseen.len(), 2);
+        assert!(
+            unseen
+                .iter()
+                .any(|row| row.id.origin == HistoryOrigin::WorkspaceTree)
+        );
+        assert!(unseen.iter().any(
+            |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &record.id)
+        ));
+    }
+
+    #[test]
+    fn causal_frontier_persistence_round_trips_full_heads() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
+        let mut frontier = WorkspaceSeenFrontier::default();
+        frontier.mark_seen(&index);
+        let encoded = serde_json::to_string(&frontier).unwrap();
+        let decoded: WorkspaceSeenFrontier = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, frontier);
+        assert!(decoded.documents["workspace-tree"].heads.is_empty());
+        assert!(!decoded.documents["workspace-tree"].exceptions.is_empty());
     }
 
     #[test]
