@@ -31,6 +31,9 @@ ed25519-dalek = { workspace = true, features = ["serde"] }
 hex.workspace = true
 libc.workspace = true
 zeroize.workspace = true
+chacha20poly1305.workspace = true
+argon2.workspace = true
+getrandom.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
