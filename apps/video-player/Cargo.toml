@@ -30,6 +30,7 @@ portal = ["ui/portal"]
 [dependencies]
 ui = { path = "../../ui" }
 media = { path = "../../crates/media" }
+collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 tracing.workspace = true
 vello.workspace = true

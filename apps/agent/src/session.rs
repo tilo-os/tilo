@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
+use ui::collaboration::{
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, PresencePayload,
+    RouteSpec,
+};
 use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
 use uuid::Uuid;
@@ -22,6 +25,9 @@ pub struct Config {
     /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
+    /// Certified device credentials for an explicit endpoint. Launcher-bound
+    /// sessions leave this `None` and use the inherited identity service.
+    pub endpoint_identity: Option<CertifiedEndpointIdentity>,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
     pub app_id: String,
@@ -145,6 +151,7 @@ impl Session {
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.name.clone()),
+                cfg.endpoint_identity.clone(),
             )?,
             None => Link::connect(
                 &cfg.app_id,
@@ -294,11 +301,13 @@ impl Session {
             tracing::debug!("asked the room for the document again");
         }
         match self.link.recv(wait)? {
-            Some(CollabEvent::CRDTUpdate { data }) => {
-                changed = self.absorb_snapshot(&data)?;
-            }
-            Some(CollabEvent::CRDTIncremental { data }) => {
-                changed = self.merge_incremental_anywhere(&data)?;
+            Some(CollabEvent::Document { envelope, .. }) => {
+                changed = match DocumentMutation::decode(&envelope.payload)? {
+                    DocumentMutation::Snapshot(data) => self.absorb_snapshot(&data)?,
+                    DocumentMutation::Incremental(data) => {
+                        self.merge_incremental_anywhere(&data)?
+                    }
+                };
             }
             Some(CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -309,13 +318,14 @@ impl Session {
                 // every document, not only the one we were invited to.
                 if let Some(ed) = self.editor.as_mut() {
                     let full = ed.full();
-                    self.link.send(&CollabRequest::SyncCRDT { data: full })?;
+                    self.link
+                        .send(&CollabRequest::DocumentSnapshot { data: full })?;
                 }
                 for peer in self.peers.values_mut() {
                     let full = peer.full();
                     self.link.send_to_route(
                         RouteSpec::app(peer.contract().app_id, self.cfg.cluster),
-                        &CollabRequest::SyncCRDT { data: full },
+                        &CollabRequest::DocumentSnapshot { data: full },
                     )?;
                 }
                 tracing::debug!(%user_id, peers = self.peers.len(), "sent our documents to a new participant");
@@ -489,7 +499,7 @@ impl Session {
         let target_app_id = ed.contract().app_id;
         match ed.invoke(&view, &address, argument, &registry) {
             Ok(Some(delta)) => {
-                let req = CollabRequest::SyncIncremental { data: delta };
+                let req = CollabRequest::DocumentIncremental { data: delta };
                 if is_primary {
                     self.link.send(&req)?;
                 } else {
@@ -859,7 +869,8 @@ impl Session {
             .context("no document yet")?
             .apply(action)?;
         if let Some(data) = delta {
-            self.link.send(&CollabRequest::SyncIncremental { data })?;
+            self.link
+                .send(&CollabRequest::DocumentIncremental { data })?;
             tracing::info!(block = %focus, "applied {}", describe(action));
         } else {
             tracing::warn!(block = %focus, "{} changed nothing", describe(action));

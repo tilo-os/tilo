@@ -45,7 +45,7 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
+use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
 use crate::comment_overlay::{CommentAction, CommentOverlay};
@@ -4178,43 +4178,21 @@ impl BooksApp {
         self.push_hit(rect, action);
     }
 
-    /// A toggle switch (track + knob). `w`/`h` are the track size. Pushes a hit
-    /// for `action` and returns the track rect.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/c/x/y/w/h are the standard transform/colours/geometry names shared by \
-                  every draw helper in this chrome section"
-    )]
+    /// Draw a shared toggle face and retain the app-specific action routing.
     fn switch(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
+        track: Rect,
         on: bool,
         action: Action,
     ) {
-        let track = Rect::new(x, y, x + w, y + h);
-        let bg = if on {
-            theme.accent_primary
-        } else {
-            c.neutral[3]
-        };
-        paint::fill_round(scene, t, track, h / 2.0, bg);
-        let kr = h / 2.0 - 2.5;
-        let kx = if on { x + w - h / 2.0 } else { x + h / 2.0 };
-        paint::circle(
+        Toggle::paint(
             scene,
             t,
-            Point::new(kx, y + h / 2.0),
-            kr,
-            Color::from_rgb8(250, 250, 252),
+            theme,
+            &ToggleFace::new(track, on).hovered(self.is_hover(track)),
         );
         self.push_hit(track, action);
     }
@@ -5264,15 +5242,15 @@ impl BooksApp {
         );
 
         // Title + hint, centred under the mark.
-        let title = "Add a book";
-        let (title_width, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        let label = "Add a book";
+        let (label_w, _) = tr.measure_weighted(label, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
-            title,
+            label,
             15.0,
             c.text_primary,
             t * Affine::translate((
-                disc_centre_x - f64::from(title_width) / 2.0,
+                disc_centre_x - f64::from(label_w) / 2.0,
                 disc_centre_y + disc_radius + 16.0,
             )),
             None,
@@ -7764,11 +7742,12 @@ impl BooksApp {
                 scene,
                 t,
                 theme,
-                c,
-                x + w - 18.0 - tog_w,
-                y + (row_h - tog_h) / 2.0,
-                tog_w,
-                tog_h,
+                Rect::new(
+                    x + w - 18.0 - tog_w,
+                    y + (row_h - tog_h) / 2.0,
+                    x + w - 18.0,
+                    y + f64::midpoint(row_h, tog_h),
+                ),
                 watched,
                 Action::ToggleWatchFolder(folder.clone()),
             );
@@ -8073,11 +8052,7 @@ impl BooksApp {
             scene,
             t,
             theme,
-            c,
-            tog_x,
-            cy - tog_h / 2.0,
-            tog_w,
-            tog_h,
+            Rect::new(tog_x, cy - tog_h / 2.0, tog_x + tog_w, cy + tog_h / 2.0),
             f.shown,
             Action::ToggleFontShown(f.id.clone()),
         );
@@ -8480,11 +8455,7 @@ impl BooksApp {
             scene,
             t,
             theme,
-            c,
-            rx,
-            cy - tog_h / 2.0,
-            tog_w,
-            tog_h,
+            Rect::new(rx, cy - tog_h / 2.0, rx + tog_w, cy + tog_h / 2.0),
             s.enabled,
             Action::ToggleSchemeEnabled(s.id.clone()),
         );

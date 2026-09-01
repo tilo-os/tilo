@@ -168,13 +168,13 @@ fn diag_writes_the_line_when_stderr_works() {
     let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
 
     with_stderr_pointed_at(writer.as_raw_fd(), || {
-        diag!("[app] recv CRDTUpdate {}B", 64);
+        diag!("[app] recv document {}B", 64);
     });
     drop(writer);
 
     let mut buf = [0u8; 256];
     let n = reader.read(&mut buf).expect("read the diagnostic back");
-    assert_eq!(&buf[..n], b"[app] recv CRDTUpdate 64B\n");
+    assert_eq!(&buf[..n], b"[app] recv document 64B\n");
 }
 
 /// Not tidiness: the compositor's relay decodes this stderr as UTF-8, and a

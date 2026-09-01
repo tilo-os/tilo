@@ -46,6 +46,11 @@ pub const ADD_SOURCE_KEY: &str = "input.source.add";
 pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
 pub const AUTO_CORRECT_KEY: &str = "text.auto_correct";
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independently-toggled preference paired with its \
+              initial value for dirty-tracking; no combination is invalid"
+)]
 pub struct MouseKeyboardPane {
     initial: InputPrefs,
     last: InputPrefs,

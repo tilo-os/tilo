@@ -248,6 +248,22 @@ fn non_ascii_emits_unicode_escape() {
 }
 
 #[test]
+fn multibyte_text_uses_character_mark_offsets() {
+    let mut para = block("paragraph", "héllo");
+    para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
+    let rtf = render_rtf(&DocSnapshot {
+        blocks: vec![para],
+        ..empty_snapshot()
+    });
+
+    assert!(
+        rtf.contains("{\\b h\\u233?ll}{o}"),
+        "bold covers four Unicode scalar values, not four bytes:\n{rtf}"
+    );
+    assert_balanced(&rtf);
+}
+
+#[test]
 fn hyperlink_mark_emits_field() {
     let mut para = block("paragraph", "click here");
     para.marks.push(mark(

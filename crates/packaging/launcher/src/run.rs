@@ -1203,15 +1203,21 @@ fn resolve_identity_broker(
     Ok((app, control, thread, identity_host))
 }
 
-/// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
-/// `cli_bin()` (falling back to `bin`) and splices `QOS_CLI_COMMAND` /
-/// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
-#[allow(clippy::too_many_arguments)]
 /// What an argv builder produces: the bwrap command line, an optional
 /// `(name, value)` environment pair the caller must splice in, and the
 /// trailing arguments passed through to the app.
 type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 
+/// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
+/// `cli_bin()` (falling back to `bin`) and splices `QOS_CLI_COMMAND` /
+/// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is an independently-resolved piece of the sandbox \
+              (runtime, service binds, dbus plan, identity, capabilities); bundling \
+              them would only move the same list behind a struct built at the one \
+              call site"
+)]
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,

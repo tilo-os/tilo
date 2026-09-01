@@ -93,7 +93,10 @@ pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
-pub use op::{EncryptionMetadata, SignedOp};
+pub use op::{
+    DocumentMutation, DocumentMutationError, EncryptionMetadata, SignedOp, document_artifact_id,
+    document_attestation_id,
+};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
@@ -101,4 +104,6 @@ pub use redaction::{
 };
 pub use role::{ArtifactKind, OpClass, Role, role_permits};
 pub use space::{Space, SpaceId};
-pub use validator::{ChannelState, ValidationError, validate_inbound_op};
+pub use validator::{
+    ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
+};
