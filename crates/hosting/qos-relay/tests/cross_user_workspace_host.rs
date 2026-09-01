@@ -36,7 +36,11 @@ async fn pinned_provider_host_serves_only_enrolled_cross_user_devices() {
     let cfg = RelayConfig {
         state_root: state.path().to_path_buf(),
         trust_policy: TrustPolicy::AllowAny,
-        workspaces: vec![WorkspaceBinding { id: 77, pin: true }],
+        workspaces: vec![WorkspaceBinding {
+            id: 77,
+            pin: true,
+            replication: qos_relay::ReplicationIntent::FullWorkspace,
+        }],
         ..RelayConfig::default()
     };
     let relay = Relay::start(
@@ -137,7 +141,11 @@ async fn provider_membership_removal_closes_a_live_tenant_session() {
         RelayConfig {
             state_root: state.path().to_path_buf(),
             trust_policy: TrustPolicy::AllowAny,
-            workspaces: vec![WorkspaceBinding { id: 78, pin: true }],
+            workspaces: vec![WorkspaceBinding {
+                id: 78,
+                pin: true,
+                replication: qos_relay::ReplicationIntent::FullWorkspace,
+            }],
             ..RelayConfig::default()
         },
         qos_relay::daemon::RelayIdentity {
