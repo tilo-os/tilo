@@ -648,7 +648,17 @@ pub trait Widget {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let _ = invocation;
+        // Give descendants their lifecycle-aware route before falling back to
+        // the v2 synchronous adapter. Without this pass, an async leaf nested
+        // under an ordinary retained container would be downgraded to the
+        // legacy immediate route.
+        for child in self.children_mut() {
+            if let Some(started) =
+                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
+            {
+                return Ok(Some(started));
+            }
+        }
         self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
             .map(|result| result.map(ResourceOperationStart::Completed))
     }
