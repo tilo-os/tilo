@@ -15,6 +15,7 @@ VM_CONTROL_SOURCE="$OS_ROOT/../crates/system/windows-vm/src/bin/qos-windows-vm-c
 INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
 BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
 FOCUSED="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSFocusedApp.ps1"
+INSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSInstaller.ps1"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 fails=0
@@ -24,7 +25,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -81,8 +82,27 @@ has "$CONTAINERFILE" 'qos-windows-provision' 'image wires provision tool'
 has "$CONTAINERFILE" '/out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control' 'image ships the singleton VM controller'
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
 has "$PROVISION" 'Start-qOSFocusedApp.ps1' 'guest tools carry the focused-app helper'
+has "$PROVISION" 'Start-qOSInstaller.ps1' 'guest tools carry the managed installer helper'
 has "$FOCUSED" 'Stop-Process -Id' 'focused fallback suppresses Explorer while running'
 has "$FOCUSED" 'Start-Process -FilePath "$env:WINDIR\explorer.exe"' 'focused fallback restores Explorer'
+has "$BRIDGE" 'Require-UploadAuth' 'installer upload has a metadata-bound HMAC contract'
+has "$BRIDGE" 'installer upload needs an exact content length' 'installer upload requires an exact size'
+has "$BRIDGE" 'TransformFinalBlock' 'guest recomputes installer SHA-256 while streaming'
+has "$BRIDGE" '[IO.File]::Move($partial, $final)' 'installer becomes visible only by atomic same-volume rename'
+has "$BRIDGE" '$maximumInstallerBytes = [UInt64]17179869184' 'guest import matches the 16 GiB portal bound'
+has "$BRIDGE" '$maximumStagedBytes = [UInt64]34359738368' 'aggregate staged installer bytes are bounded'
+has "$BRIDGE" 'Invoke-InstallerCleanup' 'expired and completed installer resources are reaped'
+has "$BRIDGE" "-LogonType InteractiveToken -RunLevel Limited" 'installer starts in the existing limited interactive session'
+has "$BRIDGE" 'beforeExecutableHashes' 'candidate discovery is scoped to installation changes'
+has "$BRIDGE" '[IO.File]::Replace' 'administrator publication state advances atomically'
+has "$BRIDGE" 'expectedGeneration' 'publication changes use optimistic generation checks'
+has "$BRIDGE" "'Traverse', 'None', 'None'" 'installer parent ACL grants traversal only'
+lacks "$BRIDGE" "ReadAndExecute', 'ContainerInherit,ObjectInherit'.*\$installerRoot" 'staged payload root is not recursively exposed'
+has "$INSTALLER" 'Get-FileHash -LiteralPath $package -Algorithm SHA256' 'interactive helper rechecks accepted package digest'
+has "$INSTALLER" "-ArgumentList @('/i', \$package)" 'MSI helper has one typed fixed invocation'
+has "$INSTALLER" 'Start-Process -FilePath $package -Wait -PassThru' 'EXE helper invokes only the accepted file without arguments'
+has "$INSTALLER" 'Where-Object { $_.SessionId -eq $sessionId }' 'installer hides Explorer only in its managed session'
+lacks "$INSTALLER" 'Invoke-Expression' 'installer helper has no free-form command evaluator'
 
 VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
 REMOTE_APP="$VM_ROOT/src/remote_app.rs"

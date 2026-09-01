@@ -23,9 +23,10 @@ $root = 'C:\ProgramData\qOS\RemoteApp'
 $focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $bridgeScript = Join-Path $BootstrapRoot 'Start-qOSGuestBridge.ps1'
 $focusedScript = Join-Path $BootstrapRoot 'Start-qOSFocusedApp.ps1'
+$installerScript = Join-Path $BootstrapRoot 'Start-qOSInstaller.ps1'
 $secretPath = Join-Path $BootstrapRoot 'qos-bridge.secret'
 $configPath = Join-Path $BootstrapRoot 'qos-bridge.json'
-foreach ($path in @($bridgeScript, $focusedScript, $secretPath, $configPath, $ApplicationsPath)) {
+foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $secretPath, $configPath, $ApplicationsPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
@@ -79,6 +80,18 @@ Copy-Item -LiteralPath $focusedScript -Destination (Join-Path $focusRoot 'Start-
 Copy-Item -LiteralPath $secretPath -Destination (Join-Path $root 'bridge.secret') -Force
 Copy-Item -LiteralPath $configPath -Destination (Join-Path $root 'bridge.json') -Force
 Copy-Item -LiteralPath $ApplicationsPath -Destination (Join-Path $root 'published-applications.json') -Force
+
+# User-selected installers are copied into this VM-local directory only after
+# the authenticated bridge verifies their declared size and SHA-256. It holds
+# no bridge key or publication manifest. The active managed user receives
+# read/execute only when a one-use operation is started.
+$installerRoot = 'C:\ProgramData\qOS\InstallerSession'
+New-Item -ItemType Directory -Force -Path $installerRoot | Out-Null
+Set-Acl -LiteralPath $installerRoot -AclObject $focusAcl
+foreach ($child in @('staging', 'payloads', 'operations')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $installerRoot $child) | Out-Null
+}
+Copy-Item -LiteralPath $installerScript -Destination (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Force
 
 $allowList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList'
 $base = Join-Path $allowList 'Applications'

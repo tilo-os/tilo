@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -8,8 +9,9 @@ use crate::libvirt::VmBackendError;
 use crate::remote_app::validate_share_path;
 use crate::{
     AgentError, ApplianceConfig, ApplianceState, Catalog, CatalogError, DomainState, GuestAgent,
-    ProvisioningError, ProvisioningStore, RemoteAppError, RemoteAppLauncher, RemoteAppProcess,
-    VmBackend,
+    InstallationOperationId, InstallationStatus, InstallerPackage, PreparedInstallation,
+    ProvisioningError, ProvisioningStore, PublicationResult, RemoteAppError, RemoteAppLauncher,
+    RemoteAppProcess, StagedInstaller, VmBackend,
 };
 
 pub const HOST_PROTOCOL_MAJOR: u16 = 1;
@@ -209,6 +211,93 @@ where
         Ok(catalog)
     }
 
+    /// Streams a portal-owned package through the authenticated guest bridge.
+    /// The reader is not a path capability and is consumed at most once.
+    pub fn stage_installer<R>(
+        &self,
+        package: &InstallerPackage,
+        reader: R,
+    ) -> Result<StagedInstaller, LaunchError>
+    where
+        R: Read + Send + 'static,
+    {
+        let (_, session) = self.installer_session()?;
+        self.agent
+            .stage_installer(&session, package, reader)
+            .map_err(Into::into)
+    }
+
+    pub fn begin_installation(
+        &self,
+        staged: &StagedInstaller,
+    ) -> Result<PreparedInstallation, LaunchError> {
+        let (_, session) = self.installer_session()?;
+        self.agent
+            .begin_installation(&session, staged)
+            .map_err(Into::into)
+    }
+
+    /// Attaches only the app-focused appliance surface for interactive setup.
+    /// It cannot silently normalize to the administrator recovery desktop.
+    pub fn present_installation(
+        &self,
+        prepared: &PreparedInstallation,
+    ) -> Result<RemoteAppProcess, LaunchError> {
+        if prepared.presentation.presentation != crate::ApplicationPresentation::AppFocusedSpice
+            || prepared.presentation.remote_app_alias != prepared.operation_id.as_str()
+        {
+            return Err(LaunchError::PublicationChanged);
+        }
+        let lease_id = format!("install-{}", prepared.operation_id.as_str());
+        self.launcher
+            .launch(&prepared.presentation, &BrokeredLaunch::deny_all(lease_id))
+            .map_err(Into::into)
+    }
+
+    pub fn installation_status(
+        &self,
+        operation: &InstallationOperationId,
+    ) -> Result<InstallationStatus, LaunchError> {
+        let (_, session) = self.installer_session()?;
+        self.agent
+            .installation_status(&session, operation)
+            .map_err(Into::into)
+    }
+
+    pub fn publish_candidate(
+        &self,
+        operation: &InstallationOperationId,
+        candidate_id: &str,
+        application_id: &str,
+        display_name: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, LaunchError> {
+        let (state, session) = self.installer_session()?;
+        let published = self.agent.publish_candidate(
+            &session,
+            operation,
+            candidate_id,
+            application_id,
+            display_name,
+            expected_generation,
+        )?;
+        self.accept_publication_catalog(state, &session, &published)?;
+        Ok(published)
+    }
+
+    pub fn remove_publication(
+        &self,
+        application_id: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, LaunchError> {
+        let (state, session) = self.installer_session()?;
+        let removed =
+            self.agent
+                .remove_publication(&session, application_id, expected_generation)?;
+        self.accept_publication_catalog(state, &session, &removed)?;
+        Ok(removed)
+    }
+
     /// Starts one allow-listed `RemoteApp`. The capability lease is revoked on
     /// every error after it is created and when `FreeRDP` exits normally.
     pub fn launch(&self, request: &LaunchRequest) -> Result<RunningRemoteApp, LaunchError> {
@@ -280,6 +369,26 @@ where
         accepted.cached_catalog = Some(catalog.clone());
         self.state.save(&accepted)?;
         Ok(())
+    }
+
+    fn installer_session(&self) -> Result<(ApplianceState, crate::GuestSession), LaunchError> {
+        let state = self.ensure_ready()?;
+        let session = self.agent.wait_ready(self.agent_timeout)?;
+        validate_health(&state, &session.health)?;
+        Ok((state, session))
+    }
+
+    fn accept_publication_catalog(
+        &self,
+        state: ApplianceState,
+        session: &crate::GuestSession,
+        result: &PublicationResult,
+    ) -> Result<(), LaunchError> {
+        let catalog = self.agent.catalog(session)?;
+        if catalog.generation != result.catalog_generation {
+            return Err(LaunchError::PublicationChanged);
+        }
+        self.accept_catalog(state, &catalog)
     }
 
     fn ready_state(&self) -> Result<ApplianceState, LaunchError> {
