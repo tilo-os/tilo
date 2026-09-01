@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{
     Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
     TaffyTree,
@@ -233,6 +233,10 @@ pub struct ShellOverlayHost {
     /// reconciler only latches the id without rebuilding, so hosts
     /// constructed around hand-made content keep it.
     content_built_for_ws: Option<u64>,
+    /// Whether `content` includes the first-use empty state. Crossing the
+    /// zero/one-window boundary requires a rebuild even though the strip set
+    /// itself did not change.
+    content_built_empty: Option<bool>,
     /// Per-strip last active-group id that
     /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
     /// focus-follow scroll is edge-triggered and doesn't fight a user who
@@ -922,6 +926,7 @@ impl ShellOverlayHost {
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
             content_built_for_ws: None,
+            content_built_empty: None,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
@@ -1384,6 +1389,16 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
         self.content_built_for_ws = Some(ws_raw);
+        self.content_built_empty = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .all(|strip| strip.window_groups.is_empty())
+            })
+        });
         self
     }
 
@@ -1405,6 +1420,12 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.active.raw();
+            let active_empty = tree.active_workspace().is_some_and(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .all(|strip| strip.window_groups.is_empty())
+            });
             match self.content_built_for_ws {
                 // Hand-made test content: latch, never rebuild over it.
                 None => {
@@ -1412,7 +1433,11 @@ impl ShellOverlayHost {
                     self.content_built_for_ws = Some(active_raw);
                     return false;
                 }
-                Some(cur) if cur == active_raw && self.rows_cover_active_strips(&tree) => {
+                Some(cur)
+                    if cur == active_raw
+                        && self.content_built_empty == Some(active_empty)
+                        && self.rows_cover_active_strips(&tree) =>
+                {
                     return false;
                 }
                 Some(_) => {}
@@ -1427,6 +1452,12 @@ impl ShellOverlayHost {
         self.content = root;
         self.group_row_ptrs = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
+        self.content_built_empty = snapshot.active_workspace().map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .all(|strip| strip.window_groups.is_empty())
+        });
         // Per-strip memos of the old workspace die with its rows.
         self.last_scrolled_active_group.clear();
         true
@@ -3058,6 +3089,34 @@ impl ShellOverlayHost {
             // opens with an "everything" list rather than blank.
             self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
         }
+    }
+
+    /// Consume the empty workspace's semantic CTA and open a picker containing
+    /// only launchable applications. Pointer, keyboard and assistive-tech
+    /// activation all publish the same key through `ui::EmptyState`.
+    fn harvest_empty_workspace_open_app(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        let requested = matches!(
+            doc.get(root, crate::shell::EMPTY_WORKSPACE_OPEN_APP),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), ScalarValue::Boolean(true))
+        );
+        if !requested {
+            return false;
+        }
+        let _ = doc.put(root, crate::shell::EMPTY_WORKSPACE_OPEN_APP, false);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            state.search_scope = crate::shell::chrome_state::SearchScope::All;
+            state.bump();
+        }
+        self.active_kind_filter = app_kind_filter();
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        self.refresh_search_results(doc, root);
+        true
     }
 
     /// Refreshes the palette's rows by fanning the query out to every
@@ -6537,6 +6596,7 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
+        self.harvest_empty_workspace_open_app(s, p);
         if let Some(sidebar) = self.sidebar.as_mut() {
             sidebar.sync(s, p);
         }
@@ -10078,6 +10138,90 @@ impl ShellOverlayHost {
     /// Root power-profile geometry exposed for integration click routing tests.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
         QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
+    }
+}
+
+#[cfg(test)]
+mod empty_workspace_tests {
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::WorkspaceTree;
+    use taffy::AvailableSpace;
+
+    fn has_open_app_button(widget: &dyn Widget) -> bool {
+        if widget.accessibility().is_some_and(|node| {
+            node.children.iter().any(|child| {
+                child.role == ui::a11y::Role::Button && child.name.as_deref() == Some("Open an app")
+            })
+        }) {
+            return true;
+        }
+        widget.children().into_iter().any(has_open_app_button)
+    }
+
+    fn empty_state_rect(widget: &dyn Widget) -> Option<Rect> {
+        if widget.name() == "EmptyState" {
+            return Some(widget.get_rect());
+        }
+        widget.children().into_iter().find_map(empty_state_rect)
+    }
+
+    fn lay_out(host: &mut ShellOverlayHost, width: f32, height: f32) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let measure_map = node_map.clone();
+        let mut text = TextRenderer::new();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::Definite(height),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                        (*ptr).measure(known, available, &mut text)
+                    })
+                },
+            )
+            .expect("empty workspace layout");
+        host.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn bootstrap_default_exposes_an_accessible_open_app_action() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, _) = build_nirios_overlay_host_with_chrome(&tree);
+        lay_out(&mut host, 1600.0, 900.0);
+        assert!(
+            has_open_app_button(host.content.as_ref()),
+            "a real first boot needs a visible, accessible route out of its empty workspace"
+        );
+        let rect = empty_state_rect(host.content.as_ref()).expect("empty state is mounted");
+        assert!(
+            rect.width() >= 320.0 && rect.height() >= 160.0,
+            "the first-use affordance needs visible canvas space, rect={rect:?}"
+        );
+    }
+
+    #[test]
+    fn empty_workspace_action_opens_the_applications_palette() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_OPEN_APP, true);
+
+        host.sync(&mut doc, &root);
+
+        assert!(host.palette_visible(), "the CTA opens the global palette");
+        assert_eq!(
+            chrome.borrow().search_scope,
+            crate::shell::chrome_state::SearchScope::All
+        );
+        assert_eq!(host.active_kind_filter, app_kind_filter());
+        assert_eq!(host.palette.query(), "", "the picker starts ready to type");
     }
 }
 
