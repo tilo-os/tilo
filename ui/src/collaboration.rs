@@ -2701,7 +2701,12 @@ mod tests {
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = drain_events(&mut mgr, Duration::from_secs(2));
+        let start = Instant::now();
+        let mut events = Vec::new();
+        while events.len() < 7 && start.elapsed() < Duration::from_secs(2) {
+            events.extend(mgr.poll());
+            thread::sleep(Duration::from_millis(5));
+        }
 
         let mut cursor_moves = Vec::new();
         let mut updates = Vec::new();
