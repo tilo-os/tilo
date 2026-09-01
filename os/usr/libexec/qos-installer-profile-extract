@@ -6,7 +6,7 @@ set -u
 
 readonly block_size=65536
 readonly magic_expected=QOS_INSTALL_PROFILE_V1
-readonly out_dir=/run/qos-installer
+readonly out_dir="${QOS_INSTALLER_PROFILE_OUT_DIR:-/run/qos-installer}"
 readonly out_file="$out_dir/profile.json"
 readonly error_file="$out_dir/profile.error"
 
@@ -19,6 +19,9 @@ report_error() {
 }
 
 declare -a candidates=()
+if [ -n "${QOS_INSTALLER_PROFILE_DEVICE:-}" ]; then
+  candidates+=("$QOS_INSTALLER_PROFILE_DEVICE")
+fi
 while read -r source mountpoint; do
   source="${source%%\[*}"
   [ -b "$source" ] || continue
@@ -39,13 +42,30 @@ if [ "${#candidates[@]}" -eq 0 ]; then
   done < <(lsblk -dpno NAME,TYPE,RM 2>/dev/null)
 fi
 
-tmp_dir="$(mktemp -d /run/qos-installer-profile.XXXXXX)" || exit 0
+declare -A seen=()
+declare -a unique_candidates=()
+for disk in "${candidates[@]}"; do
+  canonical="$(readlink -f "$disk" 2>/dev/null || true)"
+  [ -n "$canonical" ] || continue
+  [ -z "${seen[$canonical]:-}" ] || continue
+  seen[$canonical]=1
+  unique_candidates+=("$canonical")
+done
+candidates=("${unique_candidates[@]}")
+
+tmp_dir="$(mktemp -d "$out_dir/.profile-extract.XXXXXX")" || exit 0
 trap 'rm -rf "$tmp_dir"' EXIT
 valid=0
 
 for disk in "${candidates[@]}"; do
-  [ -b "$disk" ] || continue
-  size="$(blockdev --getsize64 "$disk" 2>/dev/null || true)"
+  if [ ! -b "$disk" ]; then
+    [ "${QOS_INSTALLER_PROFILE_ALLOW_FILE:-0}" = 1 ] && [ -f "$disk" ] || continue
+  fi
+  if [ -b "$disk" ]; then
+    size="$(blockdev --getsize64 "$disk" 2>/dev/null || true)"
+  else
+    size="$(stat -c %s "$disk" 2>/dev/null || true)"
+  fi
   case "$size" in ''|*[!0-9]*) continue ;; esac
   [ "$size" -ge "$block_size" ] || continue
   tail_file="$tmp_dir/tail-$valid"

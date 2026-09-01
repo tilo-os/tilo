@@ -43,15 +43,17 @@ pub enum CzField {
     Hostname,
     FullName,
     Username,
+    Locale,
     Timezone,
     Keyboard,
 }
 
 impl CzField {
-    const ALL: [CzField; 5] = [
+    const ALL: [CzField; 6] = [
         CzField::Hostname,
         CzField::FullName,
         CzField::Username,
+        CzField::Locale,
         CzField::Timezone,
         CzField::Keyboard,
     ];
@@ -64,6 +66,7 @@ struct CzGeom {
     hostname: Rect,
     full_name: Rect,
     username: Rect,
+    locale: Rect,
     timezone: Rect,
     region_label_y: f64,
     keyboard: Rect,
@@ -76,6 +79,7 @@ impl CzGeom {
             CzField::Hostname => self.hostname,
             CzField::FullName => self.full_name,
             CzField::Username => self.username,
+            CzField::Locale => self.locale,
             CzField::Timezone => self.timezone,
             CzField::Keyboard => self.keyboard,
         }
@@ -97,6 +101,7 @@ pub struct CustomizePanel {
     hostname: TextInput,
     full_name: TextInput,
     username: TextInput,
+    locale: TextInput,
     timezone: TextInput,
     keyboard: TextInput,
     focused: Option<CzField>,
@@ -120,6 +125,7 @@ impl CustomizePanel {
             hostname: field(),
             full_name: field(),
             username: field(),
+            locale: field(),
             timezone: field(),
             keyboard: field(),
             focused: None,
@@ -132,6 +138,7 @@ impl CustomizePanel {
             CzField::Hostname => &mut self.hostname,
             CzField::FullName => &mut self.full_name,
             CzField::Username => &mut self.username,
+            CzField::Locale => &mut self.locale,
             CzField::Timezone => &mut self.timezone,
             CzField::Keyboard => &mut self.keyboard,
         }
@@ -142,6 +149,7 @@ impl CustomizePanel {
             CzField::Hostname => &profile.hostname,
             CzField::FullName => &profile.user.full_name,
             CzField::Username => &profile.user.username,
+            CzField::Locale => &profile.locale,
             CzField::Timezone => &profile.timezone,
             CzField::Keyboard => &profile.keyboard,
         }
@@ -154,6 +162,7 @@ impl CustomizePanel {
             CzField::Hostname => ImagerAction::SetHostname { value },
             CzField::FullName => ImagerAction::SetFullName { value },
             CzField::Username => ImagerAction::SetUsername { value },
+            CzField::Locale => ImagerAction::SetLocale { value },
             CzField::Timezone => ImagerAction::SetTimezone { value },
             CzField::Keyboard => ImagerAction::SetKeyboard { value },
         }
@@ -202,16 +211,18 @@ impl CustomizePanel {
         let full_name = Rect::new(x0, r2, x0 + fw, r2 + fh);
         let username = Rect::new(x0 + fw + 16.0, r2, x1, r2 + fh);
         let r3 = r2 + row_pitch;
-        let timezone = Rect::new(x0, r3, x1, r3 + fh);
+        let timezone = Rect::new(x0, r3, x0 + fw, r3 + fh);
+        let locale = Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh);
         let region_label_y = r3 + fh + 26.0;
         let kb_y = region_label_y + 40.0;
-        let keyboard = Rect::new(x0, kb_y, x0 + fw, kb_y + fh);
+        let keyboard = Rect::new(x0, kb_y, x1, kb_y + fh);
         let export = Rect::new(x1 - 250.0, kb_y + fh + 30.0, x1, kb_y + fh + 62.0);
         CzGeom {
             identity_label_y,
             hostname,
             full_name,
             username,
+            locale,
             timezone,
             region_label_y,
             keyboard,
@@ -412,6 +423,16 @@ impl CustomizePanel {
             g.timezone,
             "Time zone",
         );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Locale,
+            g.locale,
+            "Language & locale",
+        );
     }
 
     /// The REGION section contains the last host-side preference. Security,
@@ -496,9 +517,9 @@ impl CustomizePanel {
         modifiers: &Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
-        _host: &mut ui::ActionHost,
-        _profile: &InstallProfile,
-        _target_removable: bool,
+        host: &mut ui::ActionHost,
+        profile: &InstallProfile,
+        target_removable: bool,
         content: Rect,
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
@@ -586,9 +607,9 @@ impl CustomizePanel {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
-        host: &mut ui::ActionHost,
-        profile: &InstallProfile,
-        target_removable: bool,
+        _host: &mut ui::ActionHost,
+        _profile: &InstallProfile,
+        _target_removable: bool,
         g: &CzGeom,
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
