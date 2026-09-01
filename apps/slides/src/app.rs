@@ -72,7 +72,9 @@ fn image_open_request() -> PickRequest {
 }
 
 fn presentation_filter() -> FileFilter {
-    FileFilter::new("Presentations").glob("*.odp")
+    FileFilter::new("Presentations (.odp, .pptx)")
+        .glob("*.odp")
+        .glob("*.pptx")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2357,15 +2359,25 @@ impl SlidesApp {
                 self.doc_portal_rx = None;
                 match outcome {
                     DocOutcome::Open(path) => {
-                        self.io_toast = Some(if self.load_odp(doc, &path) {
-                            ("Presentation opened".into(), ToastKind::Success)
+                        let power_point = is_pptx(&path);
+                        self.io_toast = Some(if self.load_presentation(doc, &path) {
+                            (
+                                if power_point {
+                                    "PowerPoint opened · slides, text, shapes and pictures imported"
+                                } else {
+                                    "Presentation opened"
+                                }
+                                .into(),
+                                ToastKind::Success,
+                            )
                         } else {
                             ("Could not open the presentation".into(), ToastKind::Error)
                         });
                     }
                     DocOutcome::Save(path) => {
-                        self.io_toast = Some(if self.save_odp(&path) {
-                            ("Presentation saved".into(), ToastKind::Success)
+                        let power_point = is_pptx(&path);
+                        self.io_toast = Some(if self.save_presentation(&path) {
+                            (if power_point { "PowerPoint saved · animations and master themes aren't exported" } else { "Presentation saved" }.into(), ToastKind::Success)
                         } else {
                             ("Could not save the presentation".into(), ToastKind::Error)
                         });
@@ -2388,10 +2400,19 @@ impl SlidesApp {
     /// Load a `.odp` from disk, replacing the deck in the shared document so
     /// undo/redo and collaboration see the whole swap as one change.
     fn load_odp(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
+        self.load_presentation(doc, path)
+    }
+
+    fn load_presentation(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
         let Ok(bytes) = std::fs::read(path) else {
             return false;
         };
-        let Ok(deck) = crate::odp::read_odp(&bytes) else {
+        let deck = if is_pptx(path) {
+            crate::pptx::read_pptx(&bytes)
+        } else {
+            crate::odp::read_odp(&bytes)
+        };
+        let Ok(deck) = deck else {
             return false;
         };
         SlidesDoc::seed(doc, &deck);
@@ -2410,6 +2431,16 @@ impl SlidesApp {
     /// Serialise the current deck to a `.odp` at `path` (adding the extension
     /// if the host didn't).
     fn save_odp(&self, path: &std::path::Path) -> bool {
+        self.save_presentation(path)
+    }
+
+    fn save_presentation(&self, path: &std::path::Path) -> bool {
+        if is_pptx(path) {
+            return match crate::pptx::write_pptx(&self.deck) {
+                Ok(bytes) => std::fs::write(path, bytes).is_ok(),
+                Err(_) => false,
+            };
+        }
         let path = ensure_odp_ext(path);
         match crate::odp::write_odp(&self.deck) {
             Ok(bytes) => std::fs::write(&path, bytes).is_ok(),
@@ -4465,6 +4496,12 @@ fn ensure_odp_ext(path: &std::path::Path) -> PathBuf {
             PathBuf::from(p)
         }
     }
+}
+
+fn is_pptx(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pptx"))
 }
 
 fn mix_panel(a: Color, b: Color) -> Color {
@@ -7720,6 +7757,27 @@ mod tests {
             app.deck.slides.len(),
             "the load landed in the CRDT"
         );
+    }
+
+    #[test]
+    fn app_routes_powerpoint_and_explains_its_fidelity_boundary() {
+        let mut app = SlidesApp::new();
+        app.deck = crate::model::seed_deck();
+        let path = std::env::temp_dir().join("slides-app-pptx-roundtrip.pptx");
+        assert!(app.save_presentation(&path), "deck saves to .pptx");
+
+        let mut opened = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &opened.deck);
+        opened.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path.clone())));
+        opened.drain_doc_portal(&mut doc);
+        assert_eq!(opened.deck.title, app.deck.title);
+        assert_eq!(opened.deck.slides.len(), app.deck.slides.len());
+        assert!(matches!(
+            opened.io_toast.as_ref(),
+            Some((message, ToastKind::Success)) if message.contains("text, shapes and pictures")
+        ));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
