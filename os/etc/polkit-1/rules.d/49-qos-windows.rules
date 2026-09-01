@@ -1,0 +1,20 @@
+// Windows setup and recovery change one root-owned, local appliance.  The
+// helper independently accepts no path or command arguments, only an inherited
+// portal descriptor for import and the singleton start operation for recovery.
+// This rule therefore grants neither general pkexec nor libvirt management.
+polkit.addRule(function (action, subject) {
+    var permitted = {
+        "org.qos.windows.import-iso": true,
+        "org.qos.windows.recovery-start": true,
+        "org.qos.windows.recovery-consume": true
+    };
+    if (permitted[action.id] === true &&
+        subject.local && subject.active && subject.isInGroup("wheel")) {
+        // Require the standard polkit administrator authentication. Its
+        // short-lived cache (and the recovery-start implication) lets the
+        // viewer consume the one-shot proof without qOS inventing a second
+        // password prompt or authorization surface.
+        return polkit.Result.AUTH_ADMIN_KEEP;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

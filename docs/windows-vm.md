@@ -12,14 +12,25 @@ a less confined desktop.
 
 ## Provisioning
 
-The owner supplies a Windows installation ISO to `qos-windows-provision
-prepare --iso /absolute/path`. The tool copies it to root-only state, creates
-one qcow2 disk, makes a small guest-tools ISO, and starts the headless singleton.
-It deliberately does not open a viewer or accept, log, or retain a product key.
-Complete Windows Setup and enter any licence in the explicitly owner-authorised
-provisioning console. The singleton domain attaches the copied installer and
-guest-tools images as read-only CD-ROMs; its empty disk falls through to the
-installer on first boot and takes priority after Windows is installed.
+Windows Apps asks the owner to select a Windows installation ISO through the
+normal qOS file portal. The owner-authorised system helper receives only that
+already-open descriptor on stdin — never a host pathname — bounds it to 20 GiB,
+parses it as ISO9660 or UDF, hashes and atomically stages it privately, then
+calls the singleton provisioner. It creates one qcow2 disk, makes a small
+guest-tools ISO, and starts the headless singleton. It deliberately does not
+open a viewer or accept, log, or retain a product key. Complete Windows Setup
+and enter any licence in the explicitly owner-authorised provisioning console.
+The singleton domain attaches the copied installer and guest-tools images as
+read-only CD-ROMs; its empty disk falls through to the installer on first boot
+and takes priority after Windows is installed.
+
+The unprivileged, typed status command is `qos-windows-owner status`; it emits
+the appliance phase, licensing state, cached catalogue generation, published
+application count, and whether recovery is possible without waking the VM.
+Windows Apps invokes the root actions through standard polkit/pkexec. Recovery
+first authorises a singleton start and then consumes a root-owned, expiring,
+single-use recovery proof before it starts `virt-viewer` as the active user.
+The recovery viewer does not receive root or libvirt-management authority.
 
 For the best normal qOS application presentation, use a Windows Server ISO
 licensed for the official Remote Desktop Services RemoteApp role. qOS also
