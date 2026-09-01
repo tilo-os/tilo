@@ -1,8 +1,8 @@
 use ui::LocalState;
 use ui::tokens::TextRole;
-use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
-    Button, ModelView, ResizableSplit, Text, TextInput, TreeNode, TreeView, Widget, labeled_field,
+    AppShell, Button, ModelView, NarrowScreen, Text, TextInput, TreeNode, TreeView, Widget,
+    labeled_field,
 };
 
 fn item_label(id: u64) -> String {
@@ -46,7 +46,7 @@ fn detail_pane(item_id: u64) -> Box<dyn Widget> {
     ])
 }
 
-/// A professional master-detail shell with durable per-item editing.
+/// A responsive professional master-detail shell with durable per-item editing.
 ///
 /// Stable tree selection switches one retained detail pane through typed local
 /// state. Each detail form binds directly to its own Automerge paths, so
@@ -55,7 +55,9 @@ fn detail_pane(item_id: u64) -> Box<dyn Widget> {
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
     let selected = LocalState::new(3_u64);
+    let narrow_screen = LocalState::new(NarrowScreen::Content);
     let selected_from_tree = selected.clone();
+    let screen_from_tree = narrow_screen.clone();
     let label = |message| ui::i18n::I18nManager::lookup_plain(message);
     let tree = TreeView::new(TreeNode::branch(
         1,
@@ -82,7 +84,10 @@ pub fn app_root() -> Box<dyn Widget> {
     .with_id("workspace-tree")
     .with_expanded([1, 2])
     .with_selected(Some(3))
-    .on_select(move |id| selected_from_tree.set(id))
+    .on_select(move |id| {
+        selected_from_tree.set(id);
+        screen_from_tree.set(NarrowScreen::Content);
+    })
     .with_viewport(560.0, 36.0)
     .with_accessible_name("workspace-tree-name");
     let master = ui::column![
@@ -93,6 +98,9 @@ pub fn app_root() -> Box<dyn Widget> {
     let detail = ModelView::from_state(&selected, |item_id| detail_pane(*item_id));
 
     Box::new(
-        ResizableSplit::new(master, detail, SplitOrientation::Horizontal).with_split_position(0.32),
+        AppShell::new(Box::new(master), Box::new(detail))
+            .with_id("workspace-shell")
+            .with_back_accessible_name("workspace-back")
+            .with_narrow_screen_state(&narrow_screen),
     )
 }
