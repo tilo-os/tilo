@@ -87,6 +87,13 @@ impl WorkspaceHistoryEntry {
     /// accepts only a 16-byte id.  Authoritative operations must retain `id`.
     pub fn timeline_entry(&self) -> HistoryEntry {
         let mut projected = self.entry.clone();
+        // Collaborative named ranges live in the workspace tree and address
+        // its native ids. Preserve those ids so adding record rows cannot
+        // detach an existing name from its band. Only foreign document ids
+        // need projection into the shared widget namespace.
+        if self.id.origin == HistoryOrigin::WorkspaceTree {
+            return projected;
+        }
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.id.origin.key().as_bytes());
         hasher.update(self.id.change.as_bytes());
@@ -484,6 +491,10 @@ mod tests {
             .map(|row| row.timeline_entry().id)
             .collect();
         assert!(projected.len() >= 2);
+        assert!(index.entries().iter().any(|row| {
+            row.id.origin == HistoryOrigin::WorkspaceTree
+                && row.timeline_entry().id == row.id.change
+        }));
     }
 
     #[test]
