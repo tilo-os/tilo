@@ -42,7 +42,7 @@ has "$PROVISION" 'xorriso -as mkisofs' 'guest payload is delivered without a hos
 has "$PROVISION" '"license":"unknown"' 'host state records no licence value'
 has "$RECOVERY" '--owner-authorized' 'desktop console has an explicit recovery gate'
 has "$RECOVERY" 'refuses to run a Wayland GUI as root' 'desktop viewer refuses root execution'
-has "$RECOVERY" 'remote-viewer --connect qemu:///system --attach qos-windows-appliance' 'recovery is an explicit libvirt attachment'
+has "$RECOVERY" 'virt-viewer --connect qemu:///system --attach qos-windows-appliance' 'recovery is an explicit libvirt attachment'
 
 lacks "$INSTALL" 'ProductType -ne 3' 'client Windows is not rejected outright'
 has "$INSTALL" 'RDS-RD-Server' 'official RDS RemoteApp role is required'
