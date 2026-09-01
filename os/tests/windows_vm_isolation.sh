@@ -7,12 +7,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="${OS_ROOT:-$(cd "$HERE/.." && pwd)}"
 NET="$OS_ROOT/usr/share/qos/windows/libvirt/qos-windows-hostonly.xml"
+EGRESS_NET="$OS_ROOT/usr/share/qos/windows/libvirt/qos-windows-egress.xml"
 UNIT="$OS_ROOT/usr/lib/systemd/system/qos-windows-vm-network.service"
 NETWORK_TOOL="$OS_ROOT/usr/libexec/qos-windows-vm-network"
 PROVISION="$OS_ROOT/usr/libexec/qos-windows-provision"
 RECOVERY="$OS_ROOT/usr/libexec/qos-windows-recovery-console"
 OWNER="$OS_ROOT/usr/libexec/qos-windows-owner"
 VM_CONTROL_SOURCE="$OS_ROOT/../crates/system/windows-vm/src/bin/qos-windows-vm-control.rs"
+LIBVIRT="$OS_ROOT/../crates/system/windows-vm/src/libvirt.rs"
 INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
 BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
 FOCUSED="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSFocusedApp.ps1"
@@ -30,12 +32,16 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$COMPAT_DOC"; do need "$file"; done
+for file in "$NET" "$EGRESS_NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$COMPAT_DOC"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
 lacks "$NET" "mode='nat'" 'network cannot silently become NAT'
 lacks "$NET" '<route ' 'network has no guest route'
+has "$EGRESS_NET" '<forward mode="nat"/>' 'egress network is explicitly NAT-backed'
+has "$EGRESS_NET" '<qos:windows-egress ' 'egress network has qOS ownership marker'
+has "$NETWORK_TOOL" 'qos-windows-egress' 'network service defines the brokered egress network'
+has "$NETWORK_TOOL" 'net-destroy' 'egress network is inactive by default'
 has "$NETWORK_TOOL" 'existing $NAME is not a qOS host-only network' 'foreign network collision fails closed'
 has "$NETWORK_TOOL" "net-define" 'network is defined through libvirt'
 has "$UNIT" 'RestrictAddressFamilies=AF_UNIX' 'network setup is Unix-socket-only'
@@ -57,6 +63,10 @@ lacks "$RECOVERY" 'qos-windows-vm-control start' 'viewer cannot acquire VM manag
 has "$RECOVERY" 'virt-viewer --connect qemu:///system --attach qos-windows-appliance' 'recovery is an explicit libvirt attachment'
 has "$VM_CONTROL_SOURCE" 'LibvirtBackend::new' 'bootstrap reuses the typed libvirt backend'
 has "$VM_CONTROL_SOURCE" 'backend.start(&config)' 'bootstrap defines and starts through one idempotent path'
+has "$VM_CONTROL_SOURCE" 'egress-open' 'typed controller exposes purpose-bound egress'
+has "$VM_CONTROL_SOURCE" 'shutdown|force-shutdown|restart|suspend|resume' 'typed controller exposes lifecycle actions'
+has "$LIBVIRT" 'SMBIOS' 'virtual SMBIOS identity remains stable for activation'
+has "$LIBVIRT" 'qos-windows-system' 'virtual disk identity remains stable for activation'
 
 lacks "$INSTALL" 'ProductType -ne 3' 'client Windows is not rejected outright'
 has "$INSTALL" 'RDS-RD-Server' 'official RDS RemoteApp role is required'

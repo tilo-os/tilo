@@ -14,6 +14,12 @@ const METADATA_ELEMENT: &str = "<qos:windows-appliance";
 const METADATA_NAMESPACE: &str = "https://qos.dev/vm/1";
 const INSTALL_MEDIA: &str = "/var/lib/qos/windows/install-media.iso";
 const GUEST_TOOLS_MEDIA: &str = "/var/lib/qos/windows/qos-guest-tools.iso";
+/// The second NIC is never present in the persistent domain definition. It is
+/// attached live only while an authenticated, purpose-bound egress lease is
+/// active. Keeping a separate MAC makes cleanup deterministic after a retry.
+const EGRESS_MAC: &str = "52:54:00:71:4f:51";
+const EGRESS_NETWORK: &str = "qos-windows-egress";
+const MAX_EGRESS_SECONDS: u64 = 30 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DomainState {
@@ -21,7 +27,34 @@ pub enum DomainState {
     ShutOff,
     Running,
     Paused,
+    Suspended,
+    Starting,
+    ShuttingDown,
+    Crashed,
     Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EgressPurpose {
+    Activation,
+    WindowsUpdate,
+}
+
+impl EgressPurpose {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Activation => "activation",
+            Self::WindowsUpdate => "windows_update",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EgressLease {
+    pub id: String,
+    pub purpose: EgressPurpose,
+    pub expires_unix_seconds: u64,
 }
 
 pub trait VmBackend: Send + Sync {
@@ -29,6 +62,49 @@ pub trait VmBackend: Send + Sync {
     fn ensure_singleton(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
     fn state(&self, config: &ApplianceConfig) -> Result<DomainState, VmBackendError>;
     fn start(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
+    /// Graceful ACPI shutdown. Repeated calls are idempotent and never turn a
+    /// paused or foreign domain into a running one.
+    fn shutdown(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        let _ = config;
+        Err(VmBackendError::UnsupportedAction("shutdown"))
+    }
+    /// Forced power-off, intended only after a bounded graceful wait.
+    fn force_shutdown(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        let _ = config;
+        Err(VmBackendError::UnsupportedAction("force_shutdown"))
+    }
+    fn restart(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        let _ = config;
+        Err(VmBackendError::UnsupportedAction("restart"))
+    }
+    fn suspend(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        let _ = config;
+        Err(VmBackendError::UnsupportedAction("suspend"))
+    }
+    fn resume(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        let _ = config;
+        Err(VmBackendError::UnsupportedAction("resume"))
+    }
+    /// Attach a NAT-backed interface for a bounded operation. The normal
+    /// domain always retains only its host-only interface.
+    fn open_egress(
+        &self,
+        config: &ApplianceConfig,
+        purpose: EgressPurpose,
+        now_unix_seconds: u64,
+        ttl_seconds: u64,
+    ) -> Result<EgressLease, VmBackendError> {
+        let _ = (config, purpose, now_unix_seconds, ttl_seconds);
+        Err(VmBackendError::UnsupportedAction("open_egress"))
+    }
+    fn close_egress(
+        &self,
+        config: &ApplianceConfig,
+        lease: &EgressLease,
+    ) -> Result<(), VmBackendError> {
+        let _ = (config, lease);
+        Err(VmBackendError::UnsupportedAction("close_egress"))
+    }
     /// Permanently removes setup media after authenticated guest enrollment.
     /// Repeated calls must be harmless.
     fn retire_installation_media(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
@@ -97,7 +173,13 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
             let xml = self.successful(["dumpxml", APPLIANCE_DOMAIN_NAME])?;
             let xml = String::from_utf8(xml.stdout)?;
             let expected_uuid = format!("<uuid>{}</uuid>", config.domain_uuid);
+            let expected_smbios_serial = format!("<entry name='serial'>{}</entry>", config.domain_uuid);
+            let expected_smbios_uuid = format!("<entry name='uuid'>{}</entry>", config.domain_uuid);
             if !xml.contains(&expected_uuid)
+                || !xml.contains(&expected_smbios_serial)
+                || !xml.contains(&expected_smbios_uuid)
+                || !xml.contains("<serial>qos-windows-system</serial>")
+                || !xml.contains("<mac address='52:54:00:71:4f:53'/>")
                 || !xml.contains(METADATA_ELEMENT)
                 || !xml.contains(METADATA_NAMESPACE)
             {
@@ -130,9 +212,13 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         let state = self.successful(["domstate", APPLIANCE_DOMAIN_NAME])?;
         let state = String::from_utf8(state.stdout)?.trim().to_ascii_lowercase();
         Ok(match state.as_str() {
-            "running" | "idle" | "in shutdown" => DomainState::Running,
-            "shut off" | "crashed" => DomainState::ShutOff,
-            "paused" | "pmsuspended" => DomainState::Paused,
+            "running" | "idle" => DomainState::Running,
+            "in shutdown" | "shutting down" => DomainState::ShuttingDown,
+            "starting" => DomainState::Starting,
+            "shut off" => DomainState::ShutOff,
+            "crashed" => DomainState::Crashed,
+            "paused" => DomainState::Paused,
+            "pmsuspended" => DomainState::Suspended,
             _ => DomainState::Other,
         })
     }
@@ -145,8 +231,153 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
                 .successful(["start", APPLIANCE_DOMAIN_NAME])
                 .map(|_| ()),
             DomainState::Absent => Err(VmBackendError::DomainDisappeared),
-            DomainState::Paused | DomainState::Other => Err(VmBackendError::UnsafeDomainState),
+            DomainState::Paused
+            | DomainState::Suspended
+            | DomainState::Starting
+            | DomainState::ShuttingDown
+            | DomainState::Other => Err(VmBackendError::UnsafeDomainState),
+            DomainState::Crashed => self
+                .successful(["start", APPLIANCE_DOMAIN_NAME])
+                .map(|_| ()),
         }
+    }
+
+    fn shutdown(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        match self.state(config)? {
+            DomainState::Absent | DomainState::ShutOff => Ok(()),
+            DomainState::ShuttingDown => Ok(()),
+            DomainState::Running => self
+                .successful(["shutdown", APPLIANCE_DOMAIN_NAME])
+                .map(|_| ()),
+            DomainState::Crashed => Ok(()),
+            DomainState::Paused
+            | DomainState::Suspended
+            | DomainState::Starting
+            | DomainState::Other => Err(VmBackendError::UnsafeDomainState),
+        }
+    }
+
+    fn force_shutdown(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        match self.state(config)? {
+            DomainState::Absent | DomainState::ShutOff | DomainState::Crashed => Ok(()),
+            DomainState::Running
+            | DomainState::ShuttingDown
+            | DomainState::Starting
+            | DomainState::Paused
+            | DomainState::Suspended => self
+                .successful(["destroy", APPLIANCE_DOMAIN_NAME])
+                .map(|_| ()),
+            DomainState::Other => Err(VmBackendError::UnsafeDomainState),
+        }
+    }
+
+    fn restart(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        match self.state(config)? {
+            DomainState::ShutOff | DomainState::Absent | DomainState::Crashed => self.start(config),
+            DomainState::Running => self
+                .successful(["reboot", APPLIANCE_DOMAIN_NAME, "--mode", "acpi"])
+                .map(|_| ()),
+            DomainState::ShuttingDown | DomainState::Starting => Ok(()),
+            DomainState::Paused | DomainState::Suspended | DomainState::Other => {
+                Err(VmBackendError::UnsafeDomainState)
+            }
+        }
+    }
+
+    fn suspend(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        match self.state(config)? {
+            DomainState::Paused | DomainState::Suspended => Ok(()),
+            DomainState::Running => self
+                .successful(["suspend", APPLIANCE_DOMAIN_NAME])
+                .map(|_| ()),
+            _ => Err(VmBackendError::UnsafeDomainState),
+        }
+    }
+
+    fn resume(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
+        self.ensure_singleton(config)?;
+        match self.state(config)? {
+            DomainState::Running => Ok(()),
+            DomainState::Paused | DomainState::Suspended => self
+                .successful(["resume", APPLIANCE_DOMAIN_NAME])
+                .map(|_| ()),
+            _ => Err(VmBackendError::UnsafeDomainState),
+        }
+    }
+
+    fn open_egress(
+        &self,
+        config: &ApplianceConfig,
+        purpose: EgressPurpose,
+        now_unix_seconds: u64,
+        ttl_seconds: u64,
+    ) -> Result<EgressLease, VmBackendError> {
+        self.ensure_singleton(config)?;
+        if ttl_seconds == 0 || ttl_seconds > MAX_EGRESS_SECONDS {
+            return Err(VmBackendError::InvalidEgressTtl);
+        }
+        if self.state(config)? != DomainState::Running {
+            return Err(VmBackendError::UnsafeDomainState);
+        }
+        // Live-only attachment is deliberately not `--config`: a crash or
+        // restart cannot accidentally make egress persistent.
+        self.successful([
+            "attach-interface",
+            APPLIANCE_DOMAIN_NAME,
+            "network",
+            EGRESS_NETWORK,
+            "--model",
+            "virtio",
+            "--mac",
+            EGRESS_MAC,
+            "--live",
+        ])?;
+        let id = format!("egress-{}-{}", purpose.as_str(), now_unix_seconds);
+        Ok(EgressLease {
+            id,
+            purpose,
+            expires_unix_seconds: now_unix_seconds.saturating_add(ttl_seconds),
+        })
+    }
+
+    fn close_egress(
+        &self,
+        config: &ApplianceConfig,
+        lease: &EgressLease,
+    ) -> Result<(), VmBackendError> {
+        config.validate()?;
+        if !lease.id.starts_with("egress-") {
+            return Err(VmBackendError::InvalidEgressLease);
+        }
+        // `--live` means cleanup does not alter the persistent default-deny
+        // domain. libvirt reports an absent device as an error; treat that as
+        // success to make timeout/retry cleanup safe.
+        let output = self.virsh([
+            "detach-interface",
+            APPLIANCE_DOMAIN_NAME,
+            "network",
+            "--mac",
+            EGRESS_MAC,
+            "--live",
+        ])?;
+        if !output.success {
+            let error = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+            if error.contains("not found")
+                || error.contains("no matching")
+                || error.contains("detached")
+            {
+                return Ok(());
+            }
+            return Err(VmBackendError::Virsh {
+                code: output.code,
+                stderr: error,
+            });
+        }
+        Ok(())
     }
 
     fn retire_installation_media(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
@@ -190,6 +421,10 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         "<domain type='kvm'>\
 <name>{}</name><uuid>{}</uuid>\
 <metadata>{METADATA_MARKER}</metadata>\
+<!-- Stable SMBIOS identity is part of the activation device identity. -->\
+<sysinfo type='smbios'><system><entry name='manufacturer'>qOS</entry>\
+<entry name='product'>Windows compatibility appliance</entry><entry name='serial'>{}</entry>\
+<entry name='uuid'>{}</entry></system></sysinfo>\
 <memory unit='MiB'>{}</memory><currentMemory unit='MiB'>{}</currentMemory>\
 <vcpu placement='static'>{}</vcpu><iothreads>{}</iothreads>{cpu}\
 <features><acpi/><apic/><hyperv mode='custom'>\
@@ -201,13 +436,13 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <timer name='pit' tickpolicy='delay'/><timer name='hpet' present='no'/>\
 <timer name='hypervclock' present='yes'/></clock>\
 <os firmware='efi'><type arch='x86_64' machine='q35'>hvm</type>\
-<loader readonly='yes' secure='yes' type='pflash'>{loader}</loader>\
+<loader readonly='yes' secure='yes' type='pflash'>{loader}</loader><smbios mode='sysinfo'/>\
 <nvram template='{nvram_template}'>{nvram}</nvram><boot dev='hd'/><boot dev='cdrom'/></os>\
 <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
 <devices><emulator>/usr/bin/qemu-system-x86_64</emulator>\
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' detect_zeroes='unmap'/>\
-<source file='{disk}'/><target dev='sda' bus='scsi'/></disk>\
+<source file='{disk}'/><target dev='sda' bus='scsi'/><serial>qos-windows-system</serial></disk>\
 <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{INSTALL_MEDIA}'/><target dev='sdb' bus='scsi'/><readonly/></disk>\
 <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{GUEST_TOOLS_MEDIA}'/><target dev='sdc' bus='scsi'/><readonly/></disk>\
 <interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
@@ -221,6 +456,8 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <audio id='1' type='spice'/>\
 <memballoon model='virtio'/></devices></domain>",
         config.domain_name,
+        config.domain_uuid,
+        config.domain_uuid,
         config.domain_uuid,
         config.performance.memory_mib,
         config.performance.memory_mib,
@@ -260,6 +497,12 @@ pub enum VmBackendError {
     DomainDisappeared,
     #[error("the appliance is paused or in an unknown state; use the administrator recovery flow")]
     UnsafeDomainState,
+    #[error("libvirt lifecycle action is not supported by this backend: {0}")]
+    UnsupportedAction(&'static str),
+    #[error("egress lease duration must be between 1 and 1800 seconds")]
+    InvalidEgressTtl,
+    #[error("egress lease identifier is invalid")]
+    InvalidEgressLease,
     #[error("libvirt paths must be valid UTF-8")]
     NonUtf8Path,
 }

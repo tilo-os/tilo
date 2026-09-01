@@ -481,7 +481,12 @@ where
             DomainState::Running => Ok(()),
             DomainState::ShutOff => self.backend.start(&self.config).map_err(Into::into),
             DomainState::Absent => Err(LaunchError::DomainDisappeared),
-            DomainState::Paused | DomainState::Other => Err(LaunchError::RecoveryRequired),
+            DomainState::Paused
+            | DomainState::Suspended
+            | DomainState::Starting
+            | DomainState::ShuttingDown
+            | DomainState::Other => Err(LaunchError::RecoveryRequired),
+            DomainState::Crashed => self.backend.start(&self.config).map_err(Into::into),
         }
     }
 }
