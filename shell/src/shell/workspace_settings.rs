@@ -913,6 +913,7 @@ pub fn scope_label(scope: &Scope) -> String {
         Scope::Room(_) => "this room".to_string(),
         Scope::App(app) => format!("the {app} app"),
         Scope::FsPath(path) => fs_scope_label(path),
+        Scope::FsRecord(record) => format!("one shared file ({})", short_id(record)),
         Scope::Device(device) => device_label(device).to_string(),
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
@@ -2696,6 +2697,10 @@ fn draw_permission_row(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact settings layout geometry is the behavior under test"
+)]
 mod tab_tests {
     //! The modal's tab surface: default tab, switching, sidebar
     //! geometry, and that the sidebar renders without a pane drawer.
@@ -3111,6 +3116,23 @@ mod permissions_pane_tests {
 
     fn pane() -> Rect {
         Rect::new(0.0, 0.0, 660.0, 480.0)
+    }
+
+    #[test]
+    fn stable_file_record_scope_is_presented_without_inventing_a_path() {
+        let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        assert_eq!(
+            scope_label(&Scope::FsRecord(record.to_string())),
+            "one shared file (b0d4e23f-c…)"
+        );
+        assert_eq!(
+            capability_allows(&CapOverride::grant(
+                Subject::Principal(Principal::App("files".to_string())),
+                Scope::FsRecord(record.to_string()),
+                Verb::Read,
+            )),
+            "View one shared file (b0d4e23f-c…)"
+        );
     }
 
     #[test]

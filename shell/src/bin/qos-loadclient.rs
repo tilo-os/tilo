@@ -377,6 +377,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact deterministic load-shape fixtures are the behavior under test"
+)]
 mod tests {
     use super::Opts;
 
