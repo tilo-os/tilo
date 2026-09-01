@@ -524,7 +524,7 @@ impl Pane {
         if active {
             fill_round(scene, t, rect, 9.0, c.accent[5].with_alpha_factor(0.12));
         } else if hov {
-            fill_round(scene, t, rect, 9.0, c.surface_white_5);
+            fill_round(scene, t, rect, 9.0, c.lift(0.35));
         }
         let chev = if account.collapsed {
             Icon::ChevronRight
@@ -593,7 +593,7 @@ impl Pane {
         let gear = account_gear_rect(rect);
         let ghov = gear.contains(st.last_mouse);
         if ghov {
-            fill_round(scene, t, gear, 8.0, c.surface_white_10);
+            fill_round(scene, t, gear, 8.0, c.lift(0.72));
         }
         Icon::Settings.draw(
             scene,
@@ -616,7 +616,7 @@ impl Pane {
         let c = &theme.tokens.colors;
         let hov = rect.contains(self.shared.borrow().last_mouse);
         if hov {
-            fill_round(scene, t, rect, 9.0, c.surface_white_5);
+            fill_round(scene, t, rect, 9.0, c.lift(0.35));
         }
         let cy = rect.y0 + ADD_ACCOUNT_ROW_H / 2.0;
         let icon = Rect::new(rect.x0 + 12.0, cy - 8.0, rect.x0 + 28.0, cy + 8.0);
@@ -663,7 +663,7 @@ impl Pane {
                 c.accent[5],
             );
         } else if hov {
-            fill_round(scene, t, rect, 8.0, c.surface_white_5);
+            fill_round(scene, t, rect, 8.0, c.lift(0.35));
         }
         let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
         let label_col = if selected {
@@ -814,7 +814,7 @@ impl Pane {
             rb,
             9.0,
             if rb_hov {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
                 c.surfaces.raised
             },
@@ -970,7 +970,7 @@ impl Pane {
                 c.accent[5],
             );
         } else if hov && swipe_dx.abs() < 1.0 {
-            fill_rect(scene, t, row, c.surface_white_5);
+            fill_rect(scene, t, row, c.lift(0.35));
         }
         fill_rect(
             scene,
@@ -1192,13 +1192,16 @@ impl Pane {
                 _ => continue,
             };
             let hov = rect.contains(last_mouse);
-            let bg = if hov {
-                c.surface_white_10
-            } else {
-                c.surface_white_5
-            };
+            let bg = if hov { c.lift(0.72) } else { c.lift(0.35) };
             fill_round(scene, t, *rect, 8.0, bg);
-            stroke_round(scene, t, *rect, 8.0, 1.0, c.border_white_10);
+            stroke_round(
+                scene,
+                t,
+                *rect,
+                8.0,
+                1.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            );
             // The Star action fills its glyph when the message is starred, so
             // the favourited state is a solid star, not merely a tinted outline.
             let is_star_on = matches!(hit, Hit::Star) && starred;
@@ -1507,13 +1510,16 @@ impl Pane {
             t,
             pill,
             8.0,
-            if hov {
-                c.surface_white_10
-            } else {
-                c.surface_white_5
-            },
+            if hov { c.lift(0.72) } else { c.lift(0.35) },
         );
-        stroke_round(scene, t, pill, 8.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            pill,
+            8.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         icon.draw(
             scene,
             t,
@@ -1720,13 +1726,16 @@ impl Pane {
                 t,
                 chip,
                 8.0,
-                if hov {
-                    c.surface_white_10
-                } else {
-                    c.surface_white_5
-                },
+                if hov { c.lift(0.72) } else { c.lift(0.35) },
             );
-            stroke_round(scene, t, chip, 8.0, 1.0, c.border_white_10);
+            stroke_round(
+                scene,
+                t,
+                chip,
+                8.0,
+                1.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            );
             a.icon().draw(
                 scene,
                 t,

@@ -39,7 +39,7 @@ pub fn draw_chart(
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        theme.tokens.colors.border_white_10,
+        ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
         None,
         &card,
     );
@@ -52,7 +52,9 @@ pub fn draw_chart(
     }
 
     // Horizontal gridlines (3 divisions).
-    let grid_color = theme.tokens.colors.border_white_10.multiply_alpha(0.6);
+    let grid_color =
+        ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26)
+            .multiply_alpha(0.6);
     for k in 0..=3 {
         let y = plot.y0 + plot.height() * (f64::from(k) / 3.0);
         scene.stroke(

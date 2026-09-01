@@ -234,18 +234,12 @@ impl Widget for FileTree {
 
             // Active / hover background.
             if self.active == Some(meta.id) {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    c.surface_white_10,
-                    None,
-                    &row_rect,
-                );
+                scene.fill(Fill::NonZero, transform, c.lift(0.72), None, &row_rect);
                 // Accent rail on the left of the active row.
                 let rail = Rect::new(self.rect.x0, y, self.rect.x0 + 2.0, y + ROW_HEIGHT);
                 scene.fill(Fill::NonZero, transform, c.accent[5], None, &rail);
             } else if self.hovered == Some(i) {
-                scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &row_rect);
+                scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &row_rect);
             }
 
             let base_x = self.rect.x0 + 10.0 + meta.depth as f64 * INDENT;
