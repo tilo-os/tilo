@@ -2015,7 +2015,23 @@ impl ShellOverlayHost {
     /// new transition if the target changed. Returns *linear* progress —
     /// the draw path splits it into its own two-phase, smoothstep-eased
     /// animation, so this must stay linear.
-    fn tick_overview_transition(&mut self, target: f32) -> f32 {
+    fn tick_overview_transition(&mut self, target: f32, reduce_motion: bool) -> f32 {
+        if reduce_motion {
+            let changed = (target - self.overview_target).abs() > f32::EPSILON;
+            self.overview_target = target;
+            self.overview_t = target;
+            self.transition_from = target;
+            self.transition_started = None;
+            if changed {
+                self.overview_selection = if target > 0.5 {
+                    self.overview_here_index()
+                } else {
+                    None
+                };
+                self.overview_scroll_y = 0.0;
+            }
+            return target;
+        }
         if (target - self.overview_target).abs() > f32::EPSILON {
             self.transition_from = self.overview_t;
             self.overview_target = target;
@@ -8442,6 +8458,21 @@ impl Widget for ShellOverlayHost {
     fn needs_animation_frame(&self) -> bool {
         self.needs_animation_frame_at(Instant::now())
     }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        [
+            self.content.next_wake_deadline(),
+            self.sidebar
+                .as_ref()
+                .and_then(|sidebar| sidebar.next_wake_deadline()),
+            self.notification_stack
+                .as_ref()
+                .and_then(|stack| stack.next_wake_deadline()),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
 }
 
 impl ShellOverlayHost {
@@ -8480,6 +8511,10 @@ impl ShellOverlayHost {
             .screenshot_markup
             .as_ref()
             .is_some_and(Widget::needs_animation_frame);
+        let notification_frame = self
+            .notification_stack
+            .as_ref()
+            .is_some_and(Widget::needs_animation_frame);
         self.transition_started.is_some()
             || qs_in_flight
             || ws_settings_in_flight
@@ -8494,6 +8529,7 @@ impl ShellOverlayHost {
             || sidebar_frame
             || mirror_frame
             || markup_frame
+            || notification_frame
             // A reading landing after the open animation settles still
             // has to reach the screen.
             || self.qs_refresh.is_in_flight()
@@ -8998,7 +9034,7 @@ impl ShellOverlayHost {
         overview_open: bool,
     ) {
         let target = if overview_open { 1.0 } else { 0.0 };
-        let t = self.tick_overview_transition(target);
+        let t = self.tick_overview_transition(target, theme.reduce_motion);
         // The overview is a panel over the desk, not a place you travel
         // to: the desktop stays drawn and the scrim dims it as the panel
         // rises, the same enter/exit the ws-settings modal plays.
@@ -9273,7 +9309,11 @@ impl ShellOverlayHost {
         self.apply_quick_settings_readings();
         self.qs_transition.set_open(
             flags.quick_settings,
-            Duration::from_millis(QS_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(QS_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let now = Instant::now();
@@ -9368,7 +9408,11 @@ impl ShellOverlayHost {
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let palette_now = Instant::now();
@@ -9376,7 +9420,7 @@ impl ShellOverlayHost {
             let openness = self.palette_transition.value(palette_now);
             draw_scrim_at(scene, transform, self.rect, openness, theme);
             let (alpha, dy, scale) =
-                modal_transition_curve(&self.palette_transition, palette_now, 0.9);
+                modal_transition_curve(&self.palette_transition, palette_now, 0.96);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
             if in_flight {
@@ -11727,7 +11771,7 @@ mod overview_transition_tests {
     fn idle_holds_zero_until_target_changes() {
         let mut h = host();
         for _ in 0..5 {
-            let t = h.tick_overview_transition(0.0);
+            let t = h.tick_overview_transition(0.0, false);
             assert_eq!(t, 0.0);
         }
     }
@@ -11735,14 +11779,14 @@ mod overview_transition_tests {
     #[test]
     fn target_change_latches_transition_and_completes() {
         let mut h = host();
-        h.tick_overview_transition(1.0);
+        h.tick_overview_transition(1.0, false);
         assert!(h.transition_started.is_some(), "should latch transition");
         assert_eq!(h.overview_target, 1.0);
         // Past the full duration, value settles exactly at the target.
         std::thread::sleep(std::time::Duration::from_millis(
             OVERVIEW_TRANSITION_MS + 30,
         ));
-        let t = h.tick_overview_transition(1.0);
+        let t = h.tick_overview_transition(1.0, false);
         assert!((t - 1.0).abs() < f32::EPSILON);
         assert!(h.transition_started.is_none(), "transition should clear");
     }
@@ -11752,14 +11796,14 @@ mod overview_transition_tests {
         // Flip target mid-fade; `transition_from` should capture the
         // current `overview_t`, not 0, so the reverse starts from there.
         let mut h = host();
-        h.tick_overview_transition(1.0);
+        h.tick_overview_transition(1.0, false);
         std::thread::sleep(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2));
-        let t_mid = h.tick_overview_transition(1.0);
+        let t_mid = h.tick_overview_transition(1.0, false);
         assert!(
             t_mid > 0.0 && t_mid < 1.0,
             "mid-flight t should be between 0 and 1, got {t_mid}"
         );
-        h.tick_overview_transition(0.0);
+        h.tick_overview_transition(0.0, false);
         assert!(
             (h.transition_from - t_mid).abs() < 0.01,
             "reverse should start from current alpha, got from={} t_mid={}",
@@ -11767,6 +11811,15 @@ mod overview_transition_tests {
             t_mid
         );
         assert_eq!(h.overview_target, 0.0);
+    }
+
+    #[test]
+    fn reduced_motion_snaps_overview_to_each_target() {
+        let mut h = host();
+        assert_eq!(h.tick_overview_transition(1.0, true), 1.0);
+        assert!(h.transition_started.is_none());
+        assert_eq!(h.tick_overview_transition(0.0, true), 0.0);
+        assert!(h.transition_started.is_none());
     }
 }
 
