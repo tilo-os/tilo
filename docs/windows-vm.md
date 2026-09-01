@@ -23,12 +23,14 @@ guest-tools ISO, and starts the headless singleton. It deliberately does not
 open a viewer or accept, log, or retain a product key. Complete Windows Setup
 and enter any licence in the explicitly owner-authorised provisioning console.
 The singleton domain attaches the copied installer and guest-tools images as
-read-only CD-ROMs, plus the packaged `/usr/share/virtio-win/virtio-win.iso`
-driver image needed for stock Windows Setup to see the virtio disk and NIC. qOS
+read-only CD-ROMs on a Windows-inbox SATA controller, plus the packaged
+`/usr/share/virtio-win/virtio-win.iso` driver image needed for stock Windows
+Setup to see the virtio disk and NIC. qOS
 does not download or redistribute that image; it uses the host distribution's
 audited `virtio-win` package and retains its license notices. The empty disk
 falls through to the installer on first boot and takes priority after Windows
-is installed.
+is installed. The installed system disk itself remains on virtio-scsi for
+normal performance.
 
 The unprivileged, typed status command is `qos-windows-owner status`; it emits
 the appliance phase, licensing state, cached catalogue generation, published

@@ -447,12 +447,14 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <nvram template='{nvram_template}'>{nvram}</nvram><boot dev='hd'/><boot dev='cdrom'/></os>\
 <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
 <devices><emulator>/usr/bin/qemu-system-x86_64</emulator>\
+<controller type='sata' index='0'/>\
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' detect_zeroes='unmap'/>\
 <source file='{disk}'/><target dev='sda' bus='scsi'/><serial>qos-windows-system</serial></disk>\
-<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{INSTALL_MEDIA}'/><target dev='sdb' bus='scsi'/><readonly/></disk>\
-<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{GUEST_TOOLS_MEDIA}'/><target dev='sdc' bus='scsi'/><readonly/></disk>\
-<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{VIRTIO_DRIVERS_MEDIA}'/><target dev='sdd' bus='scsi'/><readonly/></disk>\
+<!-- Setup media use Windows-inbox SATA; only the installed system disk uses virtio-scsi. -->\
+<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{INSTALL_MEDIA}'/><target dev='sdb' bus='sata'/><readonly/></disk>\
+<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{GUEST_TOOLS_MEDIA}'/><target dev='sdc' bus='sata'/><readonly/></disk>\
+<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{VIRTIO_DRIVERS_MEDIA}'/><target dev='sdd' bus='sata'/><readonly/></disk>\
 <interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
 <channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>\
