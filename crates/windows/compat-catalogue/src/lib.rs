@@ -189,6 +189,9 @@ pub struct ApplicationQuery {
     /// Executable filename or relative path.
     #[serde(default)]
     pub executable: Option<String>,
+    /// SHA-256 of the executable bytes, when the launcher has verified them.
+    #[serde(default)]
+    pub executable_sha256: Option<String>,
     #[serde(default)]
     pub publisher: Option<String>,
     #[serde(default)]
@@ -210,6 +213,7 @@ impl ApplicationQuery {
             app_id: normalize_optional(self.app_id.as_deref()),
             game_id: normalize_optional(self.game_id.as_deref()),
             executable: normalize_executable(self.executable.as_deref()),
+            executable_sha256: normalize_digest(self.executable_sha256.as_deref()),
             publisher: normalize_optional(self.publisher.as_deref()),
             product: normalize_optional(self.product.as_deref()),
         }
@@ -229,6 +233,9 @@ pub struct MatchKey {
     pub game_id: Option<String>,
     #[serde(default)]
     pub executable: Option<String>,
+    /// Exact executable digest. This outranks every textual identity key.
+    #[serde(default)]
+    pub executable_sha256: Option<String>,
     #[serde(default)]
     pub publisher: Option<String>,
     #[serde(default)]
@@ -248,6 +255,7 @@ impl MatchKey {
             app_id: normalize_optional(self.app_id.as_deref()),
             game_id: normalize_optional(self.game_id.as_deref()),
             executable: normalize_executable(self.executable.as_deref()),
+            executable_sha256: normalize_digest(self.executable_sha256.as_deref()),
             publisher: normalize_optional(self.publisher.as_deref()),
             product: normalize_optional(self.product.as_deref()),
         }
@@ -303,12 +311,45 @@ impl Recipe {
     }
 }
 
+/// Origin of a record. This is ordering metadata, not a permission grant.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    /// Shipped by qOS and reviewed as part of the OS image.
+    #[default]
+    BuiltIn,
+    /// Supplied by a runner/vendor integration.
+    Vendor,
+    /// Imported from a community compatibility source.
+    Community,
+    /// Explicitly authored by the user.
+    User,
+}
+
+impl Provenance {
+    fn score(self) -> u8 {
+        match self {
+            Self::BuiltIn => 3,
+            Self::Vendor => 2,
+            Self::Community => 1,
+            Self::User => 4,
+        }
+    }
+}
+
 /// One versioned catalogue entry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
     #[serde(default = "default_record_version")]
     pub version: u32,
+    /// Origin metadata used as a deterministic tie-breaker.
+    #[serde(default)]
+    pub provenance: Provenance,
+    /// Set only by the trusted catalogue loader after signature verification;
+    /// this crate does not verify signatures or create a security boundary.
+    #[serde(default)]
+    pub signed: bool,
     #[serde(default)]
     pub matches: Vec<MatchKey>,
     pub recipe: Recipe,
@@ -415,6 +456,7 @@ pub enum MatchKind {
     DefaultWine,
     ProductPublisher,
     Executable,
+    ExecutableDigest,
     GameId,
     AppId,
     PackageId,
@@ -429,6 +471,7 @@ impl MatchKind {
             Self::GameId => 3,
             Self::AppId => 4,
             Self::PackageId => 5,
+            Self::ExecutableDigest => 6,
         }
     }
 }
@@ -449,10 +492,14 @@ impl Resolver<'_> {
             let should_replace = best.is_none_or(|(current, current_kind, current_index)| {
                 (
                     kind.score(),
+                    u8::from(record.signed),
+                    record.provenance.score(),
                     std::cmp::Reverse(record.id.as_str()),
                     std::cmp::Reverse(index),
                 ) > (
                     current_kind.score(),
+                    u8::from(current.signed),
+                    current.provenance.score(),
                     std::cmp::Reverse(current.id.as_str()),
                     std::cmp::Reverse(current_index),
                 )
@@ -498,6 +545,7 @@ pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, Cat
         // deterministic precedence in the resolver.
         game_id: get(&["game_id", "gameId", "appid"]),
         executable: get(&["executable", "exe", "command"]),
+        executable_sha256: get(&["executable_sha256", "exe_sha256", "sha256"]),
         publisher: get(&["publisher", "developer"]),
         product: get(&["product", "name", "title"]),
     };
@@ -505,6 +553,7 @@ pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, Cat
         && query.app_id.is_none()
         && query.game_id.is_none()
         && query.executable.is_none()
+        && query.executable_sha256.is_none()
         && query.publisher.is_none()
         && query.product.is_none()
     {
@@ -550,6 +599,7 @@ struct NormalizedQuery {
     app_id: Option<String>,
     game_id: Option<String>,
     executable: Option<String>,
+    executable_sha256: Option<String>,
     publisher: Option<String>,
     product: Option<String>,
 }
@@ -562,6 +612,7 @@ impl NormalizedKey {
             || self.app_id.is_some()
             || self.game_id.is_some()
             || self.executable.is_some()
+            || self.executable_sha256.is_some()
             || self.publisher.is_some()
             || self.product.is_some()
     }
@@ -574,6 +625,10 @@ impl NormalizedKey {
             && equal_if_present(self.app_id.as_ref(), query.app_id.as_ref())
             && equal_if_present(self.game_id.as_ref(), query.game_id.as_ref())
             && equal_if_present(self.executable.as_ref(), query.executable.as_ref())
+            && equal_if_present(
+                self.executable_sha256.as_ref(),
+                query.executable_sha256.as_ref(),
+            )
             && equal_if_present(self.publisher.as_ref(), query.publisher.as_ref())
             && equal_if_present(self.product.as_ref(), query.product.as_ref())
     }
@@ -588,7 +643,9 @@ fn record_match_kind(record: &Record, query: &NormalizedQuery) -> Option<MatchKi
             if !key.matches(query) {
                 return None;
             }
-            if key.package_id.is_some() {
+            if key.executable_sha256.is_some() {
+                Some(MatchKind::ExecutableDigest)
+            } else if key.package_id.is_some() {
                 Some(MatchKind::PackageId)
             } else if key.app_id.is_some() {
                 Some(MatchKind::AppId)
@@ -611,6 +668,7 @@ fn validate_key(key: &MatchKey, record_id: &str) -> Result<(), CatalogueError> {
         ("application id", key.app_id.as_deref()),
         ("game id", key.game_id.as_deref()),
         ("executable", key.executable.as_deref()),
+        ("executable SHA-256", key.executable_sha256.as_deref()),
         ("publisher", key.publisher.as_deref()),
         ("product", key.product.as_deref()),
     ];
@@ -621,6 +679,14 @@ fn validate_key(key: &MatchKey, record_id: &str) -> Result<(), CatalogueError> {
         if let Some(value) = value {
             validate_token(name, value)?;
         }
+    }
+    if let Some(digest) = key.executable_sha256.as_deref()
+        && (digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(CatalogueError::InvalidExecutableDigest {
+            record_id: record_id.to_owned(),
+            digest: digest.to_owned(),
+        });
     }
     Ok(())
 }
@@ -682,6 +748,10 @@ fn normalize_executable(value: Option<&str>) -> Option<String> {
     )
 }
 
+fn normalize_digest(value: Option<&str>) -> Option<String> {
+    normalize_optional(value)
+}
+
 fn default_record_version() -> u32 {
     1
 }
@@ -700,6 +770,8 @@ pub enum CatalogueError {
     InvalidJson(String),
     #[error("invalid {kind}: {value:?}")]
     InvalidValue { kind: String, value: String },
+    #[error("catalogue record {record_id:?} has invalid executable SHA-256 {digest:?}")]
+    InvalidExecutableDigest { record_id: String, digest: String },
     #[error("invalid security profile {0:?}")]
     InvalidSecurityProfile(String),
     #[error("duplicate catalogue record {0:?}")]
@@ -738,6 +810,8 @@ mod tests {
         Record {
             id: id.to_owned(),
             version: 1,
+            provenance: Provenance::BuiltIn,
+            signed: false,
             matches: vec![key],
             recipe: Recipe {
                 layer: Layer::Wine,
@@ -794,6 +868,73 @@ mod tests {
         );
         assert_eq!(plan.record_id.as_deref(), Some("a-exact"));
         assert_eq!(plan.match_kind, MatchKind::AppId);
+    }
+
+    #[test]
+    fn executable_digest_is_strongest_match() {
+        let mut digest_record = wine_record(
+            "digest",
+            MatchKey {
+                executable_sha256: Some(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                ),
+                ..MatchKey::default()
+            },
+        );
+        digest_record.signed = true;
+        let package_record = wine_record(
+            "package",
+            MatchKey {
+                package_id: Some("com.example.editor".to_owned()),
+                ..MatchKey::default()
+            },
+        );
+        let catalogue = catalogue(vec![package_record, digest_record]);
+        let resolver = catalogue.resolver().expect("valid catalogue");
+        let plan = resolver.resolve(
+            &ApplicationQuery {
+                package_id: Some("com.example.editor".to_owned()),
+                executable_sha256: Some(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                ),
+                ..ApplicationQuery::default()
+            },
+            VmFallback::Disabled,
+        );
+        assert_eq!(plan.record_id.as_deref(), Some("digest"));
+        assert_eq!(plan.match_kind, MatchKind::ExecutableDigest);
+    }
+
+    #[test]
+    fn signed_and_provenance_metadata_break_same_match_ties() {
+        let mut unsigned = wine_record(
+            "unsigned",
+            MatchKey {
+                executable: Some("app.exe".to_owned()),
+                ..MatchKey::default()
+            },
+        );
+        unsigned.provenance = Provenance::User;
+        let mut signed = wine_record(
+            "signed",
+            MatchKey {
+                executable: Some("app.exe".to_owned()),
+                ..MatchKey::default()
+            },
+        );
+        signed.signed = true;
+        let catalogue = catalogue(vec![unsigned, signed]);
+        let resolver = catalogue.resolver().expect("valid catalogue");
+        assert_eq!(
+            resolver
+                .resolve(
+                    &ApplicationQuery::executable("app.exe"),
+                    VmFallback::Disabled
+                )
+                .record_id
+                .as_deref(),
+            Some("signed")
+        );
     }
 
     #[test]
@@ -873,12 +1014,23 @@ mod tests {
                 ..MatchKey::default()
             },
         );
-        let catalogue = catalogue(vec![duplicate.clone(), duplicate]);
+        let malformed_catalogue = catalogue(vec![duplicate.clone(), duplicate]);
         assert_eq!(
-            catalogue.validate(),
+            malformed_catalogue.validate(),
             Err(CatalogueError::DuplicateRecord(String::from("same")))
         );
         assert!(Catalogue::from_json(r#"{"schema_version":99,"records":[]}"#).is_err());
+        let malformed_digest = wine_record(
+            "bad-digest",
+            MatchKey {
+                executable_sha256: Some("not-a-digest".to_owned()),
+                ..MatchKey::default()
+            },
+        );
+        assert!(matches!(
+            catalogue(vec![malformed_digest]).validate(),
+            Err(CatalogueError::InvalidExecutableDigest { .. })
+        ));
     }
 
     #[test]
