@@ -381,10 +381,10 @@ impl TabBar {
         // compresses with the body when pressed.
         let transform = pill_transform;
 
+        Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
         self.draw_pill_body(
             scene, transform, r, tr, theme, i, t, is_pinned, is_active, is_hover,
         );
-        Self::draw_pill_presence(scene, transform, &shape, r, t, presence);
 
         // Chip strength ramps 0→1 as the trailing zone opens, reaching full once the
         // zone clears the chip by CHIP_FADE_PX. Close-hover tints red; tab-hover
@@ -573,13 +573,15 @@ impl TabBar {
         }
     }
 
-    /// Per-tab collaborator presence dots, up to 4, centred under the pill.
+    /// Presence-in-navigation mist. A peer on another tab should read as a
+    /// destination, not as an unexplained notification count.
     fn draw_pill_presence(
         scene: &mut Scene,
         transform: Affine,
         shape: &RoundedRect,
         r: Rect,
         t: &TabDescriptor,
+        theme: &Theme,
         presence: &PresenceCtx,
     ) {
         let tab_key = PresenceKey::Tab {
@@ -596,25 +598,21 @@ impl TabBar {
             transform,
             shape,
         );
-        let dot_r = 8.0_f64;
-        // Capped to 4 dots, so both counts fit `u8` exactly — lossless via
-        // `f64::from` rather than a lossy `as` cast.
-        let capped_peers = u8::try_from(peers.len().min(4)).unwrap_or(4);
-        let span = (f64::from(capped_peers) - 1.0) * 10.0;
-        let base_x = r.center().x - span / 2.0;
-        let bottom = r.y1 + 2.0;
-        for (pi, peer) in peers.iter().take(4).enumerate() {
-            let (cr, cg, cb) = presence.color_for(peer);
-            let pi_u8 = u8::try_from(pi).unwrap_or(3);
-            let cx = base_x + f64::from(pi_u8) * 10.0;
-            let c = vello::kurbo::Circle::new(Point::new(cx, bottom), dot_r);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                vello::peniko::Color::from_rgba8(cr, cg, cb, 140),
-                None,
-                &c,
-            );
+        let capped = peers.len().min(4);
+        let count = u8::try_from(capped).unwrap_or(4);
+        let segment_w = r.width() / f64::from(count);
+        for (index, peer) in peers.iter().take(capped).enumerate() {
+            let index = u8::try_from(index).unwrap_or(3);
+            let x0 = r.x0 + f64::from(index) * segment_w;
+            let x1 = if index + 1 == count {
+                r.x1
+            } else {
+                x0 + segment_w
+            };
+            let p0 = transform * Point::new(x0, r.y0);
+            let p1 = transform * Point::new(x1, r.y1);
+            let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
+            presence.draw_peer_mist(scene, theme, peer, mist_rect);
         }
         scene.pop_layer();
     }
@@ -4120,6 +4118,58 @@ mod tests {
              all rendered inactive (active+2 inactive: {with_active}, \
              all-inactive: {all_inactive}); the active body fill + border + \
              glow stroke account for the delta",
+        );
+    }
+
+    #[test]
+    fn peer_on_another_tab_paints_navigation_mist() {
+        use vello_encoding::DrawTag;
+
+        fn render(with_peer: bool) -> usize {
+            let mut b = TabBar::new(
+                "g1",
+                vec![TabDescriptor::new(1, "A"), TabDescriptor::new(2, "B")],
+                1,
+            );
+            b.rect = Rect::new(0.0, 0.0, 160.0, 40.0);
+            b.tab_rects = vec![
+                Rect::new(0.0, 6.0, 80.0, 34.0),
+                Rect::new(80.0, 6.0, 160.0, 34.0),
+            ];
+            b.close_rects = vec![Rect::ZERO; 2];
+            b.max_rects = vec![Rect::ZERO; 2];
+            b.search_rects = vec![Rect::ZERO; 2];
+
+            let mut presence = PresenceCtx::default();
+            if with_peer {
+                presence.register_peer_at(
+                    "ada".to_string(),
+                    PresenceKey::Tab {
+                        id: "2".to_string(),
+                    },
+                );
+            }
+            let mut scene = Scene::new();
+            b.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &presence,
+            );
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|tag| **tag == DrawTag::COLOR)
+                .count()
+        }
+
+        let empty = render(false);
+        let occupied = render(true);
+        assert!(
+            occupied >= empty.saturating_add(2),
+            "a peer in another view must add the mist's outer wash and bright core to its navigation tab (empty={empty}, occupied={occupied})",
         );
     }
 

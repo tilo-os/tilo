@@ -1600,10 +1600,12 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let changed = self.state.commit_action_authored(
+        let context = self.root_widget.take_commit_context();
+        let changed = self.state.commit_action_authored_with_context(
             self.last_stable_focus_idx,
             self.last_stable_metadata.clone(),
             Some(self.local_author.clone()),
+            context,
         );
         self.last_stable_focus_idx = self
             .focused_node
@@ -1928,6 +1930,26 @@ impl App {
         let raw = target.0;
         if raw == 0 {
             return None;
+        }
+        if raw >= crate::accesskit_bridge::SYNTHETIC_ID_BASE
+            && let Some((owner, path)) =
+                crate::accesskit_bridge::resolve_synthetic_target(self.root_widget.as_ref(), target)
+        {
+            // The resolver's immutable walk has ended; `owner` points into
+            // `root_widget`, which this `&mut self` owns exclusively here.
+            let owner = unsafe { &mut *(owner as *mut dyn Widget) };
+            return match action {
+                Action::Focus => {
+                    if owner.focus_synthetic_accessibility(&path) {
+                        self.needs_sync = true;
+                    }
+                    None
+                }
+                Action::Activate | Action::ToggleCheck => owner
+                    .synthetic_accessibility_rect(&path)
+                    .map(|rect| (rect.center().x, rect.center().y)),
+                _ => None,
+            };
         }
         let taffy_id = NodeId::from(raw.saturating_sub(1));
         let &w_ptr = self.node_map.get(&taffy_id)?;
