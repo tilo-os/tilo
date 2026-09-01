@@ -87,6 +87,8 @@ pub enum ComponentTemplate {
     Form,
     /// A source-agnostic virtualized tree with typed configuration.
     Tree,
+    /// A source-agnostic sparse variable-height list with retained delegates.
+    List,
 }
 
 #[derive(Debug)]
@@ -553,6 +555,7 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
         ComponentTemplate::Display => "display",
         ComponentTemplate::Form => "form",
         ComponentTemplate::Tree => "tree",
+        ComponentTemplate::List => "list",
     }
 }
 
@@ -1940,6 +1943,7 @@ fn component_source(
         ),
         ComponentTemplate::Form => form_component_source(name, module_name, type_name),
         ComponentTemplate::Tree => tree_component_source(name, module_name, type_name),
+        ComponentTemplate::List => list_component_source(name, module_name, type_name),
     }
 }
 
@@ -2201,6 +2205,158 @@ mod tests {{
         app.perform_named("more-3", &Action::Activate)
             .expect("delegated control remains independently interactive");
         assert!(app.dump_json().contains("row-action-requested"));
+    }}
+}}
+"#
+    )
+}
+
+fn list_component_source(
+    name: &str,
+    module_name: &str,
+    type_name: &str,
+) -> (String, Vec<ScreenMessage>) {
+    let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let mut source = format!(
+        r#"use std::hash::Hash;
+use ui::selection::KeySelection;
+use ui::widget::virtual_list::{{ListModel, ListRowState, VirtualList}};
+use ui::widget::Element;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct {type_name}Config<K: Clone + Eq + Hash> {{
+    pub accessible_name: String,
+    pub selection: KeySelection<K>,
+    pub multi_select: bool,
+    pub viewport_height: f32,
+    pub estimated_row_height: f32,
+}}
+
+impl<K: Clone + Eq + Hash> Default for {type_name}Config<K> {{
+    fn default() -> Self {{
+        Self {{
+            accessible_name: "{name}-accessible-name".into(),
+            selection: KeySelection::new(),
+            multi_select: true,
+            viewport_height: 360.0,
+            estimated_row_height: 48.0,
+        }}
+    }}
+}}
+
+/// Build one reusable `{name}` over any resident, database, or paged list model.
+///
+/// The row delegate receives ready, loading, and error states. The concrete
+/// return type preserves `VirtualList` activation, notification, measurement,
+/// scrolling, selection, and reorder methods for app-specific configuration.
+pub fn {module_name}<M: ListModel>(
+    id: &str,
+    model: M,
+    config: &{type_name}Config<M::Key>,
+    row_delegate: impl for<'a> FnMut(&M, usize, &M::Key, ListRowState<'a>) -> Element + 'static,
+    encode_key: impl Fn(&M::Key) -> String + 'static,
+) -> VirtualList<M> {{
+    VirtualList::new_async(model, config.estimated_row_height, row_delegate)
+        .with_id(id)
+        .with_accessible_name(&config.accessible_name)
+        .with_semantic_key(encode_key)
+        .with_viewport_height(config.viewport_height)
+        .multi_select(config.multi_select)
+        .with_selection(config.selection.clone())
+}}
+"#
+    );
+    source.push_str(&list_component_test_source(module_name, type_name));
+    (source, vec![accessible_name])
+}
+
+fn list_component_test_source(module_name: &str, type_name: &str) -> String {
+    format!(
+        r#"
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use ui::a11y::{{Action, Role}};
+    use ui::headless::SemanticExpectation;
+    use ui::widget::{{Button, Container, Text}};
+
+    struct SparseItems {{
+        count: usize,
+    }}
+
+    impl ListModel for SparseItems {{
+        type Key = u64;
+
+        fn len(&self) -> usize {{
+            self.count
+        }}
+
+        fn key_at(&self, index: usize) -> Option<Self::Key> {{
+            (index < self.count)
+                .then_some(index)
+                .and_then(|index| u64::try_from(index).ok())
+        }}
+
+        fn index_of(&self, key: &Self::Key) -> Option<usize> {{
+            usize::try_from(*key).ok().filter(|index| *index < self.count)
+        }}
+    }}
+
+    #[test]
+    fn component_keeps_sparse_variable_interactive_rows() {{
+        const ITEM_COUNT: usize = 100_000_000;
+        let mut selection = KeySelection::new();
+        selection.select_only(3);
+        let config = {type_name}Config {{
+            selection,
+            ..{type_name}Config::default()
+        }};
+        let list = {module_name}(
+            "example-list",
+            SparseItems {{ count: ITEM_COUNT }},
+            &config,
+            |_model, index, key, _state| {{
+                let height = if index % 5 == 0 {{ 72.0 }} else {{ 44.0 }};
+                Box::new(Container::new().with_height(height).with_child(Box::new(
+                    ui::row![
+                        Text::new(&format!("Item {{index}}")),
+                        Button::new(
+                            &format!("open-{{key}}"),
+                            "Open",
+                            Some("open-requested"),
+                        )
+                        .with_click_value(key.to_string()),
+                    ],
+                )))
+            }},
+            u64::to_string,
+        );
+        let mut app = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(list),
+            (560, 360),
+        );
+
+        app.expect(
+            &SemanticExpectation::named("example-list")
+                .semantic_target("key:3")
+                .role(Role::ListItem)
+                .selected(true),
+        )
+        .expect("restored stable-key selection");
+        app.perform_semantic_named("example-list", Some("key:4"), &Action::Activate)
+            .expect("visible stable key remains selectable");
+        app.perform_named("open-0", &Action::Activate)
+            .expect("delegated control remains independently interactive");
+
+        let semantics = app.inspection().root.semantics.expect("list semantics");
+        assert_eq!(semantics.role, Role::List);
+        assert!(semantics.children.len() < 30, "only the viewport is mounted");
+        assert_eq!(semantics.children[0].set_size, Some(ITEM_COUNT));
+        let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
+        let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
+        assert!((first - second).abs() > 1.0, "delegate heights drive geometry");
+        assert!(app.dump_json().contains("open-requested"));
     }}
 }}
 "#
@@ -4981,7 +5137,7 @@ fn prompt_component_template(
 ) -> Result<ComponentTemplate> {
     writeln!(
         output,
-        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior"
+        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows"
     )
     .context("showing component template choices")?;
     loop {
@@ -4990,9 +5146,10 @@ fn prompt_component_template(
             "1" | "display" | "d" => return Ok(ComponentTemplate::Display),
             "2" | "form" | "f" => return Ok(ComponentTemplate::Form),
             "3" | "tree" | "t" => return Ok(ComponentTemplate::Tree),
+            "4" | "list" | "l" => return Ok(ComponentTemplate::List),
             _ => writeln!(
                 output,
-                "  ! unknown component template {value:?}; choose 1-3 or `display`, `form`, or `tree`"
+                "  ! unknown component template {value:?}; choose 1-4 or `display`, `form`, `tree`, or `list`"
             )
             .context("showing component template error")?,
         }
@@ -5772,6 +5929,7 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "qos-dev run");
     let _ = writeln!(out, "qos-dev add component profile-card --template form");
     let _ = writeln!(out, "qos-dev add component project-tree --template tree");
+    let _ = writeln!(out, "qos-dev add component activity-list --template list");
     let _ = writeln!(out, "qos-dev add screen settings --template settings");
     let _ = writeln!(out, "qos-dev add scenario empty-state");
     let _ = writeln!(out, "qos-dev scenario run");
@@ -6350,6 +6508,18 @@ mod tests {
     }
 
     #[test]
+    fn component_wizard_exposes_the_sparse_list_template() {
+        let mut input = std::io::Cursor::new(b"4\n".to_vec());
+        let mut output = Vec::new();
+
+        let template = prompt_component_template(&mut input, &mut output).unwrap();
+
+        assert_eq!(template, ComponentTemplate::List);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Any ListModel"));
+    }
+
+    #[test]
     fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
@@ -6457,6 +6627,38 @@ mod tests {
     }
 
     #[test]
+    fn add_list_component_preserves_the_generic_sparse_model_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_app(&app);
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "activity-list".into(),
+                template: ComponentTemplate::List,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let source = std::fs::read_to_string(app.join("src/components/activity_list.rs")).unwrap();
+        syn::parse_file(&source).unwrap();
+        assert!(source.contains("pub struct ActivityListConfig"));
+        assert!(source.contains("M: ListModel"));
+        assert!(source.contains("VirtualList::new_async"));
+        assert!(source.contains("ListRowState<'a>"));
+        assert!(source.contains("with_selection(config.selection.clone())"));
+        let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
+        assert_eq!(
+            parse_component_registry(&registry).unwrap(),
+            ["activity-list"]
+        );
+        assert!(registry.contains("pub mod activity_list;"));
+    }
+
+    #[test]
     fn component_generation_is_dry_run_safe_and_localizes_template_copy() {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("starter");
@@ -6504,6 +6706,22 @@ mod tests {
         let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
         assert!(
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
+            "{catalog}"
+        );
+
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "activity-list".into(),
+                template: ComponentTemplate::List,
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let catalog = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
+        assert!(
+            catalog.contains("activity-list-accessible-name = { \"Activity List\" }"),
             "{catalog}"
         );
     }
@@ -8010,6 +8228,7 @@ mod tests {
             assert!(readme.contains("qos-dev run\n"));
             assert!(readme.contains("qos-dev add component profile-card --template form"));
             assert!(readme.contains("qos-dev add component project-tree --template tree"));
+            assert!(readme.contains("qos-dev add component activity-list --template list"));
             assert!(readme.contains("qos-dev scenario run\n"));
             assert!(readme.contains("qos-dev scenario run --artifacts target/scenario-artifacts"));
             assert!(
