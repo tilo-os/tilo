@@ -1415,10 +1415,8 @@ mod tests {
     /// How a widget identifies itself in a tree dump: its `test_id` when it
     /// has one, otherwise its type name.
     ///
-    /// Note the toolkit convention — a `Button`'s `test_id` is its *visible
-    /// label* (that is how `resolve_named_rect` targets clicks by name),
-    /// while a `TextInput`'s is its stable id. So a button shows up here as
-    /// what it says on screen.
+    /// Toolkit controls expose stable ids through `test_id`, so tree tests do
+    /// not break when visible copy is localized or changes with app state.
     fn ident(w: &dyn Widget) -> String {
         w.test_id()
             .map_or_else(|| w.name().to_string(), str::to_string)
@@ -1435,8 +1433,7 @@ mod tests {
         }
     }
 
-    /// The card's focusable widgets, identified, in tab order. Buttons
-    /// appear as their visible label (see [`ident`]).
+    /// The card's focusable widgets, identified by stable id, in tab order.
     fn focusables(app: &GreeterApp) -> Vec<String> {
         let card = card_of(app);
         let mut v = Vec::new();
@@ -1536,9 +1533,9 @@ mod tests {
             vec![
                 "greeter.username",
                 "greeter.password",
-                "Log in",
-                "Restart",
-                "Shut down",
+                "greeter.login",
+                "greeter.reboot",
+                "greeter.poweroff",
             ],
             "a lone session must not render a picker"
         );
@@ -1681,9 +1678,9 @@ mod tests {
                 "greeter.username",
                 "greeter.password",
                 "greeter.session",
-                "Log in",
-                "Restart",
-                "Shut down",
+                "greeter.login",
+                "greeter.reboot",
+                "greeter.poweroff",
             ]
         );
     }
@@ -2066,7 +2063,7 @@ mod tests {
         // The power actions stay reachable — you must always be able to
         // turn the machine off, even from a stuck login.
         assert!(
-            live.contains(&"Shut down".to_string()),
+            live.contains(&"greeter.poweroff".to_string()),
             "power actions must survive an in-flight attempt, got {live:?}"
         );
 
@@ -2152,7 +2149,7 @@ mod tests {
             let mut f = Vec::new();
             collect_focusables(card.as_ref(), &mut f);
             assert!(
-                f.contains(&app.login_label().to_string()),
+                f.contains(&"greeter.login".to_string()),
                 "{scenario:?} lost the primary action, got {f:?}"
             );
         }

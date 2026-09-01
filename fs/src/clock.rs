@@ -210,10 +210,14 @@ mod tests {
             Err(ClockConfigurationError::InvalidValue)
         ));
 
-        fs::remove_file(&path).unwrap();
-        fs::write(&path, b"1236").unwrap();
+        // Allocate the replacement while the pinned inode still exists. An
+        // unlink followed by create may immediately reuse the same inode on
+        // overlayfs/tmpfs, which does not exercise replacement detection.
+        let replacement = dir.path().join("replacement-clock-ms");
+        fs::write(&replacement, b"1236").unwrap();
         #[cfg(unix)]
-        owner_only(&path);
+        owner_only(&replacement);
+        fs::rename(&replacement, &path).unwrap();
         #[cfg(unix)]
         assert!(matches!(
             clock.read(),
