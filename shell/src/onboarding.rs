@@ -151,6 +151,14 @@ impl Onboarding {
         }
     }
 
+    /// Return to the choice screen before any identity exists.
+    pub fn back(&mut self) {
+        if matches!(self.screen, Screen::Connect | Screen::NoRecovery) {
+            self.screen = Screen::Intro;
+            self.acknowledged = false;
+        }
+    }
+
     /// Toggle the acknowledgement — reversible: unticking must lose the ability to proceed again, or the gate is decorative.
     pub fn set_acknowledged(&mut self, value: bool) {
         self.acknowledged = value;
@@ -304,6 +312,20 @@ mod tests {
         o.set_acknowledged(true);
         o.set_acknowledged(false);
         assert!(!o.can_create());
+    }
+
+    #[test]
+    fn back_returns_to_the_choice_without_carrying_acknowledgement() {
+        let mut o = Onboarding::new();
+        o.begin();
+        o.set_acknowledged(true);
+        o.back();
+        assert_eq!(o.screen(), Screen::Intro);
+        assert!(!o.acknowledged());
+
+        o.begin_connect();
+        o.back();
+        assert_eq!(o.screen(), Screen::Intro);
     }
 
     /// A UI bug must not be able to mint behind the user's back.

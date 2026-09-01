@@ -810,12 +810,19 @@ fn apply_modifier_mask(ctx: &mut TestControlCtx, mask: ModifiersState) {
 
 /// Offer `event` to the focused Wayland client; returns `true` when it was
 /// consumed and must not also reach the chrome.
+fn client_input_allowed(fb: &FrameBuilder) -> bool {
+    !fb.host().onboarding_active()
+}
+
 fn to_client(
     state: &mut Option<&mut State>,
     fb: &mut FrameBuilder,
     event: &WindowEvent,
     modifiers: Modifiers,
 ) -> bool {
+    if !client_input_allowed(fb) {
+        return false;
+    }
     match state {
         Some(st) => client_input::route_input(st, fb, event, &modifiers),
         None => false,
@@ -2054,6 +2061,32 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    // A fresh machine has no display server before `shell`, so first-login
+    // cannot be a standalone winit app or a pre-graphical user unit. Host the
+    // ceremony in trusted compositor chrome and withhold every desktop
+    // affordance until it has produced a real identity.
+    match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) if crate::shell::identity_provisioning::needs_first_run_flow(&store) => {
+            match store.path().parent().map(std::path::Path::to_path_buf) {
+                Some(identity_dir) => frame_builder.enable_onboarding(identity_dir),
+                None => {
+                    tracing::error!(
+                        path = %store.path().display(),
+                        "identity path has no parent; refusing to start an identity-less desktop"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "cannot resolve the user identity directory; refusing to start an identity-less desktop"
+            );
+            std::process::exit(1);
+        }
+    }
     frame_builder.enable_configured_theme();
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
@@ -2625,12 +2658,13 @@ pub fn run() -> ! {
                         }
                         // Offer the event to the focused Wayland client first. `route_input`
                         // returns `false` for anything the shell owns, so only client-bound events skip the chrome dispatch below.
-                        let to_client = client_input::route_input(
-                            &mut state,
-                            &mut frame_builder,
-                            wev,
-                            &test_control_ctx.modifiers,
-                        );
+                        let to_client = client_input_allowed(&frame_builder)
+                            && client_input::route_input(
+                                &mut state,
+                                &mut frame_builder,
+                                wev,
+                                &test_control_ctx.modifiers,
+                            );
                         if !to_client {
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             frame_builder.dispatch_event(
@@ -2657,7 +2691,7 @@ pub fn run() -> ! {
                 BackendEvent::ShellGesture(action) => {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
-                    if !session.is_locked() {
+                    if !session.is_locked() && client_input_allowed(&frame_builder) {
                         for t in session.note_activity(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
@@ -2667,14 +2701,14 @@ pub fn run() -> ! {
                 }
                 BackendEvent::Gesture(gesture) => {
                     // A one- or two-finger gesture: the focused client's.
-                    if !session.is_locked() {
+                    if !session.is_locked() && client_input_allowed(&frame_builder) {
                         state.forward_client_gesture(gesture);
                     }
                 }
                 BackendEvent::Touch(touch) => {
                     // The same finger also arrives as pointer events (backend emits both),
                     // driving shell chrome; this half is `wl_touch` for real multi-touch clients.
-                    if !session.is_locked() {
+                    if !session.is_locked() && client_input_allowed(&frame_builder) {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
                         state.forward_client_touch(touch, target);
                     }
@@ -2693,12 +2727,13 @@ pub fn run() -> ! {
         {
             for pressed in [true, false] {
                 let event = switch_action_event(action, pressed);
-                let to_client = client_input::route_input(
-                    &mut state,
-                    &mut frame_builder,
-                    &event,
-                    &test_control_ctx.modifiers,
-                );
+                let to_client = client_input_allowed(&frame_builder)
+                    && client_input::route_input(
+                        &mut state,
+                        &mut frame_builder,
+                        &event,
+                        &test_control_ctx.modifiers,
+                    );
                 if !to_client {
                     frame_builder.dispatch_event(
                         &event,
@@ -3355,6 +3390,18 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn onboarding_blocks_every_client_input_route() {
+        let mut fb = FrameBuilder::new((800, 600));
+        assert!(client_input_allowed(&fb));
+        fb.enable_onboarding(std::path::PathBuf::from("/tmp/qos-onboarding-test"));
+        assert!(fb.host().onboarding_active());
+        assert!(
+            !client_input_allowed(&fb),
+            "trusted first-login chrome must own input before any Wayland client"
+        );
+    }
 
     /// The compositor binds the socket the launcher dials. Assert across both
     /// production paths, not either one's idea of the path: bind with the
