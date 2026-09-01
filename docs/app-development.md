@@ -698,27 +698,36 @@ props:
 }
 ```
 
-Register the typed construction boundary once when building a screen or router:
+For the common typed display case, generate both the Rust component and its
+validated graph adapter, then insert an instance without writing JSON by hand:
+
+```bash
+qos-dev add component profile-card --template display
+qos-dev ui component ui/main.json profile-card \
+  --props '{"title":"Ada","detail":"Workspace owner"}'
+```
+
+`ui component` appends to `root` by default, derives a unique id
+(`profile-card`, `profile-card-2`, ...), and atomically rejects a bad factory
+name, non-object props, invalid parent, duplicate explicit id, or out-of-range
+index. Use `--id`, `--parent`, and `--index` when placement must be explicit.
+Register the generated typed construction boundary once when building a screen
+or router:
 
 ```rust
-use ui::widget::Element;
-use ui::{Theme, UiBuildContext, UiComponentRequest};
+use ui::{Theme, UiBuildContext};
 
-fn profile_from_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {
-    let string = |key| {
-        request.props.get(key)
-            .and_then(|value| value.as_str())
-            .map(str::to_owned)
-            .ok_or_else(|| format!("{key} must be a string"))
-    };
-    let props = ProfileCardProps::new(string("title")?, string("detail")?);
-    Ok(Box::new(profile_card(request.id, &props)))
-}
-
-let context = UiBuildContext::default()
-    .with_component("profile-card", profile_from_graph);
+let context = components::profile_card::register_ui_graph(
+    UiBuildContext::default(),
+);
 let app = screens::router_with("main", &Theme::default(), context)?;
 ```
+
+The generated `from_ui_graph` function converts `title` and `detail` into the
+same typed `ProfileCardProps` used by ordinary Rust callers and returns precise
+field errors. For a custom component shape, write the equivalent small function
+from `UiComponentRequest` to `Element` and register it with
+`UiBuildContext::with_component`.
 
 The factory returns an ordinary retained widget, so its child controls, model
 bindings, focus, accessibility, inspection, and headless scenarios work exactly
