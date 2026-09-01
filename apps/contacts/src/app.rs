@@ -36,6 +36,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
     Link, ModalDialog, Text, TextInput, Widget,
@@ -1637,7 +1638,15 @@ impl ContactsApp {
             }
         }
         if let Some((msg, _)) = &self.toast {
-            draw_toast(scene, transform, tr, theme, self.rect, msg);
+            paint_transient(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.rect,
+                ToastAnchor::BottomCenter,
+                &ToastCard::new(msg, ToastKind::Info),
+            );
         }
     }
 
@@ -3268,49 +3277,6 @@ fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: b
         Icon::ChevronRight
     };
     icon.draw(scene, t, rect, theme.tokens.colors.text_primary);
-}
-
-#[allow(
-    clippy::many_single_char_names,
-    reason = "t is the paint transform, c is the theme's colour set, and w/h/r are the \
-              toast's measured width/height/rect — conventional short names for this \
-              draw step"
-)]
-fn draw_toast(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    msg: &str,
-) {
-    let c = &theme.tokens.colors;
-    let tw = f64::from(tr.measure(msg, 13.0, None).0);
-    let w = (tw + 36.0).min(area.width() - 40.0);
-    let h = 38.0;
-    let x0 = area.center().x - w / 2.0;
-    let y0 = area.y1 - h - 20.0;
-    let r = Rect::new(x0, y0, x0 + w, y0 + h);
-    let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
-    scene.fill(
-        Fill::NonZero,
-        t,
-        Color::from_rgba8(0, 0, 0, 110),
-        None,
-        &RoundedRect::from_rect(r.inset(2.0), 10.0),
-    );
-    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-    scene.stroke(&Stroke::new(1.0), t, theme.accent_primary, None, &shape);
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
-    tr.draw_text(
-        scene,
-        msg,
-        13.0,
-        c.text_primary,
-        t * Affine::translate((r.x0 + 18.0, r.center().y - 8.0)),
-        None,
-    );
-    scene.pop_layer();
 }
 
 // =====================================================================
