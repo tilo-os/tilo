@@ -64,21 +64,26 @@ pub enum Icon {
     ClipboardPaste,
     Trash2,
     Pencil,
+    Square,
     FolderPlus,
     FilePlus,
     List,
     Star,
+    Pin,
     HardDrive,
     Check,
     // --- Video / media-navigation set ---
     Flame,
     GalleryVerticalEnd,
     History,
+    Timer,
     ThumbsUp,
     ThumbsDown,
     ListVideo,
+    PictureInPicture2,
     Sparkles,
     Eye,
+    MousePointer2,
     Menu,
     Info,
     CloudDownload,
@@ -348,6 +353,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::Star => vec![path_from_d(
             "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.85a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 10.633a.53.53 0 0 1 .294-.904l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
         )],
+        Icon::Pin => vec![
+            path_from_d("M12 17v5"),
+            path_from_d("M5 17h14"),
+            path_from_d("M5 3h14"),
+            path_from_d("M6 3v8l-2 6h16l-2-6V3"),
+        ],
         Icon::Sun => vec![
             path_from_d("M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"),
             path_from_d("M12 2v2"),
@@ -443,6 +454,11 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M3 3v5h5"),
             path_from_d("M12 7v5l4 2"),
         ],
+        Icon::Timer => vec![
+            path_from_d("M10 2h4"),
+            path_from_d("M12 14v-4"),
+            path_from_d("M4 13a8 8 0 1 0 8-8 9.7 9.7 0 0 0-3.24.55"),
+        ],
         Icon::ThumbsUp => vec![
             path_from_d("M7 10v12"),
             path_from_d(
@@ -463,6 +479,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
                 "M15 12.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997a1 1 0 0 1-1.517-.86z",
             ),
         ],
+        Icon::PictureInPicture2 => vec![
+            path_from_d("M21 9V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"),
+            rect_path(12.0, 13.0, 10.0, 7.0, 2.0),
+        ],
         Icon::Sparkles => vec![
             path_from_d(
                 "M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z",
@@ -477,6 +497,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             ),
             circle_path(12.0, 12.0, 3.0),
         ],
+        Icon::MousePointer2 => vec![path_from_d(
+            "M4.037 2.927a1 1 0 0 1 1.086-.217l15.323 7.684a1 1 0 0 1-.14 1.838l-6.686 2.39a2 2 0 0 0-1.198 1.198l-2.39 6.686a1 1 0 0 1-1.838.14z",
+        )],
         Icon::Menu => vec![
             path_from_d("M4 5h16"),
             path_from_d("M4 12h16"),
@@ -532,6 +555,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             ),
             path_from_d("m15 5 4 4"),
         ],
+        Icon::Square => vec![rect_path(3.0, 3.0, 18.0, 18.0, 2.0)],
         Icon::FolderPlus => vec![
             path_from_d("M12 10v6"),
             path_from_d("M9 13h6"),
@@ -1014,6 +1038,7 @@ mod tests {
             Icon::Bell,
             Icon::Play,
             Icon::Pause,
+            Icon::PictureInPicture2,
             Icon::Check,
             Icon::Refresh,
             Icon::ExternalLink,
@@ -1261,10 +1286,12 @@ mod tests {
             Icon::ClipboardPaste,
             Icon::Trash2,
             Icon::Pencil,
+            Icon::Square,
             Icon::FolderPlus,
             Icon::FilePlus,
             Icon::List,
             Icon::Star,
+            Icon::Pin,
             Icon::HardDrive,
             Icon::Check,
             Icon::Info,

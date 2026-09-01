@@ -60,6 +60,7 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
+pub mod floating_surface;
 pub mod format;
 pub mod fullscreen;
 pub mod gesture;
