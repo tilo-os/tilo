@@ -49,6 +49,7 @@ use crate::review_overlay::{
 use crate::ruler::RulerMarker;
 use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
+use crate::template_picker::TemplatePicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 #[cfg(test)]
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
@@ -1688,13 +1689,8 @@ pub struct WordProcessorWidget {
     chrome: ChromeColors,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
-    // ---- new-from-template picker -----------------------------------------
-    /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
-    /// only while the user is choosing a template; a selection replaces the open
-    /// document's content with the chosen template in place.
-    new_menu: ContextMenu,
-    /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
-    new_menu_templates: Vec<crate::Template>,
+    /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
+    template_picker: TemplatePicker,
     /// An in-flight host file request: `Some` means the XDG chooser is open on a
     /// worker thread; the path is drained each frame in [`Self::drain_portal`].
     /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
@@ -1797,8 +1793,7 @@ impl WordProcessorWidget {
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
             recovery: RecoveryBanner::default(),
-            new_menu: ContextMenu::new(),
-            new_menu_templates: Vec::new(),
+            template_picker: TemplatePicker::default(),
             portal_rx: None,
             portal_purpose: None,
             style_menu: ContextMenu::new(),
@@ -6690,14 +6685,10 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // Likewise route the press to the "New ▾" template menu when open:
-        // a row applies that template; a click elsewhere dismisses it.
-        if self.new_menu.is_open() {
-            let point = [self.pointer.x, self.pointer.y];
-            if let Some(idx) = self.new_menu.item_at(point) {
-                self.dispatch_new_menu(idx, state);
-            } else {
-                self.new_menu.close();
+        // Likewise route the press to the "New ▾" template picker when open.
+        if self.template_picker.is_open() {
+            if let Some(template) = self.template_picker.click(self.pointer) {
+                self.apply_template(state, template);
             }
             self.dirty = true;
             *handled = true;
@@ -7235,11 +7226,13 @@ impl WordProcessorWidget {
         }
         // Escape dismisses an open context / style menu before anything else.
         if matches!(logical_key, Key::Named(NamedKey::Escape))
-            && (self.context_menu.is_open() || self.style_menu.is_open() || self.new_menu.is_open())
+            && (self.context_menu.is_open()
+                || self.style_menu.is_open()
+                || self.template_picker.is_open())
         {
             self.context_menu.close();
             self.style_menu.close();
-            self.new_menu.close();
+            self.template_picker.close();
             self.dirty = true;
             *handled = true;
             return true;
@@ -7792,16 +7785,8 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
-        if self.new_menu.is_open() {
-            Widget::draw(
-                &mut self.new_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
+        self.template_picker
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.style_menu.is_open() {
             Widget::draw(
                 &mut self.style_menu,
@@ -8329,7 +8314,7 @@ impl WordProcessorWidget {
                 }
             }
             ToolAction::InsertToc => self.generate_toc(state),
-            ToolAction::NewMenu => self.open_new_menu(),
+            ToolAction::NewMenu => self.open_template_picker(),
         }
     }
 
@@ -8999,26 +8984,15 @@ impl WordProcessorWidget {
 
     // ---- new-from-template picker -----------------------------------------
 
-    /// Open the "New ▾" template picker: build a [`ContextMenu`] listing every
-    /// [`crate::Template`] by `title()`, anchored just under the toolbar's leading
-    /// edge. A selection (left-click on a row) replaces the open document's
-    /// content with the chosen template in place (see [`Self::apply_template`]).
-    fn open_new_menu(&mut self) {
-        let mut menu = ContextMenu::new();
-        let mut templates = Vec::new();
-        for &tpl in crate::Template::all() {
-            menu.push(MenuItem::action(tpl.display_title(), || {}));
-            templates.push(tpl);
-        }
+    /// Open the "New ▾" picker below the toolbar's leading edge.
+    fn open_template_picker(&mut self) {
         // Anchor below the toolbar's left edge (where the "New ▾" button lives).
         let anchor_x = self
             .toolbar
             .first()
             .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
-        menu.open_at([num::f32_of_f64(anchor_x), num::f32_of_f64(anchor_y)]);
-        self.new_menu = menu;
-        self.new_menu_templates = templates;
+        self.template_picker.open_at(Point::new(anchor_x, anchor_y));
         self.dirty = true;
     }
 
@@ -9042,16 +9016,6 @@ impl WordProcessorWidget {
             // A wholesale content swap is a strong autosave trigger.
             self.note_edit_for_autosave(state);
         }
-    }
-
-    /// Dispatch the new-menu row at `idx`: apply the chosen template, then close
-    /// the menu. Out-of-range rows are ignored.
-    fn dispatch_new_menu(&mut self, idx: usize, state: &mut AutoCommit) {
-        if let Some(&t) = self.new_menu_templates.get(idx) {
-            self.apply_template(state, t);
-        }
-        self.new_menu.close();
-        self.dirty = true;
     }
 
     // ---- autosave / crash-recovery ----------------------------------------
@@ -9259,7 +9223,7 @@ impl WordProcessorWidget {
             ToolAction::NewMenu,
             &t("toolbar-new"),
             64.0,
-            self.new_menu.is_open(),
+            self.template_picker.is_open(),
         );
         add(ToolAction::Bold, "B", 34.0, bold_a);
         add(ToolAction::Italic, "I", 30.0, italic_a);
@@ -13034,9 +12998,8 @@ mod tests {
         );
     }
 
-    /// Opening the "New ▾" menu lists every template by title; selecting one
-    /// replaces the document content with that template's first heading — driven
-    /// through the production `apply_tool` → menu → `dispatch_new_menu` path.
+    /// Selecting from the "New ▾" picker replaces the document content with that
+    /// template's first heading through the production pointer-routing path.
     #[test]
     fn selecting_a_template_replaces_the_document_content() {
         let (mut state, mut wp) = bound();
@@ -13050,35 +13013,31 @@ mod tests {
             "the document starts with the user's own text"
         );
 
-        // Open the picker via the real toolbar action.
+        // Draw once to establish the real toolbar anchor, then open the picker
+        // via the toolbar action.
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
-        assert!(wp.new_menu.is_open(), "the New ▾ menu opens");
-        let labels: Vec<String> = wp
-            .new_menu
-            .items()
-            .iter()
-            .filter_map(|i| i.label().map(str::to_string))
-            .collect();
-        // The menu lists every template by its localized display title (the real
-        // production path), in order. Under the default (en-US) locale these
-        // match `title()`, but we assert against `display_title()` so the test
-        // tracks the production code, not a hard-coded English literal.
-        let titles: Vec<String> = crate::Template::all()
-            .iter()
-            .map(|tpl| tpl.display_title())
-            .collect();
-        assert_eq!(
-            labels, titles,
-            "the menu lists every template by title, in order"
-        );
+        assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
 
-        // Select "Report" (its first heading is a known, stable string).
+        // Select "Report" (its first heading is a known, stable string). Shared
+        // ContextMenu rows start after 6 px padding and are 28 px tall.
         let report_idx = crate::Template::all()
             .iter()
             .position(|t| *t == crate::Template::Report)
             .unwrap();
-        wp.dispatch_new_menu(report_idx, &mut state.doc);
-        assert!(!wp.new_menu.is_open(), "the menu closes after a selection");
+        let anchor_x = wp.toolbar.first().map(|(_, rect)| rect.x0).unwrap();
+        let anchor_y = wp.rect.y0 + wp.toolbar_height(wp.rect.width());
+        wp.pointer = Point::new(
+            anchor_x + 10.0,
+            anchor_y + 6.0 + num::f64_of_usize(report_idx) * 28.0 + 1.0,
+        );
+        let mut handled = false;
+        assert!(wp.handle_left_press_menu_routing(&mut state.doc, &mut handled));
+        assert!(handled);
+        assert!(
+            !wp.template_picker.is_open(),
+            "the picker closes after a selection"
+        );
 
         let first = first_block(&wp, &state).expect("the templated document has a first block");
         assert_eq!(
