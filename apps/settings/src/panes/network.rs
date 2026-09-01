@@ -646,7 +646,7 @@ impl NetworkPane {
         wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
             Box::new(Button::new(
                 "settings.network.refresh",
-                "\u{f0450}  Refresh",
+                "Refresh",
                 Some(REFRESH_KEY),
             )),
         )));
