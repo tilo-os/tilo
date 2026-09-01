@@ -37,6 +37,7 @@ mod resources;
 mod service;
 mod session;
 mod store;
+mod vm_adapter;
 
 pub use audio_proxy::{AudioProxyError, AudioProxyLease};
 pub use catalogue::{
@@ -60,7 +61,8 @@ pub use protocol::{
 pub use resources::SystemResourceBroker;
 pub use service::{
     AccessSummary, CompatibilityService, ExplainStatus, InstallReceipt, LaunchInput, LaunchReceipt,
-    MatchReason, RouteKind, ServiceError, UnavailableVmDelegate, VmDelegate, VmRouteRequest,
+    MatchReason, RouteKind, ServiceError, UnavailableVmDelegate, VmAvailability, VmDelegate,
+    VmRouteRequest,
 };
 pub use session::{
     CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
@@ -70,3 +72,4 @@ pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
+pub use vm_adapter::{DenyAllVmPortalAuthority, LiveVmDelegate, VmPortalAuthority};
