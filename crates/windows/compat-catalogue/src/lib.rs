@@ -932,6 +932,7 @@ pub fn parse_bottles_recipe(input: &str) -> Result<Vec<BottlesProgram>, Catalogu
                 programs.push(builder.finish()?);
             }
             let mut builder = defaults.clone();
+            builder.seen_fields.clear();
             raw_key.trim().clone_into(&mut builder.name);
             current = Some(builder);
             list_section = None;
@@ -940,9 +941,16 @@ pub fn parse_bottles_recipe(input: &str) -> Result<Vec<BottlesProgram>, Catalogu
         if key == "EXECUTABLE" || key == "PROGRAM" || key == "EXE" {
             if let Some(executable) = value.as_deref().and_then(safe_executable) {
                 if let Some(builder) = current.as_mut() {
+                    if !builder.seen_fields.insert("EXECUTABLE".to_owned()) {
+                        return Err(CatalogueError::InvalidBottlesRecipe(
+                            "duplicate executable field".to_owned(),
+                        ));
+                    }
                     builder.executable = Some(executable.to_owned());
                 } else {
                     let mut builder = defaults.clone();
+                    builder.seen_fields.clear();
+                    builder.seen_fields.insert("EXECUTABLE".to_owned());
                     builder.executable = Some(executable.to_owned());
                     current = Some(builder);
                 }
@@ -950,9 +958,9 @@ pub fn parse_bottles_recipe(input: &str) -> Result<Vec<BottlesProgram>, Catalogu
             continue;
         }
         if let Some(builder) = current.as_mut() {
-            apply_bottles_field(builder, &key, value.as_deref());
+            apply_bottles_field(builder, &key, value.as_deref())?;
         } else {
-            apply_bottles_field(&mut defaults, &key, value.as_deref());
+            apply_bottles_field(&mut defaults, &key, value.as_deref())?;
         }
     }
     if let Some(builder) = current {
@@ -1036,6 +1044,7 @@ struct BottlesBuilder {
     dxvk: bool,
     vkd3d: bool,
     sync: Option<String>,
+    seen_fields: BTreeSet<String>,
 }
 
 impl BottlesBuilder {
@@ -1049,6 +1058,7 @@ impl BottlesBuilder {
             dxvk: false,
             vkd3d: false,
             sync: None,
+            seen_fields: BTreeSet::new(),
         }
     }
 
@@ -1115,8 +1125,18 @@ fn safe_executable(value: &str) -> Option<&str> {
     Some(value)
 }
 
-fn apply_bottles_field(builder: &mut BottlesBuilder, key: &str, value: Option<&str>) {
-    let Some(value) = value else { return };
+fn apply_bottles_field(
+    builder: &mut BottlesBuilder,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), CatalogueError> {
+    let Some(value) = value else { return Ok(()) };
+    let recognized = is_metadata_key(key);
+    if recognized && !builder.seen_fields.insert(key.to_owned()) {
+        return Err(CatalogueError::InvalidBottlesRecipe(format!(
+            "duplicate metadata field {key}"
+        )));
+    }
     match key {
         "NAME" if builder.name == "Bottles application" => value.clone_into(&mut builder.name),
         "ARCH" | "ARCHITECTURE" => {
@@ -1133,6 +1153,7 @@ fn apply_bottles_field(builder: &mut BottlesBuilder, key: &str, value: Option<&s
         "SYNC" => builder.sync = safe_yaml_scalar(value),
         _ => {}
     }
+    Ok(())
 }
 
 fn add_inline_dependencies(target: &mut BTreeSet<String>, value: &str) {
@@ -1164,6 +1185,7 @@ fn bottles_slug(name: &str, executable: &str) -> String {
 }
 
 fn parse_csv_rows(input: &str) -> Result<Vec<Vec<String>>, CatalogueError> {
+    const MAX_ROWS: usize = 100_000;
     let bytes = input.as_bytes();
     let mut rows = Vec::new();
     let mut row = Vec::new();
@@ -1224,6 +1246,11 @@ fn parse_csv_rows(input: &str) -> Result<Vec<Vec<String>>, CatalogueError> {
                 row.push(csv_field(&field)?);
                 field.clear();
                 if !row.is_empty() {
+                    if rows.len() >= MAX_ROWS {
+                        return Err(CatalogueError::InvalidUmuCsv(
+                            "row count exceeds limit".to_owned(),
+                        ));
+                    }
                     rows.push(std::mem::take(&mut row));
                 }
                 index = index.saturating_add(1);
@@ -1248,6 +1275,11 @@ fn parse_csv_rows(input: &str) -> Result<Vec<Vec<String>>, CatalogueError> {
         ));
     }
     if !field.is_empty() || !row.is_empty() {
+        if rows.len() >= MAX_ROWS {
+            return Err(CatalogueError::InvalidUmuCsv(
+                "row count exceeds limit".to_owned(),
+            ));
+        }
         row.push(csv_field(&field)?);
         rows.push(row);
     }
@@ -1940,5 +1972,26 @@ Steps:
     fn rejects_bottles_path_as_an_executable() {
         let recipe = "Name: Bad\nExecutable: /home/user/evil.exe\n";
         assert!(parse_bottles_recipe(recipe).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_bottles_metadata_and_bounds_csv_rows() {
+        let duplicate = "Name: App\nGrade: Gold\nGrade: Platinum\nExecutable: app.exe\n";
+        assert!(parse_bottles_recipe(duplicate).is_err());
+        let mut csv = String::from("TITLE,STORE,CODENAME,UMU_ID\n");
+        for _ in 0..100_001 {
+            csv.push_str("Game,steam,game,1\n");
+        }
+        assert!(parse_umu_csv(&csv).is_err());
+    }
+
+    #[test]
+    fn community_bottles_metadata_cannot_select_proton_or_vm() {
+        let recipe = "Name: App\nExecutable: app.exe\n";
+        let profile = profile();
+        let proton_runner = Runner::new("umu-proton", "10").expect("valid runner");
+        assert!(wine_records_from_bottles_recipe(recipe, &proton_runner, &profile).is_err());
+        let vm_runner = Runner::new("windows-vm", "managed").expect("valid runner");
+        assert!(wine_records_from_bottles_recipe(recipe, &vm_runner, &profile).is_err());
     }
 }
