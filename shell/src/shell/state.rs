@@ -1645,9 +1645,9 @@ pub struct WorkspaceTree {
     /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default)]
     pub active_group: HashMap<StripId, GroupId>,
-    /// Tree-level roster, fallback for chrome when the active workspace
-    /// has nobody of its own. `#[serde(skip)]` — reloading it would show
-    /// people who are not there.
+    /// Legacy session-wide presence cache. Ordinary chrome must read the
+    /// active workspace's roster instead: a person present elsewhere is not
+    /// present here. `#[serde(skip)]` prevents stale presence after reload.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
@@ -3067,52 +3067,12 @@ impl WorkspaceTree {
         };
         let is_local = |id: u64| peer_salt_of(id) == local_salt;
 
-        // Read before the workspace is borrowed mutably: both live on
-        // the tree rather than on the workspace.
-        let host_strip = self
-            .workspaces
-            .iter()
-            .find(|w| w.room == room)
-            .and_then(|w| {
-                let active = self.active_strip.get(&w.id).copied();
-                active
-                    .filter(|id| w.strips.iter().any(|s| s.id == *id && is_local(id.raw())))
-                    .or_else(|| w.strips.iter().find(|s| is_local(s.id.raw())).map(|s| s.id))
-            });
-
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let mut changed = false;
         let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
             replicated.into_iter().map(|s| (s.id, s)).collect();
-
-        // **Which strip a peer's windows land in is this machine's
-        // business** — taking a peer's strip id literally would mint a
-        // second strip that stacks below ours; instead their groups
-        // merge into the strip we're using, keeping their own ids.
-        let foreign: Vec<u64> = by_strip
-            .keys()
-            .copied()
-            .filter(|id| !is_local(*id))
-            .collect();
-        let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
-        for sid in foreign {
-            // `sid` came from `by_strip.keys()` just above and `BTreeMap`
-            // keys don't repeat, so this always finds an entry — but
-            // `continue` rather than `.expect()` costs nothing and can't
-            // panic if that invariant ever slips.
-            let Some(rep) = by_strip.remove(&sid) else {
-                continue;
-            };
-            peer_groups.extend(rep.groups);
-        }
-        // No strip of ours to put them in, so one is made.
-        if !peer_groups.is_empty() && host_strip.is_none() {
-            ws.strips.push(Strip::new(StripId::from(next_id()), "Main"));
-            changed = true;
-        }
-        let host_strip = host_strip.or_else(|| ws.strips.last().map(|s| s.id));
 
         // `(order, id, strip)` so local-only strips keep a position too.
         let mut out: Vec<(u64, u64, Strip)> = Vec::new();
@@ -3121,16 +3081,10 @@ impl WorkspaceTree {
         // snapshot, since `ws.strips` is about to be overwritten with the
         // merged result.
         let mut vanished: Vec<StripId> = Vec::new();
-        let mut peer_groups = Some(peer_groups);
         for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
             let sid = strip.id.raw();
-            // Everybody else's windows join this one.
-            let adopting = (Some(strip.id) == host_strip)
-                .then(|| peer_groups.take())
-                .flatten()
-                .filter(|g| !g.is_empty());
             let published = by_strip.remove(&sid);
-            if published.is_none() && adopting.is_none() {
+            if published.is_none() {
                 if is_local(sid) {
                     // Ours and simply not published; the document has
                     // no say over it.
@@ -3142,7 +3096,7 @@ impl WorkspaceTree {
                 }
                 continue;
             }
-            let mut rep = published.unwrap_or_else(|| ReplicatedStrip {
+            let rep = published.unwrap_or_else(|| ReplicatedStrip {
                 id: sid,
                 order: i as u64,
                 name: None,
@@ -3151,9 +3105,6 @@ impl WorkspaceTree {
             // Ours keeps our cache's position — taking it from the
             // document would undo a local reorder until re-projected.
             let order = if is_local(sid) { i as u64 } else { rep.order };
-            if let Some(extra) = adopting {
-                rep.groups.extend(extra);
-            }
             out.push((
                 order,
                 sid,
@@ -5808,21 +5759,18 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     assigned
 }
 
-/// Peer count for the active workspace, excluding the local user,
-/// falling back to the tree-level roster when it has none of its own —
-/// matches `TopBarChrome::sync_from_tree`'s precedence.
+/// Present collaborator count for the active workspace, excluding the local
+/// user. Presence is workspace-scoped; the legacy tree-level cache must never
+/// make somebody from another workspace appear here.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // Somebody named but not yet arrived is not counted. This drives the
     // avatar cluster's `+N` chip and the wheel disc's presence dot, and
     // both are claims that people are *in* the workspace — an invitation
     // that has not been redeemed is not one of them.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
-    let active = tree.active_workspace();
-    let per_ws = active.map_or(0, |w| w.collaborators.iter().filter(present).count());
-    if per_ws > 0 {
-        return per_ws;
-    }
-    tree.collaborators.iter().filter(present).count()
+    tree.active_workspace().map_or(0, |workspace| {
+        workspace.collaborators.iter().filter(present).count()
+    })
 }
 
 #[cfg(test)]
@@ -6380,12 +6328,12 @@ mod automerge_foundation_tests {
         (host, guest, room)
     }
 
-    /// A window somebody else opened lands *beside* yours, not
-    /// underneath — groups scroll horizontally within a strip, so a
-    /// peer's window becoming its own strip would stack vertically
-    /// on a desktop that doesn't do that.
+    /// A peer's strip is shared layout, not an instruction to pour its
+    /// windows into whichever strip this machine happened to focus. Both
+    /// strips appear, while the receiving person's active strip remains
+    /// their own local view state.
     #[test]
-    fn a_peers_window_lands_beside_yours_and_not_below_it() {
+    fn a_peers_window_arrives_in_its_shared_strip_without_moving_local_focus() {
         const HOST: u16 = 0x2222;
         const GUEST: u16 = 0x3333;
         let (mut host, mut guest, room) = two_in_a_room();
@@ -6420,6 +6368,21 @@ mod automerge_foundation_tests {
             tree.sync_room_doc(room);
         }
 
+        let guest_workspace = guest
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("guest workspace")
+            .id;
+        let guest_strip = guest
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .and_then(|workspace| workspace.strips.first())
+            .expect("guest strip")
+            .id;
+        guest.active_strip.insert(guest_workspace, guest_strip);
+
         ship(&mut host, &mut guest, room, 1);
 
         let ws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
@@ -6436,19 +6399,26 @@ mod automerge_foundation_tests {
         );
         assert_eq!(
             ws.strips.len(),
-            1,
-            "both windows belong in one horizontally-scrolling strip; \
-             {} strips means they are stacked vertically, with strips {:?}",
-            ws.strips.len(),
+            2,
+            "each shared strip must remain addressable instead of folding \
+             its windows into a local strip; got {:?}",
             ws.strips
                 .iter()
                 .map(|s| (s.id.raw(), s.window_groups.len()))
                 .collect::<Vec<_>>(),
         );
+        assert!(
+            ws.strips.iter().all(|strip| strip.window_groups.len() == 1),
+            "each owner keeps one group in its own strip: {:?}",
+            ws.strips
+                .iter()
+                .map(|strip| (strip.id.raw(), strip.window_groups.len()))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
-            ws.strips[0].window_groups.len(),
-            2,
-            "one group each, side by side",
+            guest.active_strip.get(&guest_workspace),
+            Some(&guest_strip),
+            "layout is shared; personal focus is not",
         );
     }
 

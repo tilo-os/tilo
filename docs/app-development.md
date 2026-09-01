@@ -77,6 +77,9 @@ Grow an existing app from any directory inside it with `add`:
 qos-dev add
 qos-dev add component profile-card --template form
 qos-dev add component project-tree --template tree
+qos-dev add component activity-list --template list
+qos-dev add component results-table --template table
+qos-dev add component article-body --template text
 qos-dev add screen account-settings --template settings --link-from main
 qos-dev add screen new-project --template form --link-from account-settings
 qos-dev add screen first-run --template empty-state
@@ -90,10 +93,11 @@ With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
 containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
-typed-props display, a typed-state form, or a source-agnostic virtualized tree.
-The wizard reviews the resolved artifact before entering the same atomic
-publication path as the explicit commands. Scripts and CI should continue to
-use the fully specified subcommands.
+typed-props display, a typed-state form, a source-agnostic virtualized tree, a
+sparse variable-height list, a model-backed table, or advanced text. The wizard
+reviews the resolved artifact before entering the same atomic publication path
+as the explicit commands. Scripts and CI should continue to use the fully
+specified subcommands.
 
 `add component profile-card --template form` creates
 `src/components/profile_card.rs`, maintains the generated
@@ -144,6 +148,91 @@ structural transitions. The embedded headless test proves that expansion,
 stable-key selection, and an interactive button inside a custom row delegate
 remain independent. The tree's accessible name is added to every Fluent
 catalog in the same atomic generation batch.
+
+`add component activity-list --template list` provides the equivalent reusable
+boundary for flat collections. It accepts any `ListModel`, including models
+that report hundreds of millions of logical rows while retaining only a page
+cache. The required delegate receives `Ready`, `Loading`, and `Error` states,
+and the required key encoder gives accessibility and headless tests a stable
+row identity:
+
+```rust
+let list = activity_list(
+    "activity-feed",
+    paged_model,
+    &ActivityListConfig::default(),
+    activity_row,
+    ActivityId::to_string,
+)
+.on_activate(open_activity)
+.with_reorder(can_reorder_activity, reorder_activity);
+```
+
+The typed configuration restores `KeySelection`, including constant-space
+select-all state, discarding keys no longer present in the model. It also
+controls the localized accessible name, multi-selection, viewport height, and
+initial row-height estimate. The returned `VirtualList`
+keeps targeted insert/remove/move/data notifications, retained interactive row
+widgets, measured variable heights, pixel and drag-to-scroll input, accelerated
+momentum, edge auto-scroll during reorder, insertion previews, and stable
+anchoring when rows change above the viewport. Its generated stress test uses a
+100-million-row model without allocating its rows, verifies that fewer than 30
+delegates are mounted, checks variable geometry and restored selection, and
+activates a button inside a row independently of row selection.
+
+`add component results-table --template table` completes the reusable
+collection set. It accepts app-defined `ColumnDef<Row>` values and any
+`TableModel<Row = Row>`, so ordinary text, custom-painted cells, and real
+interactive child widgets can be mixed without coupling the table to a data
+source:
+
+```rust
+let table = results_table(
+    "search-results",
+    columns,
+    remote_results,
+    &ResultsTableConfig::default(),
+)
+.on_activate(open_result);
+```
+
+The generated configuration restores and validates stable-key selection and
+controls the localized accessible name, selectable behavior, viewport height,
+and initial row-height estimate. The returned `DataTable` retains column
+sorting and resizing, loading/error row semantics, targeted asynchronous model
+notifications, interactive cell widgets, variable row measurements, keyboard
+and pointer selection, momentum and drag scrolling, and stable anchoring across
+inserts, removals, moves, and remote sorts. Its generated test exposes 100
+million logical rows from constant model storage, keeps the mounted semantic
+window below 40 rows, restores selection, measures a non-default row height,
+and independently activates a retained cell button.
+
+`add component article-body --template text` generates a small reusable
+boundary around the complete text-layout contract. `ArticleBodyProps` keeps
+the Fluent message and `TextStyle` together, with a readable default that
+enables kerning, tracking, line height, and automatic hyphenation. The ordinary
+`article_body` function returns a concrete `Text`, so app code can continue to
+use its normal state, accessibility, inspection, presence, and permission
+APIs.
+
+Two sibling constructors expose the less common paths without making ordinary
+text complicated:
+
+```rust
+let article = article_body_in_region("article", &props, polygon);
+let diagram_label = article_body_with_engine("label", &props, diagram_layout);
+```
+
+The first accepts any validated `TextFlowRegion` and uses the built-in
+`PolygonTextLayout` for concave or convex flow and exact clipping. The second
+accepts any `TextLayoutEngine`, replacing measurement and painting while
+retaining the standard `Text` widget lifecycle. Replace the generated
+`en-US` automatic hyphenation setting with the active content language, or use
+`TextStyle::with_hyphenator` for an application dictionary. The generated
+headless tests verify that both polygon and custom-engine layouts preserve
+static-text accessibility and that the custom engine participates in layout.
+The full style, hyphenation, flow-region, and engine contracts are documented
+under [Text layout and typography](#text-layout-and-typography).
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
@@ -709,6 +798,33 @@ The storage boundary stays visible in types: durable fields name a document
 path, while process-local fields bind an explicit typed handle. Reusable
 actions go through `ActionHost`, so a button, command palette entry, agent
 action, and undo history can invoke the same operation.
+
+### One driveability surface
+
+Every operation must be reachable through the resource/action catalogue. Use
+`Widget::resources` and `ActionSpec` for domain operations: name the current
+resource, publish document mutations as document actions, and publish I/O or
+presentation work as effect/view operations. The host sends this same live
+catalogue to Ctrl+K search, the `actions_enumerate` / `actions_invoke`
+automation socket, and agents; none of those consumers has an app-specific
+command path.
+
+Ordinary retained controls are projected into that catalogue automatically
+from the semantic tree. Buttons, tabs, links, toggles, tree rows, sliders, and
+editable fields therefore remain driveable while an app is being developed,
+including legacy controls that still activate through hit testing. Give every
+operable control a stable ID and a localized accessible name: the ID is its
+fresh invocation address and the name is what humans and agents search for.
+This projection is a completeness floor, not a substitute for domain actions:
+a domain action has durable resource identity, typed parameters, collaboration
+semantics, and a useful verb such as “Archive conversation” instead of the
+generic “Activate”.
+
+To verify the real external path, enumerate the running app through the test
+control socket, invoke the returned `(provider, id)` with `actions_invoke`, and
+assert the resulting document or effect. A successful invocation is never
+inferred from a stale snapshot: the shell re-resolves the address and checks
+its capability immediately before dispatch.
 
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
 the value. `TextInput::from_state` is a true two-way binding: every input edit

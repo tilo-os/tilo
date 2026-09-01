@@ -46,6 +46,22 @@ files-destructive-eviction-started = Erzwungenes lokales Entfernen für { $count
     [one] Element
    *[other] Elemente
 } gestartet.
+files-permanent-delete-title = { $count } { $count ->
+    [one] Element
+   *[other] Elemente
+} endgültig löschen?
+files-permanent-delete-summary = { $count ->
+    [one] 1 ausgewähltes Element wird aus dem Papierkorb entfernt.
+   *[other] Die ausgewählten { $count } Elemente werden aus dem Papierkorb entfernt.
+}
+files-permanent-delete-loss = Dies kann nicht rückgängig gemacht werden.
+files-permanent-delete-confirm = Endgültig löschen
+files-empty-trash-title = Papierkorb endgültig leeren?
+files-empty-trash-summary = { $count ->
+    [one] 1 Element wird aus dem Papierkorb entfernt.
+   *[other] Alle { $count } Elemente werden aus dem Papierkorb entfernt.
+}
+files-empty-trash-confirm = Papierkorb leeren
 
 ## Eigenschaften und Verfügbarkeit
 files-property-collaborative-record = Kollaborativer Datensatz: { $record }
