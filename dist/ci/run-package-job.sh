@@ -229,7 +229,7 @@ ubuntu-24.04|debian-13)
         cp dist/debian/build/qos-session-devel_*_all.deb /artifacts/
     fi
     ;;
-fedora-42)
+fedora-44)
     export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
     export PATH=$CARGO_HOME/bin:$PATH
     stage=install-dependencies
