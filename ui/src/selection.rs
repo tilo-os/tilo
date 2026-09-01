@@ -1,4 +1,9 @@
-//! [`SelectionModel`] — a reusable index-based multi-selection model.
+//! Shared collection selection models.
+//!
+//! [`SelectionModel`] is the compact index-based form for immutable local
+//! lists. [`KeySelection`] keeps selection attached to stable model keys and
+//! represents select-all as a complement, making it suitable for mutable,
+//! virtualized, and partially resident collections.
 //!
 //! Several toolkit widgets surface a list of homogeneous items that the
 //! user can select — [`DataTable`](crate::widget::DataTable) list mode,
@@ -26,7 +31,170 @@
 //! When there is no anchor yet, Shift gestures degrade to a plain
 //! single-select (there is nothing to extend from).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
+use std::hash::Hash;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeySelectionMode<K: Eq + Hash> {
+    Explicit(HashSet<K>),
+    AllExcept(HashSet<K>),
+}
+
+/// Stable-key multi-selection for virtualized and mutable collections.
+///
+/// Explicit selections store selected keys. `select_all` switches to a
+/// complement representation and stores only later deselections, so selecting
+/// a collection with millions of non-resident rows remains constant-space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeySelection<K: Eq + Hash> {
+    mode: KeySelectionMode<K>,
+    anchor: Option<K>,
+    primary: Option<K>,
+}
+
+impl<K: Eq + Hash> Default for KeySelection<K> {
+    fn default() -> Self {
+        Self {
+            mode: KeySelectionMode::Explicit(HashSet::new()),
+            anchor: None,
+            primary: None,
+        }
+    }
+}
+
+impl<K> KeySelection<K>
+where
+    K: Clone + Eq + Hash,
+{
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn is_selected(&self, key: &K) -> bool {
+        match &self.mode {
+            KeySelectionMode::Explicit(selected) => selected.contains(key),
+            KeySelectionMode::AllExcept(excluded) => !excluded.contains(key),
+        }
+    }
+
+    #[must_use]
+    pub fn is_select_all(&self) -> bool {
+        matches!(self.mode, KeySelectionMode::AllExcept(_))
+    }
+
+    /// Number selected given the current number of selectable model keys.
+    #[must_use]
+    pub fn len(&self, total: usize) -> usize {
+        match &self.mode {
+            KeySelectionMode::Explicit(selected) => selected.len(),
+            KeySelectionMode::AllExcept(excluded) => total.saturating_sub(excluded.len()),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self, total: usize) -> bool {
+        self.len(total) == 0
+    }
+
+    #[must_use]
+    pub fn anchor(&self) -> Option<&K> {
+        self.anchor.as_ref()
+    }
+
+    #[must_use]
+    pub fn primary(&self) -> Option<&K> {
+        self.primary.as_ref()
+    }
+
+    /// The finite stored set: selected keys in explicit mode, deselected keys
+    /// in select-all mode.
+    pub fn stored_keys(&self) -> impl Iterator<Item = &K> {
+        match &self.mode {
+            KeySelectionMode::Explicit(keys) | KeySelectionMode::AllExcept(keys) => keys.iter(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.mode = KeySelectionMode::Explicit(HashSet::new());
+        self.anchor = None;
+        self.primary = None;
+    }
+
+    pub fn select_only(&mut self, key: K) {
+        self.mode = KeySelectionMode::Explicit(HashSet::from([key.clone()]));
+        self.anchor = Some(key.clone());
+        self.primary = Some(key);
+    }
+
+    pub fn toggle(&mut self, key: K) {
+        match &mut self.mode {
+            KeySelectionMode::Explicit(selected) => {
+                if !selected.remove(&key) {
+                    selected.insert(key.clone());
+                }
+            }
+            KeySelectionMode::AllExcept(excluded) => {
+                if !excluded.remove(&key) {
+                    excluded.insert(key.clone());
+                }
+            }
+        }
+        self.anchor = Some(key.clone());
+        self.primary = Some(key);
+    }
+
+    /// Apply an inclusive key range already resolved by the owning model.
+    /// The stable anchor is preserved while the primary key moves to `target`.
+    pub fn select_range<I>(&mut self, target: K, keys: I, additive: bool)
+    where
+        I: IntoIterator<Item = K>,
+    {
+        if self.anchor.is_none() {
+            self.select_only(target);
+            return;
+        }
+        if additive {
+            match &mut self.mode {
+                KeySelectionMode::Explicit(selected) => selected.extend(keys),
+                KeySelectionMode::AllExcept(excluded) => {
+                    for key in keys {
+                        excluded.remove(&key);
+                    }
+                }
+            }
+        } else {
+            self.mode = KeySelectionMode::Explicit(keys.into_iter().collect());
+        }
+        self.primary = Some(target);
+    }
+
+    pub fn select_all(&mut self) {
+        self.mode = KeySelectionMode::AllExcept(HashSet::new());
+        self.anchor = None;
+        self.primary = None;
+    }
+
+    /// Drop keys no longer present after a model change. In select-all mode
+    /// only the finite exception set needs visiting.
+    pub fn reconcile<F>(&mut self, mut contains: F)
+    where
+        F: FnMut(&K) -> bool,
+    {
+        match &mut self.mode {
+            KeySelectionMode::Explicit(selected) | KeySelectionMode::AllExcept(selected) => {
+                selected.retain(|key| contains(key));
+            }
+        }
+        if self.anchor.as_ref().is_some_and(|key| !contains(key)) {
+            self.anchor = None;
+        }
+        if self.primary.as_ref().is_some_and(|key| !contains(key)) {
+            self.primary = None;
+        }
+    }
+}
 
 /// Index-based multi-selection state. Indices are opaque `usize`s the
 /// owning widget assigns to its items (typically the row/cell order).
@@ -218,6 +386,58 @@ impl SelectionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyed_selection_survives_reorder_and_prunes_deleted_keys() {
+        let mut selection = KeySelection::new();
+        selection.select_only("beta");
+        selection.select_range("delta", ["beta", "gamma", "delta"], false);
+
+        let reordered = ["delta", "alpha", "gamma", "beta"];
+        assert!(selection.is_selected(&reordered[0]));
+        assert!(selection.is_selected(&reordered[2]));
+        assert_eq!(selection.primary(), Some(&"delta"));
+
+        selection.reconcile(|key| *key != "gamma");
+        assert!(!selection.is_selected(&"gamma"));
+        assert_eq!(selection.len(3), 2);
+    }
+
+    #[test]
+    fn keyed_select_all_is_constant_space_and_tracks_exceptions() {
+        let mut selection = KeySelection::new();
+        selection.select_all();
+        assert!(selection.is_select_all());
+        assert_eq!(selection.stored_keys().count(), 0);
+        assert_eq!(selection.len(100_000_000), 100_000_000);
+
+        selection.toggle(42_u64);
+        assert!(!selection.is_selected(&42));
+        assert!(selection.is_selected(&43));
+        assert_eq!(
+            selection.stored_keys().copied().collect::<Vec<_>>(),
+            vec![42]
+        );
+        assert_eq!(selection.len(100_000_000), 99_999_999);
+
+        selection.toggle(42);
+        assert!(selection.is_selected(&42));
+        assert_eq!(selection.stored_keys().count(), 0);
+    }
+
+    #[test]
+    fn additive_key_range_removes_select_all_exceptions() {
+        let mut selection = KeySelection::new();
+        selection.select_all();
+        selection.toggle(2_u64);
+        selection.toggle(3_u64);
+        selection.select_range(3, [1, 2, 3], true);
+
+        assert!(selection.is_select_all());
+        assert!(selection.is_selected(&2));
+        assert!(selection.is_selected(&3));
+        assert_eq!(selection.primary(), Some(&3));
+    }
 
     #[test]
     fn new_is_empty() {

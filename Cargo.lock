@@ -11290,6 +11290,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-dev"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fluent",
+ "fluent-syntax",
+ "libc",
+ "notify",
+ "pkg",
+ "qos-headless-schema",
+ "qos-ui-graph",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "qos-dev-template-smoke"
+version = "0.1.0"
+dependencies = [
+ "ui",
+]
+
+[[package]]
+name = "qos-headless-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "qos-power"
 version = "0.1.0"
 dependencies = [
@@ -11389,6 +11422,23 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "qos-ui-builder"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "ui",
+]
+
+[[package]]
+name = "qos-ui-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -15650,7 +15700,9 @@ dependencies = [
  "postcard",
  "qdoc",
  "qos-actions",
+ "qos-headless-schema",
  "qos-startup-metrics",
+ "qos-ui-graph",
  "qrcode",
  "rand_core 0.6.4",
  "regex",

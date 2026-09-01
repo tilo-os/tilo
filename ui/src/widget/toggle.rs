@@ -33,6 +33,7 @@ pub struct Toggle {
     /// Spoken name for a label-less toggle (e.g. an icon-only switch);
     /// unset falls back to a sibling label from the tree builder.
     accessible_name: Option<String>,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Toggle {
@@ -49,6 +50,7 @@ impl Toggle {
             enabled: true,
             id_override: None,
             accessible_name: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -299,6 +301,14 @@ impl Toggle {
 }
 
 impl Widget for Toggle {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
             && let Value::Scalar(s) = val
@@ -316,8 +326,8 @@ impl Widget for Toggle {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(44.0),
-                height: Dimension::length(24.0),
+                width: Dimension::length(44.0_f32.max(self.interaction.minimum_target())),
+                height: Dimension::length(self.interaction.minimum_target()),
             },
             ..Default::default()
         });
@@ -343,9 +353,10 @@ impl Widget for Toggle {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        let visual = Rect::from_center_size(self.rect.center(), (44.0, 24.0));
         let disabled = !self.enabled;
         if disabled {
-            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
+            let clip = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -362,7 +373,7 @@ impl Widget for Toggle {
         let (track_color, knob_color, stroke_color, stroke_w) =
             toggle_face_colors(theme, self.is_checked, interact);
 
-        let track_shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
+        let track_shape = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -381,11 +392,11 @@ impl Widget for Toggle {
 
         let knob_radius = 10.0;
         let knob_x = if self.is_checked {
-            self.rect.x1 - knob_radius - 2.0
+            visual.x1 - knob_radius - 2.0
         } else {
-            self.rect.x0 + knob_radius + 2.0
+            visual.x0 + knob_radius + 2.0
         };
-        let knob_y = self.rect.y0 + self.rect.height() / 2.0;
+        let knob_y = visual.y0 + visual.height() / 2.0;
 
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
         scene.fill(

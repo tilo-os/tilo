@@ -15,6 +15,7 @@
 //! [`AccessState::multiline`] + [`Role::TextInput`] →
 //! `accesskit::Role::MultilineTextInput`).
 
+use vello::kurbo::Rect;
 use vello::peniko::Color;
 
 use crate::color_compat::ColorCompat;
@@ -22,7 +23,7 @@ use crate::color_compat::ColorCompat;
 /// A thin subset of AccessKit's 182 roles covering the widgets the toolkit
 /// actually ships; unknown/rare cases fall back to [`Role::Generic`].
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Role {
     Window,
     Dialog,
@@ -98,7 +99,7 @@ pub enum Role {
     clippy::struct_excessive_bools,
     reason = "this mirrors independent ARIA/AccessKit state flags; combining them into an enum would prevent valid simultaneous states"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AccessState {
     pub focused: bool,
     pub focusable: bool,
@@ -208,7 +209,7 @@ pub enum Action {
 
 /// How urgently a [live region](AccessNode::live) narrates its own update
 /// *without moving focus* — a toast appearing, a status line changing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Politeness {
     /// Wait for a natural pause before speaking.
     Polite,
@@ -222,9 +223,12 @@ pub enum Politeness {
 /// [`i18n!`](crate::i18n)), not translation keys, since AccessKit/AT-SPI
 /// consume final text.
 #[must_use]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct AccessNode {
     pub role: Role,
+    /// Opaque stable identity used to route actions on a synthetic child back
+    /// to the widget that produced it. It has meaning only to that widget.
+    pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
     pub description: Option<String>,
@@ -267,6 +271,11 @@ pub struct AccessNode {
     /// Do not mix keyed and unkeyed siblings in one list: an explicit key of
     /// `3` and an ordinal of `3` are indistinguishable downstream.
     pub key: Option<u64>,
+    /// Absolute logical-pixel bounds for a synthetic node. Retained widgets
+    /// receive their bounds from [`Widget::get_rect`](crate::widget::Widget::get_rect);
+    /// virtual rows and cells use this field because they have no widget of
+    /// their own. The AccessKit bridge applies the window scale factor.
+    pub bounds: Option<AccessBounds>,
     /// Accessible children with no backing [`Widget`](crate::widget::Widget)
     /// of their own — a table's rows and cells, a virtualized list's items.
     /// The export layer emits them as this node's subtree, nested as deeply
@@ -278,6 +287,7 @@ impl AccessNode {
     pub fn new(role: Role) -> Self {
         Self {
             role,
+            action_target: None,
             name: None,
             description: None,
             value: None,
@@ -288,8 +298,16 @@ impl AccessNode {
             pos_in_set: None,
             level: None,
             key: None,
+            bounds: None,
             children: Vec::new(),
         }
+    }
+
+    /// Attach an opaque, widget-local target for actions on this synthetic
+    /// node. Prefer stable model keys over visible indices.
+    pub fn with_action_target(mut self, target: impl Into<String>) -> Self {
+        self.action_target = Some(target.into());
+        self
     }
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -374,6 +392,12 @@ impl AccessNode {
         self
     }
 
+    /// Attach absolute logical-pixel geometry to a synthetic semantic node.
+    pub fn with_bounds(mut self, bounds: Rect) -> Self {
+        self.bounds = Some(bounds.into());
+        self
+    }
+
     /// Attach synthetic [`children`](Self::children) — accessible elements
     /// with no backing widget (a table's rows/cells).
     pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
@@ -423,8 +447,37 @@ impl std::hash::Hasher for FnvHasher {
     }
 }
 
+/// Serializable absolute logical-pixel geometry for a synthetic
+/// [`AccessNode`]. This mirrors [`Rect`] without requiring widget authors to
+/// depend on its serialization feature.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+pub struct AccessBounds {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+impl AccessBounds {
+    #[must_use]
+    pub fn to_rect(self) -> Rect {
+        Rect::new(self.x0, self.y0, self.x1, self.y1)
+    }
+}
+
+impl From<Rect> for AccessBounds {
+    fn from(value: Rect) -> Self {
+        Self {
+            x0: value.x0,
+            y0: value.y0,
+            x1: value.x1,
+            y1: value.y1,
+        }
+    }
+}
+
 /// Editable-text selection in the widget's native UTF-8 document space.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AccessibleTextSelection {
     pub anchor: usize,
     pub focus: usize,

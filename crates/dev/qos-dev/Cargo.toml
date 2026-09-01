@@ -1,0 +1,29 @@
+[package]
+name = "qos-dev"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Developer workflow for creating qOS applications"
+
+[[bin]]
+name = "qos-dev"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+fluent.workspace = true
+fluent-syntax.workspace = true
+libc.workspace = true
+notify.workspace = true
+pkg = { path = "../../packaging/pkg" }
+serde_json.workspace = true
+syn = { version = "2.0", features = ["full"] }
+tempfile.workspace = true
+toml.workspace = true
+qos-ui-graph = { path = "../ui-graph" }
+qos-headless-schema = { path = "../headless-schema" }
+
+[lints]
+workspace = true

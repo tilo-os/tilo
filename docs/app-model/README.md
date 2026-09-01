@@ -5,6 +5,12 @@ and the shared runtime itself — as a signed, content-addressed bundle called
 a `.qpkg`. This directory documents everything an outside publisher needs to
 build one, ship it, and expect it to run.
 
+For the shortest path from an idea to a native app, start with
+[`app-development.md`](../app-development.md). It covers `qos-dev new`, the
+edit/restart and test/inspection loop, the standard live/headless lifecycle,
+the professional-widget quality bar, and the app-aware `qos-dev package`
+command that builds, signs, verifies, and publishes a `.qpkg`.
+
 ## The promise
 
 You give qOS a manifest and a payload. In return:
