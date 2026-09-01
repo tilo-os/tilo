@@ -130,8 +130,6 @@ Still gated by a missing authority, guest component, upstream limitation, or
 hardware:
 
 - portal file drives, file drag/drop, and ordinary app network egress;
-- SPICE automatic Windows resolution changes (Windows vdagent is not yet on
-  the qOS guest-tools image);
 - simultaneous apps on one FreeRDP RAIL connection;
 - production 3D acceleration on a single non-partitionable GPU; and
 - native RAIL itself on client Windows releases where the unsupported host
