@@ -1,0 +1,262 @@
+#!/usr/bin/bash
+# Narrow owner-side operations for qOS's singleton Windows appliance.
+#
+# `import-iso` deliberately consumes fd 0.  The caller must duplicate the
+# descriptor obtained from qOS's file portal onto stdin before invoking pkexec;
+# no pathname, URI, or file-picker result is accepted on this privileged
+# boundary.  `recovery-start` starts only the known singleton and mints a
+# root-owned, short-lived proof consumed by the unprivileged recovery viewer
+# through a second, equally narrow pkexec action.
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+readonly ROOT='/var/lib/qos/windows'
+readonly PROVISION='/usr/libexec/qos-windows-provision'
+readonly VM_CONTROL='/usr/libexec/qos-windows-vm-control'
+readonly RECOVERY_ROOT='/run/qos/windows-recovery'
+# Windows installation media is normally much smaller.  This deliberately
+# exceeds current media while bounding a malicious portal descriptor before it
+# can consume the appliance state volume.
+readonly MAX_ISO_BYTES=21474836480
+
+die() { printf '%s\n' "qos-windows-owner: $*" >&2; exit 1; }
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  qos-windows-owner status
+  pkexec /usr/libexec/qos-windows-owner import-iso < portal-selected-windows.iso
+  pkexec /usr/libexec/qos-windows-owner recovery-start
+  pkexec /usr/libexec/qos-windows-owner consume-recovery
+
+Only `import-iso`, `recovery-start`, and internal `consume-recovery` are
+privileged actions. The ISO is read from the inherited portal descriptor on
+stdin; this command never accepts a host pathname. `recovery-start` authorises
+only a one-time unprivileged viewer attachment and never opens a desktop as
+root.
+EOF
+}
+
+require_root() { [ "${EUID}" -eq 0 ] || die 'must be invoked by pkexec'; }
+require_exact_action() {
+    [ "$#" -eq 1 ] || { usage; exit 2; }
+    case "$1" in import-iso|recovery-start|consume-recovery) ;; *) usage; exit 2 ;; esac
+}
+
+# Return the pkexec caller only when it is an ordinary numeric account.  This
+# is not the authorisation decision — polkit made that decision — it merely
+# lets root hand the recovery proof back to the same unprivileged session.
+pkexec_caller_uid() {
+    local uid="${PKEXEC_UID:-}"
+    [[ "$uid" =~ ^[1-9][0-9]*$ ]] || die 'recovery must be invoked through pkexec by an active owner'
+    getent passwd "$uid" >/dev/null || die 'pkexec caller no longer exists'
+    printf '%s\n' "$uid"
+}
+
+require_portal_regular_stdin() {
+    [ ! -t 0 ] || die 'stdin must be an inherited portal file descriptor, not a terminal'
+    local type mode size
+    type="$(stat -Lc '%F' /proc/self/fd/0 2>/dev/null)" || die 'cannot inspect portal descriptor'
+    [ "$type" = 'regular file' ] || die 'portal descriptor must name a regular file'
+    mode="$(stat -Lc '%a' /proc/self/fd/0 2>/dev/null)" || die 'cannot inspect portal descriptor mode'
+    # This is descriptive defence in depth: the qOS portal gives us an open
+    # descriptor, and the copy below never reopens a user supplied pathname.
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die 'portal descriptor has an invalid mode'
+    size="$(stat -Lc '%s' /proc/self/fd/0 2>/dev/null)" || die 'cannot inspect portal descriptor size'
+    [[ "$size" =~ ^[0-9]+$ ]] || die 'portal descriptor has an invalid size'
+    [ "$size" -gt 0 ] || die 'Windows ISO is empty'
+    [ "$size" -le "$MAX_ISO_BYTES" ] || die "Windows ISO exceeds the $MAX_ISO_BYTES byte limit"
+    printf '%s\n' "$size"
+}
+
+validate_optical_image() {
+    local image="$1"
+    # `isoinfo` validates ISO9660 descriptors.  Windows media may instead use
+    # UDF (or an ISO/UDF bridge), for which udfinfo is the authoritative parser.
+    # Do not accept an arbitrary regular file merely because it has .iso in a
+    # user-visible name.
+    if isoinfo -d -i "$image" >/dev/null 2>&1; then
+        return 0
+    fi
+    if udfinfo "$image" >/dev/null 2>&1; then
+        return 0
+    fi
+    die 'portal file is neither a readable ISO9660 nor UDF optical image'
+}
+
+import_iso() {
+    require_root
+    [ -x "$PROVISION" ] || die 'singleton provisioning machinery is not installed'
+    command -v isoinfo >/dev/null || die 'ISO9660 validator is not installed'
+    command -v udfinfo >/dev/null || die 'UDF validator is not installed'
+    local expected_size actual_size temporary staged digest
+    expected_size="$(require_portal_regular_stdin)"
+
+    # This directory is root-only until the established provisioner changes
+    # the appliance state directory to its documented owner-readable mode.
+    install -d -m 0700 -o root -g root "$ROOT"
+    umask 077
+    temporary="$(mktemp "$ROOT/.portal-iso.XXXXXX")"
+    staged=''
+    cleanup() {
+        [ -z "${temporary:-}" ] || rm -f -- "$temporary"
+        [ -z "${staged:-}" ] || rm -f -- "$staged"
+    }
+    trap cleanup EXIT HUP INT TERM
+
+    # Read the descriptor directly.  `head` caps the write even if a file is
+    # concurrently extended; comparing its original regular-file length also
+    # rejects a nonzero inherited offset or truncated stream.
+    head -c "$((MAX_ISO_BYTES + 1))" <&0 > "$temporary"
+    actual_size="$(stat -Lc '%s' "$temporary")"
+    [ "$actual_size" -eq "$expected_size" ] || die 'portal descriptor changed or was not read from its beginning'
+    [ "$actual_size" -le "$MAX_ISO_BYTES" ] || die "Windows ISO exceeds the $MAX_ISO_BYTES byte limit"
+    validate_optical_image "$temporary"
+    sync -f "$temporary"
+    digest="$(sha256sum "$temporary" | awk '{print $1}')"
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die 'could not hash staged Windows ISO'
+    staged="$ROOT/.portal-$digest.iso"
+    [ ! -e "$staged" ] || die 'a prior portal import is still being handled; do not retry concurrently'
+    # Same-directory rename makes only a complete, validated image visible to
+    # the existing provisioner.  The user never gets a path to this file.
+    mv -- "$temporary" "$staged"
+    temporary=''
+    "$PROVISION" prepare --iso "$staged"
+    rm -f -- "$staged"
+    staged=''
+    trap - EXIT HUP INT TERM
+    printf '%s\n' '{"result":"prepared","next":"open_setup"}'
+}
+
+recovery_start() {
+    require_root
+    [ -x "$VM_CONTROL" ] || die 'singleton VM controller is not installed'
+    [ -f "$ROOT/system.qcow2" ] && [ -f "$ROOT/domain.uuid" ] \
+        || die 'Windows is not provisioned; select installation media first'
+    local uid token temporary expiry
+    uid="$(pkexec_caller_uid)"
+    "$VM_CONTROL" start
+    # This directory is neither writable nor searchable by the desktop user.
+    # A viewer has to ask the root helper to consume the proof, so it cannot
+    # forge a file/flag or replay a previous owner authorisation.
+    install -d -m 0700 -o root -g root "$RECOVERY_ROOT"
+    token="$RECOVERY_ROOT/$uid"
+    temporary="$RECOVERY_ROOT/.${uid}.$$.tmp"
+    expiry="$(( $(date +%s) + 120 ))"
+    umask 077
+    printf '%s\n' "$expiry" > "$temporary"
+    chown root:root "$temporary"
+    chmod 0600 "$temporary"
+    mv -f -- "$temporary" "$token"
+    printf '%s\n' '{"result":"recovery_started","next":"open_recovery_viewer"}'
+}
+
+consume_recovery() {
+    require_root
+    local uid token consumed expiry now
+    uid="$(pkexec_caller_uid)"
+    token="$RECOVERY_ROOT/$uid"
+    consumed="$RECOVERY_ROOT/.${uid}.$$.consuming"
+    # Same-directory rename is the single-use transition. Exactly one helper
+    # can win it; every later attempt sees no token and is refused.
+    mv -- "$token" "$consumed" 2>/dev/null \
+        || die 'recovery authorisation has already been consumed or expired'
+    trap 'rm -f -- "${consumed:-}"' EXIT HUP INT TERM
+    [ "$(stat -c '%U:%G:%a' "$consumed" 2>/dev/null)" = 'root:root:600' ] \
+        || die 'recovery authorisation has unsafe ownership'
+    IFS= read -r expiry < "$consumed" || die 'recovery authorisation is malformed'
+    [[ "$expiry" =~ ^[0-9]+$ ]] || die 'recovery authorisation is malformed'
+    now="$(date +%s)"
+    [ "$now" -le "$expiry" ] || die 'recovery authorisation has expired'
+    rm -f -- "$consumed"
+    consumed=''
+    trap - EXIT HUP INT TERM
+    printf '%s\n' '{"result":"recovery_authorisation_consumed"}'
+}
+
+status() {
+    # Read-only status is intentionally usable without pkexec.  The appliance
+    # state is group-readable by the normal qOS owner; callers without that
+    # ordinary read access receive a typed unavailable result, never a guess.
+    exec python3 - <<'PY'
+import json
+import os
+import stat
+
+state_path = "/var/lib/qos/windows/session/state.json"
+result = {
+    "schema_version": 1,
+    "configured": False,
+    "phase": "not_provisioned",
+    "license": "unknown",
+    "catalog_generation": 0,
+    "published_applications": 0,
+    "recovery_available": False,
+}
+try:
+    info = os.stat(state_path, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("state is not a regular file")
+    if info.st_mode & 0o007:
+        raise ValueError("state is world-accessible")
+    descriptor = os.open(state_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if opened.st_dev != info.st_dev or opened.st_ino != info.st_ino:
+            raise ValueError("state changed while being read")
+        source = json.load(handle)
+    if source.get("schema_version") != 1:
+        raise ValueError("unsupported state schema")
+    phase = source.get("phase", "not_provisioned")
+    if isinstance(phase, dict):
+        if len(phase) != 1:
+            raise ValueError("invalid appliance phase")
+        phase = next(iter(phase))
+    if phase not in {"not_provisioned", "installing", "awaiting_guest_bridge", "ready", "repair_required"}:
+        raise ValueError("invalid appliance phase")
+    license_state = source.get("license", "unknown")
+    if isinstance(license_state, dict):
+        if len(license_state) != 1:
+            raise ValueError("invalid licence state")
+        license_state = next(iter(license_state))
+    if license_state not in {"unknown", "digitally_activated", "product_key_activated", "organisation_managed", "evaluation", "unlicensed"}:
+        raise ValueError("invalid licence state")
+    generation = source.get("catalog_generation", 0)
+    if not isinstance(generation, int) or generation < 0:
+        raise ValueError("invalid catalogue generation")
+    catalog = source.get("cached_catalog") or {}
+    applications = catalog.get("applications", []) if isinstance(catalog, dict) else []
+    if not isinstance(applications, list):
+        raise ValueError("invalid cached catalogue")
+    result.update({
+        "configured": phase != "not_provisioned",
+        "phase": phase,
+        "license": license_state,
+        "catalog_generation": generation,
+        "published_applications": len(applications),
+        "recovery_available": phase != "not_provisioned",
+    })
+except FileNotFoundError:
+    pass
+except (OSError, ValueError, json.JSONDecodeError) as error:
+    result["phase"] = "unavailable"
+    result["detail"] = str(error)
+print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+case "${1:-}" in
+    status)
+        [ "$#" -eq 1 ] || { usage; exit 2; }
+        status
+        ;;
+    import-iso|recovery-start|consume-recovery)
+        require_exact_action "$@"
+        case "$1" in
+            import-iso) import_iso ;;
+            recovery-start) recovery_start ;;
+            consume-recovery) consume_recovery ;;
+        esac
+        ;;
+    -h|--help|'') usage ;;
+    *) usage >&2; exit 2 ;;
+esac
