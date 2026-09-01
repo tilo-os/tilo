@@ -36,19 +36,32 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::format::bytes as format_bytes;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::widget::{TextInput, TextInputKind};
 
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
 use crate::model::{Column, EditMode, HexModel};
-use crate::portal::{self, PortalChannel, PortalOutcome};
 use crate::search::{self, SearchKind};
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
+
+fn file_open_request() -> PickRequest {
+    PickRequest::open("Open file", "Open")
+        .thread_name("hex-portal-open")
+        .filter(FileFilter::all_files())
+}
+
+fn file_save_request(suggested_name: &str) -> PickRequest {
+    PickRequest::save("Save file", "Save", suggested_name)
+        .thread_name("hex-portal-save")
+        .filter(FileFilter::all_files())
+}
 
 /// Which transient prompt, if any, is capturing keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,6 +168,7 @@ impl HexView {
             dirty: true,
             overlay: Overlay::None,
             search_input: TextInput::local()
+                .with_kind(TextInputKind::Code)
                 .with_id("hex.search")
                 .with_placeholder("search…")
                 .with_plain_chrome()
@@ -163,6 +177,7 @@ impl HexView {
             matches: Vec::new(),
             match_idx: None,
             goto_input: TextInput::local()
+                .with_kind(TextInputKind::Number)
                 .with_id("hex.goto")
                 .with_placeholder("0x… or decimal")
                 .with_plain_chrome()
@@ -250,7 +265,7 @@ impl HexView {
     /// path, exactly as the worker thread would deliver it. Lets the e2e suite
     /// exercise the production open flow without a live host file chooser.
     pub fn inject_open_outcome_for_test(&mut self, outcome: PortalOutcome) {
-        self.open_rx = Some(portal::inject_for_test(outcome));
+        self.open_rx = Some(ui::portal::inject_for_test(outcome));
     }
 
     /// Place the initial cursor at `offset`. Useful for opening a file
@@ -306,8 +321,12 @@ impl HexView {
     /// on peers). The heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::HexEditorAction) {
-        self.actions
-            .dispatch(doc, crate::actions::HEX_EDITOR_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::HEX_EDITOR_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.HexEditor", "Hex Editor", action),
+        );
     }
 
     // --- file open / save (through the host portal) --------------------
@@ -316,7 +335,7 @@ impl HexView {
     /// flight. The pick arrives over `open_rx`, drained in `sync`.
     fn begin_open(&mut self) {
         if self.open_rx.is_none() {
-            self.open_rx = Some(portal::request_open());
+            self.open_rx = Some(file_open_request().send());
         }
     }
 
@@ -326,7 +345,7 @@ impl HexView {
         if let Some(path) = self.path.clone() {
             self.write_to(&path);
         } else if self.save_rx.is_none() {
-            self.save_rx = Some(portal::request_save(&self.suggested_name()));
+            self.save_rx = Some(file_save_request(&self.suggested_name()).send());
         }
     }
 
@@ -347,7 +366,13 @@ impl HexView {
             Ok(()) => {
                 self.model.clear_dirty();
                 self.path = Some(path.to_path_buf());
-                self.flash(format!("Saved {}", human_size(self.model.len())), false);
+                self.flash(
+                    format!(
+                        "Saved {}",
+                        format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX))
+                    ),
+                    false,
+                );
             }
             Err(e) => self.flash(format!("Save failed: {e}"), true),
         }
@@ -372,7 +397,13 @@ impl HexView {
                 self.matches.clear();
                 self.match_idx = None;
                 self.flush(doc);
-                self.flash(format!("Opened {}", human_size(n)), false);
+                self.flash(
+                    format!(
+                        "Opened {}",
+                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
+                    ),
+                    false,
+                );
             }
             Err(e) => self.flash(format!("Open failed: {e}"), true),
         }
@@ -1454,6 +1485,13 @@ impl HexView {
 
     /// Route an event into the active shared field, keeping only byte-search
     /// policy (kind cycling / match navigation / offset commit) in this app.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "OverlayLayoutCtx bundles a `&mut Option<NodeId>` and is built fresh at the \
+                  single call site purely to move its fields on into the active field's \
+                  Widget::handle_event; it isn't Copy and taking it by reference would still \
+                  need to move the mutable reference back out, so by-value is the real shape"
+    )]
     fn handle_overlay_event(
         &mut self,
         event: &WindowEvent,
@@ -1622,6 +1660,8 @@ impl Widget for HexView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1636,7 +1676,9 @@ impl Widget for HexView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1754,10 +1796,15 @@ impl Widget for HexView {
                 self.dirty = true;
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: ke, .. } => {
-                if ke.state == ElementState::Pressed {
-                    self.handle_key_event(ke, ctrl, shift, state, handled);
-                }
+            WindowEvent::KeyboardInput {
+                event:
+                    ke @ winit::event::KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.handle_key_event(ke, ctrl, shift, state, handled);
             }
             _ => {}
         }
@@ -1871,59 +1918,95 @@ impl HexView {
 
         // Empty state: the only meaningful key action is opening a file.
         if !self.has_file {
-            if ctrl
-                && let Key::Character(c) = key
-                && c.eq_ignore_ascii_case("o")
-            {
-                self.begin_open();
-                *handled = true;
-            }
+            self.handle_empty_state_key(key, ctrl, handled);
             return;
         }
 
-        // Global chords.
-        if ctrl && let Key::Character(c) = key {
-            match c.as_str() {
-                "o" | "O" => {
-                    self.begin_open();
-                    *handled = true;
-                    return;
-                }
-                "s" | "S" => {
-                    self.begin_save();
-                    *handled = true;
-                    return;
-                }
-                "f" | "F" => {
-                    self.overlay = Overlay::Search;
-                    self.search_input.set_focus(true);
-                    self.search_input
-                        .set_cursor_pos(self.search_input.value().len());
-                    self.recompute_matches();
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                "g" | "G" => {
-                    self.overlay = Overlay::Goto;
-                    self.goto_input.set_focus(true);
-                    self.goto_input
-                        .set_cursor_pos(self.goto_input.value().len());
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
-                "a" | "A" => {
-                    self.model.select_all();
-                    self.persist(state);
-                    *handled = true;
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_global_chord(key, ctrl, state, handled) {
+            return;
         }
 
-        let mut moved = true;
+        let moved = self.handle_navigation_key(key, ctrl, shift);
+        if moved {
+            let (row, _) = self.model.cursor_cell();
+            self.model.scroll_into_view(row, self.visible_rows);
+            self.persist(state);
+            *handled = true;
+        }
+    }
+
+    /// The only meaningful key action while no file is open. Part of
+    /// [`Self::handle_key_event`].
+    fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
+        if ctrl
+            && let Key::Character(c) = key
+            && c.eq_ignore_ascii_case("o")
+        {
+            self.begin_open();
+            *handled = true;
+        }
+    }
+
+    /// Ctrl+letter global chords. Returns `true` if one matched (the caller
+    /// should stop dispatching this key further). Part of
+    /// [`Self::handle_key_event`].
+    fn handle_global_chord(
+        &mut self,
+        key: &Key,
+        ctrl: bool,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let Key::Character(c) = key else {
+            return false;
+        };
+        if !ctrl {
+            return false;
+        }
+        match c.as_str() {
+            "o" | "O" => {
+                self.begin_open();
+                *handled = true;
+                true
+            }
+            "s" | "S" => {
+                self.begin_save();
+                *handled = true;
+                true
+            }
+            "f" | "F" => {
+                self.overlay = Overlay::Search;
+                self.search_input.set_focus(true);
+                self.search_input
+                    .set_cursor_pos(self.search_input.value().len());
+                self.recompute_matches();
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            "g" | "G" => {
+                self.overlay = Overlay::Goto;
+                self.goto_input.set_focus(true);
+                self.goto_input
+                    .set_cursor_pos(self.goto_input.value().len());
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            "a" | "A" => {
+                self.model.select_all();
+                self.persist(state);
+                *handled = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Cursor movement / mode keys. Returns whether the cursor moved (or a
+    /// byte was edited), so the caller knows to scroll it into view and
+    /// persist. Part of [`Self::handle_key_event`].
+    fn handle_navigation_key(&mut self, key: &Key, ctrl: bool, shift: bool) -> bool {
         match key {
             Key::Named(NamedKey::ArrowLeft) => self.model.move_left(shift),
             Key::Named(NamedKey::ArrowRight) => self.model.move_right(shift),
@@ -1965,17 +2048,11 @@ impl HexView {
                 self.model.delete_at_cursor();
             }
             Key::Character(c) => {
-                moved = self.handle_char(c.as_str());
+                return self.handle_char(c.as_str());
             }
-            _ => moved = false,
+            _ => return false,
         }
-
-        if moved {
-            let (row, _) = self.model.cursor_cell();
-            self.model.scroll_into_view(row, self.visible_rows);
-            self.persist(state);
-            *handled = true;
-        }
+        true
     }
 
     /// Dispatch a printable character to the active column / mode. Also
@@ -2119,22 +2196,6 @@ impl GridMetrics {
 }
 
 // --- small drawing utilities ------------------------------------------
-
-/// A compact human byte count for the save/open flash (`512 B`, `4.2 kB`).
-fn human_size(n: usize) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{n} B")
-    } else {
-        format!("{v:.1} {}", UNITS[u])
-    }
-}
 
 fn with_alpha(c: Color, a: u8) -> Color {
     let rgba = c.to_rgba8();

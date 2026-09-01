@@ -21,13 +21,23 @@ path = "src/main.rs"
 # is a file-pick plus metadata probe; it needs no GStreamer, so it must never be
 # gated behind the decode/export features.
 [dependencies]
-ui = { path = "../../ui", features = ["portal"] }
+# `gpu-video` brings in the planar upload + YUV shader the compositor
+# paints hardware-decoded frames with. Without it every decoded frame
+# would have to be converted to RGBA on the CPU first.
+ui = { path = "../../ui", features = ["portal", "gpu-video"] }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tracing-subscriber.workspace = true
+# Load-bearing here even though a workspace-wide sweep dropped them from the
+# other media apps: `tracing::` appears in five modules (decode, title
+# rendering, the media source, audio and the app itself) and two files return
+# `anyhow::Result`. Dropping them fails the build outright, not merely a lint —
+# so if a future sweep removes these again, the uses have to go first.
+tracing.workspace = true
+anyhow.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -39,20 +49,47 @@ gstreamer = { workspace = true, optional = true }
 media = { path = "../../crates/media" }
 gstreamer-app = { version = "0.24", optional = true }
 
+# The GStreamer encode/decode tests stand up real pipelines. openh264 is
+# pure C and misbehaves when several encoders are built at once in one
+# process, so every test that encodes or decodes shares a `serial` group
+# rather than relying on the caller passing --test-threads=1.
+[dev-dependencies]
+serial_test.workspace = true
+# The compose probe example writes the frames it renders, so a person can
+# look at what the compositor produced rather than only at pixel asserts.
+png.workspace = true
+
 [features]
-# The preview canvas decoding real frames is the editor's core, so `decode`
-# ships on by default: the preview decodes the real frame of the clip under the
-# playhead through the shared `media::MediaEngine` (GStreamer `playbin`). The
-# `--shots` path renders the representative composited frame at runtime (an
-# un-hydrated reference always falls back to it), so the screenshot path stays
-# hermetic with the decoder compiled in. Full `gst` export (encode + mux) stays
-# opt-in — it is heavy and off the normal preview path.
-default = ["decode"]
-# Real decode for the preview canvas, via the shared `media::MediaEngine`.
-decode = ["media/decode"]
-# Real export through GStreamer (encode + mux to a real file). Heavier; needs
-# the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
-gst = ["dep:gstreamer", "dep:gstreamer-app"]
+# Shared-runtime build, as the rest of the fleet has adopted: links the
+# toolkit as a dylib so an app stays small.
+thin = ["dep:runtime-dylib"]
+# A normally-built editor decodes real frames *and* writes a real file, which
+# is what the other media apps do (`music`, `tube`, `camera` and `chat` all
+# ship their GStreamer feature on by default) and what an editor is for: one
+# that cannot export is a previewer.
+#
+# This costs nothing extra to build. `decode` is default and already pulls the
+# gstreamer stack, and `gst` adds only `media/encode`, whose own dependency
+# (`dep:gstreamer`) is a strict subset of what `decode` pulls — so the system
+# requirement is unchanged. Export used to be opt-in on the grounds that it
+# "needs the gstreamer-1.0 dev headers", but the default build has needed them
+# all along; the gate bought nothing and cost the user their export button.
+#
+# `--shots` and the tests stay hermetic at *runtime*, not by feature-gating:
+# the shots path composites the representative frame (an un-hydrated reference
+# always falls back to it) and never starts an encoder.
+default = ["decode", "gst"]
+# Real decode for the preview canvas, via the shared `media::MediaEngine`, and
+# real audio peaks for compressed sources (`waveform`), which pull PCM through
+# an `appsink` the engine does not expose. `media/decode` already links the
+# gstreamer stack in this configuration, so naming the crates directly adds no
+# new system requirement — it only lets this crate talk to the pipeline itself.
+decode = ["media/decode", "dep:gstreamer", "dep:gstreamer-app"]
+# Real export through GStreamer: encode + mux to a real file. On by default
+# (see above). Kept as a separate feature so a build that genuinely wants a
+# preview-only editor can still ask for `--no-default-features --features
+# decode`.
+gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
 
 [lints]
 workspace = true

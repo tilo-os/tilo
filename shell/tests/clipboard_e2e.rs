@@ -29,8 +29,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use rand_core::OsRng;
+use threshold_identity::ThresholdIdentity;
+use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
@@ -126,14 +129,88 @@ impl Compositor {
             &state_path,
         )
         .expect("seed the clipboard e2e desktop");
+        let identity_root = Self::seed_identity(&runtime_dir);
 
+        let mut child = Self::spawn_compositor(
+            home,
+            size,
+            &runtime_dir,
+            &control_socket,
+            &state_path,
+            &identity_root,
+        );
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let rx = Self::drain_log_pipes(&mut child, &log);
+        let found = Self::wait_for_sockets(&rx, &mut child, &log);
+
+        let this = Self {
+            child,
+            size,
+            wayland_socket: runtime_dir.join(&found["public"]),
+            privileged_socket: runtime_dir.join(&found["privileged"]),
+            control_socket: PathBuf::from(&found["control"]),
+            runtime_dir,
+            log: Arc::clone(&log),
+        };
+        assert!(
+            this.wayland_socket.exists(),
+            "compositor announced {} but no socket exists there",
+            this.wayland_socket.display()
+        );
+        assert!(
+            this.privileged_socket.exists(),
+            "compositor announced a privileged socket at {} but none exists",
+            this.privileged_socket.display()
+        );
+        this
+    }
+
+    /// Give this desktop fixture an already-completed identity ceremony.
+    /// Clipboard tests exercise normal desktop clients; leaving the fixture
+    /// identity empty correctly activates OOBE, which must withhold focus.
+    fn seed_identity(runtime_dir: &Path) -> PathBuf {
+        let identity_dir = runtime_dir.join("config/qos/identity");
+        let identity = ThresholdIdentity::bootstrap_single_device(&mut OsRng)
+            .expect("create clipboard fixture identity");
+        let record = IdentityRecord::from_threshold_identity(
+            &identity,
+            "Clipboard test",
+            [128, 128, 128],
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("encode clipboard fixture identity");
+        let bytes = record
+            .to_json_bytes()
+            .expect("serialize clipboard fixture identity");
+        let provider = runtime_identity::BrokerFileProvider::new(&identity_dir);
+        runtime_identity::import_identity_with_provider(
+            &identity_dir,
+            "primary",
+            &bytes,
+            &provider,
+        )
+        .expect("persist clipboard fixture identity");
+        runtime_dir.join("identity-root")
+    }
+
+    /// Spawn the `shell` binary under test against a throwaway `HOME`/XDG env,
+    /// pointed at the fixture's runtime dir and sockets. Split out of
+    /// [`Self::start_with`] to keep it short.
+    fn spawn_compositor(
+        home: Option<&Path>,
+        size: (i32, i32),
+        runtime_dir: &Path,
+        control_socket: &Path,
+        state_path: &Path,
+        identity_root: &Path,
+    ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
             command.env("HOME", home).env("QOS_USER_HOME", home);
         }
-        let mut child = command
+        command
             .args(["--mode", "native", "--backend", "headless"])
-            .env("XDG_RUNTIME_DIR", &runtime_dir)
+            .env("XDG_RUNTIME_DIR", runtime_dir)
             // Point every XDG dir at the throwaway runtime dir so the test neither
             // reads nor writes the developer's real desktop, and each run starts from
             // the same known tree.
@@ -145,8 +222,9 @@ impl Compositor {
             // collaborative mount, and must not win over the fixture home as
             // the hosted Files app's initial directory.
             .env("QOS_WORKSPACE_ROOTS", "")
-            .env("QOS_STATE_PATH", &state_path)
-            .env("QOS_TEST_CONTROL", &control_socket)
+            .env("QOS_STATE_PATH", state_path)
+            .env("QOS_IDENTITY_ROOT", identity_root)
+            .env("QOS_TEST_CONTROL", control_socket)
             .env("NIRIOS_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
             // smithay logs selection/drag decisions at debug; "denying drag from
             // client without implicit grab" is what distinguishes a rejected drag from
@@ -163,16 +241,22 @@ impl Compositor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn the compositor under test");
+            .expect("spawn the compositor under test")
+    }
 
-        let log = Arc::new(Mutex::new(Vec::<String>::new()));
-
-        // Both pipes must be drained continuously — a full 64 KiB pipe blocks the
-        // compositor mid-write, surfacing as an unrelated timeout much later.
+    /// Drain the compositor's stdout/stderr pipes on background threads —
+    /// unread output blocks the compositor mid-write, surfacing as an
+    /// unrelated timeout much later. Returns the channel that
+    /// [`Self::wait_for_sockets`] reads the announced socket paths from.
+    /// Split out of [`Self::start_with`] to keep it short.
+    fn drain_log_pipes(
+        child: &mut Child,
+        log: &Arc<Mutex<Vec<String>>>,
+    ) -> mpsc::Receiver<(String, String)> {
         // `tracing` goes to stdout, the compositor's `eprintln!`s to stderr;
         // missing either can hide the one line that explains a failure.
         let stdout = child.stdout.take().expect("compositor stdout");
-        let stdout_log = Arc::clone(&log);
+        let stdout_log = Arc::clone(log);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Ok(mut l) = stdout_log.lock() {
@@ -183,7 +267,7 @@ impl Compositor {
 
         let (tx, rx) = mpsc::channel::<(String, String)>();
         let stderr = child.stderr.take().expect("compositor stderr");
-        let log_writer = Arc::clone(&log);
+        let log_writer = Arc::clone(log);
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 for (marker, key) in [
@@ -206,7 +290,17 @@ impl Compositor {
                 }
             }
         });
+        rx
+    }
 
+    /// Block until all three sockets (public, privileged, control) have been
+    /// announced, or panic with the compositor's log on timeout. Split out of
+    /// [`Self::start_with`] to keep it short.
+    fn wait_for_sockets(
+        rx: &mpsc::Receiver<(String, String)>,
+        child: &mut Child,
+        log: &Arc<Mutex<Vec<String>>>,
+    ) -> HashMap<String, String> {
         let mut found: HashMap<String, String> = HashMap::new();
         let started = Instant::now();
         while found.len() < 3 {
@@ -222,37 +316,17 @@ impl Compositor {
                 );
             }
         }
-
-        let this = Self {
-            child,
-            size,
-            wayland_socket: runtime_dir.join(&found["public"]),
-            privileged_socket: runtime_dir.join(&found["privileged"]),
-            control_socket: PathBuf::from(&found["control"]),
-            runtime_dir,
-            log: Arc::clone(&log),
-        };
-        assert!(
-            this.wayland_socket.exists(),
-            "compositor announced {:?} but no socket exists there",
-            this.wayland_socket
-        );
-        assert!(
-            this.privileged_socket.exists(),
-            "compositor announced a privileged socket at {:?} but none exists",
-            this.privileged_socket
-        );
-        this
+        found
     }
 
-    fn control(&self, request: serde_json::Value) -> serde_json::Value {
+    fn control(&self, request: &serde_json::Value) -> serde_json::Value {
         use std::io::Write;
         let mut stream =
             UnixStream::connect(&self.control_socket).expect("connect to the test-control socket");
         stream
             .set_read_timeout(Some(DEADLINE))
             .expect("set control read timeout");
-        let mut line = serde_json::to_vec(&request).expect("encode control request");
+        let mut line = serde_json::to_vec(request).expect("encode control request");
         line.push(b'\n');
         stream.write_all(&line).expect("write control request");
         let mut reader = BufReader::new(stream);
@@ -265,7 +339,7 @@ impl Compositor {
     }
 
     fn chrome_copy(&self, text: &str, primary: bool) {
-        let resp = self.control(serde_json::json!({
+        let resp = self.control(&serde_json::json!({
             "op": "clipboard_copy", "text": text, "primary": primary,
         }));
         assert!(
@@ -275,7 +349,7 @@ impl Compositor {
     }
 
     fn chrome_paste(&self, primary: bool) -> Option<String> {
-        let resp = self.control(serde_json::json!({
+        let resp = self.control(&serde_json::json!({
             "op": "clipboard_paste", "primary": primary,
         }));
         let clipboard = resp
@@ -301,7 +375,7 @@ impl Compositor {
     /// messages. A focus or adoption problem is unreadable from "timed out";
     /// it is obvious from the tab list.
     fn debug_state(&self) -> String {
-        let resp = self.control(serde_json::json!({"op": "state_dump"}));
+        let resp = self.control(&serde_json::json!({"op": "state_dump"}));
         let Some(tree) = resp.get("state").and_then(|s| s.get("workspace_tree")) else {
             return format!("<no workspace_tree in {resp}>");
         };
@@ -312,10 +386,12 @@ impl Compositor {
                 tabs.push(foreign.to_string());
             }
             if value.get("window_groups").is_some() {
-                groups += value
-                    .get("window_groups")
-                    .and_then(|g| g.as_array())
-                    .map_or(0, std::vec::Vec::len);
+                groups = groups.saturating_add(
+                    value
+                        .get("window_groups")
+                        .and_then(|g| g.as_array())
+                        .map_or(0, std::vec::Vec::len),
+                );
             }
         });
         let mut all_tabs = Vec::new();
@@ -339,16 +415,16 @@ impl Compositor {
     /// Open a client connection on the public socket — the one a sandboxed app
     /// gets, and the only one the launcher bind-mounts into a sandbox.
     fn connect(&self) -> Connection {
-        self.connect_to(&self.wayland_socket)
+        Self::connect_to(&self.wayland_socket)
     }
 
     fn connect_privileged(&self) -> Connection {
-        self.connect_to(&self.privileged_socket)
+        Self::connect_to(&self.privileged_socket)
     }
 
-    fn connect_to(&self, path: &Path) -> Connection {
+    fn connect_to(path: &Path) -> Connection {
         let stream = UnixStream::connect(path)
-            .unwrap_or_else(|e| panic!("connect to the compositor socket {path:?}: {e}"));
+            .unwrap_or_else(|e| panic!("connect to the compositor socket {}: {e}", path.display()));
         Connection::from_socket(stream).expect("wayland connection from socket")
     }
 }
@@ -392,6 +468,12 @@ fn next_id() -> u64 {
 // Wayland test client
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool tracks an independent, orthogonal piece of Wayland protocol state \
+              (documented individually below), not a set of mutually exclusive variants an \
+              enum would express better"
+)]
 struct ClientState {
     globals: Vec<(String, u32, u32)>,
     compositor: Option<WlCompositor>,
@@ -597,9 +679,9 @@ impl TestClient {
                     self.step(&format!("receives pointer input at ({x}, {y})"));
                     return Some((f64::from(x), f64::from(y)));
                 }
-                x += STEP;
+                x = x.saturating_add(STEP);
             }
-            y += STEP;
+            y = y.saturating_add(STEP);
         }
         None
     }
@@ -607,13 +689,14 @@ impl TestClient {
     /// Attach an opaque `wl_shm` buffer and commit, so the compositor has real
     /// content to size and composite the tile from.
     fn attach_buffer(&mut self, width: i32, height: i32) {
+        use std::os::unix::io::AsFd;
         let shm = self
             .state
             .shm
             .clone()
             .expect("compositor advertises wl_shm");
-        let stride = width * 4;
-        let len = (stride * height) as usize;
+        let stride = width.saturating_mul(4);
+        let len = usize::try_from(stride.saturating_mul(height)).unwrap_or(0);
 
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
@@ -635,8 +718,12 @@ impl TestClient {
             file.write_at(&pixels, 0).expect("fill the shm pool");
         }
 
-        use std::os::unix::io::AsFd;
-        let pool = shm.create_pool(file.as_fd(), len as i32, &self.qh, ());
+        let pool = shm.create_pool(
+            file.as_fd(),
+            i32::try_from(len).unwrap_or(i32::MAX),
+            &self.qh,
+            (),
+        );
         let buffer = pool.create_buffer(0, width, height, stride, Format::Argb8888, &self.qh, ());
         let surface = self.surface.clone().expect("surface exists once mapped");
         surface.attach(Some(&buffer), 0, 0);
@@ -1059,7 +1146,6 @@ impl Dispatch<WlDataDevice, ()> for ClientState {
             wl_data_device::Event::Drop => {
                 state.dnd_dropped = true;
             }
-            wl_data_device::Event::Leave => {}
             _ => {}
         }
     }
@@ -1551,7 +1637,7 @@ impl Compositor {
     /// Open the next window of `app_id` in its own group, so two client windows
     /// can be on screen at once.
     fn place_next_window(&self, app_id: &str) {
-        let resp = self.control(serde_json::json!({
+        let resp = self.control(&serde_json::json!({
             "op": "place_next_window", "app_id": app_id,
         }));
         assert!(
@@ -1561,18 +1647,18 @@ impl Compositor {
     }
 
     fn pointer_move(&self, x: f64, y: f64) {
-        let resp = self.control(serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
+        let resp = self.control(&serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
         assert!(resp.get("ok").is_some(), "pointer_move failed: {resp:?}");
     }
 
     fn pointer_button(&self, pressed: bool) {
-        let resp = self.control(serde_json::json!({"op": "pointer_button", "pressed": pressed}));
+        let resp = self.control(&serde_json::json!({"op": "pointer_button", "pressed": pressed}));
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
     }
 
     /// The on-screen rect `[x, y, w, h]` of a named chrome target this frame.
     fn named_rect(&self, name: &str) -> Option<[f64; 4]> {
-        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        let resp = self.control(&serde_json::json!({"op": "list_targets"}));
         let targets = resp.get("targets")?.as_array()?;
         targets.iter().find_map(|t| {
             (t.get("name")?.as_str()? == name).then(|| {
@@ -1605,7 +1691,7 @@ impl Compositor {
     }
 
     fn target_names(&self) -> Vec<String> {
-        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        let resp = self.control(&serde_json::json!({"op": "list_targets"}));
         resp.get("targets")
             .and_then(|t| t.as_array())
             .map(|ts| {
@@ -1617,7 +1703,7 @@ impl Compositor {
     }
 
     fn snapshot(&self, path: &Path) {
-        let resp = self.control(serde_json::json!({"op": "snapshot", "path": path}));
+        let resp = self.control(&serde_json::json!({"op": "snapshot", "path": path}));
         assert!(resp.get("ok").is_some(), "snapshot failed: {resp:?}");
     }
 
@@ -1638,7 +1724,7 @@ const TINY_PNG: [u8; 67] = [
 ];
 
 fn files_tab_is_active(compositor: &Compositor) -> bool {
-    let dump = compositor.control(serde_json::json!({"op": "state_dump"}));
+    let dump = compositor.control(&serde_json::json!({"op": "state_dump"}));
     let mut active = false;
     walk_json(&dump, &mut |v| {
         let (Some(active_tab), Some(tabs)) = (
@@ -1655,6 +1741,118 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
         }
     });
     active
+}
+
+/// Narrow the demo group with the real seam-drag gesture so a client stays
+/// visible while the Files tab is focused (the demo group is laid out at
+/// full output width). Split out of the drag-and-drop tests below to keep
+/// each one short.
+fn narrow_demo_group_for_files(compositor: &Compositor) {
+    const NARROW_BY: f64 = 1100.0;
+    let seam = compositor.named_center("group_resize_handle[0]");
+    compositor.pointer_move(seam.0, seam.1);
+    compositor.pointer_button(true);
+    for i in 1..=10 {
+        compositor.pointer_move(seam.0 - NARROW_BY * (f64::from(i) / 10.0), seam.1);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    compositor.pointer_button(false);
+    std::thread::sleep(Duration::from_millis(800));
+    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-after-resize.png"));
+    assert!(
+        files_tab_is_active(compositor),
+        "the demo group must still show Files after the resize.\n{}",
+        compositor.debug_state()
+    );
+}
+
+/// The row the file manager laid out for `photo.png`, aimed at its
+/// on-screen part since the tile may extend past the left edge. Split out
+/// of the drag-and-drop tests below to keep each one short.
+fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
+    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-before-drag.png"));
+    let [x, y, w, h] = compositor
+        .named_rect("file_row:photo.png")
+        .unwrap_or_else(|| {
+            panic!(
+                "the file manager laid out no row for photo.png; targets: {:?}\n{}",
+                compositor.target_names(),
+                compositor.debug_state()
+            )
+        });
+    let x0 = x.max(0.0);
+    let x1 = (x + w).min(f64::from(compositor.size.0));
+    assert!(
+        x1 > x0 + 20.0,
+        "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
+    );
+    (f64::midpoint(x0, x1), y + h / 2.0)
+}
+
+/// Press on the file row and carry it over to the client in small steps —
+/// crossing the file manager's own drag threshold before the pointer
+/// leaves its tile, so the compositor sees a drag to promote — then wait
+/// for the client to see `enter` with an offer. Split out of the
+/// drag-and-drop tests below to keep each one short.
+fn drag_file_row_onto_client(
+    compositor: &Compositor,
+    target: &mut TestClient,
+    row: (f64, f64),
+    target_point: (f64, f64),
+) {
+    const STEPS: u32 = 12;
+    compositor.pointer_move(row.0, row.1);
+    compositor.pointer_button(true);
+    for i in 1..=STEPS {
+        let t = f64::from(i) / f64::from(STEPS);
+        compositor.pointer_move(
+            row.0 + (target_point.0 - row.0) * t,
+            row.1 + (target_point.1 - row.1) * t,
+        );
+        target.pump();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-mid-drag.png"));
+    let started = Instant::now();
+    while started.elapsed() < DEADLINE {
+        if target.state.dnd_entered && target.state.dnd_offer.is_some() {
+            break;
+        }
+        target.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        target.state.dnd_entered && target.state.dnd_offer.is_some(),
+        "the chrome drag never entered the client's surface (drag from {row:?} to {target_point:?}; \
+         file_view={:?} row_rect={:?}).\nState:\n{}\nCompositor log:\n{}",
+        compositor.named_rect("file_view"),
+        compositor.named_rect("file_row:photo.png"),
+        compositor.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+            .get("files_drag")
+            .map(|v| format!(
+                "files_drag={v} handed_off={}",
+                compositor.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+                    ["files_drag_handed_off"]
+            ))
+            .unwrap_or_default(),
+        compositor.recent_log(),
+    );
+}
+
+/// Release the pointer and wait for the client to see the drop. Split out
+/// of the drag-and-drop tests below to keep each one short.
+fn release_and_wait_for_drop(compositor: &Compositor, target: &mut TestClient) {
+    compositor.pointer_button(false);
+    let started = Instant::now();
+    while started.elapsed() < DEADLINE && !target.state.dnd_dropped {
+        target.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        target.state.dnd_dropped,
+        "the client never saw the drop.\nCompositor log:\n{}",
+        compositor.recent_log()
+    );
 }
 
 /// Drag a file out of the hosted file manager (a widget inside the
@@ -1699,87 +1897,13 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // the client is off-screen; narrow the demo group with the real gesture
     // (drag the seam handle) so the client stays visible while Files is
     // focused.
-    let seam = compositor.named_center("group_resize_handle[0]");
-    compositor.pointer_move(seam.0, seam.1);
-    compositor.pointer_button(true);
-    const NARROW_BY: f64 = 1100.0;
-    for i in 1..=10 {
-        compositor.pointer_move(seam.0 - NARROW_BY * (f64::from(i) / 10.0), seam.1);
-        std::thread::sleep(Duration::from_millis(30));
-    }
-    compositor.pointer_button(false);
-    std::thread::sleep(Duration::from_millis(800));
-    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-after-resize.png"));
-    assert!(
-        files_tab_is_active(&compositor),
-        "the demo group must still show Files after the resize.\n{}",
-        compositor.debug_state()
-    );
+    narrow_demo_group_for_files(&compositor);
     let target_point = target.pointer_target(&compositor);
     // The row the file manager laid out for the fixture file — aimed at
     // its on-screen part, since the tile may extend past the left edge.
-    let row = {
-        compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-before-drag.png"));
-        let [x, y, w, h] = compositor
-            .named_rect("file_row:photo.png")
-            .unwrap_or_else(|| {
-                panic!(
-                    "the file manager laid out no row for photo.png; targets: {:?}\n{}",
-                    compositor.target_names(),
-                    compositor.debug_state()
-                )
-            });
-        let x0 = x.max(0.0);
-        let x1 = (x + w).min(f64::from(compositor.size.0));
-        assert!(
-            x1 > x0 + 20.0,
-            "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
-        );
-        (f64::midpoint(x0, x1), y + h / 2.0)
-    };
+    let row = locate_file_row(&compositor);
 
-    // Press on the row and carry it over to the client in small steps, so
-    // the file manager's own drag threshold is crossed before the pointer
-    // leaves its tile and the compositor sees a drag to promote.
-    compositor.pointer_move(row.0, row.1);
-    compositor.pointer_button(true);
-    const STEPS: usize = 12;
-    for i in 1..=STEPS {
-        let t = i as f64 / STEPS as f64;
-        compositor.pointer_move(
-            row.0 + (target_point.0 - row.0) * t,
-            row.1 + (target_point.1 - row.1) * t,
-        );
-        target.pump();
-        std::thread::sleep(Duration::from_millis(30));
-    }
-    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-mid-drag.png"));
-    {
-        let started = Instant::now();
-        while started.elapsed() < DEADLINE {
-            if target.state.dnd_entered && target.state.dnd_offer.is_some() {
-                break;
-            }
-            target.pump();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            target.state.dnd_entered && target.state.dnd_offer.is_some(),
-            "the chrome drag never entered the client's surface (drag from {row:?} to {target_point:?}; \
-             file_view={:?} row_rect={:?}).\nState:\n{}\nCompositor log:\n{}",
-            compositor.named_rect("file_view"),
-            compositor.named_rect("file_row:photo.png"),
-            compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
-                .get("files_drag")
-                .map(|v| format!(
-                    "files_drag={v} handed_off={}",
-                    compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
-                        ["files_drag_handed_off"]
-                ))
-                .unwrap_or_default(),
-            compositor.recent_log(),
-        );
-    }
+    drag_file_row_onto_client(&compositor, &mut target, row, target_point);
     // The client's accept-mime/action requests from `enter` must reach the
     // compositor before release, or the drop is refused as unaccepted —
     // matching the protocol and what a real client's event loop avoids by
@@ -1804,19 +1928,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
         target.state.dnd_offer_mimes
     );
 
-    compositor.pointer_button(false);
-    {
-        let started = Instant::now();
-        while started.elapsed() < DEADLINE && !target.state.dnd_dropped {
-            target.pump();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            target.state.dnd_dropped,
-            "the client never saw the drop.\nCompositor log:\n{}",
-            compositor.recent_log()
-        );
-    }
+    release_and_wait_for_drop(&compositor, &mut target);
 
     let uris = target.read_dnd_bytes("text/uri-list", None);
     assert_eq!(
@@ -1839,6 +1951,73 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Spawn the real `word-processor` binary against the compositor under test,
+/// draining its stderr onto a background thread. Split out of
+/// [`a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor`]
+/// to keep it short.
+fn spawn_word_processor(
+    compositor: &Compositor,
+    word_processor: &Path,
+    home: &Path,
+) -> (Child, Arc<Mutex<Vec<String>>>) {
+    let socket_name = compositor
+        .wayland_socket
+        .file_name()
+        .expect("socket name")
+        .to_os_string();
+    let mut app = Command::new(word_processor)
+        .env("WAYLAND_DISPLAY", &socket_name)
+        // What the launcher exports for a packaged app; `ui` announces it
+        // as the Wayland app id, which is how the placement above is
+        // matched to this window.
+        .env("QOS_PACKAGE_ID", "dev.qos.word-processor")
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+        .env("XDG_CONFIG_HOME", compositor.runtime_dir.join("app-config"))
+        .env("XDG_DATA_HOME", compositor.runtime_dir.join("app-data"))
+        .env("XDG_CACHE_HOME", compositor.runtime_dir.join("app-cache"))
+        .env("HOME", home)
+        .env_remove("DISPLAY")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the word processor");
+    let app_log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stderr = app.stderr.take().expect("app stderr");
+    let sink = Arc::clone(&app_log);
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if let Ok(mut l) = sink.lock() {
+                l.push(line);
+            }
+        }
+    });
+    (app, app_log)
+}
+
+/// Wait for the word processor's toplevel to be adopted into the tree — the
+/// chrome names every foreign tile it lays out. Split out of
+/// [`a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor`]
+/// to keep it short.
+fn wait_for_word_processor_mapped(compositor: &Compositor, app_log: &Arc<Mutex<Vec<String>>>) {
+    let started = Instant::now();
+    loop {
+        let adopted = compositor
+            .target_names()
+            .iter()
+            .any(|n| n.starts_with("foreign-surface-"));
+        if adopted {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(90),
+            "the word processor never mapped a window.\nApp log:\n{}\nCompositor log:\n{}",
+            app_log.lock().map(|l| l.join("\n")).unwrap_or_default(),
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// The same drag, dropped on the real word processor. A live lane: starts
 /// `target/debug/word-processor` as an unsandboxed client (needs a GPU to
 /// render) and asserts its own report that it inserted the image.
@@ -1846,6 +2025,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
 /// hermetic CI stays green.
 #[test]
 fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
+    const STEPS: u32 = 16;
     if std::env::var_os("QOS_LIVE_APP_DND").is_none() {
         eprintln!("skipping: set QOS_LIVE_APP_DND=1 to run the word-processor drop lane");
         return;
@@ -1871,59 +2051,8 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     let compositor = Compositor::start_with_home(Some(&home));
     compositor.place_next_window("dev.qos.word-processor");
 
-    let socket_name = compositor
-        .wayland_socket
-        .file_name()
-        .expect("socket name")
-        .to_os_string();
-    let mut app = Command::new(&word_processor)
-        .env("WAYLAND_DISPLAY", &socket_name)
-        // What the launcher exports for a packaged app; `ui` announces it
-        // as the Wayland app id, which is how the placement above is
-        // matched to this window.
-        .env("QOS_PACKAGE_ID", "dev.qos.word-processor")
-        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
-        .env("XDG_CONFIG_HOME", compositor.runtime_dir.join("app-config"))
-        .env("XDG_DATA_HOME", compositor.runtime_dir.join("app-data"))
-        .env("XDG_CACHE_HOME", compositor.runtime_dir.join("app-cache"))
-        .env("HOME", &home)
-        .env_remove("DISPLAY")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn the word processor");
-    let app_log = Arc::new(Mutex::new(Vec::<String>::new()));
-    {
-        let stderr = app.stderr.take().expect("app stderr");
-        let sink = Arc::clone(&app_log);
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if let Ok(mut l) = sink.lock() {
-                    l.push(line);
-                }
-            }
-        });
-    }
-
-    // Wait for the app's toplevel to be adopted into the tree: the chrome
-    // names every foreign tile it lays out.
-    let started = Instant::now();
-    loop {
-        let adopted = compositor
-            .target_names()
-            .iter()
-            .any(|n| n.starts_with("foreign-surface-"));
-        if adopted {
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(90),
-            "the word processor never mapped a window.\nApp log:\n{}\nCompositor log:\n{}",
-            app_log.lock().map(|l| l.join("\n")).unwrap_or_default(),
-            compositor.recent_log()
-        );
-        std::thread::sleep(Duration::from_millis(250));
-    }
+    let (mut app, app_log) = spawn_word_processor(&compositor, &word_processor, &home);
+    wait_for_word_processor_mapped(&compositor, &app_log);
     // Let it paint its first frame, so the tile has a real size.
     std::thread::sleep(Duration::from_secs(3));
 
@@ -1959,9 +2088,8 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
-    const STEPS: usize = 16;
     for i in 1..=STEPS {
-        let t = i as f64 / STEPS as f64;
+        let t = f64::from(i) / f64::from(STEPS);
         compositor.pointer_move(row.0 + (drop_x - row.0) * t, row.1 + (drop_y - row.1) * t);
         std::thread::sleep(Duration::from_millis(40));
     }

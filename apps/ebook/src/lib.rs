@@ -34,12 +34,14 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod actions;
 pub mod app;
+mod color_picker;
 mod comment_overlay;
 pub mod content;
 pub mod doc;
@@ -48,9 +50,11 @@ mod input_controls;
 pub mod model;
 pub mod paginate;
 pub mod paint;
-pub mod portal;
+mod reader_bubble;
 pub mod reader_theme;
+mod reading_settings;
 pub mod search_provider;
+mod shelf_controls;
 pub mod xhtml;
 
 pub use app::BooksApp;

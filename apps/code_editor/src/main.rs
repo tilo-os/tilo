@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -64,117 +65,61 @@ const SCENARIOS: &[&str] = &[
     "status",
 ];
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
+///
 /// Returns an error when `--shots` fails to lay out or render the offscreen
 /// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
 /// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        // `--shots` renders one offscreen frame. `--viewport WxH` overrides the
-        // default desktop viewport so the same binary can capture the narrow
-        // (overlay-sidebar) responsive layout. `--sidebar-open` snaps the flap
-        // open so a narrow shot shows the summoned sidebar + scrim rather than
-        // the closed default a fresh narrow window opens to. `--scenario NAME`
-        // stages a specific view (terminal / selection / completion).
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let open_sidebar = args.iter().any(|a| a == "--sidebar-open");
-        let scenario = parse_scenario_arg(&args);
-        if let Some(name) = scenario.as_deref() {
-            // An unknown scenario used to fall through silently and render the
-            // plain cold-start frame — a check that cannot observe its subject
-            // but reports success. Refuse it instead.
-            if !SCENARIOS.contains(&name) {
-                eprintln!(
-                    "code_editor: unknown scenario '{name}'. Known scenarios: {}",
-                    SCENARIOS.join(", ")
-                );
-                std::process::exit(2);
-            }
-        }
-        // `--shots` with a path captures that real project; without one it
-        // captures the bundled demo, which is the only place the demo is used.
-        let mut app = match code_editor::parse_path_arg(&args) {
-            Some(path) => code_editor::CodeApp::open_path(&path),
-            None => code_editor::CodeApp::with_sample(),
-        };
-        // Seed the width up front so this single offscreen frame resolves the
-        // responsive layout (docked vs. overlay) correctly — `build_layout`
-        // runs before `apply_layout` would otherwise measure the window.
-        app.set_width_hint(f64::from(viewport.0));
-        if open_sidebar {
-            app.shots_snap_sidebar(true);
-        }
-        render_scenario_to_png(app, viewport, &out, scenario.as_deref())?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    let open_path = code_editor::parse_path_arg(&args);
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            code_editor::app_root_at(open_path.as_deref()),
-            "dev.qos.code-editor",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.code-editor");
-    let mut app =
-        ui::App::new(state, code_editor::app_root_at(open_path.as_deref())).with_autosave(autosave);
-    // Register Code's action so the shell's Ctrl+K palette can decode + replay the
-    // same buffer-creation the on-screen "New file" command dispatches.
-    code_editor::actions::register(app.action_registry_mut());
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.code-editor", code_editor::app_root)
+            .live_root_with_args(live_root)
+            .shot_handler(render_shot)
+            .allowed_flags(&["--sidebar-open"])
+            .allowed_live_options(&["--path"])
+            .max_positionals(1)
+            .scenarios(SCENARIOS)
+            .configure_app(configure_app),
+    )?;
     Ok(())
 }
 
-/// Parse `--viewport WxH` (e.g. `--viewport 520x820`) for `--shots`.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let spec = if arg == "--viewport" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--viewport=")
-        };
-        if let Some(spec) = spec {
-            let (w, h) = spec.split_once(['x', 'X'])?;
-            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
+fn requested_path(args: &LaunchArgs) -> Option<std::path::PathBuf> {
+    args.value("--path")
+        .map(std::path::PathBuf::from)
+        .or_else(|| args.positionals().first().map(std::path::PathBuf::from))
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LaunchSpec::live_root_with_args"
+)]
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let path = requested_path(args);
+    Ok(code_editor::app_root_at(path.as_deref()))
 }
 
-/// Parse `--scenario NAME` (terminal / selection / completion).
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
+fn configure_app(app: &mut ui::App) {
+    code_editor::actions::register(app.action_registry_mut());
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("code editor screenshot handler called without --shots".into())
+    })?;
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let mut app = requested_path(args).map_or_else(code_editor::CodeApp::with_sample, |path| {
+        code_editor::CodeApp::open_path(&path)
+    });
+    app.set_width_hint(f64::from(viewport.0));
+    if args.has("--sidebar-open") {
+        app.shots_snap_sidebar(true);
     }
-    None
+    render_scenario_to_png(app, viewport, out, args.scenario.as_deref())
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Render one offscreen frame of the `CodeApp`, optionally staging a scenario

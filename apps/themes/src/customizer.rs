@@ -382,7 +382,7 @@ impl Widget for Customizer {
             && self.handle_pointer_capture(
                 event,
                 scale,
-                m,
+                *m,
                 state,
                 path,
                 handled,
@@ -401,7 +401,7 @@ impl Widget for Customizer {
             && self.handle_control_events(
                 event,
                 scale,
-                m,
+                *m,
                 state,
                 path,
                 handled,
@@ -412,7 +412,7 @@ impl Widget for Customizer {
             return;
         }
 
-        self.handle_button_events(event, scale, m, state, path, handled, focus_target, taffy);
+        self.handle_button_events(event, scale, *m, state, path, handled, focus_target, taffy);
     }
 
     fn name(&self) -> &'static str {
@@ -659,7 +659,7 @@ impl Customizer {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        m: &winit::event::Modifiers,
+        m: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -671,7 +671,7 @@ impl Customizer {
                 self.color_picker.handle_event(
                     event,
                     scale,
-                    m,
+                    &m,
                     state,
                     path,
                     handled,
@@ -687,7 +687,7 @@ impl Customizer {
                 self.radius_slider.handle_event(
                     event,
                     scale,
-                    m,
+                    &m,
                     state,
                     path,
                     handled,
@@ -703,7 +703,7 @@ impl Customizer {
                 self.spacing_slider.handle_event(
                     event,
                     scale,
-                    m,
+                    &m,
                     state,
                     path,
                     handled,
@@ -720,7 +720,7 @@ impl Customizer {
     /// Colour-token chip selection (part of [`Widget::handle_event`],
     /// editable only). Returns `true` if a chip was clicked.
     fn handle_chip_selection(
-        &mut self,
+        &self,
         event: &WindowEvent,
         state: &mut AutoCommit,
         path: &ObjId,
@@ -766,7 +766,7 @@ impl Customizer {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        m: &winit::event::Modifiers,
+        m: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -777,7 +777,7 @@ impl Customizer {
             self.color_picker.handle_event(
                 event,
                 scale,
-                m,
+                &m,
                 state,
                 path,
                 handled,
@@ -793,7 +793,7 @@ impl Customizer {
             self.radius_slider.handle_event(
                 event,
                 scale,
-                m,
+                &m,
                 state,
                 path,
                 handled,
@@ -809,7 +809,7 @@ impl Customizer {
             self.spacing_slider.handle_event(
                 event,
                 scale,
-                m,
+                &m,
                 state,
                 path,
                 handled,
@@ -825,7 +825,7 @@ impl Customizer {
             self.font_dropdown.handle_event(
                 event,
                 scale,
-                m,
+                &m,
                 state,
                 path,
                 handled,
@@ -851,7 +851,7 @@ impl Customizer {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        m: &winit::event::Modifiers,
+        m: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -868,7 +868,7 @@ impl Customizer {
             b.handle_event(
                 event,
                 scale,
-                m,
+                &m,
                 state,
                 path,
                 handled,

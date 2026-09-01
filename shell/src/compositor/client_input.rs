@@ -805,6 +805,12 @@ fn v120_component(value: f64) -> i32 {
 /// Whether the shell chrome is currently claiming all input: an overlay,
 /// the command palette, the peer-sync card, the workspace-name editor, or a permission prompt — in any of those a client must not receive keys or pointer focus.
 pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+    // First-login chrome is a compositor-owned security boundary. It hides the
+    // entire desktop and must mute both the local Wayland seat and the remote
+    // input firewall, just like the session lock does.
+    if fb.host().onboarding_active() {
+        return true;
+    }
     if fb.host().palette_visible() {
         return true;
     }
@@ -1351,14 +1357,17 @@ fn foreign_tab_title(app_id: &str) -> String {
 
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
-    let target = if chrome_captures_input(fb) {
-        None
-    } else {
+    let captured = chrome_captures_input(fb);
+    let candidate = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
         active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
     };
-    state.set_client_keyboard_focus(target);
+    state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
+}
+
+fn gate_keyboard_focus(candidate: Option<u64>, chrome_captures: bool) -> Option<u64> {
+    if chrome_captures { None } else { candidate }
 }
 
 /// Tell the remote-input firewall what is on screen. Called every tick,
@@ -1836,6 +1845,10 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic pointer-coordinate fixtures use exactly representable values"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
@@ -2471,6 +2484,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn onboarding_mutes_wayland_focus_and_the_remote_input_view() {
+        const HIDDEN_SURFACE: u64 = 424_242;
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.host_mut()
+            .enable_onboarding(std::path::PathBuf::from("/tmp/qos-oobe-input-test"));
+        let _ = fb.paint_settled();
+
+        assert!(
+            chrome_captures_input(&fb),
+            "compositor-owned OOBE must capture every client input route"
+        );
+
+        assert_eq!(
+            gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
+            None,
+            "a hidden Wayland client cannot retain keyboard focus"
+        );
+        let remote_view = crate::network::input_firewall::ShellView::new(
+            vec![(HIDDEN_SURFACE, Rect::new(0.0, 0.0, 400.0, 300.0))],
+            gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
+            chrome_captures_input(&fb),
+            false,
+        );
+        assert!(
+            remote_view.chrome_captures_input(),
+            "remote peers must see OOBE as occluding trusted chrome"
+        );
+    }
+
     /// The geometry contract the pointer router depends on: a foreign
     /// toplevel mirrored into the chrome's tree becomes a live window group
     /// whose *tile* rect is laid out, hit-testable, and translates a global
@@ -2534,6 +2578,11 @@ mod tests {
 
     /// The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "tree is read for every probe in the loop below; the block already ends \
+                  right after the loop, so there's no earlier point to drop the guard"
+    )]
     fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
         use crate::network::input_firewall::ShellView;
 
@@ -2591,11 +2640,6 @@ mod tests {
 
         // Wherever local input would land on a client, the firewall must name that same client; wherever it lands on chrome, the firewall must name nothing.
         let mut inside = 0;
-        #[allow(
-            clippy::significant_drop_tightening,
-            reason = "tree is read for every probe in the loop below; the block already ends \
-                      right after the loop, so there's no earlier point to drop the guard"
-        )]
         {
             let chrome = fb.chrome();
             let tree = chrome.tree();
@@ -2853,7 +2897,7 @@ mod tests {
             toast.body,
         );
         assert!(
-            toast.dismiss_after >= std::time::Duration::from_mins(1),
+            toast.dismiss_after >= std::time::Duration::from_secs(60),
             "a stop that lasts until the host lifts it cannot be confirmed by a \
              toast that slides away in five seconds",
         );

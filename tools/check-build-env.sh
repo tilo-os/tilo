@@ -19,7 +19,7 @@ MODULES=(
 # of naming itself: bwrap runs the launcher's confinement suites and
 # rust-analyzer is the real language server the code editor's suite drives;
 # sccache is baked into the image so workflows never download or compile it.
-BINARIES=(capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0)
+BINARIES=(capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0 yt-dlp)
 FONTS=(
   "Noto Sans Arabic"
   "Noto Sans Hebrew"

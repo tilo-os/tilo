@@ -953,11 +953,14 @@ impl NetworkPane {
     }
 
     fn secret_field(&self, key: &str, id: &str, placeholder: &str) -> El {
+        // `key` is always one of the fixed buffers seeded by
+        // `initial_secret_buffers`; fall back to a fresh, unshared buffer
+        // rather than panicking if that invariant is ever violated.
         let buffer = self
             .secret_buffers
             .get(key)
             .cloned()
-            .expect("fixed secret buffer must be initialized");
+            .unwrap_or_else(|| Arc::new(Mutex::new(String::new())));
         let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
         Box::new(
             TextInput::local()
@@ -999,7 +1002,7 @@ impl NetworkPane {
                 "If the SIM is locked, enter its PIN. It is sent directly to ModemManager over the system bus and is never saved.",
             ),
         ];
-        if !self.sims.is_empty() {
+        if let Some(first_sim) = self.sims.first() {
             rows.push(choice_row(
                 "SIM",
                 Box::new(
@@ -1007,7 +1010,7 @@ impl NetworkPane {
                         self.sims.iter().map(|s| s.label.clone()).collect(),
                         MOBILE_SIM_KEY,
                     )
-                    .with_placeholder(&self.sims[0].label),
+                    .with_placeholder(&first_sim.label),
                 ),
             ));
         }
@@ -2298,13 +2301,21 @@ impl Widget for NetworkPane {
             },
             ..Default::default()
         };
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `child` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "child was just created in this same tree"
+        )]
         let node = taffy.new_with_children(style, &[child]).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -2531,6 +2542,16 @@ mod tests {
         );
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
+        // Connection dispatch deliberately runs off the UI thread. Wait for
+        // the recorder exactly as the password-bearing async path below does;
+        // asserting immediately races the worker and can falsely report that
+        // the visible Connect button did nothing.
+        for _ in 0..50 {
+            if !rec.calls().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         assert_eq!(rec.calls(), vec!["connect_wifi(Cafe_Guest)"]);
     }
 

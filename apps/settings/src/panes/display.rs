@@ -960,13 +960,21 @@ impl Widget for DisplayPane {
             },
             ..Default::default()
         };
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `child` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "child was just created in this same tree"
+        )]
         let node = taffy.new_with_children(style, &[child]).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

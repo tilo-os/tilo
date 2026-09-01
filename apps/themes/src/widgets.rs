@@ -119,7 +119,7 @@ impl ThemeRow {
     /// Refresh visual fields in place (preserves hover / rect so the gallery
     /// can push fresh state every frame without flicker).
     pub fn update(&mut self, spec: &ThemeSpec, selected: bool, active: bool, suppress_name: bool) {
-        self.name = spec.name.clone();
+        self.name.clone_from(&spec.name);
         self.kind.builtin = spec.builtin;
         self.kind.dark_base = spec.dark_base;
         self.swatch = Self::swatch_of(spec);
@@ -138,6 +138,125 @@ impl ThemeRow {
             self.rect.x1 - 12.0,
             self.rect.y0 + 33.0,
         )
+    }
+
+    /// Palette swatch: surface tile with a raised inset and a row of
+    /// accent + semantic dots (part of [`Widget::draw`]). Returns its rect
+    /// so the name/tag text can anchor beside it.
+    fn draw_swatch(&self, scene: &mut Scene, t: Affine, theme: &Theme) -> Rect {
+        let sw = Rect::new(
+            self.rect.x0 + 11.0,
+            self.rect.y0 + 9.0,
+            self.rect.x0 + 51.0,
+            self.rect.y1 - 9.0,
+        );
+        draw::fill_rrect(scene, t, sw, 7.0, model::color(self.swatch[0]));
+        draw::stroke_rrect(
+            scene,
+            t,
+            sw,
+            7.0,
+            theme.border_standard.multiply_alpha(0.5),
+            1.0,
+        );
+        let inset = Rect::new(
+            sw.x0 + 5.0,
+            sw.y0 + 5.0,
+            sw.x1 - 5.0,
+            sw.y0 + sw.height() * 0.42,
+        );
+        draw::fill_rrect(scene, t, inset, 4.0, model::color(self.swatch[1]));
+        let dot_y = sw.y1 - 8.5;
+        for (i, c) in self.swatch[2..].iter().enumerate() {
+            draw::circle(
+                scene,
+                t,
+                Point::new(sw.x0 + 8.0 + i as f64 * 8.6, dot_y),
+                3.0,
+                model::color(*c),
+            );
+        }
+        sw
+    }
+
+    /// Name (unless the gallery's inline editor covers it) plus the
+    /// preset/custom · dark/light tag beside the swatch `sw` (part of
+    /// [`Widget::draw`]).
+    fn draw_name_and_tag(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        sw: Rect,
+    ) {
+        let tx = sw.x1 + 11.0;
+        if !self.suppress_name {
+            draw::text_w(
+                tr,
+                scene,
+                t,
+                &self.name,
+                14.0,
+                theme.text_primary,
+                tx,
+                self.rect.y0 + 11.0,
+                TextWeight::Semibold,
+            );
+        }
+        let tag = if self.kind.builtin {
+            "Preset"
+        } else {
+            "Custom"
+        };
+        let base = if self.kind.dark_base { "Dark" } else { "Light" };
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("{tag} · {base}"),
+            11.0,
+            theme.text_dim,
+            tx,
+            self.rect.y0 + 33.0,
+        );
+    }
+
+    /// The "Active" badge on the row's right edge when this theme is the
+    /// applied OS theme (part of [`Widget::draw`]).
+    fn draw_active_badge(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.view.active {
+            return;
+        }
+        let lab = "Active";
+        let (w, _) = tr.measure(lab, 10.0, None);
+        let pw = f64::from(w) + 16.0;
+        let pill = Rect::new(
+            self.rect.x1 - pw - 10.0,
+            self.rect.center().y - 9.0,
+            self.rect.x1 - 10.0,
+            self.rect.center().y + 9.0,
+        );
+        draw::fill_rrect(scene, t, pill, 9.0, theme.accent_primary);
+        draw::text_center(
+            tr,
+            scene,
+            t,
+            lab,
+            10.0,
+            on_accent(theme),
+            pill.x0,
+            pill.x1,
+            pill.y0,
+            pill.y1,
+            TextWeight::Bold,
+        );
     }
 }
 
@@ -201,99 +320,9 @@ impl Widget for ThemeRow {
         };
         draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
 
-        // Palette swatch: a compact tile of the theme's base surface with a
-        // raised inset and a row of accent + semantic dots.
-        let sw = Rect::new(
-            self.rect.x0 + 11.0,
-            self.rect.y0 + 9.0,
-            self.rect.x0 + 51.0,
-            self.rect.y1 - 9.0,
-        );
-        draw::fill_rrect(scene, t, sw, 7.0, model::color(self.swatch[0]));
-        draw::stroke_rrect(
-            scene,
-            t,
-            sw,
-            7.0,
-            theme.border_standard.multiply_alpha(0.5),
-            1.0,
-        );
-        let inset = Rect::new(
-            sw.x0 + 5.0,
-            sw.y0 + 5.0,
-            sw.x1 - 5.0,
-            sw.y0 + sw.height() * 0.42,
-        );
-        draw::fill_rrect(scene, t, inset, 4.0, model::color(self.swatch[1]));
-        let dot_y = sw.y1 - 8.5;
-        for (i, c) in self.swatch[2..].iter().enumerate() {
-            draw::circle(
-                scene,
-                t,
-                Point::new(sw.x0 + 8.0 + i as f64 * 8.6, dot_y),
-                3.0,
-                model::color(*c),
-            );
-        }
-
-        // Name (unless the gallery's inline editor covers it) + tag.
-        let tx = sw.x1 + 11.0;
-        if !self.suppress_name {
-            draw::text_w(
-                tr,
-                scene,
-                t,
-                &self.name,
-                14.0,
-                theme.text_primary,
-                tx,
-                self.rect.y0 + 11.0,
-                TextWeight::Semibold,
-            );
-        }
-        let tag = if self.kind.builtin {
-            "Preset"
-        } else {
-            "Custom"
-        };
-        let base = if self.kind.dark_base { "Dark" } else { "Light" };
-        draw::text(
-            tr,
-            scene,
-            t,
-            &format!("{tag} · {base}"),
-            11.0,
-            theme.text_dim,
-            tx,
-            self.rect.y0 + 33.0,
-        );
-
-        // Applied-theme badge on the right edge.
-        if self.view.active {
-            let lab = "Active";
-            let (w, _) = tr.measure(lab, 10.0, None);
-            let pw = f64::from(w) + 16.0;
-            let pill = Rect::new(
-                self.rect.x1 - pw - 10.0,
-                self.rect.center().y - 9.0,
-                self.rect.x1 - 10.0,
-                self.rect.center().y + 9.0,
-            );
-            draw::fill_rrect(scene, t, pill, 9.0, theme.accent_primary);
-            draw::text_center(
-                tr,
-                scene,
-                t,
-                lab,
-                10.0,
-                on_accent(theme),
-                pill.x0,
-                pill.x1,
-                pill.y0,
-                pill.y1,
-                TextWeight::Bold,
-            );
-        }
+        let sw = self.draw_swatch(scene, t, theme);
+        self.draw_name_and_tag(scene, t, tr, theme, sw);
+        self.draw_active_badge(scene, t, tr, theme);
     }
 
     #[allow(clippy::too_many_arguments)]

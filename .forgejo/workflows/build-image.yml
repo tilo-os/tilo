@@ -259,7 +259,10 @@ jobs:
           ./os/dev/build-image.sh
           export QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
-          ./os/dev/vm.sh boot --2d
+          # The installed Files AT-SPI gate needs the real qOS compositor.
+          # vm.sh documents that its 2D mode may not start that compositor;
+          # egl-headless + virgl is the release-test configuration that does.
+          ./os/dev/vm.sh boot --gl
           ./os/dev/vm.sh wait
           ./os/dev/vm.sh login "$QOS_USER" "$QOS_PASS"
           for attempt in $(seq 1 60); do
@@ -272,7 +275,51 @@ jobs:
             fi
             sleep 2
           done
+
+          # This is a fresh installed user, so the session must stop at the
+          # real first-login identity ceremony before the compositor starts.
+          # Drive the keyboard-accessible flow exactly as a person does:
+          # Continue -> acknowledge no recovery -> Create -> Start qOS. The
+          # artifact poll is the deterministic barrier between Create and the
+          # final screen; no test-only minting or bypass enters the image.
+          for attempt in $(seq 1 60); do
+            if ./os/dev/vm.sh ssh \
+              "pgrep -f '^/usr/bin/shell --provision-identity$' >/dev/null"; then
+              break
+            fi
+            if [[ "$attempt" == 60 ]]; then
+              ./os/dev/vm.sh serial | tail -120
+              echo "first-login identity ceremony did not start" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          sleep 2
+          # The intro exposes two actions in focus order: connect an existing
+          # identity, then create a new one. Select the latter explicitly.
+          ./os/dev/vm.sh keys tab tab ret
+          sleep 1
+          ./os/dev/vm.sh keys tab spc
+          sleep 1
+          # Enabling the acknowledgement rebuilds the button in place while
+          # preserving checkbox focus. One Tab reaches the enabled action.
+          ./os/dev/vm.sh keys tab ret
+          for attempt in $(seq 1 60); do
+            if ./os/dev/vm.sh ssh \
+              "test -s \"\$HOME/.config/qos/identity/primary.json\" && test -s /var/lib/qos/device/cert.bin"; then
+              break
+            fi
+            if [[ "$attempt" == 60 ]]; then
+              ./os/dev/vm.sh serial | tail -120
+              echo "identity ceremony did not produce the certified chain" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          ./os/dev/vm.sh keys tab ret
+
           ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
+          ./os/dev/vm.sh ssh /usr/libexec/qos/collaborative-files-image-contract.sh runtime
 
           # Only the exact image that passed installation and boot receives a
           # public tag. Every tag points at the same manifest digest.

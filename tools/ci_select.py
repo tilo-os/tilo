@@ -50,6 +50,11 @@ HEAVY_PACKAGES = {
     "word-processor",
 }
 
+# Below this structural cost, a second clean target directory spends more CPU
+# rebuilding shared dependencies than it saves in wall time. Real shard timing
+# and CPU figures are emitted by ci-measure.sh so this can be tuned from runs.
+SHARD_COST_BUDGET = 1_000
+
 
 def run(*args: str, cwd: Path) -> str:
     return subprocess.check_output(args, cwd=cwd, text=True).strip()
@@ -74,10 +79,14 @@ def changed_files(root: Path, base: str | None, head: str) -> list[str]:
     try:
         merge_base = run("git", "merge-base", base, head, cwd=root)
     except subprocess.CalledProcessError:
-        # Shallow/manual checkouts must be safe.  Selecting everything is much
-        # better than silently omitting a package.
-        return ["Cargo.toml"]
-    output = run("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", f"{merge_base}...{head}", cwd=root)
+        # A depth-limited checkout may have the event's exact base tree without
+        # enough ancestry to compute a merge base. Comparing those two trees can
+        # over-select files for a pull request whose base moved, but it cannot
+        # omit a file that differs between the advertised base and head.
+        diff_range = f"{base}..{head}"
+    else:
+        diff_range = f"{merge_base}...{head}"
+    output = run("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", diff_range, cwd=root)
     return [line for line in output.splitlines() if line]
 
 
@@ -152,6 +161,12 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int) -> lis
     return result
 
 
+def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int) -> int:
+    total_cost = sum(package_cost(packages[name]) for name in names)
+    cost_limited = max(1, (total_cost + SHARD_COST_BUDGET - 1) // SHARD_COST_BUDGET)
+    return min(max(1, maximum), len(names), cost_limited)
+
+
 def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int) -> dict:
     packages, by_dir = package_maps(metadata, root)
     global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
@@ -170,6 +185,7 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int) 
         selected.update(ALWAYS_PACKAGES & packages.keys())
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
         full = False
+    effective_shards = useful_shard_count(selected, packages, shard_count)
     return {
         "full": full,
         "reason": reason,
@@ -177,7 +193,10 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int) 
         "selected_count": len(selected),
         "workspace_count": len(packages),
         "selected": sorted(selected),
-        "matrix": {"include": balance(selected, packages, shard_count)},
+        "estimated_cost": sum(package_cost(packages[name]) for name in selected),
+        "requested_shards": shard_count,
+        "shard_count": effective_shards,
+        "matrix": {"include": balance(selected, packages, effective_shards)},
     }
 
 
@@ -188,6 +207,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
+        handle.write(f"estimated_cost={plan['estimated_cost']}\n")
+        handle.write(f"shard_count={plan['shard_count']}\n")
 
 
 def main() -> int:

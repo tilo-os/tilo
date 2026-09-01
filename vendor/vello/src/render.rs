@@ -127,6 +127,7 @@ pub(crate) fn render_encoding_full(
         params,
         budget,
         measure,
+        false,
     );
     let out_image = render.out_image();
     let bump_buf = measure.then(|| render.bump_buf());
@@ -156,8 +157,9 @@ impl Render {
     /// `budget` is how much bump-allocated scratch to reserve; see
     /// [`vello_encoding::BumpBudget`].
     ///
-    /// The `robust` parameter controls whether we're preparing for readback
-    /// of the atomic bump buffer, for robust dynamic memory.
+    /// `measure_bump` downloads the atomic bump counters used for dynamic
+    /// memory sizing. `capture_debug` additionally retains the debug-layer
+    /// buffers for the caller; it must later take and release those buffers.
     pub fn render_encoding_coarse(
         &mut self,
         encoding: &Encoding,
@@ -166,7 +168,8 @@ impl Render {
         persistent_image_atlas: &mut Option<ImageProxy>,
         params: &RenderParams,
         budget: &vello_encoding::BumpBudget,
-        robust: bool,
+        measure_bump: bool,
+        capture_debug: bool,
     ) -> Recording {
         use vello_encoding::RenderConfig;
         let mut recording = Recording::default();
@@ -224,6 +227,15 @@ impl Render {
                     images.evicted
                 );
             }
+        }
+        // Warn on the first resolve pass that omits any images.
+        if images.omitted != 0 && images.omitted_total == images.omitted as u64 {
+            log::warn!(
+                "image atlas {}x{} omitted {} image(s); further omissions will not be logged",
+                atlas_width,
+                atlas_height,
+                images.omitted,
+            );
         }
         for image in images.images {
             recording.write_image(image_atlas, image.1, image.2, image.0.clone());
@@ -557,14 +569,14 @@ impl Render {
             image_atlas: ResourceProxy::Image(image_atlas),
             out_image,
         });
-        if robust {
+        if measure_bump {
             recording.download(*bump_buf.as_buf().unwrap());
         }
         recording.free_resource(bump_buf);
 
         #[cfg(feature = "debug_layers")]
         {
-            if robust {
+            if capture_debug {
                 let path_bboxes = *path_bbox_buf.as_buf().unwrap();
                 let lines = *lines_buf.as_buf().unwrap();
                 recording.download(lines);
@@ -581,6 +593,7 @@ impl Render {
         }
         #[cfg(not(feature = "debug_layers"))]
         {
+            let _ = capture_debug;
             recording.free_resource(path_bbox_buf);
             recording.free_resource(lines_buf);
         }

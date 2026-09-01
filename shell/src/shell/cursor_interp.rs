@@ -221,6 +221,10 @@ fn interpolated_at(uid: &str, state: &PeerState, now: Instant) -> Option<Interpo
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact interpolation endpoints and clamping are the behavior under test"
+)]
 mod tests {
     use super::*;
 

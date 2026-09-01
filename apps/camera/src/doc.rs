@@ -134,14 +134,13 @@ pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
 }
 
 pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
-    let m = match map_at(doc, root, "settings") {
-        Some(m) => m,
-        None => {
-            let Ok(m) = doc.put_object(root, "settings", ObjType::Map) else {
-                return;
-            };
-            m
-        }
+    let m = if let Some(m) = map_at(doc, root, "settings") {
+        m
+    } else {
+        let Ok(m) = doc.put_object(root, "settings", ObjType::Map) else {
+            return;
+        };
+        m
     };
     let _ = doc.put(&m, "resolution", s.resolution.as_str());
     let _ = doc.put(&m, "photo_format", s.photo_format.as_str());
@@ -173,14 +172,13 @@ pub fn read_favorites(doc: &AutoCommit, root: &ObjId) -> HashSet<String> {
 /// Star / unstar a library item by id. Unstarring removes the key so the
 /// favorites map does not accumulate tombstoned `false`s.
 pub fn set_favorite(doc: &mut AutoCommit, root: &ObjId, id: &str, on: bool) {
-    let m = match map_at(doc, root, "favorites") {
-        Some(m) => m,
-        None => {
-            let Ok(m) = doc.put_object(root, "favorites", ObjType::Map) else {
-                return;
-            };
-            m
-        }
+    let m = if let Some(m) = map_at(doc, root, "favorites") {
+        m
+    } else {
+        let Ok(m) = doc.put_object(root, "favorites", ObjType::Map) else {
+            return;
+        };
+        m
     };
     if on {
         let _ = doc.put(&m, id, true);
@@ -219,14 +217,13 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
 /// Record a scanned code at the front of the history. Re-scanning the same
 /// payload moves it to the front rather than duplicating; the list is capped.
 pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
-    let list = match list_at(doc, root, "scans") {
-        Some(l) => l,
-        None => {
-            let Ok(l) = doc.put_object(root, "scans", ObjType::List) else {
-                return;
-            };
-            l
-        }
+    let list = if let Some(l) = list_at(doc, root, "scans") {
+        l
+    } else {
+        let Ok(l) = doc.put_object(root, "scans", ObjType::List) else {
+            return;
+        };
+        l
     };
     // Drop any existing entry with the same payload.
     let n = doc.length(&list);

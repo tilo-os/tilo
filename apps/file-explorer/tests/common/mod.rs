@@ -56,7 +56,7 @@ impl Harness {
         // more than the real 450 ms — at which point a deliberate double-click
         // reads as two singles and the test fails for a reason it is not
         // about. Nothing here asserts on the window itself.
-        ui::gesture::set_multi_click_interval(std::time::Duration::from_mins(1));
+        ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(60));
         // Two frames: the first lets the responsive `nav` learn its width and
         // settle to its docked (wide) mode; the second is the steady-state
         // geometry the user actually interacts with.

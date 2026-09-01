@@ -1,0 +1,72 @@
+#!/bin/bash
+# qOS graphical-session entry point. Greetd runs this in the authenticated
+# user's PAM session; it owns the corresponding systemd --user target for
+# exactly as long as the compositor lives.
+set -euo pipefail
+
+readonly SYSTEMCTL=/usr/bin/systemctl
+readonly SHELL_BIN=/usr/bin/shell
+readonly CAGE_BIN=/usr/bin/cage
+readonly SESSION_TARGET=qos-graphical-session.target
+
+target_started=0
+shell_pid=""
+
+stop_target() {
+  if [ "$target_started" = 1 ]; then
+    "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
+    target_started=0
+  fi
+}
+
+terminate_session() {
+  local signal="$1" status="$2"
+  trap - HUP INT TERM
+  if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
+    kill "-$signal" "$shell_pid" 2>/dev/null || true
+    wait "$shell_pid" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+
+trap stop_target EXIT
+trap 'terminate_session HUP 129' HUP
+trap 'terminate_session INT 130' INT
+trap 'terminate_session TERM 143' TERM
+
+run_managed() {
+  "$@" &
+  shell_pid=$!
+  local status
+  if wait "$shell_pid"; then
+    status=0
+  else
+    status=$?
+  fi
+  shell_pid=""
+  return "$status"
+}
+
+# First login needs a display for the explicit no-recovery acknowledgement,
+# but the qOS compositor must not start before identity exists. Cage provides
+# one temporary single-client Wayland session after greetd authentication and
+# releases DRM/seat ownership when the ceremony exits. Existing complete
+# identities skip it; partial legacy state takes the same idempotent provision
+# path and is still verified afterward.
+if ! "$SHELL_BIN" --verify-collaboration-identity >/dev/null 2>&1; then
+  run_managed "$CAGE_BIN" -s -- "$SHELL_BIN" --provision-identity
+  "$SHELL_BIN" --verify-collaboration-identity
+fi
+
+# This blocks until graphical-session-pre.target (whose identity unit performs
+# idempotent migration/repair) and graphical-session.target complete. Starting the
+# qOS-owned target is necessary because the standard graphical targets carry
+# RefuseManualStart=yes.
+"$SYSTEMCTL" --user start "$SESSION_TARGET"
+target_started=1
+
+set +e
+run_managed "$SHELL_BIN" "$@"
+status=$?
+set -e
+exit "$status"

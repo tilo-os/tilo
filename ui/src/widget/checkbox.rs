@@ -32,6 +32,8 @@ pub struct CheckboxFace {
     fill_unchecked: bool,
 }
 
+type BoolChangeCallback = Box<dyn FnMut(bool)>;
+
 impl CheckboxFace {
     pub fn new(rect: Rect, checked: bool) -> Self {
         Self {
@@ -92,6 +94,12 @@ pub struct Checkbox {
     /// Spoken name for a checkbox with no adjacent text label. When unset
     /// the checkbox relies on a sibling label resolved by the tree builder.
     accessible_name: Option<String>,
+    /// Typed process-local model mirrored in both directions during the
+    /// ordinary widget sync/event lifecycle.
+    local_state: Option<crate::local_state::LocalBinding<bool>>,
+    /// Observes user intent without owning model synchronization.
+    on_change: Option<BoolChangeCallback>,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Checkbox {
@@ -108,6 +116,72 @@ impl Checkbox {
             enabled: true,
             id_override: None,
             accessible_name: None,
+            local_state: None,
+            on_change: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
+        }
+    }
+
+    /// Create a true two-way binding to typed process-local boolean state.
+    ///
+    /// Pointer, keyboard, and accessibility activation update `state`;
+    /// mutations through any clone of `state` update this checkbox on the
+    /// next synchronization pass. Use [`Self::on_change`] only to observe
+    /// user changes, not to keep the model in sync.
+    pub fn from_state(state: &crate::LocalState<bool>) -> Self {
+        let (checked, binding) = crate::local_state::LocalBinding::new(state);
+        Self {
+            is_checked: checked,
+            local_state: Some(binding),
+            ..Self::new("checkbox", "")
+        }
+    }
+
+    /// Observe changes produced by user interaction.
+    ///
+    /// Model synchronization and [`Self::set_checked`] do not invoke this
+    /// callback, so validation or action dispatch cannot mistake a model
+    /// refresh for new user intent.
+    #[must_use]
+    pub fn on_change(mut self, callback: impl FnMut(bool) + 'static) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self
+    }
+
+    /// Return the value currently presented by this checkbox.
+    pub fn is_checked(&self) -> bool {
+        self.is_checked
+    }
+
+    /// Replace the presented value and publish it to a bound local model.
+    ///
+    /// This is a programmatic model mutation and does not invoke
+    /// [`Self::on_change`]. Document-bound controls should mutate their
+    /// Automerge path instead and let [`Widget::sync`] adopt the result.
+    pub fn set_checked(&mut self, checked: bool) {
+        self.is_checked = checked;
+        self.publish_local_state();
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.is_checked);
+        }
+    }
+
+    fn commit_user_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let checked = !self.is_checked;
+        if self.local_state.is_none() {
+            let _ = state.put(
+                root,
+                self.on_toggle_path.as_str(),
+                automerge::ScalarValue::Boolean(checked),
+            );
+        }
+        self.is_checked = checked;
+        self.publish_local_state();
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(checked);
         }
     }
 
@@ -235,7 +309,21 @@ impl Checkbox {
 }
 
 impl Widget for Checkbox {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(binding) = &mut self.local_state {
+            if let Some(checked) = binding.poll() {
+                self.is_checked = checked;
+            }
+            return;
+        }
         if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
             && let Value::Scalar(s) = val
             && let automerge::ScalarValue::Boolean(b) = s.as_ref()
@@ -252,8 +340,8 @@ impl Widget for Checkbox {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(24.0),
-                height: Dimension::length(24.0),
+                width: Dimension::length(self.interaction.minimum_target()),
+                height: Dimension::length(self.interaction.minimum_target()),
             },
             ..Default::default()
         });
@@ -279,11 +367,12 @@ impl Widget for Checkbox {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        let visual = Rect::from_center_size(self.rect.center(), (24.0, 24.0));
         Self::paint(
             scene,
             transform,
             theme,
-            &CheckboxFace::new(self.rect, self.is_checked)
+            &CheckboxFace::new(visual, self.is_checked)
                 .hovered(self.is_hovered)
                 .focused(self.is_focused)
                 .disabled(!self.enabled),
@@ -322,16 +411,7 @@ impl Widget for Checkbox {
             } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *handled = true;
                 *focus_target = Some(node_id);
-                let new_val = !self.is_checked;
-                let _ = state.put(
-                    root,
-                    self.on_toggle_path.as_str(),
-                    automerge::ScalarValue::Boolean(new_val),
-                );
-                // Update the local cache now so accessibility() reflects the
-                // new state this same frame — otherwise the focus narration
-                // triggered by this click would speak the pre-click state.
-                self.is_checked = new_val;
+                self.commit_user_toggle(state, root);
             }
             _ => {}
         }
@@ -403,16 +483,7 @@ impl Widget for Checkbox {
         }
         match action {
             Action::ToggleCheck | Action::Activate => {
-                let new_val = !self.is_checked;
-                let _ = state.put(
-                    path,
-                    self.on_toggle_path.as_str(),
-                    automerge::ScalarValue::Boolean(new_val),
-                );
-                // Mirror the optimistic local update the event path does on
-                // the next `sync`; setting it here keeps `accessibility()`
-                // consistent within the same frame.
-                self.is_checked = new_val;
+                self.commit_user_toggle(state, path);
                 true
             }
             _ => false,
@@ -570,6 +641,48 @@ mod tests {
             &root
         ));
         assert!(!c.is_checked, "Activate flips back");
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_checkboxes() {
+        use crate::a11y::Action;
+
+        let state = crate::LocalState::new(false);
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut first = Checkbox::from_state(&state)
+            .on_change(move |checked| captured.borrow_mut().push(checked));
+        let mut second = Checkbox::from_state(&state);
+        let mut document = AutoCommit::new();
+
+        state.set(true);
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert!(first.is_checked());
+        assert!(second.is_checked());
+        assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &Action::ToggleCheck,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert!(!state.get(), "user activation publishes typed state");
+        assert_eq!(&*changes.borrow(), &[false]);
+
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert!(!second.is_checked(), "sibling follows the shared model");
+
+        second.set_checked(true);
+        assert!(state.get(), "programmatic mutation publishes typed state");
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        assert!(first.is_checked());
+        assert_eq!(
+            &*changes.borrow(),
+            &[false],
+            "programmatic mutation does not invoke the user callback"
+        );
     }
 
     #[test]

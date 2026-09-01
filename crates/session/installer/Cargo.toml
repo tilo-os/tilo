@@ -23,6 +23,9 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing-subscriber.workspace = true
+os-actions = { path = "../../system/os-actions" }
+zeroize.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 

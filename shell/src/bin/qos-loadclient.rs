@@ -10,6 +10,14 @@
 //! moving gradient, so a compositor that hashes buffers can't elide the
 //! work. Prints frame count and wall time on exit for the harness.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        reason = "parser tests compare exact input and default values"
+    )
+)]
+
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
@@ -64,7 +72,7 @@ impl Opts {
             app_id: "qos-loadclient".to_string(),
             seconds: 10.0,
         };
-        let mut it = args.into_iter().peekable();
+        let mut it = args.into_iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--fullscreen" => o.fullscreen = true,
@@ -123,8 +131,8 @@ impl LoadApp {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        let (w, h) = (self.width.max(1), self.height.max(1));
-        let Some((w_px, h_px, stride)) = Self::buffer_geometry(w, h) else {
+        let (width, height) = (self.width.max(1), self.height.max(1));
+        let Some((w_px, h_px, stride)) = Self::buffer_geometry(width, height) else {
             return;
         };
         let Ok((buffer, canvas)) =
@@ -141,21 +149,26 @@ impl LoadApp {
         let Ok(row_len) = usize::try_from(stride) else {
             return;
         };
-        for (y, row) in canvas.chunks_exact_mut(row_len).enumerate() {
-            let y = u32::try_from(y).unwrap_or(0);
-            for (x, px) in row.chunks_exact_mut(4).enumerate() {
-                let x = u32::try_from(x).unwrap_or(0);
-                let [b, g, r, a] = px else {
+        for (row_idx, row) in canvas.chunks_exact_mut(row_len).enumerate() {
+            let row_idx = u32::try_from(row_idx).unwrap_or(0);
+            for (col_idx, pixel) in row.chunks_exact_mut(4).enumerate() {
+                let col_idx = u32::try_from(col_idx).unwrap_or(0);
+                let [blue, green, red, alpha] = pixel else {
                     continue; // chunks_exact_mut(4) guarantees len == 4
                 };
                 // Gradient colour, not a measured quantity — wrapping on overflow
                 // is fine, it just shifts where the pattern rolls over.
-                let v = u8::try_from(x.wrapping_add(y).wrapping_add(phase).wrapping_rem(256))
-                    .unwrap_or(0);
-                *b = v; // B
-                *g = 0x40; // G
-                *r = 0xFFu8.wrapping_sub(v); // R
-                *a = 0xFF; // A
+                let value = u8::try_from(
+                    col_idx
+                        .wrapping_add(row_idx)
+                        .wrapping_add(phase)
+                        .wrapping_rem(256),
+                )
+                .unwrap_or(0);
+                *blue = value; // B
+                *green = 0x40; // G
+                *red = 0xFFu8.wrapping_sub(value); // R
+                *alpha = 0xFF; // A
             }
         }
         let surface = window.wl_surface();
@@ -364,6 +377,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact deterministic load-shape fixtures are the behavior under test"
+)]
 mod tests {
     use super::Opts;
 

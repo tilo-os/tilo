@@ -26,14 +26,20 @@
 //! reachable by anyone outside that group.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
 use thiserror::Error;
 
 use crate::CanonicalError;
 use crate::cert::DeviceCert;
+
+/// Sequence for same-directory temporary device-key claim files.  Final
+/// ownership comes from the no-clobber hard link, not this name; `create_new`
+/// only makes a stale temporary file impossible to overwrite.
+static DEVICE_KEY_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical layout of identity paths under a chosen root.
 ///
@@ -288,11 +294,101 @@ pub fn load_or_create_device_key(
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             paths.ensure_directories()?;
             let sk = SigningKey::generate(&mut rand::rngs::OsRng);
-            write_device_key(path, &sk)?;
-            Ok((sk, DeviceKeyOutcome::Created))
+            let created = publish_device_key_no_clobber(path, &sk)?;
+            // Always reload the final path.  When a simultaneous creator won
+            // the atomic claim, returning our locally generated key would
+            // make this process use a device identity that was never stored.
+            let final_key = read_device_key(path)?;
+            Ok((
+                final_key,
+                if created {
+                    DeviceKeyOutcome::Created
+                } else {
+                    DeviceKeyOutcome::Loaded
+                },
+            ))
         }
         Err(e) => Err(PersistError::Io(e)),
     }
+}
+
+/// Publish a complete device key exactly once.
+///
+/// `atomic_file::write_with_mode` is intentionally not used here: its final
+/// rename correctly replaces a file for ordinary updates, but device-key
+/// creation must never replace a key another first-login process just made.
+/// The candidate is fully written and synced under a unique same-directory
+/// temporary name, then `hard_link` atomically claims the final name only if
+/// it is still absent.  A caller that loses returns `Ok(false)` and must load
+/// the winner from disk.
+fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
+    let parent = path.parent().ok_or_else(|| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device-key path has no parent",
+        ))
+    })?;
+    let temp = create_device_key_claim_temp(parent, &key.to_bytes())?;
+    let claim = fs::hard_link(&temp, path);
+    let _ = fs::remove_file(&temp);
+
+    match claim {
+        Ok(()) => {
+            // The key contents reached storage before the directory entry was
+            // published.  Sync the parent as well, so a successful first boot
+            // survives a power loss after the hard-link claim.
+            fs::File::open(parent)?.sync_all()?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(PersistError::Io(error)),
+    }
+}
+
+/// Create a private, complete temporary candidate beside the final device-key
+/// path.  The mode is applied before this file is ever linked into the
+/// shared identity tree, so it cannot briefly become publicly visible.
+fn create_device_key_claim_temp(
+    parent: &Path,
+    bytes: &[u8; 32],
+) -> Result<std::path::PathBuf, PersistError> {
+    for _ in 0..16 {
+        let sequence = DEVICE_KEY_CLAIM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(
+            ".qos-device-key-claim-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(DEVICE_KEY_MODE);
+        }
+        match options.open(&temp) {
+            Ok(mut file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    // `mode` is filtered by the process umask; explicitly
+                    // restore the intended shared-device mode while the file
+                    // is still private under its temporary name.
+                    file.set_permissions(fs::Permissions::from_mode(DEVICE_KEY_MODE))?;
+                }
+                if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+                    let _ = fs::remove_file(&temp);
+                    return Err(PersistError::Io(error));
+                }
+                return Ok(temp);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(PersistError::Io(error)),
+        }
+    }
+    Err(PersistError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a device-key claim temporary file",
+    )))
 }
 
 /// Adopt an externally-supplied 32-byte seed as this device's key.
@@ -313,16 +409,18 @@ pub fn adopt_device_key(
     seed: &[u8; 32],
 ) -> Result<SigningKey, PersistError> {
     let path = paths.device_privkey.as_path();
-    if path.exists() {
+    paths.ensure_directories()?;
+    let sk = SigningKey::from_bytes(seed);
+    if !publish_device_key_no_clobber(path, &sk)? {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("device key already exists at {}", path.display()),
         )));
     }
-    paths.ensure_directories()?;
-    let sk = SigningKey::from_bytes(seed);
-    write_device_key(path, &sk)?;
-    Ok(sk)
+    // Read back the claimed final path: this validates the key's required
+    // mode and keeps adoption subject to the same persistence contract as
+    // ordinary first-boot creation.
+    read_device_key(path)
 }
 
 /// Read a signed device cert from disk.
@@ -356,9 +454,18 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
     Ok(())
 }
 
+/// # Panics
+/// Never in practice: `byte >> 4` and `byte & 0x0f` are both bounded to
+/// `0..16` by the bit operation itself (not by any external input), so
+/// indexing the 16-entry `HEX` table can never go out of range.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "byte >> 4 and byte & 0x0f are both unconditionally in 0..16, so HEX[..] cannot go out of range; see this fn's # Panics doc"
+)]
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
         out.push(HEX[(byte >> 4) as usize] as char);
         out.push(HEX[(byte & 0x0f) as usize] as char);
@@ -399,6 +506,7 @@ fn ensure_secret_mode(_path: &Path) -> Result<(), PersistError> {
 mod tests {
     use super::*;
     use ed25519_dalek::Signer;
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn public_key_round_trip() {
@@ -561,6 +669,50 @@ mod tests {
             first.verifying_key().to_bytes(),
             second.verifying_key().to_bytes(),
             "the device identity must survive a restart"
+        );
+    }
+
+    #[test]
+    fn simultaneous_device_key_creation_uses_one_persisted_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(tmp.path());
+        let start = Arc::new(Barrier::new(3));
+
+        let first_paths = paths.clone();
+        let first_start = Arc::clone(&start);
+        let first = std::thread::spawn(move || {
+            first_start.wait();
+            load_or_create_device_key(&first_paths).map(|(key, outcome)| (key.to_bytes(), outcome))
+        });
+        let second_paths = paths.clone();
+        let second_start = Arc::clone(&start);
+        let second = std::thread::spawn(move || {
+            second_start.wait();
+            load_or_create_device_key(&second_paths).map(|(key, outcome)| (key.to_bytes(), outcome))
+        });
+        start.wait();
+
+        let first = first.join().expect("first device-key thread").unwrap();
+        let second = second.join().expect("second device-key thread").unwrap();
+        assert_eq!(
+            usize::from(first.1 == DeviceKeyOutcome::Created)
+                + usize::from(second.1 == DeviceKeyOutcome::Created),
+            1,
+            "one claimant creates the shared device key and the other loads it"
+        );
+        assert_eq!(
+            first.0, second.0,
+            "every concurrent caller must return the one persisted device key"
+        );
+        assert_eq!(
+            read_device_key(&paths.device_privkey).unwrap().to_bytes(),
+            first.0,
+            "the final file matches both callers and was never overwritten"
+        );
+        assert_eq!(
+            fs::read(&paths.device_privkey).unwrap().len(),
+            32,
+            "the published final device key is complete"
         );
     }
 

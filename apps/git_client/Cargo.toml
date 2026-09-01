@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "git_client"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # The qOS ACTION model: the client's durable view preferences (diff layout,
 # syntax highlight, whitespace, wrap) are its only shared-document state, and it
@@ -21,7 +25,6 @@ ui = { path = "../../ui" }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

@@ -6,9 +6,7 @@
 //! - Roster/context: `subscribe_context` yielding `ChannelContext` snapshots.
 //! - Signed op stream attribution: `Stream.read()` returns `(op,
 //!   fromUserId)`, decoded by the wrapper.
-//! - Legacy unsigned paths (`send_unsigned_snapshot` /
-//!   `send_unsigned_incremental`) dispatched to the broker verbatim.
-//! - Scrollback: `fetch_scrollback` decodes `ScrollbackBatch`.
+//! - Scrollback: `fetch_scrollback_for` decodes `ScrollbackBatch`.
 //!
 //! No real broker — everything runs against a hand-rolled fake server over
 //! an in-memory `UnixStream` pair.
@@ -41,7 +39,7 @@ use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use runtime_collab::raw::{
-    channel_context, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
+    channel_context, channel_handle, collab_service, context_stream, presence_event,
     presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use runtime_collab::{CollabClient, CollabServiceClient, PresencePayload};
@@ -51,14 +49,14 @@ use runtime_portal::UnixCapnpClient;
 
 #[derive(Default)]
 struct Captures {
-    unsigned_snapshots: Vec<Vec<u8>>,
-    unsigned_incrementals: Vec<Vec<u8>>,
+    presence_pointer: Vec<(Vec<u8>, f32, f32)>,
     presence_caret: Vec<(Vec<u8>, u64)>,
     presence_selection: Vec<(Vec<u8>, u64, u64)>,
+    presence_typing: Vec<(Vec<u8>, u64, u64)>,
     presence_arrived: Vec<Vec<u8>>,
     presence_left: Vec<Vec<u8>>,
     presence_cursor: Vec<(f32, f32)>,
-    scrollback_requests: Vec<(u64, u32)>,
+    scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
 }
 
 type SharedCaptures = Rc<RefCell<Captures>>;
@@ -81,10 +79,52 @@ struct SeedPresence {
 #[derive(Clone)]
 enum PresencePayloadKind {
     Cursor { x: f32, y: f32 },
+    Pointer { x: f32, y: f32 },
     Caret { pos: u64 },
     Selection { start: u64, end: u64 },
+    Typing { start: u64, end: u64 },
     Arrived,
     Left,
+}
+
+fn every_presence_payload() -> Vec<SeedPresence> {
+    vec![
+        SeedPresence {
+            user_id: "alice".into(),
+            key_bytes: b"key-1".to_vec(),
+            payload: PresencePayloadKind::Cursor { x: 12.5, y: -3.0 },
+        },
+        SeedPresence {
+            user_id: "alice-keyed".into(),
+            key_bytes: b"key-pointer".to_vec(),
+            payload: PresencePayloadKind::Pointer { x: 3.5, y: 8.0 },
+        },
+        SeedPresence {
+            user_id: "bob".into(),
+            key_bytes: b"key-2".to_vec(),
+            payload: PresencePayloadKind::Caret { pos: 42 },
+        },
+        SeedPresence {
+            user_id: "carol".into(),
+            key_bytes: b"key-3".to_vec(),
+            payload: PresencePayloadKind::Selection { start: 7, end: 11 },
+        },
+        SeedPresence {
+            user_id: "carol-typing".into(),
+            key_bytes: b"key-typing".to_vec(),
+            payload: PresencePayloadKind::Typing { start: 12, end: 15 },
+        },
+        SeedPresence {
+            user_id: "dave".into(),
+            key_bytes: b"key-4".to_vec(),
+            payload: PresencePayloadKind::Arrived,
+        },
+        SeedPresence {
+            user_id: "eve".into(),
+            key_bytes: b"key-5".to_vec(),
+            payload: PresencePayloadKind::Left,
+        },
+    ]
 }
 
 struct FakePresenceStream {
@@ -112,11 +152,21 @@ impl presence_stream::Server for FakePresenceStream {
                 b.set_x(x);
                 b.set_y(y);
             }
+            PresencePayloadKind::Pointer { x, y } => {
+                let mut b = payload.init_pointer();
+                b.set_x(x);
+                b.set_y(y);
+            }
             PresencePayloadKind::Caret { pos } => {
                 payload.init_caret().set_pos(pos);
             }
             PresencePayloadKind::Selection { start, end } => {
                 let mut b = payload.init_selection();
+                b.set_start(start);
+                b.set_end(end);
+            }
+            PresencePayloadKind::Typing { start, end } => {
+                let mut b = payload.init_typing();
                 b.set_start(start);
                 b.set_end(end);
             }
@@ -127,37 +177,11 @@ impl presence_stream::Server for FakePresenceStream {
     }
 }
 
-// fake cursor stream (schema-v1 path)
-
-struct FakeCursorStream {
-    backlog: Rc<RefCell<Vec<(String, f32, f32)>>>,
-}
-
-impl cursor_stream::Server for FakeCursorStream {
-    fn read(
-        self: Rc<Self>,
-        _params: cursor_stream::ReadParams,
-        mut results: cursor_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let mut backlog = self.backlog.borrow_mut();
-        if backlog.is_empty() {
-            return Promise::err(capnp::Error::failed("cursor backlog exhausted".into()));
-        }
-        let (id, x, y) = backlog.remove(0);
-        let mut r = results.get();
-        r.set_user_id(&id);
-        r.set_x(x);
-        r.set_y(y);
-        Promise::ok(())
-    }
-}
-
 // fake presence handle
 
 struct FakePresence {
     captures: SharedCaptures,
     presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
-    cursor_backlog: Rc<RefCell<Vec<(String, f32, f32)>>>,
 }
 
 impl presence_handle::Server for FakePresence {
@@ -177,15 +201,23 @@ impl presence_handle::Server for FakePresence {
         Promise::ok(())
     }
 
-    fn subscribe_remote_cursors(
+    fn publish_pointer(
         self: Rc<Self>,
-        _params: presence_handle::SubscribeRemoteCursorsParams,
-        mut results: presence_handle::SubscribeRemoteCursorsResults,
+        params: presence_handle::PublishPointerParams,
+        _results: presence_handle::PublishPointerResults,
     ) -> Promise<(), capnp::Error> {
-        let client: cursor_stream::Client = capnp_rpc::new_client(FakeCursorStream {
-            backlog: self.cursor_backlog.clone(),
-        });
-        results.get().set_stream(client);
+        let r = match params.get() {
+            Ok(r) => r,
+            Err(e) => return Promise::err(e),
+        };
+        let key = match r.get_key_bytes() {
+            Ok(b) => b.to_vec(),
+            Err(e) => return Promise::err(e),
+        };
+        self.captures
+            .borrow_mut()
+            .presence_pointer
+            .push((key, r.get_x(), r.get_y()));
         Promise::ok(())
     }
 
@@ -225,6 +257,26 @@ impl presence_handle::Server for FakePresence {
         self.captures
             .borrow_mut()
             .presence_selection
+            .push((key, r.get_start(), r.get_end()));
+        Promise::ok(())
+    }
+
+    fn publish_typing(
+        self: Rc<Self>,
+        params: presence_handle::PublishTypingParams,
+        _results: presence_handle::PublishTypingResults,
+    ) -> Promise<(), capnp::Error> {
+        let r = match params.get() {
+            Ok(r) => r,
+            Err(e) => return Promise::err(e),
+        };
+        let key = match r.get_key_bytes() {
+            Ok(b) => b.to_vec(),
+            Err(e) => return Promise::err(e),
+        };
+        self.captures
+            .borrow_mut()
+            .presence_typing
             .push((key, r.get_start(), r.get_end()));
         Promise::ok(())
     }
@@ -353,7 +405,6 @@ struct FakeChannel {
     captures: SharedCaptures,
     op_backlog: OpBacklog,
     presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
-    cursor_backlog: Rc<RefCell<Vec<(String, f32, f32)>>>,
     context_backlog: Rc<RefCell<Vec<SeedContext>>>,
     scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
 }
@@ -396,35 +447,24 @@ impl channel_handle::Server for FakeChannel {
         let client: presence_handle::Client = capnp_rpc::new_client(FakePresence {
             captures: self.captures.clone(),
             presence_backlog: self.presence_backlog.clone(),
-            cursor_backlog: self.cursor_backlog.clone(),
         });
         results.get().set_handle(client);
         Promise::ok(())
     }
 
-    fn send_unsigned_snapshot(
+    fn retired_unsigned_snapshot(
         self: Rc<Self>,
-        params: channel_handle::SendUnsignedSnapshotParams,
-        _results: channel_handle::SendUnsignedSnapshotResults,
+        _params: channel_handle::RetiredUnsignedSnapshotParams,
+        _results: channel_handle::RetiredUnsignedSnapshotResults,
     ) -> Promise<(), capnp::Error> {
-        let d = match params.get().and_then(runtime_collab::collab_capnp::channel_handle::send_unsigned_snapshot_params::Reader::get_data) {
-            Ok(b) => b.to_vec(),
-            Err(e) => return Promise::err(e),
-        };
-        self.captures.borrow_mut().unsigned_snapshots.push(d);
         Promise::ok(())
     }
 
-    fn send_unsigned_incremental(
+    fn retired_unsigned_incremental(
         self: Rc<Self>,
-        params: channel_handle::SendUnsignedIncrementalParams,
-        _results: channel_handle::SendUnsignedIncrementalResults,
+        _params: channel_handle::RetiredUnsignedIncrementalParams,
+        _results: channel_handle::RetiredUnsignedIncrementalResults,
     ) -> Promise<(), capnp::Error> {
-        let d = match params.get().and_then(runtime_collab::collab_capnp::channel_handle::send_unsigned_incremental_params::Reader::get_data) {
-            Ok(b) => b.to_vec(),
-            Err(e) => return Promise::err(e),
-        };
-        self.captures.borrow_mut().unsigned_incrementals.push(d);
         Promise::ok(())
     }
 
@@ -440,19 +480,21 @@ impl channel_handle::Server for FakeChannel {
         Promise::ok(())
     }
 
-    fn fetch_scrollback(
+    fn fetch_scrollback_for(
         self: Rc<Self>,
-        params: channel_handle::FetchScrollbackParams,
-        mut results: channel_handle::FetchScrollbackResults,
+        params: channel_handle::FetchScrollbackForParams,
+        mut results: channel_handle::FetchScrollbackForResults,
     ) -> Promise<(), capnp::Error> {
         let p = match params.get() {
             Ok(r) => r,
             Err(e) => return Promise::err(e),
         };
-        self.captures
-            .borrow_mut()
-            .scrollback_requests
-            .push((p.get_before_seq(), p.get_max()));
+        self.captures.borrow_mut().scrollback_requests.push((
+            p.get_artifact_id()
+                .map_or_else(|_| Vec::new(), <[u8]>::to_vec),
+            p.get_before_seq(),
+            p.get_max(),
+        ));
         let seed = self
             .scrollback_response
             .borrow()
@@ -485,7 +527,6 @@ struct FakeBroker {
     captures: SharedCaptures,
     op_backlog: Vec<(Vec<u8>, String)>,
     presence_backlog: Vec<SeedPresence>,
-    cursor_backlog: Vec<(String, f32, f32)>,
     context_backlog: Vec<SeedContext>,
     scrollback_response: Option<SeedScrollback>,
 }
@@ -500,7 +541,6 @@ impl collab_service::Server for FakeBroker {
             captures: self.captures.clone(),
             op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
             presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
-            cursor_backlog: Rc::new(RefCell::new(self.cursor_backlog.clone())),
             context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
             scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
         };
@@ -542,40 +582,10 @@ async fn presence_variants_publish_and_stream_round_trip() {
         .run_until(async {
             let captures = Rc::new(RefCell::new(Captures::default()));
 
-            // Seed one of each payload variant for full-variant coverage on `subscribe_all`.
-            let presence_backlog = vec![
-                SeedPresence {
-                    user_id: "alice".into(),
-                    key_bytes: b"key-1".to_vec(),
-                    payload: PresencePayloadKind::Cursor { x: 12.5, y: -3.0 },
-                },
-                SeedPresence {
-                    user_id: "bob".into(),
-                    key_bytes: b"key-2".to_vec(),
-                    payload: PresencePayloadKind::Caret { pos: 42 },
-                },
-                SeedPresence {
-                    user_id: "carol".into(),
-                    key_bytes: b"key-3".to_vec(),
-                    payload: PresencePayloadKind::Selection { start: 7, end: 11 },
-                },
-                SeedPresence {
-                    user_id: "dave".into(),
-                    key_bytes: b"key-4".to_vec(),
-                    payload: PresencePayloadKind::Arrived,
-                },
-                SeedPresence {
-                    user_id: "eve".into(),
-                    key_bytes: b"key-5".to_vec(),
-                    payload: PresencePayloadKind::Left,
-                },
-            ];
-
             let broker = FakeBroker {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),
-                presence_backlog,
-                cursor_backlog: Vec::new(),
+                presence_backlog: every_presence_payload(),
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
@@ -585,16 +595,26 @@ async fn presence_variants_publish_and_stream_round_trip() {
 
             // Publish every variant.
             presence.publish_cursor(1.5, 2.5).await.unwrap();
+            presence
+                .publish_pointer(b"art-pointer", 4.0, 5.0)
+                .await
+                .unwrap();
             presence.publish_caret(b"art-a", 100).await.unwrap();
             presence.publish_selection(b"art-b", 3, 9).await.unwrap();
+            presence.publish_typing(b"art-typing", 6, 10).await.unwrap();
             presence.publish_arrived(b"art-c").await.unwrap();
             presence.publish_left(b"art-d").await.unwrap();
 
             {
                 let c = captures.borrow();
                 assert_eq!(c.presence_cursor, vec![(1.5, 2.5)]);
+                assert_eq!(
+                    c.presence_pointer,
+                    vec![(b"art-pointer".to_vec(), 4.0, 5.0)]
+                );
                 assert_eq!(c.presence_caret, vec![(b"art-a".to_vec(), 100)]);
                 assert_eq!(c.presence_selection, vec![(b"art-b".to_vec(), 3, 9)]);
+                assert_eq!(c.presence_typing, vec![(b"art-typing".to_vec(), 6, 10)]);
                 assert_eq!(c.presence_arrived, vec![b"art-c".to_vec()]);
                 assert_eq!(c.presence_left, vec![b"art-d".to_vec()]);
             }
@@ -609,38 +629,44 @@ async fn presence_variants_publish_and_stream_round_trip() {
             assert_eq!(e1.payload, PresencePayload::Cursor { x: 12.5, y: -3.0 });
 
             let e2 = stream.read().await.unwrap();
-            assert_eq!(e2.user_id, "bob");
-            assert_eq!(e2.payload, PresencePayload::Caret { pos: 42 });
+            assert_eq!(e2.user_id, "alice-keyed");
+            assert_eq!(e2.key_bytes, b"key-pointer");
+            assert_eq!(e2.payload, PresencePayload::Pointer { x: 3.5, y: 8.0 });
 
             let e3 = stream.read().await.unwrap();
-            assert_eq!(e3.user_id, "carol");
-            assert_eq!(e3.payload, PresencePayload::Selection { start: 7, end: 11 });
+            assert_eq!(e3.user_id, "bob");
+            assert_eq!(e3.payload, PresencePayload::Caret { pos: 42 });
 
             let e4 = stream.read().await.unwrap();
-            assert_eq!(e4.user_id, "dave");
-            assert_eq!(e4.payload, PresencePayload::Arrived);
+            assert_eq!(e4.user_id, "carol");
+            assert_eq!(e4.payload, PresencePayload::Selection { start: 7, end: 11 });
 
             let e5 = stream.read().await.unwrap();
-            assert_eq!(e5.user_id, "eve");
-            assert_eq!(e5.payload, PresencePayload::Left);
+            assert_eq!(e5.user_id, "carol-typing");
+            assert_eq!(e5.key_bytes, b"key-typing");
+            assert_eq!(e5.payload, PresencePayload::Typing { start: 12, end: 15 });
+
+            let e6 = stream.read().await.unwrap();
+            assert_eq!(e6.user_id, "dave");
+            assert_eq!(e6.payload, PresencePayload::Arrived);
+
+            let e7 = stream.read().await.unwrap();
+            assert_eq!(e7.user_id, "eve");
+            assert_eq!(e7.payload, PresencePayload::Left);
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn backward_compat_publish_cursor_and_cursor_stream_still_work() {
-    // Guards `PresenceHandle::publish_cursor` + `subscribe_remote_cursors`
-    // against drift from the schema v2 additions.
+async fn keyless_publish_cursor_still_works() {
     let local = LocalSet::new();
     local
         .run_until(async {
             let captures = Rc::new(RefCell::new(Captures::default()));
-            let cursor_backlog = vec![("peer-x".to_string(), 4.0, 5.0)];
             let broker = FakeBroker {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),
                 presence_backlog: Vec::new(),
-                cursor_backlog,
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
@@ -654,11 +680,6 @@ async fn backward_compat_publish_cursor_and_cursor_stream_still_work() {
                 vec![(11.0, 22.0)],
                 "publish_cursor kept @0 semantics"
             );
-
-            let cursors = presence.subscribe_remote_cursors().await.unwrap();
-            let u = cursors.read().await.unwrap();
-            assert_eq!(u.user_id, "peer-x");
-            assert_eq!((u.x, u.y), (4.0, 5.0));
         })
         .await;
 }
@@ -686,7 +707,6 @@ async fn subscribe_context_delivers_typed_snapshot() {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),
                 presence_backlog: Vec::new(),
-                cursor_backlog: Vec::new(),
                 context_backlog,
                 scrollback_response: None,
             };
@@ -723,7 +743,6 @@ async fn op_stream_carries_from_user_id() {
                 captures: captures.clone(),
                 op_backlog,
                 presence_backlog: Vec::new(),
-                cursor_backlog: Vec::new(),
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
@@ -738,43 +757,6 @@ async fn op_stream_carries_from_user_id() {
             let ev2 = stream.read().await.unwrap();
             assert_eq!(ev2.op, b"second-op");
             assert_eq!(ev2.from_user_id, "peer-42");
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn legacy_unsigned_paths_reach_broker() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let captures = Rc::new(RefCell::new(Captures::default()));
-            let broker = FakeBroker {
-                captures: captures.clone(),
-                op_backlog: Vec::new(),
-                presence_backlog: Vec::new(),
-                cursor_backlog: Vec::new(),
-                context_backlog: Vec::new(),
-                scrollback_response: None,
-            };
-            let collab = stand_up_client(broker);
-            let channel = collab.join_channel("c", b"id").await.unwrap();
-
-            channel.send_unsigned_snapshot(b"full-doc").await.unwrap();
-            channel
-                .send_unsigned_incremental(b"change-1")
-                .await
-                .unwrap();
-            channel
-                .send_unsigned_incremental(b"change-2")
-                .await
-                .unwrap();
-
-            let c = captures.borrow();
-            assert_eq!(c.unsigned_snapshots, vec![b"full-doc".to_vec()]);
-            assert_eq!(
-                c.unsigned_incrementals,
-                vec![b"change-1".to_vec(), b"change-2".to_vec()]
-            );
         })
         .await;
 }
@@ -795,14 +777,17 @@ async fn fetch_scrollback_round_trip_full_batch() {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),
                 presence_backlog: Vec::new(),
-                cursor_backlog: Vec::new(),
                 context_backlog: Vec::new(),
                 scrollback_response,
             };
             let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
-            let batch = channel.fetch_scrollback(50, 25).await.unwrap();
+            let artifact_id = [7_u8; 16];
+            let batch = channel
+                .fetch_scrollback_for(&artifact_id, 50, 25)
+                .await
+                .unwrap();
             assert_eq!(
                 batch.ops,
                 vec![b"op-a".to_vec(), b"op-b".to_vec(), b"op-c".to_vec()]
@@ -810,7 +795,10 @@ async fn fetch_scrollback_round_trip_full_batch() {
             assert_eq!(batch.earliest_seq, 7);
             assert_eq!(batch.latest_seq, 9);
             assert!(!batch.done);
-            assert_eq!(captures.borrow().scrollback_requests, vec![(50, 25)]);
+            assert_eq!(
+                captures.borrow().scrollback_requests,
+                vec![(artifact_id.to_vec(), 50, 25)]
+            );
         })
         .await;
 }
@@ -827,14 +815,16 @@ async fn fetch_scrollback_empty_done_batch_decodes() {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),
                 presence_backlog: Vec::new(),
-                cursor_backlog: Vec::new(),
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
             let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
-            let batch = channel.fetch_scrollback(0, 10).await.unwrap();
+            let batch = channel
+                .fetch_scrollback_for(&[8_u8; 16], 0, 10)
+                .await
+                .unwrap();
             assert!(batch.ops.is_empty());
             assert!(batch.done);
             assert_eq!(batch.earliest_seq, 0);

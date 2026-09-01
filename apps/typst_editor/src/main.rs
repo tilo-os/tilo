@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -54,103 +55,55 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// # Errors
 /// Returns an error when the `--shots` path fails to lay out or render the
 /// offscreen frame (a taffy layout error, or an I/O failure writing the PNG).
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // The offscreen screenshot path uses the bundled demo documents so the
-        // capture is hermetic and deterministic; the live app reads the user's
-        // real document library instead.
-        let root = match parse_scenario_arg(&args) {
-            Some(scenario) => typst_editor::demo_root_scenario(&scenario),
-            None => typst_editor::demo_root(),
-        };
-        let theme = match parse_theme_arg(&args).as_deref() {
-            Some("light") => Theme::light(),
-            _ => Theme::dark(),
-        };
-        render_shot_to_png(root, viewport, &theme, &out)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            typst_editor::app_root(),
-            "dev.qos.typst-editor",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.typst-editor");
-    let app = ui::App::new(state, typst_editor::app_root()).with_autosave(autosave);
-    app.run();
-    Ok(())
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new("dev.qos.typst-editor", typst_editor::app_root)
+            .shot_handler(shot_handler)
+            .allowed_options(&["--theme"])
+            .scenarios(&[
+                "preview",
+                "menu",
+                "problems",
+                "scrolled",
+                "errors",
+                "editor-select",
+                "preview-zoom",
+                "preview-pan",
+                "select",
+                "stale",
+                "status",
+            ]),
+    );
 }
 
-/// Parse an optional `--viewport WxH` (shots-only) that overrides the default
-/// capture size. Purely a screenshot affordance — it never affects the live
-/// event loop, which sizes itself to the window.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--viewport" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--viewport=") {
-            break rest.to_string();
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
+    let root = args
+        .scenario
+        .as_deref()
+        .map_or_else(typst_editor::demo_root, typst_editor::demo_root_scenario);
+    let theme = match args.value("--theme") {
+        Some("light") => Theme::light(),
+        Some("dark") | None => Theme::dark(),
+        Some(name) => {
+            return Err(LaunchError::Scenario(format!(
+                "unknown screenshot theme {name:?}; expected \"light\" or \"dark\""
+            )));
         }
     };
-    let (w, h) = raw.split_once(['x', 'X', '×'])?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-}
-
-/// Parse an optional `--scenario NAME` (shots-only) used to pre-arrange the
-/// captured state. Never consulted by the live event loop.
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    loop {
-        let arg = iter.next()?;
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
-    }
-}
-
-/// Parse an optional `--theme light|dark` (shots-only) so a capture can be
-/// graded in both themes. Never consulted by the live event loop.
-fn parse_theme_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    loop {
-        let arg = iter.next()?;
-        if arg == "--theme" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--theme=") {
-            return Some(rest.to_string());
-        }
-    }
-}
-
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
+    render_shot_to_png(
+        root,
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        &theme,
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

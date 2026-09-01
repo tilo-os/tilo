@@ -148,7 +148,7 @@ fn render_at_tab(tree: &WorkspaceTree, tab: WsTab) -> (ShellOverlayHost, Chrome,
 fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
     use automerge::AutoCommit;
     let mut tree = TaffyTree::<()>::new();
-    let node = tree.new_leaf(Default::default()).unwrap();
+    let node = tree.new_leaf(Style::default()).unwrap();
     let mut handled = false;
     let mut focus_target = None;
     let mut doc = AutoCommit::new();
@@ -215,6 +215,11 @@ fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
 // The Permissions tab is always reachable
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing t via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before t's last use"
+)]
 fn the_permissions_pill_is_painted_on_a_workspace_with_no_grants() {
     // The pill must be on screen for an empty workspace, so a host can
     // grant proactively rather than only in response to a portal prompt.
@@ -303,6 +308,11 @@ fn permissions_tab_renders_one_row_per_capability() {
 // Granting
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing t via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before t's last use"
+)]
 fn clicking_grant_writes_a_capability_the_decision_function_honours() {
     let tree = tree_with_grants(vec![(
         "firefox",
@@ -497,6 +507,11 @@ fn the_members_tab_renders_the_roster_with_controls() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing t via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before t's last use"
+)]
 fn clicking_a_role_chip_changes_what_the_member_may_do() {
     let tree = tree_with_members();
     let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
@@ -545,6 +560,11 @@ fn clicking_a_role_chip_changes_what_the_member_may_do() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing t via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before t's last use"
+)]
 fn removing_a_member_takes_their_capabilities_with_them() {
     let mut tree = tree_with_members();
     let owner = shell::shell::state::local_user_id();
@@ -605,6 +625,11 @@ fn a_non_owner_cannot_change_a_role_or_remove_a_member() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing t via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before t's last use"
+)]
 fn the_owner_row_offers_no_role_change_and_no_removal() {
     // The recorded owner is the workspace's root of trust and `role_of`
     // short-circuits to Owner for them, so a control that appeared to

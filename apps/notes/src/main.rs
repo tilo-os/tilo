@@ -33,69 +33,81 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+
+const SHOT_SCENARIOS: &[&str] = &[
+    "first_note",
+    "drawer",
+    "drag",
+    "menu",
+    "rename",
+    "rename_commit",
+    "slash",
+    "slash_applied",
+    "heading",
+    "title_edit",
+    "recipes",
+    "formula",
+    "status",
+    "presence",
+];
 
 /// # Errors
 ///
 /// Returns an error if `--shots` mode fails to render, or if the app fails
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    // Headless snapshot mode: `--shots <file.png>` (optionally with
-    // `--viewport WxH`) renders one offscreen frame and exits, so the
-    // whole UI can be reviewed without a window.
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_flag(&args, "--shots") {
-        let viewport = parse_flag(&args, "--viewport")
-            .and_then(|v| shots::parse_viewport(&v))
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // `--scenario <name>` drives the app into an interaction state
-        // before the snapshot: `drawer` (narrow page drawer), `drag`
-        // (mid-drag ghost + reflow), `menu` (row context menu), `slash`
-        // (editor block menu).
-        let scenario = parse_flag(&args, "--scenario");
-        shots::render_to_path(viewport, std::path::Path::new(&out), scenario.as_deref())?;
-        return Ok(());
-    }
-
-    // Per-peer identity. The same id drives (a) the Automerge actor so
-    // two instances are distinct CRDT authors, (b) the broker's presence
-    // attribution, and (c) the per-peer presence colour. A missing
-    // QUICK_APP_ID falls back to a random id so two un-configured
-    // instances still get distinct actors.
-    let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
-
-    let mut app_widget = NotesApp::spawn_default()?;
-    // Attribute this instance's edits to `app_id` so peers can highlight
-    // "what they wrote" in this user's color.
-    app_widget.set_local_author(Some(app_id.clone()));
-    let mut state = ui::State::new();
-    state
-        .doc
-        .set_actor(automerge::ActorId::from(app_id.as_bytes()));
-
-    let mut app = ui::App::new(state, Box::new(app_widget));
-    // Register Notes' action decoders so the Ctrl+K palette and remote replay
-    // can decode every page-tree mutation this app dispatches.
-    notes::actions::register(app.action_registry_mut());
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new_with_args("dev.qos.notes", live_root)
+            .open_state_with_args(open_state)
+            .shot_handler(render_shot)
+            .scenarios(SHOT_SCENARIOS)
+            .configure_app(configure_app),
+    )?;
     Ok(())
 }
 
-/// Read `--name value` or `--name=value` out of `args`. Returns the
-/// value string if present.
-fn parse_flag(args: &[String], name: &str) -> Option<String> {
-    let prefix = format!("{name}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == name {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&prefix) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+fn peer_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+    })
+}
+
+fn live_root(_args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
+    let mut app = NotesApp::spawn_default().map_err(LaunchError::Operation)?;
+    app.set_local_author(Some(peer_id().to_owned()));
+    Ok(Box::new(app))
+}
+
+fn open_state(_app_id: &'static str, _args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    let mut state = ui::State::new();
+    state
+        .doc
+        .set_actor(automerge::ActorId::from(peer_id().as_bytes()));
+    (
+        state,
+        ui::persist::Autosave::disabled("Notes owns its workspace persistence"),
+    )
+}
+
+fn configure_app(app: &mut ui::App) {
+    notes::actions::register(app.action_registry_mut());
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("Notes screenshot handler called without --shots".into())
+    })?;
+    shots::render_to_path(
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        out,
+        args.scenario.as_deref(),
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }

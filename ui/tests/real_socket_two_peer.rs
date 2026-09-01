@@ -13,7 +13,7 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::support::typed_collab::TypedBroker;
+use crate::support::{document_mutation, typed_collab::TypedBroker};
 use ui::collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, PresencePayload, RouteSpec,
 };
@@ -27,7 +27,7 @@ fn typed_socket_fans_out_incremental_and_presence() {
     let mut peer_b = broker.manager("peer-b");
     thread::sleep(Duration::from_millis(100));
 
-    peer_a.send(CollabRequest::SyncIncremental {
+    peer_a.send(CollabRequest::DocumentIncremental {
         data: b"hello".to_vec(),
     });
     thread::sleep(Duration::from_millis(100));
@@ -35,17 +35,23 @@ fn typed_socket_fans_out_incremental_and_presence() {
     assert_eq!(
         events
             .iter()
-            .filter(
-                |event| matches!(event, CollabEvent::CRDTIncremental { data } if data == b"hello")
-            )
+            .filter(|event| {
+                matches!(
+                    document_mutation(event),
+                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
+                )
+            })
             .count(),
         1,
         "peer B receives the incremental exactly once: {events:?}",
     );
     assert!(
-        peer_a.poll().iter().all(
-            |event| !matches!(event, CollabEvent::CRDTIncremental { data } if data == b"hello")
-        ),
+        peer_a.poll().iter().all(|event| {
+            !matches!(
+                document_mutation(event),
+                Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
+            )
+        }),
         "the sender is not echoed"
     );
 
@@ -79,16 +85,18 @@ fn route_specific_send_never_leaks_onto_the_primary_route() {
 
     sender.send_to_route(
         RouteSpec::app("photos", Uuid::nil()),
-        CollabRequest::SyncIncremental {
+        CollabRequest::DocumentIncremental {
             data: b"photo-edit".to_vec(),
         },
     );
     thread::sleep(Duration::from_millis(100));
 
-    assert!(photos.poll().iter().any(
-        |event| matches!(event, CollabEvent::CRDTIncremental { data } if data == b"photo-edit")
-    ));
-    assert!(primary_observer.poll().iter().all(
-        |event| !matches!(event, CollabEvent::CRDTIncremental { data } if data == b"photo-edit")
-    ));
+    assert!(photos.poll().iter().any(|event| matches!(
+        document_mutation(event),
+        Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
+    )));
+    assert!(primary_observer.poll().iter().all(|event| !matches!(
+        document_mutation(event),
+        Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
+    )));
 }

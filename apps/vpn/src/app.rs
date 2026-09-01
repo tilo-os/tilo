@@ -21,10 +21,13 @@ use winit::keyboard::{Key, NamedKey};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::icons::Icon;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
+use ui::widget::{
+    Button, ButtonFace, EmptyState, ModalDialog, TextInput, Toggle, ToggleFace, Widget,
+};
 
 use crate::actions::{self, VPN_ACTION_TYPE};
 use crate::config::{self, CommandPlan};
@@ -33,7 +36,6 @@ use crate::model::{
     ConnId, ConnKind, ConnStatus, Connection, Vault, human_ago, sample_vault, stub_connection,
 };
 use crate::net::{self, Transfer};
-use crate::portal::{self, ImportOutcome};
 use crate::throughput;
 
 /// One real byte-counter reading of a connected tunnel, timestamped so a
@@ -107,6 +109,23 @@ impl TransferHistory {
 
 const HEADER_H: f64 = 72.0;
 const LIST_W: f64 = 440.0;
+
+fn tunnel_import_request(kind: ConnKind) -> PickRequest {
+    let (title, filter) = match kind {
+        ConnKind::WireGuard => (
+            "Import WireGuard tunnel",
+            FileFilter::new("WireGuard (.conf)").glob("*.conf"),
+        ),
+        ConnKind::OpenVpn => (
+            "Import OpenVPN tunnel",
+            FileFilter::new("OpenVPN (.ovpn)").glob("*.ovpn"),
+        ),
+    };
+    PickRequest::open(title, "Import")
+        .thread_name("vpn-portal-import")
+        .filter(filter)
+        .all_files()
+}
 const ROW_H: f64 = 74.0;
 const ROW_GAP: f64 = 8.0;
 
@@ -142,13 +161,6 @@ enum Modal {
     None,
     Add,
     Confirm,
-}
-
-/// Which add-form field has keyboard focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AddField {
-    Name,
-    Endpoint,
 }
 
 /// The live confirm dialog: the shared [`ModalDialog`] hosting a [`ConfirmBody`]
@@ -312,16 +324,15 @@ pub struct VpnApp {
     /// `modal == Modal::Confirm` and torn down when it resolves.
     confirm_dialog: Option<ConfirmDlg>,
     add_kind: ConnKind,
-    add_name: String,
-    add_endpoint: String,
-    add_focus: AddField,
+    add_name: TextInput,
+    add_endpoint: TextInput,
     pending: Option<Pending>,
     /// Most recent action results, newest last. Starts empty — populated
     /// only by real user actions (imports, connect attempts).
     activity: Vec<String>,
     /// In-flight XDG-portal file import, drained once per frame. `None` when
     /// idle.
-    import_rx: Option<portal::ImportChannel>,
+    import_rx: Option<PortalChannel>,
     /// Which protocol the pending import was requested for (seeds the parser
     /// when the chosen file has an ambiguous extension).
     import_hint: ConnKind,
@@ -379,9 +390,8 @@ impl VpnApp {
             modal: Modal::None,
             confirm_dialog: None,
             add_kind: ConnKind::WireGuard,
-            add_name: String::new(),
-            add_endpoint: String::new(),
-            add_focus: AddField::Name,
+            add_name: TextInput::local().with_font_size(13.0),
+            add_endpoint: TextInput::local().with_font_size(13.0),
             pending: None,
             activity: Vec::new(),
             import_rx: None,
@@ -550,6 +560,11 @@ impl VpnApp {
         }
     }
 
+    /// Open the shared-field Add form for a deterministic screenshot.
+    pub fn seed_shot_add(&mut self) {
+        self.open_add(ConnKind::WireGuard);
+    }
+
     fn request_toggle(&mut self, id: ConnId) {
         let Some(c) = self.vault.get(id) else { return };
         let backend = config::default_backend(c.kind);
@@ -611,10 +626,12 @@ impl VpnApp {
                 Ok(out) => {
                     // The routing command is the external side effect; flipping
                     // the stored preference is the action (undo + replay for free).
-                    self.actions.dispatch(
+                    let action = actions::set_tor_global_action(on);
+                    self.actions.dispatch_with_context(
                         doc,
                         VPN_ACTION_TYPE,
-                        &actions::set_tor_global_action(on),
+                        &action,
+                        qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
                     );
                     self.log(format!("$ {}  → ok {}", plan.display(), out));
                 }
@@ -644,7 +661,7 @@ impl VpnApp {
             return;
         }
         self.import_hint = kind;
-        self.import_rx = Some(portal::request_import(kind));
+        self.import_rx = Some(tunnel_import_request(kind).send());
         self.log(format!("choose a .{} file to import…", kind.ext()));
     }
 
@@ -665,7 +682,7 @@ impl VpnApp {
         };
         self.import_rx = None;
         match outcome {
-            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let stem = path
                         .file_stem()
@@ -710,10 +727,12 @@ impl VpnApp {
                     // NetworkManager import above is the external side effect;
                     // adding the resulting profile to the shared document is the
                     // same action the add form dispatches — one source of truth.
-                    self.actions.dispatch(
+                    let action = actions::add_connection_action(conn);
+                    self.actions.dispatch_with_context(
                         doc,
                         VPN_ACTION_TYPE,
-                        &actions::add_connection_action(conn),
+                        &action,
+                        qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
                     );
                     self.refresh(doc);
                     self.select(doc, id);
@@ -724,8 +743,8 @@ impl VpnApp {
                     true
                 }
             },
-            ImportOutcome::Cancelled => false,
-            ImportOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => false,
+            PortalOutcome::Failed(reason) => {
                 self.log(format!("import failed: {reason}"));
                 true
             }
@@ -734,33 +753,43 @@ impl VpnApp {
 
     pub(crate) fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
         let next = self.vault.get(id).is_none_or(|c| !c.tor);
-        self.actions.dispatch(
+        let action = actions::set_conn_tor_action(id, next);
+        self.actions.dispatch_with_context(
             doc,
             VPN_ACTION_TYPE,
-            &actions::set_conn_tor_action(id, next),
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
         );
         self.refresh(doc);
     }
 
     fn open_add(&mut self, kind: ConnKind) {
         self.add_kind = kind;
-        self.add_name.clear();
-        self.add_endpoint.clear();
-        self.add_focus = AddField::Name;
+        self.add_name.set_text("");
+        self.add_endpoint.set_text("");
+        self.add_name.set_focus(true);
+        self.add_endpoint.set_focus(false);
         self.modal = Modal::Add;
     }
 
     pub(crate) fn commit_add(&mut self, doc: &mut AutoCommit) {
         // Build the profile from the form (shared with the palette's add action),
         // then filling in the one field only the form carries: the endpoint.
-        let mut c = stub_connection(&self.add_name, self.add_kind);
-        c.endpoint = self.add_endpoint.trim().to_string();
+        let mut c = stub_connection(self.add_name.value(), self.add_kind);
+        c.endpoint = self.add_endpoint.value().trim().to_string();
         let name = c.name.clone();
         let id = c.id;
         // Dispatch the SAME action the Ctrl+K "Add … connection" entry does.
-        self.actions
-            .dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(c));
+        let action = actions::add_connection_action(c);
+        self.actions.dispatch_with_context(
+            doc,
+            VPN_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
+        );
         self.modal = Modal::None;
+        self.add_name.set_focus(false);
+        self.add_endpoint.set_focus(false);
         self.refresh(doc);
         self.select(doc, id);
         self.activity
@@ -841,7 +870,9 @@ impl VpnApp {
         // Modal card (centered).
         let modal_card = {
             let w = 480.0;
-            let h = 300.0;
+            // Two labelled 34px fields plus the import tip and button row do
+            // not fit in 300px without the tip overlapping the endpoint.
+            let h = 330.0;
             let cx = r.center().x;
             let cy = r.center().y;
             Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
@@ -1077,8 +1108,26 @@ impl VpnApp {
         );
 
         // Compact import buttons.
-        self.draw_secondary_button(scene, tr, t, theme, lay.imp_conf, "Import .conf");
-        self.draw_secondary_button(scene, tr, t, theme, lay.imp_ovpn, "Import .ovpn");
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(lay.imp_conf, "Import .conf")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .hovered(point_in(lay.imp_conf, self.last_mouse)),
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(lay.imp_ovpn, "Import .ovpn")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .hovered(point_in(lay.imp_ovpn, self.last_mouse)),
+        );
 
         // Tor global pill.
         Self::draw_pill_toggle(
@@ -1092,59 +1141,17 @@ impl VpnApp {
         );
 
         // Add button (accent).
-        let hov = point_in(lay.add_btn, self.last_mouse);
-        let bg = if hov {
-            theme.tokens.colors.accent[4]
-        } else {
-            theme.tokens.colors.accent[5]
-        };
-        fill_round(scene, t, lay.add_btn, f64::from(theme.tokens.radii.md), bg);
-        text_center(
+        Button::paint(
+            scene,
+            t,
             tr,
-            scene,
-            t,
-            "+ Add tunnel",
-            13.0,
-            Color::WHITE,
-            lay.add_btn,
-            TextWeight::Semibold,
-        );
-    }
-
-    /// A compact bordered secondary button (used by the header import actions).
-    fn draw_secondary_button(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        r: Rect,
-        label: &str,
-    ) {
-        let hov = point_in(r, self.last_mouse);
-        let bg = if hov {
-            theme.tokens.colors.surface_white_10
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
-        stroke_round(
-            scene,
-            t,
-            r,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.border_standard,
-            1.0,
-        );
-        text_center(
-            tr,
-            scene,
-            t,
-            label,
-            12.0,
-            theme.text_primary,
-            r,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(lay.add_btn, "+ Add tunnel")
+                .primary()
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(13.0)
+                .weight(TextWeight::Semibold)
+                .hovered(point_in(lay.add_btn, self.last_mouse)),
         );
     }
 
@@ -1243,7 +1250,7 @@ impl VpnApp {
             };
             let selected = self.vault.selected == Some(*id);
             let hovered = self.hovered_row == Some(*id);
-            self.draw_list_row(scene, tr, t, theme, c, row, toggle, selected, hovered);
+            Self::draw_list_row(scene, tr, t, theme, c, row, toggle, selected, hovered);
         }
     }
 
@@ -1256,7 +1263,6 @@ impl VpnApp {
         reason = "one list row is scene + renderer + transform + theme + the connection + its two laid-out rects + selection/hover state; grouping into a struct would only move the fields, not reduce them"
     )]
     fn draw_list_row(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -1390,7 +1396,7 @@ impl VpnApp {
         };
         let dinner = Rect::new(d.x0 + 24.0, d.y0 + 24.0, d.x1 - 24.0, d.y1 - 24.0);
 
-        self.draw_detail_header(scene, tr, t, theme, dinner, c);
+        Self::draw_detail_header(scene, tr, t, theme, dinner, c);
         self.draw_detail_connect_button(scene, tr, t, theme, lay, c);
         self.draw_detail_tabs(scene, tr, t, theme, lay);
 
@@ -1442,7 +1448,6 @@ impl VpnApp {
     /// The title, status pill and endpoint subtitle at the top of the detail
     /// pane. Split out of [`Self::draw_detail`].
     fn draw_detail_header(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -1525,45 +1530,20 @@ impl VpnApp {
         lay: &LayoutRects,
         c: &Connection,
     ) {
-        let hov = point_in(lay.connect_btn, self.last_mouse);
-        let (bg, fg, label) = if c.is_connected() {
-            (
-                theme
-                    .tokens
-                    .colors
-                    .semantic
-                    .danger
-                    .multiply_alpha(if hov { 1.0 } else { 0.9 }),
-                Color::WHITE,
-                "Disconnect",
-            )
+        let face = if c.is_connected() {
+            ButtonFace::new(lay.connect_btn, "Disconnect").danger()
         } else {
-            (
-                if hov {
-                    theme.tokens.colors.accent[4]
-                } else {
-                    theme.tokens.colors.accent[5]
-                },
-                Color::WHITE,
-                "Connect",
-            )
+            ButtonFace::new(lay.connect_btn, "Connect").primary()
         };
-        fill_round(
+        Button::paint(
             scene,
             t,
-            lay.connect_btn,
-            f64::from(theme.tokens.radii.md),
-            bg,
-        );
-        text_center(
             tr,
-            scene,
-            t,
-            label,
-            14.0,
-            fg,
-            lay.connect_btn,
-            TextWeight::Semibold,
+            theme,
+            &face
+                .radius(f64::from(theme.tokens.radii.md))
+                .weight(TextWeight::Semibold)
+                .hovered(point_in(lay.connect_btn, self.last_mouse)),
         );
     }
 
@@ -2027,14 +2007,15 @@ impl VpnApp {
         }
     }
 
-    /// Draw the hand-rolled Add form modal (scrim + card + fields). The Confirm
-    /// modal is drawn via the shared [`ModalDialog`] in `draw`.
+    /// Draw the Add form's custom scrim/card around shared text fields. The
+    /// action-confirm modal is entirely owned by [`ModalDialog`] in `draw`.
     fn draw_add_modal_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
+        presence: &PresenceCtx,
         lay: &LayoutRects,
     ) {
         if self.modal != Modal::Add {
@@ -2064,15 +2045,16 @@ impl VpnApp {
             theme.tokens.colors.border_white_20,
             1.0,
         );
-        self.draw_add_modal(scene, tr, t, theme, card);
+        self.draw_add_modal(scene, tr, t, theme, presence, card);
     }
 
     fn draw_add_modal(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
+        presence: &PresenceCtx,
         card: Rect,
     ) {
         let x = card.x0 + 28.0;
@@ -2099,8 +2081,8 @@ impl VpnApp {
             TextWeight::Bold,
         );
         self.draw_add_kind_selector(scene, tr, t, theme, card, x);
-        self.draw_add_fields(scene, tr, t, theme, card);
-        Self::draw_add_modal_footer(scene, tr, t, theme, card);
+        self.draw_add_fields(scene, tr, t, theme, presence, card);
+        self.draw_add_modal_footer(scene, tr, t, theme, card);
     }
 
     /// The `WireGuard`/`OpenVPN` segmented protocol selector in the add
@@ -2167,6 +2149,43 @@ impl VpnApp {
     /// The Name/Endpoint fields in the add modal. Split out of
     /// [`Self::draw_add_modal`].
     fn draw_add_fields(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        card: Rect,
+    ) {
+        let x = card.x0 + 28.0;
+        let width = card.width() - 56.0;
+        for (label, y, input) in [
+            ("Name", card.y0 + 128.0, &mut self.add_name),
+            (
+                "Endpoint (host:port)",
+                card.y0 + 186.0,
+                &mut self.add_endpoint,
+            ),
+        ] {
+            text_w(
+                tr,
+                scene,
+                t,
+                label,
+                11.0,
+                theme.text_dim,
+                x,
+                y,
+                TextWeight::Bold,
+            );
+            input.apply_layout_external(Rect::new(x, y + 18.0, x + width, y + 52.0));
+            input.draw(scene, t, tr, theme, presence);
+        }
+    }
+
+    /// The Cancel/Save buttons and the import-tip line at the bottom of the
+    /// add modal. Split out of [`Self::draw_add_modal`].
+    fn draw_add_modal_footer(
         &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -2174,90 +2193,28 @@ impl VpnApp {
         theme: &Theme,
         card: Rect,
     ) {
-        Self::draw_field(
+        let (cancel, save) = add_modal_button_rects(card);
+        Button::paint(
             scene,
-            tr,
             t,
+            tr,
             theme,
-            "Name",
-            &self.add_name,
-            card.x0 + 28.0,
-            card.y0 + 128.0,
-            card.width() - 56.0,
-            self.add_focus == AddField::Name,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(13.0)
+                .hovered(point_in(cancel, self.last_mouse)),
         );
-        Self::draw_field(
+        Button::paint(
             scene,
-            tr,
             t,
+            tr,
             theme,
-            "Endpoint (host:port)",
-            &self.add_endpoint,
-            card.x0 + 28.0,
-            card.y0 + 186.0,
-            card.width() - 56.0,
-            self.add_focus == AddField::Endpoint,
-        );
-    }
-
-    /// The Cancel/Save buttons and the import-tip line at the bottom of the
-    /// add modal. Split out of [`Self::draw_add_modal`].
-    fn draw_add_modal_footer(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        card: Rect,
-    ) {
-        let by = card.y1 - 52.0;
-        let cancel = Rect::new(
-            card.x1 - 28.0 - 200.0,
-            by,
-            card.x1 - 28.0 - 110.0,
-            by + 36.0,
-        );
-        let save = Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0);
-        fill_round(
-            scene,
-            t,
-            cancel,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.surfaces.base,
-        );
-        stroke_round(
-            scene,
-            t,
-            cancel,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.border_standard,
-            1.0,
-        );
-        text_center(
-            tr,
-            scene,
-            t,
-            "Cancel",
-            13.0,
-            theme.text_primary,
-            cancel,
-            TextWeight::Medium,
-        );
-        fill_round(
-            scene,
-            t,
-            save,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.accent[5],
-        );
-        text_center(
-            tr,
-            scene,
-            t,
-            "Save",
-            13.0,
-            Color::WHITE,
-            save,
-            TextWeight::Semibold,
+            &ButtonFace::new(save, "Save")
+                .primary()
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(13.0)
+                .weight(TextWeight::Semibold)
+                .hovered(point_in(save, self.last_mouse)),
         );
         text_w(
             tr,
@@ -2267,90 +2224,9 @@ impl VpnApp {
             11.0,
             theme.text_dim,
             card.x0 + 28.0,
-            by - 24.0,
+            cancel.y0 - 24.0,
             TextWeight::Regular,
         );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a labelled form field is scene + renderer + transform + theme + label/value + position/size + focus state; grouping into a struct would only move the fields, not reduce them"
-    )]
-    fn draw_field(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        label: &str,
-        value: &str,
-        x: f64,
-        y: f64,
-        w: f64,
-        focused: bool,
-    ) {
-        text_w(
-            tr,
-            scene,
-            t,
-            label,
-            11.0,
-            theme.text_dim,
-            x,
-            y,
-            TextWeight::Bold,
-        );
-        // Named `field_r` rather than the file's usual single-letter `r` so
-        // this scope doesn't also trip many_single_char_names alongside `t`,
-        // `x`, `y`, `w` above.
-        let field_r = Rect::new(x, y + 18.0, x + w, y + 18.0 + 34.0);
-        fill_round(
-            scene,
-            t,
-            field_r,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.surfaces.base,
-        );
-        stroke_round(
-            scene,
-            t,
-            field_r,
-            f64::from(theme.tokens.radii.md),
-            if focused {
-                theme.border_focus
-            } else {
-                theme.tokens.colors.border_standard
-            },
-            if focused { 2.0 } else { 1.0 },
-        );
-        let shown = if value.is_empty() { "" } else { value };
-        let col = theme.text_primary;
-        text_vc(
-            tr,
-            scene,
-            t,
-            shown,
-            13.0,
-            col,
-            field_r.x0 + 12.0,
-            field_r.y0,
-            field_r.height(),
-            TextWeight::Regular,
-        );
-        if focused {
-            // caret
-            let (vw, _) = tr.measure(shown, 13.0, None);
-            let cx = field_r.x0 + 12.0 + f64::from(vw) + 1.0;
-            scene.stroke(
-                &Stroke::new(1.5),
-                t,
-                theme.border_focus,
-                None,
-                &Line::new(
-                    Point::new(cx, field_r.y0 + 8.0),
-                    Point::new(cx, field_r.y1 - 8.0),
-                ),
-            );
-        }
     }
 
     /// Copy for the pending action's confirm dialog: title, summary, the exact
@@ -2419,34 +2295,8 @@ impl VpnApp {
             return;
         };
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children only errors for a NodeId from a different tree, and `node` was just created in this same fresh `taffy`"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(rect.width() as f32),
-                        height: Dimension::length(rect.height() as f32),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        let _ = taffy.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(rect.height() as f32),
-            },
-        );
-        cd.dialog
-            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        let mut text_renderer = TextRenderer::new();
+        cd.dialog.layout_in(rect, &theme, &mut text_renderer);
     }
 
     /// Route an event into the open confirm dialog, then apply the flags its
@@ -2487,29 +2337,13 @@ impl VpnApp {
         }
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
-        let root = automerge::ROOT;
         let (ok, cancel) = {
             let Some(cd) = self.confirm_dialog.as_mut() else {
                 return;
             };
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            #[allow(
-                clippy::unwrap_used,
-                reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
-            )]
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut focus_target = None;
-            cd.dialog.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                doc,
-                &root,
-                handled,
-                &mut focus_target,
-                node,
-                &taffy,
-            );
+            *handled =
+                cd.dialog
+                    .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
         if ok {
@@ -2521,32 +2355,6 @@ impl VpnApp {
             self.confirm_dialog = None;
         }
         *handled = true;
-    }
-
-    fn modal_button_rects(&self, lay: &LayoutRects) -> (Rect, Rect) {
-        // (cancel, primary) — matches the draw layout above.
-        let card = lay.modal_card;
-        let by = card.y1 - 52.0;
-        match self.modal {
-            Modal::Add => (
-                Rect::new(
-                    card.x1 - 28.0 - 200.0,
-                    by,
-                    card.x1 - 28.0 - 110.0,
-                    by + 36.0,
-                ),
-                Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0),
-            ),
-            _ => (
-                Rect::new(
-                    card.x1 - 28.0 - 220.0,
-                    by,
-                    card.x1 - 28.0 - 120.0,
-                    by + 36.0,
-                ),
-                Rect::new(card.x1 - 28.0 - 110.0, by, card.x1 - 28.0, by + 36.0),
-            ),
-        }
     }
 
     fn add_modal_hit(&mut self, doc: &mut AutoCommit, p: Point, lay: &LayoutRects) {
@@ -2578,20 +2386,134 @@ impl VpnApp {
             card.y0 + 238.0,
         );
         if point_in(name_r, p) {
-            self.add_focus = AddField::Name;
+            self.add_name.set_focus(true);
+            self.add_endpoint.set_focus(false);
             return;
         }
         if point_in(endp_r, p) {
-            self.add_focus = AddField::Endpoint;
+            self.add_name.set_focus(false);
+            self.add_endpoint.set_focus(true);
             return;
         }
-        let (cancel, save) = self.modal_button_rects(lay);
+        // Draw and hit-testing share this geometry, so a themed face never
+        // drifts away from its click target as the modal is resized.
+        let (cancel, save) = add_modal_button_rects(card);
         if point_in(cancel, p) {
             self.modal = Modal::None;
+            self.add_name.set_focus(false);
+            self.add_endpoint.set_focus(false);
         } else if point_in(save, p) {
             self.commit_add(doc);
         }
     }
+
+    /// Route the complete event stream through the two shared editors while
+    /// the Add modal is open. The parent owns modal-level Escape/Enter and
+    /// focus traversal; the fields own selection, clipboard, IME and caret
+    /// movement. Returns after consuming every event so nothing reaches the
+    /// connection list behind the scrim.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event so the embedded inputs receive the original event context"
+    )]
+    fn route_add_modal_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.modal = Modal::None;
+                    self.add_name.set_focus(false);
+                    self.add_endpoint.set_focus(false);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.commit_add(state);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Tab) => {
+                    let name_next = if modifiers.state().shift_key() {
+                        self.add_endpoint.is_focused()
+                    } else {
+                        !self.add_name.is_focused()
+                    };
+                    self.add_name.set_focus(name_next);
+                    self.add_endpoint.set_focus(!name_next);
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            let lay = self.layout();
+            self.add_modal_hit(state, self.last_mouse, &lay);
+            if self.modal != Modal::Add {
+                *handled = true;
+                return;
+            }
+        }
+
+        for input in [&mut self.add_name, &mut self.add_endpoint] {
+            input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        *handled = true;
+    }
+}
+
+fn add_modal_button_rects(card: Rect) -> (Rect, Rect) {
+    let by = card.y1 - 52.0;
+    (
+        Rect::new(
+            card.x1 - 28.0 - 200.0,
+            by,
+            card.x1 - 28.0 - 110.0,
+            by + 36.0,
+        ),
+        Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0),
+    )
 }
 
 fn render_config_text(c: &Connection) -> String {
@@ -2719,10 +2641,12 @@ impl Widget for VpnApp {
         self.draw_list(scene, text_renderer, transform, theme, &lay);
         self.draw_detail(scene, text_renderer, transform, theme, &lay);
         self.draw_header(scene, text_renderer, transform, theme, &lay);
-        // The Add form keeps its hand-rolled overlay (multi-field form); the
-        // destructive/action Confirm routes through the shared ModalDialog.
+        // The Add form keeps its compact protocol/card layout but embeds
+        // shared text fields; action confirms use the shared ModalDialog.
         match self.modal {
-            Modal::Add => self.draw_add_modal_overlay(scene, text_renderer, transform, theme, &lay),
+            Modal::Add => {
+                self.draw_add_modal_overlay(scene, text_renderer, transform, theme, presence, &lay);
+            }
             Modal::Confirm => {
                 self.ensure_confirm_dialog();
                 self.layout_confirm_dialog();
@@ -2741,12 +2665,26 @@ impl Widget for VpnApp {
         scale_factor: f64,
         modifiers: &Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
+        if self.modal == Modal::Add {
+            self.route_add_modal_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            return;
+        }
         // The Confirm dialog is modal: while it's up the shared ModalDialog
         // captures every event (clicks, Esc, y/n) and nothing leaks to the
         // list behind the scrim.
@@ -2770,12 +2708,11 @@ impl Widget for VpnApp {
                     KeyEvent {
                         logical_key,
                         state: ElementState::Pressed,
-                        text,
                         ..
                     },
                 ..
             } => {
-                self.handle_key_press(logical_key, text, state, handled);
+                self.handle_key_press(logical_key, state, handled);
             }
             _ => {}
         }
@@ -2876,11 +2813,6 @@ impl VpnApp {
         let p = self.last_mouse;
         let lay = self.layout();
         *handled = true;
-        // Modal first (captures everything).
-        if self.modal == Modal::Add {
-            self.add_modal_hit(state, p, &lay);
-            return;
-        }
         // Header controls.
         if point_in(lay.add_btn, p) {
             self.open_add(ConnKind::WireGuard);
@@ -2932,51 +2864,9 @@ impl VpnApp {
         }
     }
 
-    /// A pressed key: while the add modal is open it owns text entry and Esc
-    /// / Enter / Tab / Backspace; otherwise the global shortcuts (arrow-key
-    /// selection, Enter to toggle, and the single-letter mnemonics). Split
-    /// out of [`Self::handle_event`].
-    fn handle_key_press(
-        &mut self,
-        logical_key: &Key,
-        text: &Option<winit::keyboard::SmolStr>,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
-        // Modal key handling.
-        if self.modal == Modal::Add {
-            *handled = true;
-            match logical_key {
-                Key::Named(NamedKey::Escape) => self.modal = Modal::None,
-                Key::Named(NamedKey::Enter) => self.commit_add(state),
-                Key::Named(NamedKey::Tab) => {
-                    self.add_focus = match self.add_focus {
-                        AddField::Name => AddField::Endpoint,
-                        AddField::Endpoint => AddField::Name,
-                    };
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    let f = match self.add_focus {
-                        AddField::Name => &mut self.add_name,
-                        AddField::Endpoint => &mut self.add_endpoint,
-                    };
-                    f.pop();
-                }
-                _ => {
-                    if let Some(txt) = text {
-                        let s = txt.as_str();
-                        if !s.is_empty() && !s.chars().any(char::is_control) {
-                            let f = match self.add_focus {
-                                AddField::Name => &mut self.add_name,
-                                AddField::Endpoint => &mut self.add_endpoint,
-                            };
-                            f.push_str(s);
-                        }
-                    }
-                }
-            }
-            return;
-        }
+    /// A pressed global shortcut (the Add modal returns before reaching this
+    /// helper). Split out of [`Self::handle_event`].
+    fn handle_key_press(&mut self, logical_key: &Key, state: &mut AutoCommit, handled: &mut bool) {
         // Global shortcuts.
         match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
@@ -3072,23 +2962,34 @@ mod tests {
             button: MouseButton::Left,
         }
     }
-    fn esc_key() -> WindowEvent {
+    fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Escape);
+        ev.logical_key = logical_key;
         ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
             winit::keyboard::NativeKeyCode::Unidentified,
         );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
-        ev.text = None;
+        ev.text = text.map(Into::into);
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed() },
             event: ev,
             is_synthetic: false,
         }
     }
+    fn esc_key() -> WindowEvent {
+        key(Key::Named(NamedKey::Escape), None)
+    }
     fn dispatch(app: &mut VpnApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+        dispatch_with_modifiers(app, doc, ev, Modifiers::default());
+    }
+    fn dispatch_with_modifiers(
+        app: &mut VpnApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        modifiers: Modifiers,
+    ) {
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy::NodeId::new(0);
         let mut handled = false;
@@ -3096,7 +2997,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            &Modifiers::default(),
+            &modifiers,
             doc,
             &automerge::ROOT,
             &mut handled,
@@ -3227,7 +3128,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
 
-        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path.clone())));
+        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
         assert!(app.drain_import(&mut doc), "a delivered import applies");
         assert!(app.import_rx.is_none(), "draining clears the request");
         assert_eq!(app.vault.connections.len(), before + 1);
@@ -3257,10 +3160,107 @@ mod tests {
         let (mut app, mut doc) = demo_with_doc();
         let before = app.vault.connections.len();
         app.open_add(ConnKind::OpenVpn);
-        app.add_name = "Travel".into();
-        app.add_endpoint = "edge.example:1194".into();
+        app.add_name.set_text("Travel");
+        app.add_endpoint.set_text("edge.example:1194");
         app.commit_add(&mut doc);
         assert_eq!(app.vault.connections.len(), before + 1);
         assert!(app.vault.connections.iter().any(|c| c.name == "Travel"));
+    }
+
+    #[test]
+    fn add_modal_shared_button_rects_drive_save_and_cancel() {
+        let (mut app, mut doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        let before = app.vault.connections.len();
+        app.open_add(ConnKind::WireGuard);
+        app.add_name.set_text("Shared face");
+        app.add_endpoint.set_text("vpn.example:51820");
+        let card = app.layout().modal_card;
+        let (cancel, save) = add_modal_button_rects(card);
+        assert!(cancel.x1 <= save.x0, "button rects do not overlap");
+
+        dispatch(&mut app, &mut doc, &cursor_at(save.center()));
+        dispatch(&mut app, &mut doc, &press());
+        assert_eq!(app.vault.connections.len(), before + 1);
+        assert_eq!(app.modal, Modal::None);
+
+        app.open_add(ConnKind::OpenVpn);
+        let card = app.layout().modal_card;
+        let (cancel, _) = add_modal_button_rects(card);
+        dispatch(&mut app, &mut doc, &cursor_at(cancel.center()));
+        dispatch(&mut app, &mut doc, &press());
+        assert_eq!(app.vault.connections.len(), before + 1);
+        assert_eq!(app.modal, Modal::None, "Cancel dismisses without saving");
+    }
+
+    #[test]
+    fn add_modal_routes_ime_selection_and_focus_through_shared_inputs() {
+        let (mut app, mut doc) = demo_with_doc();
+        let before = app.vault.connections.len();
+        app.open_add(ConnKind::WireGuard);
+
+        dispatch(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("Trävel".into(), Some((6, 6)))),
+        );
+        assert_eq!(app.add_name.value(), "", "preedit stays transient");
+        dispatch(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("Trävel".into())),
+        );
+        assert_eq!(app.add_name.value(), "Trävel");
+
+        let control = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        dispatch_with_modifiers(
+            &mut app,
+            &mut doc,
+            &key(Key::Character("a".into()), Some("a")),
+            control,
+        );
+        assert_eq!(app.add_name.selection_range_public(), Some((0, 7)));
+        dispatch(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("Travel".into())),
+        );
+
+        dispatch(&mut app, &mut doc, &key(Key::Named(NamedKey::Tab), None));
+        assert!(!app.add_name.is_focused());
+        assert!(app.add_endpoint.is_focused());
+        dispatch(
+            &mut app,
+            &mut doc,
+            &key(
+                Key::Character("edge.example:51820".into()),
+                Some("edge.example:51820"),
+            ),
+        );
+
+        let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+        dispatch_with_modifiers(
+            &mut app,
+            &mut doc,
+            &key(Key::Named(NamedKey::Tab), None),
+            shift,
+        );
+        assert!(app.add_name.is_focused());
+        assert!(!app.add_endpoint.is_focused());
+
+        dispatch(&mut app, &mut doc, &key(Key::Named(NamedKey::Enter), None));
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(app.vault.connections.len(), before + 1);
+        let added = app
+            .vault
+            .connections
+            .iter()
+            .find(|connection| connection.name == "Travel")
+            .expect("submitted connection is present");
+        assert_eq!(added.endpoint, "edge.example:51820");
+        assert!(
+            app.last_dispatched().is_some(),
+            "the existing action path commits"
+        );
     }
 }

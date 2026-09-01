@@ -25,11 +25,12 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use ui::ColorCompat;
 use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use ui::widget::{EditOutcome, EditableLabel, TextInput, Widget};
 
 use crate::actions::{self, SheetsAction, SheetsResourceCtx};
 use crate::doc::SheetsDoc;
@@ -47,6 +48,50 @@ const MENUBAR_H: f64 = 44.0;
 const FORMULA_H: f64 = 34.0;
 const TABS_H: f64 = 34.0;
 const NAME_BOX_W: f64 = 92.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Interchange {
+    Csv,
+    Xlsx,
+    Ods,
+}
+
+impl Interchange {
+    fn ext(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Xlsx => "xlsx",
+            Self::Ods => "ods",
+        }
+    }
+
+    fn filter(self) -> FileFilter {
+        match self {
+            Self::Csv => FileFilter::new("CSV").glob("*.csv"),
+            Self::Xlsx => FileFilter::new("Excel workbook").glob("*.xlsx"),
+            Self::Ods => FileFilter::new("Calc spreadsheet").glob("*.ods"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingIo {
+    Import(Interchange),
+    Export(Interchange),
+}
+
+fn spreadsheet_import_request(format: Interchange) -> PickRequest {
+    PickRequest::open("Import spreadsheet", "Import")
+        .thread_name("sheets-portal-import")
+        .filter(format.filter())
+        .all_files()
+}
+
+fn spreadsheet_export_request(format: Interchange, suggested: &str) -> PickRequest {
+    PickRequest::save("Export spreadsheet", "Export", suggested)
+        .thread_name("sheets-portal-export")
+        .filter(format.filter())
+}
 
 /// A top-level menu-bar action.
 #[derive(Clone, Debug, PartialEq)]
@@ -180,20 +225,8 @@ enum TabAction {
 /// An in-progress inline rename of a sheet tab.
 struct TabRename {
     idx: usize,
-    chars: Vec<char>,
-    caret: usize,
     rect: Rect,
-}
-
-/// A transient "Name box" (Go-To) editor. Clicking the cell-reference box in
-/// the formula bar opens it seeded with the active cell's reference; the user
-/// types an A1 reference (`B7`) or range (`A1:C3`) and presses Enter to jump
-/// the selection there. `select_all` mirrors Excel: the box opens with the
-/// current reference fully selected so the first keystroke replaces it.
-struct NameBoxEdit {
-    chars: Vec<char>,
-    caret: usize,
-    select_all: bool,
+    editor: EditableLabel,
 }
 
 /// Palette of tab colours. Stored per sheet as an index into this list.
@@ -300,7 +333,7 @@ pub struct SheetsApp {
     name_box_rect: Rect,
     fx_rect: Rect,
     /// An active Name box Go-To entry, when the user has clicked the name box.
-    name_box_edit: Option<NameBoxEdit>,
+    name_box_edit: Option<TextInput>,
     formula_field_rect: Rect,
     /// Cumulative x (layout space) of each character boundary in the formula
     /// bar's current text, rebuilt each draw. Drives click-to-position-caret,
@@ -349,7 +382,7 @@ pub struct SheetsApp {
     /// An in-flight interchange file dialog: the operation and the channel its
     /// chosen path arrives on, drained once per frame in [`Self::drain_io`].
     /// `None` when no import/export chooser is open.
-    io: Option<(crate::portal::PendingIo, crate::portal::PortalChannel)>,
+    io: Option<(PendingIo, PortalChannel)>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -465,8 +498,12 @@ impl SheetsApp {
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &SheetsAction) {
-        self.actions
-            .dispatch(doc, actions::SHEETS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::SHEETS_ACTION_TYPE,
+            action,
+            actions::history_context_for_doc(doc, action),
+        );
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
@@ -1168,7 +1205,7 @@ impl SheetsApp {
     /// No file picker exists in the toolkit yet, so "most recent in the
     /// folder" is the selection heuristic (drop a file there, then import).
     fn import_csv(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(crate::portal::Interchange::Csv);
+        self.begin_import(Interchange::Csv);
     }
 
     /// Core: import the CSV file at `path` into a new sheet. Split out from the
@@ -1217,7 +1254,7 @@ impl SheetsApp {
     }
 
     fn export_csv(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(crate::portal::Interchange::Csv);
+        self.begin_export(Interchange::Csv);
     }
 
     /// Core: write the active sheet's computed values to `path` as CSV.
@@ -1248,7 +1285,7 @@ impl SheetsApp {
     }
 
     fn export_xlsx(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(crate::portal::Interchange::Xlsx);
+        self.begin_export(Interchange::Xlsx);
     }
 
     /// Core: write the active sheet to `path` as an `.xlsx` workbook.
@@ -1261,7 +1298,7 @@ impl SheetsApp {
     }
 
     fn export_ods(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(crate::portal::Interchange::Ods);
+        self.begin_export(Interchange::Ods);
     }
 
     /// Core: write the active sheet to `path` as an `.ods` spreadsheet.
@@ -1313,7 +1350,7 @@ impl SheetsApp {
     }
 
     fn import_xlsx(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(crate::portal::Interchange::Xlsx);
+        self.begin_import(Interchange::Xlsx);
     }
 
     /// Core: import the `.xlsx` workbook at `path` into new sheets.
@@ -1325,7 +1362,7 @@ impl SheetsApp {
     }
 
     fn import_ods(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(crate::portal::Interchange::Ods);
+        self.begin_import(Interchange::Ods);
     }
 
     /// Core: import the `.ods` spreadsheet at `path` into new sheets.
@@ -1338,13 +1375,13 @@ impl SheetsApp {
 
     /// Open the host file chooser to pick a file to import (unless one is
     /// already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn begin_import(&mut self, fmt: crate::portal::Interchange) {
+    fn begin_import(&mut self, fmt: Interchange) {
         if self.io.is_some() {
             return;
         }
         self.io = Some((
-            crate::portal::PendingIo::Import(fmt),
-            crate::portal::request_import(fmt),
+            PendingIo::Import(fmt),
+            spreadsheet_import_request(fmt).send(),
         ));
         self.status = format!("Choose a .{} file to import…", fmt.ext());
     }
@@ -1352,7 +1389,7 @@ impl SheetsApp {
     /// Open the host Save dialog to pick where to export the active sheet,
     /// seeding the filename with the sheet's name (unless one is already in
     /// flight). The chosen destination is handled in [`Self::drain_io`].
-    fn begin_export(&mut self, fmt: crate::portal::Interchange) {
+    fn begin_export(&mut self, fmt: Interchange) {
         if self.io.is_some() {
             return;
         }
@@ -1363,8 +1400,8 @@ impl SheetsApp {
             .unwrap_or_else(|| "Sheet".into());
         let suggested = format!("{name}.{}", fmt.ext());
         self.io = Some((
-            crate::portal::PendingIo::Export(fmt),
-            crate::portal::request_export(fmt, &suggested),
+            PendingIo::Export(fmt),
+            spreadsheet_export_request(fmt, &suggested).send(),
         ));
         self.status = "Choose where to save…".into();
     }
@@ -1373,7 +1410,6 @@ impl SheetsApp {
     /// frame, and run the chosen import/export against the picked path. The UI
     /// thread never blocks: the portal round-trip lives on its own worker.
     fn drain_io(&mut self, doc: &mut AutoCommit) {
-        use crate::portal::{Interchange, PendingIo, PortalOutcome};
         let Some((op, rx)) = &self.io else { return };
         let op = *op;
         match rx.try_recv() {
@@ -2070,7 +2106,7 @@ impl SheetsApp {
     /// Formula bar's name box: background, focus border, and either the live
     /// edit buffer (with caret + pre-fill selection) or the selection label.
     fn draw_name_box(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -2108,43 +2144,18 @@ impl SheetsApp {
         let sm = theme.tokens.typography.scale.sm;
         let nb_text_x = name_box.x0 + 8.0;
         let nb_text_y = name_box.y0 + (name_box.height() - f64::from(sm)) / 2.0;
-        if let Some(nb) = &self.name_box_edit {
-            let text: String = nb.chars.iter().collect();
-            // The pre-filled reference draws fully selected until the first edit.
-            if nb.select_all && !text.is_empty() {
-                let (tw, _) = tr.measure(&text, sm, None);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5].with_alpha_factor(0.30),
-                    None,
-                    &Rect::new(
-                        nb_text_x,
-                        name_box.y0 + 4.0,
-                        nb_text_x + f64::from(tw),
-                        name_box.y1 - 4.0,
-                    ),
-                );
-            }
-            tr.draw_text_weighted(
-                scene,
-                &text,
-                sm,
-                colors.text_primary,
-                transform * Affine::translate((nb_text_x, nb_text_y)),
-                None,
-                TextWeight::Semibold,
-            );
-            let prefix: String = nb.chars[..nb.caret.min(nb.chars.len())].iter().collect();
-            let (cw, _) = tr.measure(&prefix, sm, None);
-            let cx = nb_text_x + f64::from(cw);
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                colors.accent[5],
-                None,
-                &Line::new((cx, name_box.y0 + 4.0), (cx, name_box.y1 - 4.0)),
-            );
+        if let Some(input) = &mut self.name_box_edit {
+            // Keep the compact spreadsheet chrome, while the shared editor
+            // owns shaping, scrolling, selection, clipboard, IME and caret
+            // hit-testing inside its content band.
+            input.set_font_size(sm);
+            input.apply_layout_external(Rect::new(
+                nb_text_x,
+                name_box.y0 + 2.0,
+                name_box.x1 - 4.0,
+                name_box.y1 - 2.0,
+            ));
+            input.draw(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
             let label = self.grid.selection_label();
             tr.draw_text_weighted(
@@ -2170,43 +2181,12 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let colors = &theme.tokens.colors;
-        tr.draw_text_styled(
-            scene,
-            "fx",
-            theme.tokens.typography.scale.base,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    self.formula_rect.x0 + NAME_BOX_W + 8.0,
-                    self.formula_rect.y0 + 8.0,
-                )),
-            None,
-            TextWeight::Regular,
-            true,
-            false,
-        );
+        self.draw_formula_fx_label(scene, transform, tr, theme);
         let ff_shape =
             RoundedRect::from_rect(self.formula_field_rect, f64::from(theme.tokens.radii.sm));
         let editing = self.grid.is_editing();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &ff_shape,
-        );
-        scene.stroke(
-            &Stroke::new(if editing { 2.0 } else { 1.0 }),
-            transform,
-            if editing {
-                colors.accent[5]
-            } else {
-                colors.border_standard
-            },
-            None,
-            &ff_shape,
-        );
+        Self::draw_formula_field_chrome(scene, transform, theme, ff_shape, editing);
+
         let content = self.grid.active_display_raw();
         let base = theme.tokens.typography.scale.base;
         let text_x0 = self.formula_field_rect.x0 + 8.0;
@@ -2226,7 +2206,75 @@ impl SheetsApp {
             transform,
             &ff_shape,
         );
-        // Selection highlight behind the text (drawn whenever editing).
+        self.draw_formula_selection(scene, transform, theme, editing, text_x0);
+        Self::draw_formula_content(scene, transform, tr, theme, &content, base, origin);
+        self.draw_formula_caret(scene, transform, theme, editing, text_x0);
+        scene.pop_layer();
+    }
+
+    fn draw_formula_fx_label(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let colors = &theme.tokens.colors;
+        tr.draw_text_styled(
+            scene,
+            "fx",
+            theme.tokens.typography.scale.base,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    self.formula_rect.x0 + NAME_BOX_W + 8.0,
+                    self.formula_rect.y0 + 8.0,
+                )),
+            None,
+            TextWeight::Regular,
+            true,
+            false,
+        );
+    }
+
+    fn draw_formula_field_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        ff_shape: RoundedRect,
+        editing: bool,
+    ) {
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &ff_shape,
+        );
+        scene.stroke(
+            &Stroke::new(if editing { 2.0 } else { 1.0 }),
+            transform,
+            if editing {
+                colors.accent[5]
+            } else {
+                colors.border_standard
+            },
+            None,
+            &ff_shape,
+        );
+    }
+
+    /// Selection highlight behind the text (drawn whenever editing).
+    fn draw_formula_selection(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        editing: bool,
+        text_x0: f64,
+    ) {
+        let colors = &theme.tokens.colors;
         if editing && let Some((s, e)) = self.grid.edit_selection() {
             let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
             let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
@@ -2244,15 +2292,28 @@ impl SheetsApp {
                 &sel_rect,
             );
         }
-        // Formulas (whether being edited OR merely selected) tint each cell
-        // reference to match the coloured outlines on the grid; plain values
-        // draw in the body colour.
+    }
+
+    /// Formulas (whether being edited OR merely selected) tint each cell
+    /// reference to match the coloured outlines on the grid; plain values
+    /// draw in the body colour.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_formula_content(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: &str,
+        base: f32,
+        origin: Point,
+    ) {
+        let colors = &theme.tokens.colors;
         if content.starts_with('=') {
             crate::grid::draw_formula_line(
                 scene,
                 transform,
                 tr,
-                &content,
+                content,
                 base,
                 colors.text_primary,
                 origin,
@@ -2261,14 +2322,25 @@ impl SheetsApp {
         } else if !content.is_empty() {
             tr.draw_text(
                 scene,
-                &content,
+                content,
                 base,
                 colors.text_primary,
                 transform * Affine::translate((origin.x, origin.y)),
                 None,
             );
         }
-        // Caret in the formula bar while editing.
+    }
+
+    /// Caret in the formula bar while editing.
+    fn draw_formula_caret(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        editing: bool,
+        text_x0: f64,
+    ) {
+        let colors = &theme.tokens.colors;
         if editing && let Some(caret) = self.grid.edit_caret() {
             let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
             scene.stroke(
@@ -2282,7 +2354,6 @@ impl SheetsApp {
                 ),
             );
         }
-        scene.pop_layer();
     }
 
     /// Bottom strip: sheet-tab switcher + the "+" add-sheet button. The
@@ -2841,43 +2912,21 @@ impl SheetsApp {
     }
 
     fn draw_tab_rename(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(rn) = &self.tab_rename else {
+        let Some(rn) = &mut self.tab_rename else {
             return;
         };
-        let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rn.rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
-        scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &shape);
-        let sm = theme.tokens.typography.scale.sm;
-        let text: String = rn.chars.iter().collect();
-        let tx = rn.rect.x0 + 8.0;
-        let ty = rn.rect.y0 + (rn.rect.height() - f64::from(sm)) / 2.0;
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-        tr.draw_text(
-            scene,
-            &text,
-            sm,
-            colors.text_primary,
-            transform * Affine::translate((tx, ty)),
-            None,
-        );
-        let prefix: String = rn.chars[..rn.caret.min(rn.chars.len())].iter().collect();
-        let (pw, _) = tr.measure(&prefix, sm, None);
-        let cx = tx + f64::from(pw);
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            colors.accent[5],
-            None,
-            &Line::new((cx, rn.rect.y0 + 4.0), (cx, rn.rect.y1 - 4.0)),
-        );
-        scene.pop_layer();
+        // Theme typography remains authoritative even though the edit began
+        // before the draw pass had a Theme reference.
+        rn.editor.set_font_size(theme.tokens.typography.scale.sm);
+        rn.editor.apply_layout_external(rn.rect);
+        rn.editor
+            .draw(scene, transform, tr, theme, &PresenceCtx::default());
     }
 
     fn chip_label_and_state(&self, kind: SettingKind) -> (String, bool) {
@@ -3084,6 +3133,13 @@ fn char_boundaries(tr: &mut TextRenderer, text: &str, size: f32, x0: f64) -> Vec
     xs
 }
 
+/// Spreadsheet references never contain whitespace. Keep every other
+/// printable character so submission can report a useful invalid-reference
+/// error instead of silently rewriting the user's entry.
+fn reference_box_char(ch: char) -> bool {
+    !ch.is_whitespace() && !ch.is_control()
+}
+
 /// Parse a Name box (Go-To) entry into an `(anchor, active)` selection. Accepts
 /// a single reference (`B7`) or a range (`A1:C3`), case-insensitive, tolerating
 /// absolute markers (`$A$1`). Returns `None` for anything that isn't a valid
@@ -3142,6 +3198,8 @@ impl Widget for SheetsApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3156,7 +3214,9 @@ impl Widget for SheetsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -3280,13 +3340,28 @@ impl Widget for SheetsApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.route_inline_editor(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            handled,
+            &mut PaletteRouteCtx {
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        ) {
+            return;
+        }
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(modifiers, state, path, handled);
+                self.handle_left_press(*modifiers, state, path, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -3314,18 +3389,19 @@ impl Widget for SheetsApp {
                 self.handle_mouse_wheel(delta, scale_factor, handled);
             }
             WindowEvent::KeyboardInput { .. } => {
+                let mut ctx = PaletteRouteCtx {
+                    path,
+                    focus_target,
+                    node_id,
+                    taffy,
+                };
                 self.handle_keyboard_input(
                     event,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     state,
                     handled,
-                    PaletteRouteCtx {
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    },
+                    &mut ctx,
                 );
             }
             _ => {}
@@ -3359,25 +3435,121 @@ impl Widget for SheetsApp {
 }
 
 impl SheetsApp {
+    /// Route every input kind through the active shared inline editor before
+    /// the spreadsheet's grid or chrome can see it. Both editors are modal in
+    /// Sheets: a tab rename blur-commits, while a Name-box blur cancels.
+    fn route_inline_editor(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+        ctx: &mut PaletteRouteCtx<'_>,
+    ) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        if self.tab_rename.is_some() {
+            let outcome = {
+                let Some(rename) = self.tab_rename.as_mut() else {
+                    return false;
+                };
+                rename.editor.apply_layout_external(rename.rect);
+                rename.editor.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    ctx.path,
+                    handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
+                );
+                rename.editor.take_outcome()
+            };
+            self.resolve_tab_rename_outcome(state, outcome);
+            self.pending.redraw = true;
+            // The previous inline editor was modal too: clicking away commits
+            // but does not also activate the newly clicked spreadsheet target.
+            *handled = true;
+            return true;
+        }
+
+        if self.name_box_edit.is_some() {
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            ) || matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } if !self.name_box_rect.contains(self.last_mouse)
+            ) {
+                self.name_box_edit = None;
+                self.pending.redraw = true;
+                *handled = true;
+                return true;
+            }
+
+            let submitted = {
+                let Some(input) = self.name_box_edit.as_mut() else {
+                    return false;
+                };
+                input.apply_layout_external(Rect::new(
+                    self.name_box_rect.x0 + 8.0,
+                    self.name_box_rect.y0 + 2.0,
+                    self.name_box_rect.x1 - 4.0,
+                    self.name_box_rect.y1 - 2.0,
+                ));
+                input.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    ctx.path,
+                    handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
+                );
+                input.take_submit()
+            };
+            if submitted {
+                self.commit_name_box();
+            }
+            self.pending.redraw = true;
+            *handled = true;
+            return true;
+        }
+
+        false
+    }
+
     /// Left-press: routes to whichever modal surface is open (palette,
     /// rename, name box, tab menu, settings panel, dropdown menu), then the
     /// menu bar / name box / fx / formula field / sheet tabs, and finally the
     /// grid body, in priority order.
     fn handle_left_press(
         &mut self,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) {
         let p = self.last_mouse;
         if self.try_palette_click(p, state, path, handled) {
-            return;
-        }
-        if self.try_tab_rename_click(p, state, handled) {
-            return;
-        }
-        if self.try_name_box_edit_click(p, handled) {
             return;
         }
         if self.try_tab_menu_click(p, state, handled) {
@@ -3420,41 +3592,6 @@ impl SheetsApp {
             self.palette.close();
         }
         self.pending.redraw = true;
-        *handled = true;
-        true
-    }
-
-    /// An active inline rename is modal: a click outside its field commits
-    /// it (Excel behaviour).
-    fn try_tab_rename_click(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) -> bool {
-        if self.tab_rename.is_none() {
-            return false;
-        }
-        let inside = self.tab_rename.as_ref().is_some_and(|r| r.rect.contains(p));
-        if !inside {
-            self.commit_tab_rename(state);
-        }
-        self.pending.redraw = true;
-        *handled = true;
-        true
-    }
-
-    /// The Name box (Go-To) editor is modal while open: a click inside it
-    /// keeps focus; a click anywhere else cancels the pending entry (Excel
-    /// behaviour) without navigating.
-    fn try_name_box_edit_click(&mut self, p: Point, handled: &mut bool) -> bool {
-        if self.name_box_edit.is_none() {
-            return false;
-        }
-        if !self.name_box_rect.contains(p) {
-            self.name_box_edit = None;
-            self.pending.redraw = true;
-        }
         *handled = true;
         true
     }
@@ -3575,7 +3712,7 @@ impl SheetsApp {
     fn try_chrome_click(
         &mut self,
         p: Point,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -3632,7 +3769,7 @@ impl SheetsApp {
     fn try_grid_click(
         &mut self,
         p: Point,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -3714,24 +3851,24 @@ impl SheetsApp {
     /// The command palette (when open) owns the keyboard: arrows, Enter, Esc
     /// and typing are consumed by it and never reach the grid behind. On
     /// Enter it emits an outcome we dispatch here. Otherwise: Ctrl+K opens
-    /// the palette, the name box / an inline rename own the keyboard while
-    /// open, Escape closes an overlay, clipboard chords route to either the
-    /// grid selection or an in-progress edit's text selection, and anything
-    /// left falls through to the grid's own key handling.
+    /// the palette, Escape closes an overlay, clipboard chords route to either
+    /// the grid selection or an in-progress edit's text selection, and
+    /// anything left falls through to the grid's own key handling. Inline
+    /// editors are routed before this method by [`Self::route_inline_editor`].
     fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
-        ctx: PaletteRouteCtx<'_>,
+        ctx: &mut PaletteRouteCtx<'_>,
     ) {
         if self.palette.is_open() {
             self.palette.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 ctx.path,
                 handled,
@@ -3761,30 +3898,6 @@ impl SheetsApp {
             }
         }
 
-        // The Name box owns the keyboard while a Go-To entry is open.
-        if self.name_box_edit.is_some() {
-            if let WindowEvent::KeyboardInput { event: ke, .. } = event
-                && ke.state.is_pressed()
-            {
-                self.name_box_key(ke, *modifiers);
-            }
-            self.pending.redraw = true;
-            *handled = true;
-            return;
-        }
-
-        // An inline rename owns the keyboard while it is open.
-        if self.tab_rename.is_some() {
-            if let WindowEvent::KeyboardInput { event: ke, .. } = event
-                && ke.state.is_pressed()
-            {
-                self.tab_rename_key(state, ke, *modifiers);
-            }
-            self.pending.redraw = true;
-            *handled = true;
-            return;
-        }
-
         // Escape closes any open overlay.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
             && ke.state.is_pressed()
@@ -3812,7 +3925,7 @@ impl SheetsApp {
         }
 
         let mut out = Vec::new();
-        if self.grid.key(event, modifiers, &mut out) {
+        if self.grid.key(event, &modifiers, &mut out) {
             *handled = true;
         }
         self.apply_cmds(state, out);
@@ -3824,7 +3937,7 @@ impl SheetsApp {
     fn handle_grid_clipboard_chord(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -3879,7 +3992,7 @@ impl SheetsApp {
     fn handle_edit_clipboard_chord(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         handled: &mut bool,
     ) -> bool {
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -4007,106 +4120,38 @@ impl SheetsApp {
         // Give the editor a little more room than the tab so a longer name fits.
         let right = (tab.x0 + 150.0).min(self.rect.x1 - 8.0).max(tab.x1);
         let rect = Rect::new(tab.x0, tab.y0, right, tab.y1);
-        let chars: Vec<char> = name.chars().collect();
-        let caret = chars.len();
+        let mut editor = EditableLabel::new(&name)
+            .with_font_size(14.0)
+            .with_id("sheet_tab_rename");
+        editor.begin_edit();
         self.tab_menu_target = None;
-        self.tab_rename = Some(TabRename {
-            idx,
-            chars,
-            caret,
-            rect,
-        });
+        self.tab_rename = Some(TabRename { idx, rect, editor });
         self.pending.redraw = true;
     }
 
-    fn tab_rename_insert(&mut self, s: &str) {
-        if let Some(r) = &mut self.tab_rename {
-            for ch in s.chars() {
-                if ch == '\n' || ch == '\r' || ch == '\t' {
-                    continue;
+    fn resolve_tab_rename_outcome(&mut self, doc: &mut AutoCommit, outcome: EditOutcome) {
+        match outcome {
+            EditOutcome::Committed(name) => {
+                let Some(rename) = self.tab_rename.take() else {
+                    return;
+                };
+                let trimmed = name.trim();
+                let unchanged = self
+                    .sheet_names
+                    .get(rename.idx)
+                    .is_some_and(|current| current == trimmed);
+                if !trimmed.is_empty() && !unchanged {
+                    self.perform_action(doc, &actions::rename_sheet_action(rename.idx, trimmed));
+                    self.reload(doc);
+                    self.status = format!("Renamed sheet to {trimmed}");
                 }
-                r.chars.insert(r.caret, ch);
-                r.caret += 1;
             }
-            self.pending.redraw = true;
-        }
-    }
-
-    fn tab_rename_key(
-        &mut self,
-        doc: &mut AutoCommit,
-        ke: &winit::event::KeyEvent,
-        mods: Modifiers,
-    ) {
-        use winit::keyboard::{Key, NamedKey};
-        match &ke.logical_key {
-            Key::Named(NamedKey::Enter) => self.commit_tab_rename(doc),
-            Key::Named(NamedKey::Escape) => {
+            EditOutcome::Cancelled => {
                 self.tab_rename = None;
             }
-            Key::Named(NamedKey::Backspace) => {
-                if let Some(r) = &mut self.tab_rename
-                    && r.caret > 0
-                {
-                    r.chars.remove(r.caret - 1);
-                    r.caret -= 1;
-                }
-            }
-            Key::Named(NamedKey::Delete) => {
-                if let Some(r) = &mut self.tab_rename
-                    && r.caret < r.chars.len()
-                {
-                    r.chars.remove(r.caret);
-                }
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                if let Some(r) = &mut self.tab_rename {
-                    r.caret = r.caret.saturating_sub(1);
-                }
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                if let Some(r) = &mut self.tab_rename
-                    && r.caret < r.chars.len()
-                {
-                    r.caret += 1;
-                }
-            }
-            Key::Named(NamedKey::Home) => {
-                if let Some(r) = &mut self.tab_rename {
-                    r.caret = 0;
-                }
-            }
-            Key::Named(NamedKey::End) => {
-                if let Some(r) = &mut self.tab_rename {
-                    r.caret = r.chars.len();
-                }
-            }
-            Key::Named(NamedKey::Space) => self.tab_rename_insert(" "),
-            Key::Character(s) => {
-                let ctrl = mods.state().control_key() || mods.state().super_key();
-                if !ctrl {
-                    self.tab_rename_insert(s);
-                }
-            }
-            _ => {
-                if let Some(t) = &ke.text {
-                    self.tab_rename_insert(t);
-                }
-            }
+            EditOutcome::None => return,
         }
-    }
-
-    fn commit_tab_rename(&mut self, doc: &mut AutoCommit) {
-        if let Some(r) = self.tab_rename.take() {
-            let name: String = r.chars.iter().collect();
-            let trimmed = name.trim();
-            if !trimmed.is_empty() {
-                self.perform_action(doc, &actions::rename_sheet_action(r.idx, trimmed));
-                self.reload(doc);
-                self.status = format!("Renamed sheet to {trimmed}");
-            }
-            self.pending.redraw = true;
-        }
+        self.pending.redraw = true;
     }
 
     // --- name box (Go-To) + fx formula entry -------------------------------
@@ -4119,105 +4164,17 @@ impl SheetsApp {
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
         let (c, r) = self.grid.active();
-        let chars: Vec<char> = crate::model::addr_to_a1(c, r).chars().collect();
-        let caret = chars.len();
-        self.name_box_edit = Some(NameBoxEdit {
-            chars,
-            caret,
-            select_all: true,
-        });
-        self.pending.redraw = true;
-    }
-
-    /// Insert typed text into the Name box, dropping whitespace (references
-    /// never contain spaces). A pending select-all is cleared first so the
-    /// pre-filled reference is replaced.
-    fn name_box_insert(&mut self, s: &str) {
-        if let Some(nb) = &mut self.name_box_edit {
-            if nb.select_all {
-                nb.chars.clear();
-                nb.caret = 0;
-                nb.select_all = false;
-            }
-            for ch in s.chars() {
-                if ch.is_whitespace() {
-                    continue;
-                }
-                nb.chars.insert(nb.caret, ch);
-                nb.caret += 1;
-            }
-            self.pending.redraw = true;
-        }
-    }
-
-    fn name_box_key(&mut self, ke: &winit::event::KeyEvent, mods: Modifiers) {
-        use winit::keyboard::{Key, NamedKey};
-        match &ke.logical_key {
-            Key::Named(NamedKey::Enter) => self.commit_name_box(),
-            Key::Named(NamedKey::Escape) => {
-                self.name_box_edit = None;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if let Some(nb) = &mut self.name_box_edit {
-                    if nb.select_all {
-                        nb.chars.clear();
-                        nb.caret = 0;
-                        nb.select_all = false;
-                    } else if nb.caret > 0 {
-                        nb.chars.remove(nb.caret - 1);
-                        nb.caret -= 1;
-                    }
-                }
-            }
-            Key::Named(NamedKey::Delete) => {
-                if let Some(nb) = &mut self.name_box_edit {
-                    if nb.select_all {
-                        nb.chars.clear();
-                        nb.caret = 0;
-                        nb.select_all = false;
-                    } else if nb.caret < nb.chars.len() {
-                        nb.chars.remove(nb.caret);
-                    }
-                }
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                if let Some(nb) = &mut self.name_box_edit {
-                    nb.select_all = false;
-                    nb.caret = nb.caret.saturating_sub(1);
-                }
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                if let Some(nb) = &mut self.name_box_edit {
-                    nb.select_all = false;
-                    if nb.caret < nb.chars.len() {
-                        nb.caret += 1;
-                    }
-                }
-            }
-            Key::Named(NamedKey::Home) => {
-                if let Some(nb) = &mut self.name_box_edit {
-                    nb.select_all = false;
-                    nb.caret = 0;
-                }
-            }
-            Key::Named(NamedKey::End) => {
-                if let Some(nb) = &mut self.name_box_edit {
-                    nb.select_all = false;
-                    nb.caret = nb.chars.len();
-                }
-            }
-            Key::Character(s) => {
-                let ctrl = mods.state().control_key() || mods.state().super_key();
-                if !ctrl {
-                    self.name_box_insert(s);
-                }
-            }
-            _ => {
-                if let Some(t) = &ke.text {
-                    self.name_box_insert(t);
-                }
-            }
-        }
+        let reference = crate::model::addr_to_a1(c, r);
+        let mut input = TextInput::local()
+            .with_initial_value(&reference)
+            .with_char_filter(reference_box_char)
+            .with_plain_chrome()
+            .with_font_size(14.0)
+            .with_enter_submits(true)
+            .with_id("sheet_name_box");
+        input.set_focus(true);
+        input.select_all();
+        self.name_box_edit = Some(input);
         self.pending.redraw = true;
     }
 
@@ -4225,11 +4182,10 @@ impl SheetsApp {
     /// move the selection there (scrolling it into view), or report an invalid
     /// reference without changing the selection.
     fn commit_name_box(&mut self) {
-        let Some(nb) = self.name_box_edit.take() else {
+        let Some(input) = self.name_box_edit.take() else {
             return;
         };
-        let text: String = nb.chars.iter().collect();
-        let text = text.trim();
+        let text = input.value().trim();
         if text.is_empty() {
             self.pending.redraw = true;
             return;
@@ -4974,13 +4930,43 @@ mod tests {
     fn tab_rename_updates_sheet_name() {
         let (mut app, mut doc) = seeded_app();
         app.begin_tab_rename(0);
-        if let Some(r) = &mut app.tab_rename {
-            r.chars.clear();
-            r.caret = 0;
+        for ch in ["L", "e", "d", "g", "e", "r"] {
+            assert!(feed(
+                &mut app,
+                &mut doc,
+                &char_event(ch),
+                Modifiers::default()
+            ));
         }
-        app.tab_rename_insert("Ledger");
-        app.commit_tab_rename(&mut doc);
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &named_event(winit::keyboard::NamedKey::Enter),
+            Modifiers::default()
+        ));
         assert_eq!(SheetsDoc::sheet_names(&mut doc)[0], "Ledger");
+    }
+
+    #[test]
+    fn tab_rename_escape_cancels_without_a_document_write() {
+        let (mut app, mut doc) = seeded_app();
+        let before = SheetsDoc::sheet_names(&mut doc);
+        app.begin_tab_rename(0);
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event("Discarded"),
+            Modifiers::default()
+        ));
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &named_event(winit::keyboard::NamedKey::Escape),
+            Modifiers::default()
+        ));
+        assert!(app.tab_rename.is_none());
+        assert_eq!(SheetsDoc::sheet_names(&mut doc), before);
+        assert!(app.actions.take_committed().is_none());
     }
 
     #[test]
@@ -5140,16 +5126,30 @@ mod tests {
     }
 
     /// Clicking the Name box, typing a reference, and pressing Enter moves the
-    /// selection there — the real `begin_name_box_edit` → `name_box_insert` →
-    /// `commit_name_box` path `handle_event` runs on a click + Enter.
+    /// selection there through the same shared-TextInput event path used live.
     #[test]
     fn name_box_goto_navigates_to_a_cell() {
-        let (mut app, _doc) = seeded_app();
+        let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 0));
         app.begin_name_box_edit(); // seeds "A1", fully selected
         assert!(app.name_box_edit.is_some());
-        app.name_box_insert("C5"); // replaces the pre-filled reference
-        app.commit_name_box();
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event(" C 5 "),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            app.name_box_edit.as_ref().map(TextInput::value),
+            Some("C5"),
+            "the reference field drops whitespace before domain parsing"
+        );
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &named_event(winit::keyboard::NamedKey::Enter),
+            Modifiers::default()
+        ));
         assert!(app.name_box_edit.is_none());
         assert_eq!(app.grid.active(), (2, 4));
         assert!(app.status.contains("Went to"), "status={}", app.status);
@@ -5158,10 +5158,20 @@ mod tests {
     /// A `ref:ref` Name box entry selects the whole range.
     #[test]
     fn name_box_goto_selects_a_range() {
-        let (mut app, _doc) = seeded_app();
+        let (mut app, mut doc) = seeded_app();
         app.begin_name_box_edit();
-        app.name_box_insert("B2:D4");
-        app.commit_name_box();
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event("B2:D4"),
+            Modifiers::default()
+        ));
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &named_event(winit::keyboard::NamedKey::Enter),
+            Modifiers::default()
+        ));
         let (tl, br) = app.grid.selection_bounds();
         assert_eq!(tl, (1, 1));
         assert_eq!(br, (3, 3));
@@ -5170,11 +5180,21 @@ mod tests {
     /// An invalid Name box entry reports the error and leaves the selection put.
     #[test]
     fn name_box_invalid_reference_keeps_selection() {
-        let (mut app, _doc) = seeded_app();
+        let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2
         app.begin_name_box_edit();
-        app.name_box_insert("nope!");
-        app.commit_name_box();
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event("nope!"),
+            Modifiers::default()
+        ));
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &named_event(winit::keyboard::NamedKey::Enter),
+            Modifiers::default()
+        ));
         assert_eq!(app.grid.active(), (4, 1), "selection must not move");
         assert!(app.status.contains("Invalid"), "status={}", app.status);
     }
@@ -5185,10 +5205,8 @@ mod tests {
         let (mut app, _doc) = seeded_app();
         app.grid.select_only((4, 1));
         app.begin_name_box_edit();
-        if let Some(nb) = &mut app.name_box_edit {
-            nb.chars.clear();
-            nb.select_all = false;
-            nb.caret = 0;
+        if let Some(input) = &mut app.name_box_edit {
+            input.set_text("");
         }
         app.commit_name_box();
         assert!(app.name_box_edit.is_none());
@@ -5416,7 +5434,6 @@ mod tests {
     /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
     #[test]
     fn portal_drain_exports_then_imports_through_the_picked_path() {
-        use crate::portal::{Interchange, PendingIo, PortalOutcome};
         let tmp = std::env::temp_dir().join(format!("qos-sheets-portal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -5427,7 +5444,7 @@ mod tests {
         // Inject a Save outcome as though the user picked `path`, then drain.
         app.io = Some((
             PendingIo::Export(Interchange::Csv),
-            crate::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
         ));
         app.drain_io(&mut doc);
         assert!(
@@ -5445,7 +5462,7 @@ mod tests {
         let before = SheetsDoc::sheet_count(&mut doc);
         app.io = Some((
             PendingIo::Import(Interchange::Csv),
-            crate::portal::inject_for_test(PortalOutcome::Opened(path)),
+            ui::portal::inject_for_test(PortalOutcome::Opened(path)),
         ));
         app.drain_io(&mut doc);
         assert_eq!(
@@ -5465,12 +5482,11 @@ mod tests {
     /// A cancelled chooser clears the in-flight dialog and touches nothing.
     #[test]
     fn portal_cancel_is_silent() {
-        use crate::portal::{Interchange, PendingIo, PortalOutcome};
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
         app.io = Some((
             PendingIo::Import(Interchange::Xlsx),
-            crate::portal::inject_for_test(PortalOutcome::Cancelled),
+            ui::portal::inject_for_test(PortalOutcome::Cancelled),
         ));
         app.drain_io(&mut doc);
         assert!(app.io.is_none());
@@ -5512,9 +5528,13 @@ mod tests {
     }
 
     fn char_event(s: &str) -> WindowEvent {
-        key_event(winit::keyboard::Key::Character(
+        let mut event = key_event(winit::keyboard::Key::Character(
             winit::keyboard::SmolStr::new(s),
-        ))
+        ));
+        if let WindowEvent::KeyboardInput { event: key, .. } = &mut event {
+            key.text = Some(winit::keyboard::SmolStr::new(s));
+        }
+        event
     }
 
     fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {

@@ -85,11 +85,52 @@ enum StagedKind {
     Dmabuf(Dmabuf),
 }
 
+/// Build the encoder's `FrameInput::DmabufFd` from `dmabuf`'s planes.
+/// `.take(4)` bounds the plane count, but writes go through `.get_mut()`
+/// anyway rather than trust that invariant to hold forever. Split out of
+/// `SharedFlatpakSession::encode_next_frame` to keep it short.
+fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
+    let mut plane_fds = [-1i32; 4];
+    let mut plane_offsets = [0u64; 4];
+    let mut plane_strides = [0u32; 4];
+    let mut num_planes: u8 = 0;
+    for (i, (fd, (offset, stride))) in dmabuf
+        .handles()
+        .zip(dmabuf.offsets().zip(dmabuf.strides()))
+        .take(4)
+        .enumerate()
+    {
+        if let Some(slot) = plane_fds.get_mut(i) {
+            *slot = fd.as_raw_fd();
+        }
+        if let Some(slot) = plane_offsets.get_mut(i) {
+            *slot = u64::from(offset);
+        }
+        if let Some(slot) = plane_strides.get_mut(i) {
+            *slot = stride;
+        }
+        num_planes = num_planes.saturating_add(1);
+    }
+    let fmt = dmabuf.format();
+    FrameInput::DmabufFd {
+        plane_fds,
+        plane_offsets,
+        plane_strides,
+        num_planes,
+        drm_fourcc: fmt.code as u32,
+        drm_modifier: u64::from(fmt.modifier),
+        width: dmabuf.width(),
+        height: dmabuf.height(),
+    }
+}
+
 /// One encoded frame, ready to wrap in `NeighbourMsg::SurfaceFrame`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodedFrame {
     /// Surface the encoder is capturing.
     pub surface: SurfaceId,
+    /// Authenticated session handle of the stream owner.
+    pub source_peer: PeerId,
     /// H.264 Annex-B NALU payload.
     pub nalus: Vec<u8>,
     /// Owner-side capture timestamp (monotonic ns). Receivers subtract their
@@ -102,6 +143,7 @@ impl EncodedFrame {
     pub fn into_neighbour_msg(self) -> NeighbourMsg {
         NeighbourMsg::SurfaceFrame {
             surface: self.surface,
+            source_peer: self.source_peer,
             encoded_h264: self.nalus,
             ts: self.capture_ts_ns,
         }
@@ -210,7 +252,7 @@ impl SharedFlatpakSession {
         surface_id: SurfaceId,
         width: u32,
         height: u32,
-        config: FlatpakShareConfig,
+        config: &FlatpakShareConfig,
     ) -> Result<Self, ShareError> {
         Self::start_with_metrics(
             host_user_id,
@@ -218,7 +260,7 @@ impl SharedFlatpakSession {
             surface_id,
             width,
             height,
-            &config,
+            config,
             None,
         )
     }
@@ -553,45 +595,12 @@ impl SharedFlatpakSession {
                 encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
                 CapturePath::ShmReadback,
             ),
-            StagedKind::Dmabuf(dmabuf) => {
-                let mut plane_fds = [-1i32; 4];
-                let mut plane_offsets = [0u64; 4];
-                let mut plane_strides = [0u32; 4];
-                let mut num_planes: u8 = 0;
-                for (i, (fd, (offset, stride))) in dmabuf
-                    .handles()
-                    .zip(dmabuf.offsets().zip(dmabuf.strides()))
-                    .take(4)
-                    .enumerate()
-                {
-                    // `.take(4)` bounds `i` to the four plane slots, but
-                    // index via `.get_mut()` anyway rather than trust that
-                    // invariant to hold forever.
-                    if let Some(slot) = plane_fds.get_mut(i) {
-                        *slot = fd.as_raw_fd();
-                    }
-                    if let Some(slot) = plane_offsets.get_mut(i) {
-                        *slot = u64::from(offset);
-                    }
-                    if let Some(slot) = plane_strides.get_mut(i) {
-                        *slot = stride;
-                    }
-                    num_planes = num_planes.saturating_add(1);
-                }
-                let fmt = dmabuf.format();
-                let input = FrameInput::DmabufFd {
-                    plane_fds,
-                    plane_offsets,
-                    plane_strides,
-                    num_planes,
-                    drm_fourcc: fmt.code as u32,
-                    drm_modifier: u64::from(fmt.modifier),
-                    width: dmabuf.width(),
-                    height: dmabuf.height(),
-                };
-                (encoder.encode(input, &mut nalus), CapturePath::DmabufDirect)
-            }
+            StagedKind::Dmabuf(dmabuf) => (
+                encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
+                CapturePath::DmabufDirect,
+            ),
         };
+        drop(encoder);
         match encode_result {
             Ok(stats) => {
                 self.throttle
@@ -617,6 +626,7 @@ impl SharedFlatpakSession {
                 self.stream_sender.publish(keyframe, nalus.clone());
                 Some(EncodedFrame {
                     surface: self.surface_id,
+                    source_peer: self.host_user_id,
                     nalus,
                     capture_ts_ns: carried_ts,
                 })
@@ -791,11 +801,17 @@ mod tests {
     }
 
     fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
         for y in 0..height {
             for x in 0..width {
-                let r = ((x * 255) / width.max(1)) as u8;
-                let g = ((y * 255) / height.max(1)) as u8;
+                let r = u8::try_from(x.saturating_mul(255).checked_div(width.max(1)).unwrap_or(0))
+                    .unwrap_or(255);
+                let g = u8::try_from(
+                    y.saturating_mul(255)
+                        .checked_div(height.max(1))
+                        .unwrap_or(0),
+                )
+                .unwrap_or(255);
                 out.push(r);
                 out.push(g);
                 out.push(128);
@@ -814,7 +830,7 @@ mod tests {
                 encoder: choice,
                 ..cfg_openh264()
             };
-            let session = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg)
+            let session = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg)
                 .expect("session should fall back to openh264");
             #[cfg(not(feature = "vaapi"))]
             #[cfg(not(feature = "nvenc"))]
@@ -828,12 +844,12 @@ mod tests {
 
     #[test]
     fn start_rejects_zero_and_oversized_dimensions() {
-        match SharedFlatpakSession::start(1, "x", 1, 0, 64, cfg_openh264()) {
+        match SharedFlatpakSession::start(1, "x", 1, 0, 64, &cfg_openh264()) {
             Err(ShareError::DimensionsExceeded { .. }) => {}
             Err(other) => panic!("expected DimensionsExceeded for 0 width, got {other:?}"),
             Ok(_) => panic!("zero-width session should not construct"),
         }
-        match SharedFlatpakSession::start(1, "x", 1, 5000, 64, cfg_openh264()) {
+        match SharedFlatpakSession::start(1, "x", 1, 5000, 64, &cfg_openh264()) {
             Err(ShareError::DimensionsExceeded { .. }) => {}
             Err(other) => {
                 panic!("expected DimensionsExceeded for 5000 width, got {other:?}")
@@ -848,7 +864,7 @@ mod tests {
             target_fps: 60,
             ..cfg_openh264()
         };
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg).expect("start");
+        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg).expect("start");
         assert_eq!(
             s.snapshot_config().target_fps,
             SOFTWARE_FPS_CEILING,
@@ -858,7 +874,7 @@ mod tests {
 
     #[test]
     fn stream_start_and_end_messages_carry_the_session_ids() {
-        let s = SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, cfg_openh264())
+        let s = SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, &cfg_openh264())
             .expect("start");
         match s.stream_start_msg() {
             NeighbourMsg::SurfaceStreamStart {
@@ -906,7 +922,7 @@ mod tests {
     fn encode_next_frame_produces_annex_b_bytes() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, W, H, cfg_openh264())
+        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, W, H, &cfg_openh264())
             .expect("start");
         s.deposit_captured_rgba(gradient_frame(W, H));
         let frame = s
@@ -918,10 +934,12 @@ mod tests {
         match msg {
             NeighbourMsg::SurfaceFrame {
                 surface,
+                source_peer,
                 encoded_h264,
                 ts,
             } => {
                 assert_eq!(surface, 7);
+                assert_eq!(source_peer, 1);
                 assert_eq!(encoded_h264, frame.nalus);
                 assert_eq!(ts, frame.capture_ts_ns);
             }
@@ -931,7 +949,7 @@ mod tests {
 
     #[test]
     fn encode_next_frame_none_when_no_staged_frame() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
         assert!(s.encode_next_frame(Instant::now()).is_none());
     }
 
@@ -939,7 +957,7 @@ mod tests {
     fn stop_short_circuits_encode_next_frame() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "x", 7, W, H, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, W, H, &cfg_openh264()).expect("start");
         s.deposit_captured_rgba(gradient_frame(W, H));
         // Flip `active` directly (bypassing `stop`) to isolate the short-circuit.
         let active = s.active.clone();
@@ -949,7 +967,7 @@ mod tests {
 
     #[test]
     fn viewer_registration_gates_remote_input() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
         let peer: PeerId = 99;
 
         assert!(!s.accept_remote_input(peer));
@@ -969,7 +987,7 @@ mod tests {
 
     #[test]
     fn route_input_delivers_only_when_accepted() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
         let peer: PeerId = 42;
         let mut sink = RecordingSink::default();
 

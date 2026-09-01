@@ -322,13 +322,6 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 /// This is an assumption which is known to be limiting, and is planned to change.
 #[cfg(feature = "wgpu")]
 pub struct Renderer {
-    #[cfg_attr(
-        not(feature = "hot_reload"),
-        expect(
-            dead_code,
-            reason = "Options are only used to reinitialise on a hot reload"
-        )
-    )]
     options: RendererOptions,
     engine: WgpuEngine,
     resolver: Resolver,
@@ -494,7 +487,11 @@ impl Renderer {
         if self.budget.collect(device, &mut self.engine).0 {
             self.engine.clear_pool();
         }
-        let measure = self.budget.wants_readback();
+        // Downloads inside a recording are not supported by the CPU-dispatch
+        // engine. The CPU path still uses the GPU for the fine pass, but its
+        // coarse buffers are host allocations and do not need GPU-side bump
+        // measurement.
+        let measure = !self.options.use_cpu && self.budget.wants_readback();
         let (recording, target, bump_buf) = render::render_full(
             scene,
             &mut self.resolver,
@@ -772,12 +769,12 @@ impl Renderer {
         let mut render = Render::new();
         let encoding = scene.encoding();
         self.budget.set_viewport(params.width, params.height);
-        // This path awaits the bump counters between the coarse and fine
-        // stages anyway, so it always reads them: the reservation for the
-        // next frame comes from this one, exactly as in the sync path.
-        // (Upstream gated this on `debug_layers`, when the counters were
-        // only ever used for debug visualisation.)
-        let robust = true;
+        let capture_debug = cfg!(feature = "debug_layers");
+        // Debug layers require these counters. Otherwise only the adaptive
+        // GPU path pays for the awaited readback; pinned and CPU-dispatch
+        // rendering do not need it for sizing.
+        let measure_bump =
+            capture_debug || (!self.options.use_cpu && self.budget.wants_measurement());
         let recording = render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
@@ -785,7 +782,8 @@ impl Renderer {
             &mut self.image_atlas,
             params,
             self.budget.budget(),
-            robust,
+            measure_bump,
+            capture_debug,
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();
@@ -810,10 +808,9 @@ impl Renderer {
             let mapped = buf_slice.get_mapped_range();
             bump = Some(bytemuck::pod_read_unaligned(&mapped));
         }
-        // Size the next frame from this one. Re-running coarse for the
-        // *current* frame is still not done: it would mean discarding a
-        // recording's worth of buffers mid-flight, where growing here
-        // costs at worst the one frame that outgrew its reservation.
+        // Size later frames from this one. Re-running coarse for the current
+        // frame is not attempted; a failure can therefore affect this output,
+        // and convergence can require more than one subsequent render.
         if let Some(bump) = bump.as_ref()
             && self.budget.observe_now(bump)
         {

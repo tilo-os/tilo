@@ -1790,10 +1790,12 @@ impl CodeApp {
                 let id = self.session.project.add_file(root, &name, "");
                 self.sidebar.set_project(&self.session.project);
                 self.open_node(id);
-                self.actions.dispatch(
+                let action = actions::create_buffer_action(id as u64, "");
+                self.actions.dispatch_with_context(
                     doc,
                     actions::CODE_EDITOR_ACTION_TYPE,
-                    &actions::create_buffer_action(id as u64, ""),
+                    &action,
+                    actions::history_context(&action, &name),
                 );
             }
             Command::OpenFolder => self.request_open_folder(),
@@ -2773,7 +2775,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -3554,7 +3556,7 @@ impl Widget for CodeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if self.handle_palette_and_prompt_cursor(event, scale_factor, modifiers, state, handled) {
+        if self.handle_palette_and_prompt_cursor(event, scale_factor, *modifiers, state, handled) {
             return;
         }
 

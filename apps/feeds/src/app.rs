@@ -28,11 +28,13 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
 
 use crate::actions::{self, FeedsAction, FeedsResourceCtx};
@@ -44,8 +46,21 @@ use crate::model::{
     Article, BlockKind, Feed, FeedKind, Filter, Id, ReadFont, ReadSettings, ReadTheme, Store,
     relative_time,
 };
-use crate::portal::{self, ImportOutcome};
 use crate::reader_theme::ReaderPalette;
+
+fn opml_import_request() -> PickRequest {
+    PickRequest::open("Import OPML", "Import")
+        .thread_name("feeds-portal-import")
+        .filter(
+            FileFilter::new("OPML")
+                .mimetype("text/x-opml")
+                .mimetype("application/xml")
+                .mimetype("text/xml")
+                .glob("*.opml")
+                .glob("*.xml"),
+        )
+        .all_files()
+}
 use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
@@ -363,7 +378,7 @@ pub struct FeedsApp {
     // --- OPML import (XDG portal) ---------------------------------------
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame in `sync`. `None` when no picker is open.
-    import_rx: Option<portal::ImportChannel>,
+    import_rx: Option<PortalChannel>,
 
     // --- per-feed context menu ------------------------------------------
     /// Right-click menu over a sidebar feed. Uses the shared `ui` primitive so
@@ -826,8 +841,12 @@ impl FeedsApp {
     /// before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
-        self.actions
-            .dispatch(doc, actions::FEEDS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::FEEDS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Feeds", "Feeds", action),
+        );
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
         // store for a change this widget already mirrored.
@@ -1008,7 +1027,7 @@ impl FeedsApp {
         if self.import_rx.is_some() {
             return;
         }
-        self.import_rx = Some(portal::request_import());
+        self.import_rx = Some(opml_import_request().send());
         self.set_toast("Choose an OPML file…");
     }
 
@@ -1030,7 +1049,7 @@ impl FeedsApp {
         };
         self.import_rx = None;
         match outcome {
-            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let new_ids = self.apply_opml_import(&text, doc);
                     if new_ids.is_empty() {
@@ -1048,8 +1067,8 @@ impl FeedsApp {
                     true
                 }
             },
-            ImportOutcome::Cancelled => false,
-            ImportOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => false,
+            PortalOutcome::Failed(reason) => {
                 self.set_toast(format!("Import failed: {reason}"));
                 true
             }
@@ -1204,30 +1223,8 @@ impl FeedsApp {
         }
         let Some(m) = self.modal.as_mut() else { return };
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = m.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        let Ok(root) = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(self.rect.width() as f32),
-                    height: Dimension::length(self.rect.height() as f32),
-                },
-                ..Default::default()
-            },
-            &[node],
-        ) else {
-            return;
-        };
-        let _ = taffy.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
-            },
-        );
-        m.dialog
-            .apply_layout(&taffy, node, Point::new(self.rect.x0, self.rect.y0));
+        let mut text_renderer = TextRenderer::new();
+        m.dialog.layout_in(self.rect, &theme, &mut text_renderer);
     }
 
     /// Route an event to the open dialog and act on the flags its action
@@ -1253,24 +1250,9 @@ impl FeedsApp {
         }
         let (submit, cancel) = {
             let Some(m) = self.modal.as_mut() else { return };
-            // The dialog ignores the node/taffy it's handed (it drives its own
-            // retained content tree), so a throwaway leaf is fine.
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let Ok(node) = taffy.new_leaf(Style::default()) else {
-                return;
-            };
-            let mut focus_target = None;
-            m.dialog.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                &mut focus_target,
-                node,
-                &taffy,
-            );
+            *handled = m
+                .dialog
+                .handle_detached(event, scale_factor, modifiers, state, path);
             (m.submit.replace(false), m.cancel.replace(false))
         };
         if submit {
@@ -1990,7 +1972,15 @@ impl FeedsApp {
         if let Some((msg, since)) = &self.toast
             && since.elapsed().as_secs_f32() < 4.0
         {
-            draw_toast(scene, t, tr, theme, &self.rect, msg);
+            paint_transient(
+                scene,
+                t,
+                tr,
+                theme,
+                self.rect,
+                ToastAnchor::BottomRight,
+                &ToastCard::new(msg, ToastKind::Info),
+            );
         }
 
         // Dialog on top of everything — the shared ModalDialog paints its own
@@ -3572,50 +3562,6 @@ fn draw_chrome_button(
     }
 }
 
-#[allow(
-    clippy::many_single_char_names,
-    reason = "conventional short names for the shared drawing context (t: transform, w/h: \
-              size, x/y: position) used consistently across every draw_* function in this file"
-)]
-fn draw_toast(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: &Rect,
-    msg: &str,
-) {
-    let c = &theme.tokens.colors;
-    let (tw, _) = tr.measure(msg, 13.0, None);
-    let w = f64::from(tw) + 36.0;
-    let h = 38.0;
-    let x = rect.x1 - w - 24.0;
-    let y = rect.y1 - h - 24.0;
-    let r = Rect::new(x, y, x + w, y + h);
-    scene.fill(
-        Fill::NonZero,
-        t,
-        c.neutral[2],
-        None,
-        &RoundedRect::from_rect(r, 10.0),
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        alpha(c.border_focus, 160),
-        None,
-        &RoundedRect::from_rect(r, 10.0),
-    );
-    tr.draw_text(
-        scene,
-        msg,
-        13.0,
-        c.text_primary,
-        t * Affine::translate((x + 18.0, y + 11.0)),
-        None,
-    );
-}
-
 // --- text helpers -----------------------------------------------------
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
@@ -4095,6 +4041,7 @@ impl FeedsApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use uuid::Uuid;
@@ -5187,7 +5134,7 @@ mod tests {
         std::fs::write(&path, opml::sample_opml()).unwrap();
 
         let feeds_before = a.store.feeds.len();
-        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path)));
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         assert!(
             a.import_rx.is_some(),
             "a request is in flight until drained"
@@ -5227,7 +5174,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         a.sync(&mut doc, &automerge::ROOT);
         let before = a.store.feeds.len();
-        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Cancelled));
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.import_rx.is_none(), "cancel clears the request");
         assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");

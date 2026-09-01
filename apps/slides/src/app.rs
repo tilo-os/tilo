@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::TryRecvError;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -22,6 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::{
@@ -39,17 +41,97 @@ use crate::actions;
 use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
+use crate::help_overlay::HelpOverlay;
 use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
-use crate::portal;
-use crate::presentation::{Blank, Command as PresentCommand, Presentation};
+use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
+use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
 use crate::render;
 use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
 
 /// Logical pixels scrolled per mouse-wheel line notch.
 const WHEEL_LINE_PX: f64 = 48.0;
+
+fn image_open_request() -> PickRequest {
+    PickRequest::open("Insert image", "Insert")
+        .thread_name("slides-portal-open")
+        .filter(
+            FileFilter::new("Images")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg")
+                .glob("*.gif")
+                .glob("*.webp")
+                .glob("*.bmp")
+                .glob("*.svg"),
+        )
+        .all_files()
+}
+
+fn presentation_filter() -> FileFilter {
+    FileFilter::new("Presentations").glob("*.odp")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocOutcome {
+    Open(PathBuf),
+    Save(PathBuf),
+    Cancelled,
+    Failed(String),
+}
+
+struct DocPortalChannel {
+    rx: PortalChannel,
+    save: bool,
+}
+
+impl DocPortalChannel {
+    fn try_recv(&self) -> Result<DocOutcome, TryRecvError> {
+        self.rx.try_recv().map(|outcome| match outcome {
+            PortalOutcome::Opened(path) if self.save => DocOutcome::Save(path),
+            PortalOutcome::Opened(path) => DocOutcome::Open(path),
+            PortalOutcome::Cancelled => DocOutcome::Cancelled,
+            PortalOutcome::Failed(error) => DocOutcome::Failed(error),
+        })
+    }
+}
+
+fn open_document_request() -> DocPortalChannel {
+    DocPortalChannel {
+        rx: PickRequest::open("Open presentation", "Open")
+            .thread_name("slides-portal-open-doc")
+            .filter(presentation_filter())
+            .all_files()
+            .send(),
+        save: false,
+    }
+}
+
+fn save_document_request(suggested_name: &str) -> DocPortalChannel {
+    DocPortalChannel {
+        rx: PickRequest::save("Save presentation", "Save", suggested_name)
+            .thread_name("slides-portal-save-doc")
+            .filter(presentation_filter())
+            .send(),
+        save: true,
+    }
+}
+
+#[cfg(test)]
+fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
+    let (outcome, save) = match outcome {
+        DocOutcome::Open(path) => (PortalOutcome::Opened(path), false),
+        DocOutcome::Save(path) => (PortalOutcome::Opened(path), true),
+        DocOutcome::Cancelled => (PortalOutcome::Cancelled, false),
+        DocOutcome::Failed(error) => (PortalOutcome::Failed(error), false),
+    };
+    DocPortalChannel {
+        rx: ui::portal::inject_for_test(outcome),
+        save,
+    }
+}
 
 const TOOLBAR_H: f64 = 56.0;
 const RAIL_W: f64 = 212.0;
@@ -351,9 +433,8 @@ pub struct SlidesApp {
     editing_text: bool,
     caret: usize,
     editing_notes: bool,
-    notes_caret: usize,
-    /// Selection anchor (char index) for the active on-canvas text / notes
-    /// editor. `sel_anchor == active_caret()` means "no live selection"; the
+    /// Selection anchor (char index) for the active on-canvas text editor.
+    /// `sel_anchor == active_caret()` means "no live selection"; the
     /// pair is a [`ui::text_selection::Selection`] over the CRDT-backed text, so
     /// the on-canvas editor gets the same selection semantics as every other
     /// `ui` text field (shift+arrow, word-wise, drag-select, select-all,
@@ -367,8 +448,9 @@ pub struct SlidesApp {
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
 
-    /// Keyboard-shortcuts overlay visibility (toggled with `?`).
-    show_help: bool,
+    /// Modal keyboard-shortcuts overlay. Owns its visibility, drawing, and
+    /// pointer/keyboard capture policy in every editor and presentation mode.
+    help_overlay: HelpOverlay,
     /// Snap-to-guides toggle (G in edit mode would clash with overview, so
     /// snapping is always on, but the active guide lines computed during the
     /// current drag live here so `draw` can paint them).
@@ -434,16 +516,9 @@ pub struct SlidesApp {
     /// (not a constant) so `--shots` can force a narrow layout deterministically.
     breakpoint: f64,
 
-    /// Cached render of the settled audience slide in present mode. Present
-    /// mode pumps animation frames to keep the ~1 Hz speaker clock live, but
-    /// the *slide* underneath is static between navigations — so we shape it
-    /// once into a detached scene and re-append it each vsync instead of
-    /// re-shaping every text element. Invalidated by
-    /// [`PresentCache::matches`] when the slide, size, theme or deck changes.
-    present_cache: Option<PresentCache>,
     /// Monotonic revision of the loaded deck, bumped whenever the CRDT mirror
-    /// is reloaded. Part of [`PresentCache`]'s key so a remote edit (or undo)
-    /// to the current slide invalidates the cached render.
+    /// is reloaded. The presentation cache includes it in its key, so a remote
+    /// edit (or undo) to the current slide invalidates the cached render.
     deck_rev: u64,
 
     /// Path-keyed decode cache for image elements. Decodes off the UI thread;
@@ -454,7 +529,7 @@ pub struct SlidesApp {
     /// slides the deck has.
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
-    overview_scroll: f64,
+    overview: OverviewGrid,
     /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
     /// pointer policy; document actions returned by it are applied here.
     toolbar_tools: ToolbarTools,
@@ -462,11 +537,11 @@ pub struct SlidesApp {
     /// file chooser is open on a worker thread; the chosen path arrives over
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
     /// `None` when idle. Per-peer/transient (not CRDT).
-    portal_rx: Option<portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// An in-flight host file open/save for `.odp` documents. Same
     /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
     /// the deck bytes to write once the user names a destination.
-    doc_portal_rx: Option<portal::DocPortalChannel>,
+    doc_portal_rx: Option<DocPortalChannel>,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -486,6 +561,10 @@ pub struct SlidesApp {
     /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
     /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
     title_input: TextInput,
+    /// Directly bound to the current slide's Automerge notes text while open.
+    /// The shared editor owns multiline layout, selection, clipboard, scrolling
+    /// and IME; `editing_notes` only owns the inspector's open state.
+    notes_input: TextInput,
     /// Set when the popover opens so the next `draw` (which has the theme, hence
     /// can resolve a colour *role* to a concrete colour) seeds the picker with
     /// the selected element's current fill.
@@ -509,46 +588,6 @@ pub struct SlidesApp {
 enum DemoMenu {
     Element,
     Slide,
-}
-
-/// One shaped audience slide, kept across present-mode frames so the speaker
-/// clock can tick without re-rendering the whole slide (see
-/// [`SlidesApp::present_cache`]).
-struct PresentCache {
-    slide: usize,
-    rev: u64,
-    palette: PaletteKind,
-    /// Destination rect, rounded to whole pixels so sub-pixel jitter doesn't
-    /// force a needless re-shape.
-    dest: (i64, i64, i64, i64),
-    /// The slide painted at `Affine::IDENTITY`; appended under the live
-    /// transform each frame.
-    scene: Scene,
-}
-
-impl PresentCache {
-    fn key(
-        dest: Rect,
-        slide: usize,
-        rev: u64,
-        palette: PaletteKind,
-    ) -> (usize, u64, PaletteKind, (i64, i64, i64, i64)) {
-        (
-            slide,
-            rev,
-            palette,
-            (
-                dest.x0.round() as i64,
-                dest.y0.round() as i64,
-                dest.x1.round() as i64,
-                dest.y1.round() as i64,
-            ),
-        )
-    }
-
-    fn matches(&self, dest: Rect, slide: usize, rev: u64, palette: PaletteKind) -> bool {
-        (self.slide, self.rev, self.palette, self.dest) == Self::key(dest, slide, rev, palette)
-    }
 }
 
 impl Default for SlidesApp {
@@ -593,12 +632,11 @@ impl SlidesApp {
             editing_text: false,
             caret: 0,
             editing_notes: false,
-            notes_caret: 0,
             sel_anchor: 0,
             editing_title: false,
             title_caret: 0,
             presentation: Presentation::default(),
-            show_help: false,
+            help_overlay: HelpOverlay::default(),
             active_guides: Vec::new(),
             last_mouse: Point::ZERO,
             drag: Drag::None,
@@ -615,11 +653,10 @@ impl SlidesApp {
             last_flap_tick: std::time::Instant::now(),
             flap_uninitialised: true,
             breakpoint: NARROW_BREAKPOINT,
-            present_cache: None,
             deck_rev: 0,
             images: ImageStore::new(),
             rail_scroll: 0.0,
-            overview_scroll: 0.0,
+            overview: OverviewGrid::new(),
             toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
@@ -634,9 +671,15 @@ impl SlidesApp {
             fill_picker_open: false,
             fill_picker_needs_init: false,
             title_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Name)
                 .with_plain_chrome()
                 .with_font_size(17.0)
                 .with_id("slides-title"),
+            notes_input: TextInput::local()
+                .multiline(true)
+                .with_plain_chrome()
+                .with_font_size(12.5)
+                .with_id("slides-speaker-notes"),
             demo_menu: None,
             demo_reorder: false,
             demo_delete_zone: false,
@@ -679,7 +722,7 @@ impl SlidesApp {
                 self.presentation.start();
                 self.presentation.set_blank(Blank::White);
             }
-            "help" => self.show_help = true,
+            "help" => self.help_overlay.show(),
             // A long deck so the rail overflows its viewport — proves the rail
             // scrolls (scrolled to the end here) and the pinned Add/Dup/Del row
             // is never overlapped by thumbnails.
@@ -693,7 +736,7 @@ impl SlidesApp {
             // Overview scrolled to its end, proving the last slide is reachable.
             "overview_end" => {
                 self.mode = Mode::Overview;
-                self.overview_scroll = 1.0e6;
+                self.overview.set_scroll(1.0e6);
             }
             // Narrow-layout captures (rendered at a phone-ish viewport, so the
             // panels resolve to overlay flaps from the width). We only record a
@@ -730,12 +773,6 @@ impl SlidesApp {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.editing_notes = true;
-                self.notes_caret = self
-                    .deck
-                    .slides
-                    .get(1)
-                    .map_or(0, |s| s.notes.chars().count());
-                self.sel_anchor = self.notes_caret;
                 self.bootstrapped = true;
             }
             // The docked, nothing-selected inspector (slide-level properties:
@@ -1011,8 +1048,12 @@ impl SlidesApp {
     /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
     /// would double-record the undo boundary the host already records.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::SlidesAction) {
-        self.actions
-            .dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::SLIDES_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
+        );
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
@@ -1658,7 +1699,7 @@ impl SlidesApp {
 
         let font_input_rect = if el.kind == ElementKind::Text {
             let (new_y, rect) =
-                self.build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
+                Self::build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
             y = new_y;
             rect
         } else {
@@ -1739,7 +1780,6 @@ impl SlidesApp {
                   this argument list as a throwaway struct"
     )]
     fn build_inspector_type_row(
-        &self,
         el: &Element,
         x0: f64,
         x1: f64,
@@ -2176,10 +2216,7 @@ impl SlidesApp {
                 self.perform_action(doc, &actions::set_deck_palette_action(p));
             }
             Hit::EditNotes => {
-                self.editing_notes = true;
-                self.editing_text = false;
-                self.notes_caret = self.slide().map_or(0, |s| s.notes.chars().count());
-                self.sel_anchor = self.notes_caret;
+                self.begin_notes_edit(doc);
             }
             Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
             Hit::ToggleInspector => self.inspector_flap.toggle(self.inspector_layout()),
@@ -2274,7 +2311,7 @@ impl SlidesApp {
 
     /// Ask the host desktop's file chooser to pick an image, via the XDG
     /// Desktop Portal. Per HIG §5 the app never draws its own picker: the
-    /// portal round-trip runs on a worker thread ([`portal::request_open`]) and
+    /// portal round-trip runs on a worker thread ([`ui::portal::PickRequest`]) and
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`]. A second request while one is in flight is
     /// ignored, so a double-click can't stack two host dialogs.
@@ -2282,7 +2319,7 @@ impl SlidesApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(portal::request_open());
+        self.portal_rx = Some(image_open_request().send());
     }
 
     /// Ask the host to pick a `.odp` presentation to open (Ctrl+O). The chosen
@@ -2292,7 +2329,7 @@ impl SlidesApp {
         if self.doc_portal_rx.is_some() {
             return;
         }
-        self.doc_portal_rx = Some(portal::request_open_document());
+        self.doc_portal_rx = Some(open_document_request());
     }
 
     /// Ask the host where to save the current deck as a `.odp` (Ctrl+S).
@@ -2301,7 +2338,7 @@ impl SlidesApp {
             return;
         }
         let name = format!("{}.odp", sanitize_filename(&self.deck.title));
-        self.doc_portal_rx = Some(portal::request_save_document(&name));
+        self.doc_portal_rx = Some(save_document_request(&name));
     }
 
     /// Drain a completed `.odp` open/save request, loading or writing the deck.
@@ -2314,13 +2351,13 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.doc_portal_rx = None;
                 match outcome {
-                    portal::DocOutcome::Open(path) => {
+                    DocOutcome::Open(path) => {
                         self.load_odp(doc, &path);
                     }
-                    portal::DocOutcome::Save(path) => {
+                    DocOutcome::Save(path) => {
                         self.save_odp(&path);
                     }
-                    portal::DocOutcome::Cancelled | portal::DocOutcome::Failed(_) => {}
+                    DocOutcome::Cancelled | DocOutcome::Failed(_) => {}
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -2346,7 +2383,7 @@ impl SlidesApp {
         self.sel = None;
         self.editing_text = false;
         self.editing_notes = false;
-        self.present_cache = None;
+        self.presentation.invalidate_cache();
         self.mark();
         self.reload(doc);
         true
@@ -2374,10 +2411,10 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    portal::PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
+                    PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
                     // A cancel or a portal failure is not a bug — leave the deck
                     // untouched (we never fabricate a placeholder element).
-                    portal::PortalOutcome::Cancelled | portal::PortalOutcome::Failed(_) => {}
+                    PortalOutcome::Cancelled | PortalOutcome::Failed(_) => {}
                 }
             }
             // Still waiting on the host dialog, or the worker vanished.
@@ -2519,9 +2556,9 @@ impl SlidesApp {
     ///
     /// Multi-monitor presenter mode (the design intent):
     ///   * The compositor enumerates connected outputs. With two outputs, it
-    ///     fullscreens the **audience** surface — `draw_present` with
-    ///     `presenter_view = false` — on the **larger** output, and paints the
-    ///     **presenter dashboard** — `draw_presenter` — on the other.
+    ///     fullscreens the clean **audience** presentation on the **larger**
+    ///     output, and paints the presentation's **presenter dashboard** on
+    ///     the other.
     ///   * Both surfaces share one CRDT deck + one `cur_slide`, so advancing
     ///     on either output is reflected on both instantly (the model is
     ///     already per-deck, with `cur_slide` per-peer view state).
@@ -2532,7 +2569,7 @@ impl SlidesApp {
     /// a second slides surface bound to the presenter output, or to composite
     /// two views of the same surface. Until then, the presenter dashboard is
     /// a **togglable full-window view** on this one monitor (press `P` while
-    /// presenting), which is exactly what `draw_presenter` renders.
+    /// presenting), using the same presentation renderer.
     ///
     /// Returns `(audience_on_larger, presenter_on_other)` as a hint a
     /// compositor integration can act on; both are always available because
@@ -2558,13 +2595,6 @@ impl SlidesApp {
         // Typing over a selection replaces it (delete first, then insert at the
         // collapsed caret).
         self.delete_selection(doc);
-        if self.editing_notes {
-            SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 0, s);
-            self.notes_caret += s.chars().count();
-            self.sel_anchor = self.notes_caret;
-            self.reload(doc);
-            return;
-        }
         if let Some(id) = self.sel.clone() {
             SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 0, s);
             self.caret += s.chars().count();
@@ -2585,16 +2615,6 @@ impl SlidesApp {
         }
         // A live selection is deleted whole; otherwise delete the char before.
         if self.delete_selection(doc) {
-            return;
-        }
-        if self.editing_notes {
-            if self.notes_caret > 0 {
-                SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret - 1, 1, "");
-                self.notes_caret -= 1;
-                self.sel_anchor = self.notes_caret;
-                self.mark();
-                self.reload(doc);
-            }
             return;
         }
         if let Some(id) = self.sel.clone()
@@ -2624,14 +2644,6 @@ impl SlidesApp {
             return;
         }
         let len = self.cur_text_len();
-        if self.editing_notes {
-            if self.notes_caret < len {
-                SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 1, "");
-                self.mark();
-                self.reload(doc);
-            }
-            return;
-        }
         if let Some(id) = self.sel.clone()
             && self.caret < len
         {
@@ -2644,8 +2656,6 @@ impl SlidesApp {
     fn cur_text_len(&self) -> usize {
         if self.editing_title {
             self.deck.title.chars().count()
-        } else if self.editing_notes {
-            self.slide().map_or(0, |s| s.notes.chars().count())
         } else {
             self.selected_element()
                 .map_or(0, |e| e.text.chars().count())
@@ -2657,8 +2667,6 @@ impl SlidesApp {
     fn cur_edit_text(&self) -> String {
         if self.editing_title {
             self.deck.title.clone()
-        } else if self.editing_notes {
-            self.slide().map(|s| s.notes.clone()).unwrap_or_default()
         } else {
             self.selected_element()
                 .map(|e| e.text.clone())
@@ -2690,6 +2698,39 @@ impl SlidesApp {
         Widget::set_focus(&mut self.title_input, false);
         self.mark();
         self.reload(doc);
+    }
+
+    /// Bind the shared multiline editor to the current slide's real Automerge
+    /// text. Rebinding is needed only when navigation changes slides; ordinary
+    /// sync preserves the live caret/selection while folding in peer edits.
+    fn sync_notes_input(&mut self, doc: &mut AutoCommit, place_at_end: bool) {
+        let Some(obj) = SlidesDoc::notes_text_obj(doc, self.cur_slide) else {
+            self.end_notes_edit();
+            return;
+        };
+        let rebound = self.notes_input.bound_obj() != Some(&obj);
+        if rebound {
+            self.notes_input.bind_text(obj);
+        }
+        Widget::sync(&mut self.notes_input, doc, &automerge::ROOT);
+        if rebound || place_at_end {
+            let end = self.notes_input.value().len();
+            self.notes_input.set_cursor_pos(end);
+        }
+        Widget::set_focus(&mut self.notes_input, true);
+    }
+
+    fn begin_notes_edit(&mut self, doc: &mut AutoCommit) {
+        self.editing_notes = true;
+        self.editing_text = false;
+        self.sel = None;
+        self.sync_notes_input(doc, true);
+    }
+
+    fn end_notes_edit(&mut self) {
+        self.editing_notes = false;
+        Widget::set_focus(&mut self.notes_input, false);
+        self.mark();
     }
 
     /// The rect the inline title editor occupies in the toolbar.
@@ -2778,12 +2819,78 @@ impl SlidesApp {
         true
     }
 
+    /// Route the inspector notes box through its directly-bound multiline
+    /// [`TextInput`]. Escape or a press outside ends editing; all editor events
+    /// otherwise stay in the shared caret/selection/IME path.
+    #[allow(clippy::too_many_arguments)]
+    fn route_notes_edit(
+        &mut self,
+        event: &WindowEvent,
+        sf: f64,
+        mods: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.editing_notes {
+            return false;
+        }
+        let Some(rect) = self.compute_chrome().notes_box else {
+            self.end_notes_edit();
+            return false;
+        };
+        self.notes_input.apply_layout_external(rect);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.end_notes_edit();
+                return true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left | MouseButton::Right,
+                ..
+            } if !rect.contains(self.last_mouse) => {
+                self.end_notes_edit();
+                return false;
+            }
+            _ => {}
+        }
+        let mut input_handled = false;
+        self.notes_input.handle_event(
+            event,
+            sf,
+            &mods,
+            state,
+            path,
+            &mut input_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if self.notes_input.take_dirty().is_some() {
+            self.mark();
+            self.reload(state);
+        }
+        input_handled
+    }
+
     /// The char-index caret of whatever text is being edited.
     fn active_caret(&self) -> usize {
         if self.editing_title {
             self.title_caret
-        } else if self.editing_notes {
-            self.notes_caret
         } else {
             self.caret
         }
@@ -2792,8 +2899,6 @@ impl SlidesApp {
     fn set_active_caret(&mut self, v: usize) {
         if self.editing_title {
             self.title_caret = v;
-        } else if self.editing_notes {
-            self.notes_caret = v;
         } else {
             self.caret = v;
         }
@@ -2837,10 +2942,7 @@ impl SlidesApp {
             return false;
         }
         let (a, b) = (sel.min(), sel.max());
-        if self.editing_notes {
-            SlidesDoc::splice_notes(doc, self.cur_slide, a, b - a, "");
-            self.notes_caret = a;
-        } else if let Some(id) = self.sel.clone() {
+        if let Some(id) = self.sel.clone() {
             SlidesDoc::splice_element_text(doc, self.cur_slide, &id, a, b - a, "");
             self.caret = a;
         } else {
@@ -3401,7 +3503,7 @@ impl SlidesApp {
                   argument list as a throwaway struct"
     )]
     fn draw_editor_inspector_layer(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3430,8 +3532,11 @@ impl SlidesApp {
                 self.draw_button(scene, t, tr, theme, pal, b);
             }
         }
-        if let (Some(nb), Some(slide)) = (chrome.notes_box, self.slide()) {
-            self.draw_notes(scene, t, tr, theme, nb, &slide.notes);
+        if let (Some(nb), Some(notes)) = (
+            chrome.notes_box,
+            self.slide().map(|slide| slide.notes.clone()),
+        ) {
+            self.draw_notes(scene, t, tr, theme, nb, &notes);
         }
         for l in &chrome.labels {
             if Self::in_inspector(chrome, Point::new(l.pos.x, l.pos.y)) {
@@ -4213,7 +4318,7 @@ impl SlidesApp {
     }
 
     fn draw_notes(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4240,968 +4345,69 @@ impl SlidesApp {
             },
             1.0,
         );
-        let display = if notes.is_empty() {
-            "Click to add speaker notes…".to_string()
-        } else {
-            notes.to_string()
-        };
-        let col = if notes.is_empty() {
-            c.text_dim
-        } else {
-            c.text_primary
-        };
-        tr.draw_text_weighted(
-            scene,
-            &display,
-            12.5,
-            col,
-            t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
-            Some((nb.width() - 20.0) as f32),
-            TextWeight::Regular,
-        );
-        // Blinking-free caret while the notes field is focused. The text area's
-        // width is sized so the caret helper's wrap width matches the draw call
-        // above (`er.width() + 4 == nb.width() - 20`), and notes are top-anchored
-        // and left-aligned.
         if self.editing_notes {
-            let er = Rect::new(
-                nb.x0 + 10.0,
-                nb.y0 + 9.0,
-                nb.x0 + 10.0 + (nb.width() - 24.0),
-                nb.y1 - 9.0,
-            );
-            // Selection highlight (same shared caret / selection core as the
-            // canvas text) behind the caret.
-            let sel = self.selection();
-            if !sel.is_collapsed() {
-                let hl = render::with_alpha(self.palette(theme).accent, 70);
-                for r in self.selection_rects_in_box(
-                    tr,
-                    notes,
-                    sel.min(),
-                    sel.max(),
-                    er,
+            self.notes_input.apply_layout_external(nb);
+            if self.notes_input.value().is_empty() {
+                tr.draw_text_weighted(
+                    scene,
+                    "Click to add speaker notes…",
                     12.5,
+                    c.text_dim,
+                    t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
+                    Some((nb.width() - 20.0) as f32),
                     TextWeight::Regular,
-                    false,
-                    TextAlign::Left,
-                    false,
-                ) {
-                    chrome::fill_rrect(scene, t, r, 2.0, hl);
-                }
+                );
             }
-            self.draw_caret_in_box(
+            self.notes_input
+                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+        } else {
+            let (display, col) = if notes.is_empty() {
+                ("Click to add speaker notes…", c.text_dim)
+            } else {
+                (notes, c.text_primary)
+            };
+            tr.draw_text_weighted(
                 scene,
-                t,
-                tr,
-                self.palette(theme).accent,
-                notes,
-                self.notes_caret,
-                er,
+                display,
                 12.5,
+                col,
+                t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
+                Some((nb.width() - 20.0) as f32),
                 TextWeight::Regular,
-                false,
-                TextAlign::Left,
-                false,
             );
         }
     }
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        // Presenter dashboard takes over the whole window when toggled on.
-        if self.presentation.is_presenter_view() {
-            self.draw_presenter(scene, t, tr, theme);
-            return;
-        }
-
-        let pal = self.palette(theme);
-        // Black backdrop.
-        chrome::fill_rect(scene, t, self.rect, Color::BLACK);
-
-        // Blanked screen (black or white): nothing but a faint resume hint.
-        if self.presentation.draw_blank(scene, t, tr, self.rect) {
-            return;
-        }
-
-        // Letterbox the current slide.
-        let (area, notes_panel) = if self.presentation.show_notes() {
-            let split = self.rect.y0 + self.rect.height() * 0.66;
-            (
-                Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, split),
-                Some(Rect::new(self.rect.x0, split, self.rect.x1, self.rect.y1)),
-            )
-        } else {
-            (self.rect, None)
-        };
-        let outer_pad = 24.0;
-        let aw = area.width() - 2.0 * outer_pad;
-        let ah = area.height() - 2.0 * outer_pad;
-        let s = (aw / SLIDE_W).min(ah / SLIDE_H);
-        let sw = SLIDE_W * s;
-        let sh = SLIDE_H * s;
-        let sx = area.x0 + (area.width() - sw) / 2.0;
-        let sy = area.y0 + (area.height() - sh) / 2.0;
-        let dest = Rect::new(sx, sy, sx + sw, sy + sh);
-        // Cross-fade: paint the outgoing slide first, then the incoming
-        // one inside an alpha layer that ramps in.
-        let alpha = self.presentation.transition_alpha();
-        if let Some((from, _)) = self.presentation.transition()
-            && alpha < 1.0
-            && let Some(prev) = self.deck.slides.get(from)
-        {
-            render::draw_slide(scene, t, tr, theme, &pal, prev, dest, 0.0, &self.images);
-        }
-        if alpha < 1.0 {
-            // Mid cross-fade → paint live inside the alpha layer (it animates,
-            // so caching would gain nothing and the layer transform matters).
-            if let Some(slide) = self.slide() {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    alpha,
-                    t,
-                    &dest,
-                );
-                render::draw_slide(scene, t, tr, theme, &pal, slide, dest, 0.0, &self.images);
-                scene.pop_layer();
-            }
-        } else {
-            // Settled → the slide is static between navigations. Shape it once
-            // into a detached scene, then just re-append it each frame so the
-            // speaker clock ticks without re-shaping every element every vsync.
-            self.append_present_slide(scene, t, tr, theme, &pal, dest);
-        }
-
-        self.draw_present_progress_bar(scene, t, &pal);
-
-        // Elapsed-time pill, top-right. A leading ⏸ glyph + dimmer fill marks
-        // a paused timer.
-        self.presentation.draw_timer_pill(scene, t, tr, self.rect);
-
-        // Slide counter pill + hint, in the gutter below the slide — only
-        // when there's clear room (suppressed when the notes panel is up).
-        if dest.y1 + 40.0 < area.y1 {
-            self.draw_present_counter_hint(scene, t, tr, dest);
-        }
-
-        if let Some(np) = notes_panel {
-            self.draw_present_notes_panel(scene, t, tr, theme, &pal, np);
-        }
-    }
-
-    /// Progress bar pinned to the very bottom edge of the screen.
-    fn draw_present_progress_bar(&self, scene: &mut Scene, t: Affine, pal: &Palette) {
-        let n = self.deck.slides.len().max(1);
-        let frac = (self.cur_slide + 1) as f64 / n as f64;
-        let bar_h = 4.0;
-        let track = Rect::new(
-            self.rect.x0,
-            self.rect.y1 - bar_h,
-            self.rect.x1,
-            self.rect.y1,
+        let frame = PresentationFrame::new(
+            self.rect,
+            &self.deck,
+            self.cur_slide,
+            self.deck_rev,
+            &self.images,
         );
-        chrome::fill_rect(scene, t, track, render::with_alpha(Color::WHITE, 30));
-        let fill = Rect::new(
-            track.x0,
-            track.y0,
-            track.x0 + track.width() * frac,
-            track.y1,
-        );
-        chrome::fill_rect(scene, t, fill, pal.accent);
-    }
-
-    /// Slide counter pill ("N / total") plus, in the room to its left, the
-    /// richest keyboard-shortcut hint that still fits.
-    fn draw_present_counter_hint(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        dest: Rect,
-    ) {
-        let counter = format!("{} / {}", self.cur_slide + 1, self.deck.slides.len());
-        let cw = chrome::est_width(&counter, 13.0) + 24.0;
-        let cr = Rect::new(dest.x1 - cw, dest.y1 + 8.0, dest.x1, dest.y1 + 8.0 + 26.0);
-        chrome::fill_rrect(scene, t, cr, 13.0, render::with_alpha(Color::WHITE, 26));
-        chrome::text_centered(
-            scene,
-            t,
-            tr,
-            &counter,
-            cr,
-            13.0,
-            Color::WHITE,
-            TextWeight::Semibold,
-        );
-        // The nav hint fills the gutter to the *left* of the counter pill,
-        // capped so it can never paint under the pill (they overlapped on
-        // narrow widths). Pick the richest variant that still fits the room;
-        // if even the short one won't, drop it and keep just the counter.
-        let hint_x = dest.x0;
-        let hint_max = (cr.x0 - 16.0 - hint_x).max(0.0);
-        let full = "← →  navigate    Home / End  first · last    P  presenter    S  notes    B / W  blank    Esc  exit";
-        let medium = "← →  navigate    P  presenter    S  notes    Esc  exit";
-        let short = "← →  navigate    Esc  exit";
-        if let Some(hint) = [full, medium, short]
-            .into_iter()
-            .find(|h| chrome::est_width(h, 12.5) <= hint_max)
-        {
-            tr.draw_text_weighted(
-                scene,
-                hint,
-                12.5,
-                render::with_alpha(Color::WHITE, 150),
-                t * Affine::translate((hint_x, dest.y1 + 14.0)),
-                Some(hint_max as f32),
-                TextWeight::Regular,
-            );
-        }
-    }
-
-    /// Speaker-notes panel: the clock, the current slide's notes, and a
-    /// preview of the next slide.
-    fn draw_present_notes_panel(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pal: &Palette,
-        np: Rect,
-    ) {
-        chrome::fill_rect(scene, t, np, theme.tokens.colors.surfaces.raised);
-        stroke_line(
-            scene,
-            t,
-            np.x0,
-            np.y0,
-            np.x1,
-            np.y0,
-            theme.tokens.colors.border_standard,
-        );
-        let nx = np.x0 + 40.0;
-        tr.draw_text_weighted(
-            scene,
-            "SPEAKER NOTES",
-            12.0,
-            pal.accent,
-            t * Affine::translate((nx, np.y0 + 20.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        // The NEXT preview occupies the right third; reserve its left edge.
-        let pw = np.width() * 0.26;
-        let preview_x0 = np.x1 - 40.0 - pw;
-        // Big elapsed clock, right-aligned just left of the preview.
-        let clock = self.presentation.clock();
-        let (clock_w, _) = tr.measure_weighted(&clock, 30.0, None, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
-            &clock,
-            30.0,
-            theme.tokens.colors.text_primary,
-            t * Affine::translate((preview_x0 - 36.0 - f64::from(clock_w), np.y0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let notes = self.slide().map(|s| s.notes.clone()).unwrap_or_default();
-        let body = if notes.is_empty() {
-            "—".to_string()
-        } else {
-            notes
-        };
-        tr.draw_text_weighted(
-            scene,
-            &body,
-            18.0,
-            theme.tokens.colors.text_primary,
-            t * Affine::translate((nx, np.y0 + 44.0)),
-            Some((np.width() * 0.6) as f32),
-            TextWeight::Regular,
-        );
-        // Next slide preview.
-        if let Some(next) = self.deck.slides.get(self.cur_slide + 1) {
-            let ph = pw * SLIDE_H / SLIDE_W;
-            let pr = Rect::new(preview_x0, np.y0 + 28.0, np.x1 - 40.0, np.y0 + 28.0 + ph);
-            tr.draw_text_weighted(
-                scene,
-                "NEXT",
-                11.0,
-                theme.tokens.colors.text_dim,
-                t * Affine::translate((pr.x0, pr.y0 - 18.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            render::draw_slide(scene, t, tr, theme, pal, next, pr, 6.0, &self.images);
-            chrome::stroke_rrect(scene, t, pr, 6.0, render::with_alpha(Color::WHITE, 40), 1.0);
-        }
-    }
-
-    /// Append the settled audience slide, (re)shaping it into a detached scene
-    /// only when the slide, size, theme or deck actually changed. Between
-    /// navigations this is a cheap scene-append, so present mode can keep the
-    /// speaker clock ticking without re-shaping every element every vsync.
-    fn append_present_slide(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pal: &Palette,
-        dest: Rect,
-    ) {
-        let slide_idx = self.cur_slide;
-        let rev = self.deck_rev;
-        let palette = self.deck.palette;
-        let stale = self
-            .present_cache
-            .as_ref()
-            .is_none_or(|c| !c.matches(dest, slide_idx, rev, palette));
-        if stale {
-            // Shape into a detached scene at IDENTITY (absolute slide coords);
-            // the live transform is applied on append below.
-            let mut frag = Scene::new();
-            if let Some(slide) = self.deck.slides.get(slide_idx) {
-                render::draw_slide(
-                    &mut frag,
-                    Affine::IDENTITY,
-                    tr,
-                    theme,
-                    pal,
-                    slide,
-                    dest,
-                    0.0,
-                    &self.images,
-                );
-            }
-            self.present_cache = Some(PresentCache {
-                slide: slide_idx,
-                rev,
-                palette,
-                dest: (
-                    dest.x0.round() as i64,
-                    dest.y0.round() as i64,
-                    dest.x1.round() as i64,
-                    dest.y1.round() as i64,
-                ),
-                scene: frag,
-            });
-        }
-        if let Some(c) = &self.present_cache {
-            scene.append(&c.scene, Some(t));
-        }
-    }
-
-    // --- presenter dashboard -----------------------------------------------
-
-    /// The presenter's private dashboard, shown on the presenter's monitor
-    /// (or, single-monitor, as a togglable full-window view). Layout:
-    ///
-    /// ```text
-    /// ┌──────────────────────────── header: title · position · timer ──┐
-    /// │ ┌──────────────────────────┐  ┌───────────────────────────────┐│
-    /// │ │  CURRENT (large preview) │  │ NEXT (thumbnail)              ││
-    /// │ │                          │  │                               ││
-    /// │ │                          │  ├───────────────────────────────┤│
-    /// │ │                          │  │ SPEAKER NOTES (scrolling body)││
-    /// │ └──────────────────────────┘  └───────────────────────────────┘│
-    /// └──── footer hint: ← → navigate · P slide · Space pause · …────────┘
-    /// ```
-    fn draw_presenter(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let pal = self.palette(theme);
-        let c = &theme.tokens.colors;
-        // Deep neutral backdrop so it reads as "behind the scenes", distinct
-        // from the black audience field.
-        chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
-
-        let outer_pad = 28.0;
-        let header_h = 60.0;
-        let footer_h = 40.0;
-        let body = Rect::new(
-            self.rect.x0 + outer_pad,
-            self.rect.y0 + header_h,
-            self.rect.x1 - outer_pad,
-            self.rect.y1 - footer_h,
-        );
-
-        self.draw_presenter_header(scene, t, tr, c, &pal, outer_pad);
-
-        // --- body: current (≈62%) | right column (next + notes) -----------
-        let gap = 24.0;
-        let left_w = (body.width() * 0.62).min(body.width() - 320.0);
-        let cur_area = Rect::new(body.x0, body.y0, body.x0 + left_w, body.y1);
-        let right = Rect::new(cur_area.x1 + gap, body.y0, body.x1, body.y1);
-
-        self.draw_presenter_current(scene, t, tr, theme, c, &pal, cur_area);
-        let next_rect = self.draw_presenter_next(scene, t, tr, theme, c, &pal, right);
-        self.draw_presenter_notes(scene, t, tr, c, right, body, next_rect);
-
-        self.draw_presenter_footer(scene, t, tr, c, &pal, outer_pad);
-    }
-
-    /// Header: deck title (left) · PRESENTER VIEW badge · position + timer
-    /// (right).
-    fn draw_presenter_header(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        outer_pad: f64,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            &self.deck.title,
-            18.0,
-            c.text_primary,
-            t * Affine::translate((self.rect.x0 + outer_pad, self.rect.y0 + 18.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "PRESENTER VIEW",
-            11.0,
-            pal.accent,
-            t * Affine::translate((self.rect.x0 + outer_pad, self.rect.y0 + 40.0)),
-            None,
-            TextWeight::Semibold,
-        );
-
-        // Big timer pill, top-right, with position beneath.
-        let paused = self.presentation.is_paused();
-        let clock = self.presentation.clock();
-        let (clock_w, _) = tr.measure_weighted(&clock, 34.0, None, TextWeight::Bold);
-        let clock_x = self.rect.x1 - outer_pad - f64::from(clock_w);
-        tr.draw_text_weighted(
-            scene,
-            &clock,
-            34.0,
-            if paused { c.text_dim } else { c.text_primary },
-            t * Affine::translate((clock_x, self.rect.y0 + 12.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let pos = format!(
-            "{}  ·  slide {} / {}",
-            if paused { "PAUSED" } else { "ELAPSED" },
-            self.cur_slide + 1,
-            self.deck.slides.len()
-        );
-        let (pos_w, _) = tr.measure_weighted(&pos, 12.0, None, TextWeight::Semibold);
-        tr.draw_text_weighted(
-            scene,
-            &pos,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((
-                self.rect.x1 - outer_pad - f64::from(pos_w),
-                self.rect.y0 + 44.0,
-            )),
-            None,
-            TextWeight::Semibold,
-        );
-    }
-
-    /// CURRENT label + the large slide preview (fit 16:9, top-anchored so it
-    /// sits just under its label rather than floating in the column).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the presenter dashboard's own palette/colours \
-                  every sub-step needs; bundling them would only re-create this argument list \
-                  as a throwaway struct"
-    )]
-    fn draw_presenter_current(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        cur_area: Rect,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            "CURRENT",
-            11.0,
-            c.text_dim,
-            t * Affine::translate((cur_area.x0, cur_area.y0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let cur_top = cur_area.y0 + 20.0;
-        let cur_avail = Rect::new(cur_area.x0, cur_top, cur_area.x1, cur_area.y1);
-        // Top-anchor the large current preview so it sits just under its label
-        // rather than floating in the middle of a tall column.
-        let cur_dest = fit_slide_top(cur_avail);
-        // Drop shadow + slide.
-        let sh = cur_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-        chrome::fill_rrect(
-            scene,
-            t,
-            sh.inflate(2.0, 2.0),
-            12.0,
-            render::with_alpha(Color::BLACK, 80),
-        );
-        if let Some(slide) = self.slide() {
-            render::draw_slide(
-                scene,
-                t,
-                tr,
-                theme,
-                pal,
-                slide,
-                cur_dest,
-                12.0,
-                &self.images,
-            );
-        }
-        chrome::stroke_rrect(
-            scene,
-            t,
-            cur_dest,
-            12.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
-    }
-
-    /// RIGHT column, top: the NEXT preview (or an "End of deck" placeholder
-    /// card), sized to the column width. Returns its rect, so the notes
-    /// panel below knows where it ends.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the presenter dashboard's own palette/colours \
-                  every sub-step needs; bundling them would only re-create this argument list \
-                  as a throwaway struct"
-    )]
-    fn draw_presenter_next(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        right: Rect,
-    ) -> Rect {
-        tr.draw_text_weighted(
-            scene,
-            "NEXT",
-            11.0,
-            c.text_dim,
-            t * Affine::translate((right.x0, right.y0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let next_top = right.y0 + 20.0;
-        let next_w = right.width();
-        let next_h = next_w * SLIDE_H / SLIDE_W;
-        let next_rect = Rect::new(right.x0, next_top, right.x0 + next_w, next_top + next_h);
-        if let Some(next) = self.deck.slides.get(self.cur_slide + 1) {
-            render::draw_slide(scene, t, tr, theme, pal, next, next_rect, 8.0, &self.images);
-            chrome::stroke_rrect(
-                scene,
-                t,
-                next_rect,
-                8.0,
-                render::with_alpha(c.text_primary, 30),
-                1.0,
-            );
-        } else {
-            // End of deck — placeholder card.
-            chrome::fill_rrect(scene, t, next_rect, 8.0, c.surfaces.raised);
-            chrome::stroke_rrect(
-                scene,
-                t,
-                next_rect,
-                8.0,
-                render::with_alpha(c.text_primary, 24),
-                1.0,
-            );
-            chrome::text_centered(
-                scene,
-                t,
-                tr,
-                "End of deck",
-                next_rect,
-                14.0,
-                c.text_dim,
-                TextWeight::Semibold,
-            );
-        }
-        next_rect
-    }
-
-    /// Speaker notes panel, filling the RIGHT column beneath the NEXT
-    /// preview down to the bottom of `body`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the presenter dashboard's own column geometry; \
-                  bundling them would only re-create this argument list as a throwaway struct"
-    )]
-    fn draw_presenter_notes(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        right: Rect,
-        body: Rect,
-        next_rect: Rect,
-    ) {
-        let notes_top = next_rect.y1 + 22.0;
-        tr.draw_text_weighted(
-            scene,
-            "SPEAKER NOTES",
-            11.0,
-            c.text_dim,
-            t * Affine::translate((right.x0, notes_top)),
-            None,
-            TextWeight::Semibold,
-        );
-        let nb = Rect::new(right.x0, notes_top + 20.0, right.x1, body.y1);
-        chrome::fill_rrect(scene, t, nb, 10.0, c.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            nb,
-            10.0,
-            render::with_alpha(c.text_primary, 22),
-            1.0,
-        );
-        let notes = self.slide().map(|s| s.notes.clone()).unwrap_or_default();
-        let (body_txt, col) = if notes.is_empty() {
-            ("No notes for this slide.".to_string(), c.text_dim)
-        } else {
-            (notes, c.text_primary)
-        };
-        tr.draw_text_weighted(
-            scene,
-            &body_txt,
-            16.0,
-            col,
-            t * Affine::translate((nb.x0 + 16.0, nb.y0 + 14.0)),
-            Some((nb.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-    }
-
-    /// Footer keyboard hint + the progress bar pinned to the very bottom edge.
-    fn draw_presenter_footer(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        outer_pad: f64,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            "← →  navigate    Home / End  first · last    P  hide dashboard    K  pause timer    0  reset    Esc  exit",
-            12.0,
-            c.text_dim,
-            t * Affine::translate((self.rect.x0 + outer_pad, self.rect.y1 - 26.0)),
-            None,
-            TextWeight::Regular,
-        );
-
-        let n = self.deck.slides.len().max(1);
-        let frac = (self.cur_slide + 1) as f64 / n as f64;
-        let track = Rect::new(self.rect.x0, self.rect.y1 - 3.0, self.rect.x1, self.rect.y1);
-        chrome::fill_rect(scene, t, track, render::with_alpha(c.text_primary, 26));
-        let fillr = Rect::new(
-            track.x0,
-            track.y0,
-            track.x0 + track.width() * frac,
-            track.y1,
-        );
-        chrome::fill_rect(scene, t, fillr, pal.accent);
+        self.presentation.draw(scene, t, tr, theme, &frame);
     }
 
     // --- overview (slide-sorter) -------------------------------------------
 
-    /// Lay out the slide grid: as many columns as fit, returning the scroll
-    /// viewport, each slide's index + destination rect (already offset by the
-    /// clamped vertical scroll), and the maximum scroll. Shared by draw,
-    /// hit-test and the wheel/scrollbar handlers so they always agree.
     fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
-        let header_h = 64.0;
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + header_h,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        let pad = 36.0;
-        let gap = 26.0;
-        let avail_w = (area.width() - 2.0 * pad).max(200.0);
-        // Aim for a thumbnail ~250px wide, then fit an integer column count.
-        let target = 260.0;
-        let cols = ((avail_w + gap) / (target + gap)).floor().max(1.0) as usize;
-        let tw = (avail_w - (cols as f64 - 1.0) * gap) / cols as f64;
-        let th = tw * SLIDE_H / SLIDE_W;
-        let n = self.deck.slides.len();
-        // Each cell is the slide card plus a caption row beneath it.
-        let cell_h = th + 30.0;
-        let row_stride = cell_h + gap;
-        let rows = if n == 0 { 0 } else { n.div_ceil(cols) };
-        // Content height from the top of `area`: top pad + all rows + bottom pad.
-        let content_h = if rows == 0 {
-            0.0
-        } else {
-            pad + rows as f64 * cell_h + (rows as f64 - 1.0) * gap + pad
-        };
-        let max_scroll = (content_h - area.height()).max(0.0);
-        let scroll = self.overview_scroll.clamp(0.0, max_scroll);
-        let mut out = Vec::new();
-        for i in 0..n {
-            let col = i % cols;
-            let row = i / cols;
-            let x = area.x0 + pad + col as f64 * (tw + gap);
-            let y = area.y0 + pad + row as f64 * row_stride - scroll;
-            out.push((i, Rect::new(x, y, x + tw, y + th)));
-        }
-        (area, out, max_scroll)
+        self.overview.geometry(self.rect, self.deck.slides.len())
     }
 
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let pal = self.palette(theme);
-        let c = &theme.tokens.colors;
-        chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
-
-        // Header row.
-        tr.draw_text_weighted(
-            scene,
-            &self.deck.title,
-            18.0,
-            c.text_primary,
-            t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &format!(
-                "{} slides  ·  click to open  ·  Esc / G to return",
-                self.deck.slides.len()
-            ),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 38.0)),
-            None,
-            TextWeight::Regular,
-        );
-        stroke_line(
+        let palette = self.palette(theme);
+        self.overview.draw(
             scene,
             t,
-            self.rect.x0,
-            self.rect.y0 + 60.0,
-            self.rect.x1,
-            self.rect.y0 + 60.0,
-            c.border_standard,
+            tr,
+            theme,
+            self.rect,
+            &self.deck,
+            self.cur_slide,
+            &palette,
+            &self.images,
         );
-
-        let (area, thumbs, max_scroll) = self.compute_overview();
-        // Clip the scrolling grid to the area below the header so cards never
-        // paint over the title row as they scroll past.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
-        for (i, rect) in thumbs {
-            if let Some(slide) = self.deck.slides.get(i) {
-                // Drop shadow + card.
-                let sh = rect + vello::kurbo::Vec2::new(0.0, 4.0);
-                chrome::fill_rrect(
-                    scene,
-                    t,
-                    sh.inflate(1.0, 1.0),
-                    8.0,
-                    render::with_alpha(Color::BLACK, 60),
-                );
-                render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 8.0, &self.images);
-                let (ring, w) = if i == self.cur_slide {
-                    (pal.accent, 2.5)
-                } else {
-                    (render::with_alpha(c.text_primary, 30), 1.0)
-                };
-                chrome::stroke_rrect(scene, t, rect, 8.0, ring, w);
-                // Caption row *beneath* the card: a slide-number chip then the
-                // layout name. Kept below the card so it never collides with the
-                // slide's own title/content (an on-card badge overlapped it).
-                let cap_y = rect.y1 + 7.0;
-                let num = format!("{}", i + 1);
-                let num_col = if i == self.cur_slide {
-                    pal.accent
-                } else {
-                    c.text_primary
-                };
-                tr.draw_text_weighted(
-                    scene,
-                    &num,
-                    12.0,
-                    num_col,
-                    t * Affine::translate((rect.x0 + 2.0, cap_y)),
-                    None,
-                    TextWeight::Bold,
-                );
-                let (num_w, _) = tr.measure_weighted(&num, 12.0, None, TextWeight::Bold);
-                tr.draw_text_weighted(
-                    scene,
-                    slide.layout.label(),
-                    11.5,
-                    c.text_dim,
-                    t * Affine::translate((rect.x0 + f64::from(num_w) + 12.0, cap_y + 0.5)),
-                    None,
-                    TextWeight::Regular,
-                );
-            }
-        }
-        scene.pop_layer();
-        // Scrollbar when the grid overflows the viewport.
-        if let Some((track, thumb)) = scrollbar_rects(
-            area,
-            self.overview_scroll.clamp(0.0, max_scroll),
-            max_scroll,
-        ) {
-            chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
-            chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
-        }
-    }
-
-    // --- keyboard-shortcuts overlay ----------------------------------------
-
-    /// Whether the keyboard-shortcuts overlay should paint this frame. It is
-    /// shown in **every** mode (including Present): suppressing it in Present
-    /// while `on_key` still routed keys to it would soft-lock navigation.
-    fn help_overlay_visible(&self) -> bool {
-        self.show_help
-    }
-
-    fn draw_help(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let pal = self.palette(theme);
-        // Scrim.
-        chrome::fill_rect(scene, t, self.rect, render::with_alpha(Color::BLACK, 150));
-        // Centered card.
-        let cw = 580.0_f64.min(self.rect.width() - 80.0);
-        let ch = 588.0_f64.min(self.rect.height() - 60.0);
-        let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
-        let cy = self.rect.y0 + (self.rect.height() - ch) / 2.0;
-        let card = Rect::new(cx, cy, cx + cw, cy + ch);
-        chrome::fill_rrect(scene, t, card, 16.0, c.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            card,
-            16.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
-
-        let px = card.x0 + 32.0;
-        tr.draw_text_weighted(
-            scene,
-            "Keyboard shortcuts",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((px, card.y0 + 24.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Press ?  or Esc to close",
-            12.0,
-            c.text_dim,
-            t * Affine::translate((px, card.y0 + 50.0)),
-            None,
-            TextWeight::Regular,
-        );
-
-        Self::draw_help_rows(scene, t, tr, c, &pal, card, px);
-    }
-
-    /// The keyboard-shortcut rows (key(s) → description), including the
-    /// "Present mode" section divider. An empty description renders the row
-    /// as a dim small-caps section header instead of a key/description pair.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the help card's own geometry; bundling them \
-                  would only re-create this argument list as a throwaway struct"
-    )]
-    fn draw_help_rows(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        card: Rect,
-        px: f64,
-    ) {
-        let rows: [(&str, &str); 20] = [
-            ("N", "New slide"),
-            ("Click title", "Rename the deck"),
-            ("P", "Present from current slide"),
-            ("G", "Slide-sorter overview"),
-            ("T / R / O / L", "Insert text · rect · ellipse · line"),
-            ("Tab", "Cycle selection on the slide"),
-            ("Enter", "Edit selected text box"),
-            ("Drag", "Move · resize (snaps to guides)"),
-            ("Arrows", "Nudge selection (Shift = 1px)"),
-            ("[  /  ]", "Send back · bring to front"),
-            ("Ctrl-D", "Duplicate element"),
-            ("Del / Backspace", "Delete element"),
-            ("Ctrl-Z / Ctrl-Y", "Undo · redo"),
-            ("Present mode", ""),
-            ("← → / Space / click", "Previous · next slide"),
-            ("Home / End / 1-9", "First · last · jump to slide N"),
-            ("P", "Toggle presenter dashboard"),
-            ("S  ·  B / W", "Speaker notes · black / white out"),
-            ("K  ·  0", "Pause timer · reset timer"),
-            ("?", "Toggle this help"),
-        ];
-        let cw = card.width();
-        let mut y = card.y0 + 84.0;
-        let key_w = 186.0;
-        for (k, d) in rows {
-            // A row with an empty description is a section divider (e.g.
-            // "Present mode") — render it as a dim small-caps header.
-            if d.is_empty() {
-                y += 6.0;
-                tr.draw_text_weighted(
-                    scene,
-                    &k.to_uppercase(),
-                    11.0,
-                    c.text_dim,
-                    t * Affine::translate((px, y + 2.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                y += 22.0;
-                continue;
-            }
-            tr.draw_text_weighted(
-                scene,
-                k,
-                13.0,
-                pal.accent,
-                t * Affine::translate((px, y)),
-                Some(key_w as f32),
-                TextWeight::Semibold,
-            );
-            tr.draw_text_weighted(
-                scene,
-                d,
-                13.0,
-                c.text_primary,
-                t * Affine::translate((px + key_w, y)),
-                Some((cw - key_w - 64.0) as f32),
-                TextWeight::Regular,
-            );
-            y += 25.0;
-        }
     }
 }
 
@@ -5252,55 +4458,6 @@ fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64,
     scene.stroke(&Stroke::new(1.0), t, color, None, &line);
 }
 
-/// `(track, thumb)` rects for a vertical scrollbar over `viewport`, or `None`
-/// when the content fits (`max_scroll <= 0`). The thumb height is proportional
-/// to the visible fraction and its position to the scroll offset.
-fn scrollbar_rects(viewport: Rect, scroll: f64, max_scroll: f64) -> Option<(Rect, Rect)> {
-    if max_scroll <= 0.5 || viewport.height() <= 8.0 {
-        return None;
-    }
-    let sw = 6.0;
-    let track = Rect::new(
-        viewport.x1 - sw - 3.0,
-        viewport.y0,
-        viewport.x1 - 3.0,
-        viewport.y1,
-    );
-    let content_h = viewport.height() + max_scroll;
-    let visible_frac = (viewport.height() / content_h).clamp(0.06, 1.0);
-    let thumb_h = (track.height() * visible_frac).max(28.0);
-    let travel = track.height() - thumb_h;
-    let t = if max_scroll > 0.0 {
-        (scroll / max_scroll).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let ty = track.y0 + travel * t;
-    let thumb = Rect::new(track.x0, ty, track.x1, ty + thumb_h);
-    Some((track, thumb))
-}
-
-/// Map a vertical scrollbar-thumb drag (`dy` px) to a content scroll offset.
-/// The thumb travels `track.height - thumb.height`; the content travels
-/// `max_scroll` over that same span, so one thumb pixel is `max_scroll/travel`
-/// content pixels. Result is clamped to `0..=max_scroll`.
-fn scroll_from_thumb_drag(viewport: Rect, orig_scroll: f64, max_scroll: f64, dy: f64) -> f64 {
-    if max_scroll <= 0.0 {
-        return 0.0;
-    }
-    let orig = orig_scroll.clamp(0.0, max_scroll);
-    match scrollbar_rects(viewport, orig, max_scroll) {
-        Some((track, thumb)) => {
-            let travel = (track.height() - thumb.height()).max(1.0);
-            (orig + dy * (max_scroll / travel)).clamp(0.0, max_scroll)
-        }
-        None => 0.0,
-    }
-}
-
-/// Truncate `label` with a trailing ellipsis so its estimated width fits
-/// `max_w`. Uses the same [`chrome::est_width`] metric that drives the toolbar
-/// layout, so the clip lands where the layout expects it.
 /// Line starts (char index of the first char of every `\n`-delimited line).
 fn line_starts(chars: &[char]) -> Vec<usize> {
     let mut starts = vec![0usize];
@@ -5409,15 +4566,6 @@ fn write_demo_image() -> Option<PathBuf> {
     Some(path)
 }
 
-/// Fit a 16:9 slide horizontally centred but *top-anchored* inside `area`.
-fn fit_slide_top(area: Rect) -> Rect {
-    let s = (area.width() / SLIDE_W).min(area.height() / SLIDE_H);
-    let sw = SLIDE_W * s;
-    let sh = SLIDE_H * s;
-    let sx = area.x0 + (area.width() - sw) / 2.0;
-    Rect::new(sx, area.y0, sx + sw, area.y0 + sh)
-}
-
 impl Widget for SlidesApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
@@ -5444,6 +4592,9 @@ impl Widget for SlidesApp {
                     .map(|e| e.id.clone());
             }
             self.bootstrapped = true;
+        }
+        if self.editing_notes {
+            self.sync_notes_input(state, false);
         }
     }
 
@@ -5506,7 +4657,7 @@ impl Widget for SlidesApp {
         // Fold in any images that finished decoding on their worker thread. A
         // freshly-decoded image must re-shape the cached present-mode slide.
         if self.images.pump() {
-            self.present_cache = None;
+            self.presentation.invalidate_cache();
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
         self.presentation.expire_transition();
@@ -5548,9 +4699,9 @@ impl Widget for SlidesApp {
         // The help overlay draws over every mode — including Present, where it
         // must appear (and be dismissable), otherwise a `?` press would set the
         // flag, suppress the overlay, and swallow all later navigation keys.
-        if self.help_overlay_visible() {
-            self.draw_help(scene, transform, text_renderer, theme);
-        }
+        let palette = self.palette(theme);
+        self.help_overlay
+            .draw(scene, transform, text_renderer, theme, self.rect, &palette);
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -5631,6 +4782,19 @@ impl Widget for SlidesApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.route_notes_edit(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            *handled = true;
+            return;
+        }
         // A right-press (re)opens a context menu — handled before the modal
         // routing so it works even while another menu is already up.
         if let WindowEvent::MouseInput {
@@ -5694,6 +4858,25 @@ impl Widget for SlidesApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.editing_notes {
+            return self.notes_input.cursor_shape(point);
+        }
+        None
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.editing_notes
+            .then(|| self.notes_input.ime_cursor_rect())
+            .flatten()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.editing_notes
+            .then(|| self.notes_input.ime_purpose())
+            .flatten()
     }
 
     fn needs_commit(&self) -> bool {
@@ -5843,8 +5026,7 @@ impl SlidesApp {
                 self.sync_page_rail();
             }
             Mode::Overview => {
-                let (_, _, ov_max) = self.compute_overview();
-                self.overview_scroll = self.overview_scroll.clamp(0.0, ov_max);
+                self.overview.clamp(self.rect, self.deck.slides.len());
             }
             Mode::Present => {}
         }
@@ -5992,8 +5174,12 @@ impl SlidesApp {
         } = self.drag.clone()
         {
             let (area, _, max_scroll) = self.compute_overview();
-            self.overview_scroll =
-                scroll_from_thumb_drag(area, orig_scroll, max_scroll, p.y - start_y);
+            self.overview.set_scroll(scroll_from_thumb_drag(
+                area,
+                orig_scroll,
+                max_scroll,
+                p.y - start_y,
+            ));
             return;
         }
         let chrome = self.compute_chrome();
@@ -6076,8 +5262,7 @@ impl SlidesApp {
 
     fn on_press(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
         // The help overlay swallows the next click (to dismiss).
-        if self.show_help {
-            self.show_help = false;
+        if self.help_overlay.on_pointer_press(p, self.rect) {
             *handled = true;
             return;
         }
@@ -6089,27 +5274,25 @@ impl SlidesApp {
             return;
         }
         if self.mode == Mode::Overview {
-            let (area, thumbs, max_scroll) = self.compute_overview();
+            let (area, _, max_scroll) = self.compute_overview();
             // Scrollbar thumb → start a scroll drag.
             if let Some((_, thumb)) = scrollbar_rects(
                 area,
-                self.overview_scroll.clamp(0.0, max_scroll),
+                self.overview.scroll().clamp(0.0, max_scroll),
                 max_scroll,
             ) && thumb.contains(p)
             {
                 self.drag = Drag::ScrollOverview {
                     start_y: p.y,
-                    orig_scroll: self.overview_scroll.clamp(0.0, max_scroll),
+                    orig_scroll: self.overview.scroll().clamp(0.0, max_scroll),
                 };
                 *handled = true;
                 return;
             }
-            for (i, rect) in thumbs {
-                if rect.contains(p) {
-                    self.apply_hit(doc, Hit::OpenSlide(i));
-                    *handled = true;
-                    return;
-                }
+            if let Some(index) = self.overview.slide_at(self.rect, self.deck.slides.len(), p) {
+                self.apply_hit(doc, Hit::OpenSlide(index));
+                *handled = true;
+                return;
             }
             *handled = true;
             return;
@@ -6817,9 +6000,7 @@ impl SlidesApp {
                 }
             }
             Mode::Overview => {
-                let (_, _, max_scroll) = self.compute_overview();
-                if max_scroll > 0.0 {
-                    self.overview_scroll = (self.overview_scroll - dy).clamp(0.0, max_scroll);
+                if self.overview.wheel(self.rect, self.deck.slides.len(), dy) {
                     *handled = true;
                 }
             }
@@ -6850,24 +6031,10 @@ impl SlidesApp {
             return;
         }
 
-        // Help overlay owns all keys while open.
-        if self.show_help {
-            match key {
-                Key::Named(NamedKey::Escape) => self.show_help = false,
-                Key::Character(c) if c == "?" => self.show_help = false,
-                _ => {}
-            }
-            *handled = true;
-            return;
-        }
-        // `?` opens help from any non-text context.
-        if !self.editing_text
-            && !self.editing_notes
-            && !self.editing_title
-            && let Key::Character(c) = key
-            && c.as_str() == "?"
-        {
-            self.show_help = true;
+        // The help overlay owns every key while visible. It can be opened from
+        // any non-text context; active editors reserve `?` for typing.
+        let allow_help = !self.editing_text && !self.editing_notes && !self.editing_title;
+        if self.help_overlay.on_key(key, allow_help) {
             *handled = true;
             return;
         }
@@ -6905,12 +6072,10 @@ impl SlidesApp {
             return;
         }
 
-        // Text / notes / title editing intercepts most keys. The on-canvas text
-        // and speaker-notes editors share the `ui` caret / selection core:
-        // shift+arrow extends, ctrl+arrow is word-wise, ctrl+A selects all, and
-        // C/X/V go through the shared clipboard — all splicing the real CRDT.
-        // (Title rename is consumed earlier by the shared `TextInput`; it only
-        // reaches here defensively.)
+        // Text editing intercepts most keys. Speaker notes and title rename are
+        // consumed earlier by their shared `TextInput`s; they reach here only
+        // for shortcuts the fields intentionally leave to the toolkit (notably
+        // global undo/redo).
         if self.editing_text || self.editing_notes || self.editing_title {
             self.on_key_editing_text(doc, key, text, mods, ctrl, handled);
             return;
@@ -7347,6 +6512,7 @@ impl SlidesApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::{Deck, ElementKind, Layout, PaletteKind, Slide};
@@ -7656,56 +6822,6 @@ mod tests {
         assert!(
             app.presentation.elapsed().as_millis() < 50,
             "0 resets the clock"
-        );
-    }
-
-    #[test]
-    fn present_slide_cache_avoids_reshaping_each_frame() {
-        // Present mode pumps animation frames to tick the speaker clock; the
-        // slide underneath must NOT be re-shaped every frame. The first frame
-        // shapes + caches; subsequent frames at the same slide/size just append
-        // the cached scene, and navigation invalidates it.
-        let mut app = presenting_app();
-        app.cur_slide = 1; // a heavier slide (title + multi-line body + figure)
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        let theme = Theme::dark();
-        let pal = app.palette(&theme);
-        let mut tr = TextRenderer::new();
-        let dest = Rect::new(100.0, 50.0, 1180.0, 660.0);
-
-        // Cold frame: shapes every element and fills the cache.
-        let mut scene = Scene::new();
-        let t0 = std::time::Instant::now();
-        app.append_present_slide(&mut scene, Affine::IDENTITY, &mut tr, &theme, &pal, dest);
-        let cold = t0.elapsed();
-        assert!(
-            app.present_cache.is_some(),
-            "first frame populates the cache"
-        );
-
-        // Warm frames: same slide/size ⇒ cache hit, a scene append with no
-        // re-shaping.
-        let t1 = std::time::Instant::now();
-        for _ in 0..20 {
-            let mut s = Scene::new();
-            app.append_present_slide(&mut s, Affine::IDENTITY, &mut tr, &theme, &pal, dest);
-        }
-        let warm_avg = t1.elapsed() / 20;
-        assert!(
-            warm_avg * 2 < cold,
-            "cached present frame ({warm_avg:?}) should be far cheaper than the cold reshape ({cold:?})"
-        );
-
-        // Navigation invalidates the cache so edits/advances still re-render.
-        app.cur_slide += 1;
-        assert!(
-            !app.present_cache.as_ref().unwrap().matches(
-                dest,
-                app.cur_slide,
-                app.deck_rev,
-                app.deck.palette
-            ),
-            "advancing the slide invalidates the cached render"
         );
     }
 
@@ -8028,7 +7144,7 @@ mod tests {
         let mut handled = false;
         app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
         assert!(
-            handled && app.overview_scroll > 0.0,
+            handled && app.overview.scroll() > 0.0,
             "wheel scrolls the overview"
         );
 
@@ -8038,7 +7154,7 @@ mod tests {
             app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
         }
         assert!(
-            (app.overview_scroll - max_scroll).abs() < 1.0,
+            (app.overview.scroll() - max_scroll).abs() < 1.0,
             "overview scroll clamps to max"
         );
         let (area, thumbs, _) = app.compute_overview();
@@ -8065,7 +7181,7 @@ mod tests {
         };
         app.drag_move(Point::new(thumb.center().x, thumb.center().y + 120.0));
         assert!(
-            app.overview_scroll > 0.0,
+            app.overview.scroll() > 0.0,
             "dragging the thumb down scrolls the grid"
         );
     }
@@ -8276,9 +7392,9 @@ mod tests {
         // Feed the exact per-frame drain path a chosen-file outcome and confirm
         // it lands a real image element (with its src) in the CRDT.
         let path = write_png("slides-unit-insert.png", 12, 8);
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path.clone()),
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -8316,9 +7432,7 @@ mod tests {
         app.reload(&doc);
         let before = app.slide().map_or(0, |s| s.elements.len());
 
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Cancelled,
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -8570,9 +7684,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        app.doc_portal_rx = Some(crate::portal::inject_doc_for_test(
-            crate::portal::DocOutcome::Open(path),
-        ));
+        app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path)));
         app.drain_doc_portal(&mut doc);
         assert!(
             app.doc_portal_rx.is_none(),
@@ -8690,7 +7802,16 @@ mod tests {
 
     // === embedded inspector widgets (NumberInput / ColorPicker) ===========
 
-    fn app_dispatch(app: &mut SlidesApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+    fn app_dispatch(app: &mut SlidesApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
+        app_dispatch_mods(app, doc, Modifiers::default(), ev)
+    }
+
+    fn app_dispatch_mods(
+        app: &mut SlidesApp,
+        doc: &mut AutoCommit,
+        modifiers: Modifiers,
+        ev: &WindowEvent,
+    ) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
@@ -8699,7 +7820,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            &Modifiers::default(),
+            &modifiers,
             doc,
             &root,
             &mut handled,
@@ -8707,6 +7828,7 @@ mod tests {
             node,
             &taffy,
         );
+        handled
     }
     fn cursor_ev(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -8873,7 +7995,7 @@ mod tests {
         app_dispatch(&mut app, &mut doc, &char_ev("!"));
         app_dispatch(&mut app, &mut doc, &char_ev("?"));
         assert!(
-            !app.show_help,
+            !app.help_overlay.is_visible(),
             "'?' while renaming types into the title, not the help overlay"
         );
         // Enter commits the rename.
@@ -8947,18 +8069,26 @@ mod tests {
     fn help_overlay_is_visible_and_dismissable_in_present_mode() {
         let mut app = presenting_app();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        assert!(!app.help_overlay_visible());
+        assert!(!app.help_overlay.is_visible());
         // '?' opens the overlay even while presenting.
         assert!(press_char(&mut app, "?"));
         assert!(
-            app.help_overlay_visible(),
+            app.help_overlay.is_visible(),
             "the help overlay is shown in Present mode (the exact gate `draw` uses)"
         );
         // And it actually paints over the present surface without panicking.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        app.draw_help(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let palette = app.palette(&theme);
+        app.help_overlay.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            app.rect,
+            &palette,
+        );
 
         // While open it is modal (a nav key is swallowed, does not advance).
         let before = app.cur_slide;
@@ -8969,7 +8099,7 @@ mod tests {
         );
         // Dismiss with '?', and navigation resumes — no soft-lock.
         assert!(press_char(&mut app, "?"));
-        assert!(!app.help_overlay_visible(), "'?' dismisses the overlay");
+        assert!(!app.help_overlay.is_visible(), "'?' dismisses the overlay");
         assert!(press_named(&mut app, NamedKey::ArrowRight));
         assert_eq!(
             app.cur_slide,
@@ -9069,30 +8199,54 @@ mod tests {
         assert_eq!(caret_line_home_end(t, 1, true), 3);
     }
 
-    // --- speaker notes editing (no caret + no vertical nav before) ----------
+    // --- shared multiline speaker-notes editor ------------------------------
 
     #[test]
     fn notes_typing_writes_through_and_up_down_move_the_caret() {
         let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
         // Seed two lines of notes on slide 0.
         crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "line one\nsecond");
         app.reload(&doc);
         app.apply_hit(&mut doc, Hit::EditNotes);
         assert!(app.editing_notes, "clicking notes enters the notes editor");
-        let len = app.slide().unwrap().notes.chars().count();
-        assert_eq!(app.notes_caret, len, "caret opens at the end of the notes");
+        let len = "line one\nsecond".len();
+        assert_eq!(
+            app.notes_input.cursor_pos(),
+            len,
+            "caret opens at the end of the notes"
+        );
+
+        // The shared multiline editor resolves vertical movement from the same
+        // wrapped layout it paints, so build one deterministic inspector frame.
+        let nb = app.compute_chrome().notes_box.expect("notes box");
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        app.draw_notes(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            nb,
+            "line one\nsecond",
+        );
 
         // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
-        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowUp));
-        assert_eq!(
-            app.notes_caret, 6,
-            "ArrowUp moved the notes caret up one line"
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowUp));
+        assert!(
+            app.notes_input.cursor_pos() < "line one".len(),
+            "ArrowUp moved the notes caret onto the first shaped line"
         );
-        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowDown));
-        assert_eq!(app.notes_caret, len, "ArrowDown returns to the second line");
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowDown));
+        assert_eq!(
+            app.notes_input.cursor_pos(),
+            len,
+            "ArrowDown returns to the second line"
+        );
 
         // Typing splices into the CRDT notes at the caret.
-        assert!(keyc(&mut app, &mut doc, "!"));
+        app_dispatch(&mut app, &mut doc, &char_ev("!"));
         assert_eq!(
             loaded(&doc).slides[0].notes,
             "line one\nsecond!",
@@ -9602,29 +8756,51 @@ mod tests {
         );
     }
 
-    /// Speaker notes editing shares the same selection / delete core and edits
-    /// the real CRDT notes text.
+    /// Selection replacement, IME and multiline insertion all travel through
+    /// the real root-widget event path into the directly-bound notes text.
     #[test]
-    fn notes_selection_shares_the_caret_core_and_edits_the_crdt() {
+    fn notes_selection_ime_and_multiline_edit_the_bound_crdt_text() {
         use winit::keyboard::ModifiersState;
         let mut s = Slide::new(Layout::TitleContent);
         s.notes = "abc".into();
         let (mut app, mut doc) = app_doc(s);
-        app.editing_notes = true;
-        app.notes_caret = 3;
-        app.sel_anchor = 3;
-        assert!(key_char_mods(
+        sized(&mut app, 1280.0, 800.0);
+        app.apply_hit(&mut doc, Hit::EditNotes);
+
+        app_dispatch_mods(
             &mut app,
             &mut doc,
-            "a",
-            ModifiersState::CONTROL
-        ));
-        assert_eq!(app.selected_text(), "abc", "Ctrl+A selects the notes");
-        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+            Modifiers::from(ModifiersState::CONTROL),
+            &char_ev("a"),
+        );
+        assert_eq!(
+            app.notes_input.selection_range_public(),
+            Some((0, 3)),
+            "Ctrl+A selects the notes in the shared editor"
+        );
+
+        app_dispatch(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+        );
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
+        app_dispatch(&mut app, &mut doc, &char_ev("agenda"));
         assert_eq!(
             loaded(&doc).slides[0].notes,
-            "",
-            "notes use the shared selection/delete path into the CRDT"
+            "東京\nagenda",
+            "IME replacement and newline insertion persist to the CRDT"
+        );
+
+        let handled = app_dispatch_mods(
+            &mut app,
+            &mut doc,
+            Modifiers::from(ModifiersState::CONTROL),
+            &char_ev("z"),
+        );
+        assert!(
+            !handled,
+            "Ctrl+Z falls through to the toolkit's global undo handler"
         );
     }
 

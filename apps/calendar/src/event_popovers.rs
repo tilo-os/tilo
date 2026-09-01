@@ -19,7 +19,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{DatePicker, TimePicker};
 
-use crate::app::{CalTarget, draw_check, fill_round, stroke_round};
+use crate::app::{CalTarget, draw_check};
+use crate::draw_util::{fill_round, stroke_round};
 use crate::model::Event;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -174,8 +175,53 @@ impl EventPopovers {
         let mut handled = false;
         let mut edit = None;
 
+        self.dispatch_picker_event(
+            kind,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+            is_enter,
+            is_click,
+            &mut handled,
+            &mut edit,
+        );
+
+        if !handled && is_click {
+            self.handle_hit_fallback(pointer, &mut handled, &mut edit);
+        }
+
+        (handled, edit)
+    }
+
+    /// Route the event into whichever picker the open popover owns (part of
+    /// [`Self::handle_event`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal event-handling split of an over-length function"
+    )]
+    fn dispatch_picker_event(
+        &mut self,
+        kind: PopoverKind,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+        is_enter: bool,
+        is_click: bool,
+        handled: &mut bool,
+        edit: &mut Option<PopoverEdit>,
+    ) {
         match kind {
-            PopoverKind::None => {}
+            PopoverKind::None | PopoverKind::Calendar => {}
             PopoverKind::StartDate | PopoverKind::EndDate => {
                 let before = self.date_picker.selected();
                 self.date_picker.handle_event(
@@ -184,18 +230,18 @@ impl EventPopovers {
                     &modifiers,
                     state,
                     path,
-                    &mut handled,
+                    handled,
                     focus_target,
                     node_id,
                     taffy,
                 );
                 let after = self.date_picker.selected();
                 if after != before {
-                    edit = Some(PopoverEdit::Date(kind, after));
+                    *edit = Some(PopoverEdit::Date(kind, after));
                 }
-                if (is_click && handled && after != before) || is_enter {
+                if (is_click && *handled && after != before) || is_enter {
                     self.close();
-                    handled = true;
+                    *handled = true;
                 }
             }
             PopoverKind::StartTime | PopoverKind::EndTime => {
@@ -211,43 +257,47 @@ impl EventPopovers {
                     &modifiers,
                     state,
                     path,
-                    &mut handled,
+                    handled,
                     focus_target,
                     node_id,
                     taffy,
                 );
                 let after = (picker.hours(), picker.minutes());
                 if after != before {
-                    edit = Some(PopoverEdit::Time(kind, after.0, after.1));
+                    *edit = Some(PopoverEdit::Time(kind, after.0, after.1));
                 }
                 if is_enter {
                     self.close();
-                    handled = true;
+                    *handled = true;
                 }
             }
-            PopoverKind::Calendar => {}
         }
+    }
 
-        if !handled && is_click {
-            let hit = self
-                .hits
-                .iter()
-                .rev()
-                .find(|(rect, _)| rect.contains(pointer))
-                .map(|(_, hit)| hit.clone());
-            match hit {
-                Some(Hit::Dismiss) => self.close(),
-                Some(Hit::Guard) => {}
-                Some(Hit::Calendar(target)) => {
-                    edit = Some(PopoverEdit::Calendar(target));
-                    self.close();
-                }
-                None => self.close(),
+    /// A left click the picker didn't consume, resolved against the hit map
+    /// — the dismiss scrim, a calendar row, or a popover guard (part of
+    /// [`Self::handle_event`]).
+    fn handle_hit_fallback(
+        &mut self,
+        pointer: Point,
+        handled: &mut bool,
+        edit: &mut Option<PopoverEdit>,
+    ) {
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(pointer))
+            .map(|(_, hit)| hit.clone());
+        match hit {
+            Some(Hit::Dismiss) | None => self.close(),
+            Some(Hit::Guard) => {}
+            Some(Hit::Calendar(target)) => {
+                *edit = Some(PopoverEdit::Calendar(target));
+                self.close();
             }
-            handled = true;
         }
-
-        (handled, edit)
+        *handled = true;
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -182,15 +182,11 @@ fn write_image_blobs(
 
 /// Detect an image's file extension + ODF media type from its magic bytes; unknown payloads fall back to a generic binary stream.
 fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        ("png", "image/png")
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        ("jpg", "image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("gif", "image/gif")
-    } else {
-        ("bin", "application/octet-stream")
-    }
+    crate::export::detect_image_media(bytes)
+        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
+        .map_or(("bin", "application/octet-stream"), |media| {
+            (media.extension, media.mime)
+        })
 }
 
 /// The `Pictures/<hash>.<ext>` href an image block's blob is written under.
@@ -458,7 +454,10 @@ fn render_inline(
         }
         if let Some(note_id) = run.note_reference {
             if let Some(note) = notes.get(note_id) {
-                *note_ctr += 1;
+                // A per-document note counter; bounded by how many notes
+                // one document has, nowhere near `usize::MAX` (or the
+                // note-counter's actual integer type's max).
+                *note_ctr = note_ctr.saturating_add(1);
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
             continue;
@@ -1225,13 +1224,14 @@ mod tests {
             .collect()
     }
 
-    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
-    fn norm_region(
-        blocks: &[crate::snapshot::BlockView],
-    ) -> Vec<(
+    /// One block's `(text, marks-with-values)`, marks as `(start, end, name, value)`.
+    type NormalizedRegionBlock = (
         String,
         Vec<(usize, usize, String, crate::document::MarkValue)>,
-    )> {
+    );
+
+    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
+    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<NormalizedRegionBlock> {
         blocks
             .iter()
             .map(|b| {
@@ -2423,6 +2423,8 @@ mod tests {
     fn comment_roundtrips_through_odt() {
         use crate::document::MarkValue;
         use crate::schema::MARK_COMMENT;
+        // (author, body text, (range start, range end)) per comment, for a stable equality check.
+        type CommentSummary = (String, String, Option<(usize, usize)>);
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "please fix this word now");
@@ -2486,8 +2488,6 @@ mod tests {
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        // (author, body text, (range start, range end)) per comment, for a stable equality check.
-        type CommentSummary = (String, String, Option<(usize, usize)>);
         let authors_texts = |snap: &DocSnapshot| {
             let mut v: Vec<CommentSummary> = snap
                 .comments

@@ -189,16 +189,15 @@ fn write_diff_overlay(baseline: &Path, current: &Path, threshold: u8) -> Result<
         return Err(format!("size mismatch: {dims:?} vs {c_dims:?}"));
     }
     for (a, b) in c_pix.chunks_exact_mut(4).zip(b_pix.chunks_exact(4)) {
-        if let ([ra, ga, ba, aa], [rb, gb, bb, _ab]) = (a, b) {
-            if ra.abs_diff(*rb) > threshold
+        if let ([ra, ga, ba, aa], [rb, gb, bb, _ab]) = (a, b)
+            && (ra.abs_diff(*rb) > threshold
                 || ga.abs_diff(*gb) > threshold
-                || ba.abs_diff(*bb) > threshold
-            {
-                *ra = 255;
-                *ga = 0;
-                *ba = 0;
-                *aa = 255;
-            }
+                || ba.abs_diff(*bb) > threshold)
+        {
+            *ra = 255;
+            *ga = 0;
+            *ba = 0;
+            *aa = 255;
         }
     }
     let out_path = current.with_extension("diff.png");
@@ -248,7 +247,7 @@ fn load_rgba(path: &Path) -> Result<(Vec<u8>, (u32, u32)), String> {
             }
             out
         }
-        other => {
+        other @ png::ColorType::Indexed => {
             return Err(format!(
                 "unsupported PNG color type {:?} in '{}'",
                 other,
@@ -300,23 +299,23 @@ mod tests {
     #[test]
     fn baseline_diff_reports_pixel_count() {
         // 4×4 buffer, mutate 7 specific pixels by a +30 delta in R.
-        let w = 4u32;
-        let h = 4u32;
-        let n = (w * h) as usize;
-        let mut a = vec![0u8; n * 4];
-        for i in 0..n {
-            a[i * 4] = 50;
-            a[i * 4 + 1] = 80;
-            a[i * 4 + 2] = 120;
-            a[i * 4 + 3] = 255;
+        let width = 4u32;
+        let height = 4u32;
+        let pixel_count = (width * height) as usize;
+        let mut baseline = vec![0u8; pixel_count * 4];
+        for i in 0..pixel_count {
+            baseline[i * 4] = 50;
+            baseline[i * 4 + 1] = 80;
+            baseline[i * 4 + 2] = 120;
+            baseline[i * 4 + 3] = 255;
         }
-        let mut b = a.clone();
+        let mut current = baseline.clone();
         for &idx in &[0usize, 3, 5, 6, 9, 12, 15] {
-            b[idx * 4] = b[idx * 4].saturating_add(30);
+            current[idx * 4] = current[idx * 4].saturating_add(30);
         }
-        assert_eq!(count_diff_pixels(&a, &b, 4), 7);
+        assert_eq!(count_diff_pixels(&baseline, &current, 4), 7);
         // Identical buffers → zero diff.
-        assert_eq!(count_diff_pixels(&a, &a, 4), 0);
+        assert_eq!(count_diff_pixels(&baseline, &baseline, 4), 0);
     }
 
     /// End-to-end roundtrip: write two PNGs to a tempdir, run the diff

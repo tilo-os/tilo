@@ -18,12 +18,15 @@ env:
   CARGO_HOME: /cargo-home
   CARGO_BUILD_JOBS: "4"
   CARGO_INCREMENTAL: "0"
+  # Match the test profile below. Cargo keeps dev/test artifacts in the same
+  # target tree, but a different debuginfo setting gives them different
+  # fingerprints and recompiles the dependency graph for the all-target pass.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
   # Cache availability changes speed, never correctness or mergeability.
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   RUSTFLAGS: "-D warnings"
-  SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
   WGPU_BACKEND: vulkan
   # Every runner may expose a different physical adapter. Goldens are rendered
   # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
@@ -52,12 +55,28 @@ jobs:
       full: ${{ steps.plan.outputs.full }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
+      estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
-      - name: Checkout complete history for change selection
+      - name: Checkout head for change selection
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
+          fetch-depth: 2
+          fetch-tags: false
+
+      - name: Fetch comparison base
+        shell: bash
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ] || [ "$base" = "null" ]; then
+            base='${{ github.event.before }}'
+          fi
+          if [ -n "$base" ] &&
+             [ "$base" != "0000000000000000000000000000000000000000" ] &&
+             ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$base"
+          fi
 
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
@@ -99,6 +118,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+          fetch-tags: false
 
       - name: Restore Cargo downloads
         id: cargo-cache
@@ -122,6 +143,16 @@ jobs:
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
       # perform metadata-only work before doing codegen for the same crates.
+      # app-catalogue's registry integration tests execute the real installer;
+      # it is deliberately not a Rust dependency, so an affected-only Cargo
+      # invocation does not otherwise produce that binary.
+      - name: Build installer used by app-catalogue integration tests
+        if: contains(matrix.packages, '-p app-catalogue')
+        run: >-
+          bash tools/ci-measure.sh "build qos-install test fixture" --
+          bash scripts/ci-run.sh "cargo build (qos-install test fixture)" --
+          cargo build --locked -p install
+
       - name: Test shard ${{ matrix.shard }}
         env:
           XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
@@ -138,6 +169,22 @@ jobs:
           bash tools/ci-measure.sh "check shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
           cargo check --locked --all-targets ${{ matrix.packages }}
+
+      # The workspace lints are `deny`, so this fails on the first new
+      # violation rather than letting one land and be found by the weekly
+      # ratchet up to six days later. It reuses the rlibs the two steps above
+      # just built, so the marginal cost is clippy's own analysis.
+      #
+      # The pre-commit hook runs the same lints on the crates a commit
+      # touches, but a hook is per-clone and `--no-verify`-able. This is the
+      # gate that actually holds.
+      - name: Clippy shard ${{ matrix.shard }}
+        env:
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: >-
+          bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo clippy (affected shard ${{ matrix.shard }})" --
+          cargo clippy --locked --all-targets ${{ matrix.packages }}
 
       - name: Report remote compiler-cache effectiveness
         if: always()

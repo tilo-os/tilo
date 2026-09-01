@@ -14,6 +14,46 @@ use crate::shell::state::{
     Collaborator, PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree,
 };
 
+/// Authority carried by an invitation.  Owner is deliberately absent: a
+/// bearer invite may add a collaborator, never transfer workspace ownership.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum InviteRole {
+    Viewer,
+    Commenter,
+    #[default]
+    Editor,
+}
+
+impl InviteRole {
+    #[must_use]
+    pub fn verb(self) -> crate::shell::state::Verb {
+        match self {
+            Self::Viewer => crate::shell::state::Verb::Read,
+            Self::Commenter => crate::shell::state::Verb::Comment,
+            Self::Editor => crate::shell::state::Verb::Write,
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Viewer => "Viewer",
+            Self::Commenter => "Commenter",
+            Self::Editor => "Editor",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Viewer => Self::Commenter,
+            Self::Commenter => Self::Editor,
+            Self::Editor => Self::Viewer,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PeerInviteToken {
     /// Inviter-local routing handle. The durable shared identity is `room_id`.
@@ -33,6 +73,16 @@ pub struct PeerInviteToken {
     /// endpoint/device key. Absent only on legacy invitations.
     #[serde(default)]
     pub owner_device_cert: Option<DeviceCert>,
+    /// Maximum workspace role granted when this invite is redeemed. Legacy
+    /// invitations predate role selection and retain their historic Editor
+    /// behaviour through the enum default.
+    #[serde(default)]
+    pub role: InviteRole,
+    /// Random per-invite nonce. Names stay authority-side, but this makes
+    /// two invitations minted in the same second distinct credentials so
+    /// cancellation and redemption can target the exact invitation.
+    #[serde(default)]
+    pub invite_nonce: [u8; 16],
     pub expiry_unix_seconds: u64,
     pub signature: Vec<u8>,
 }
@@ -55,6 +105,31 @@ struct InvitePayloadV2<'a> {
     owner_addr: &'a iroh::EndpointAddr,
     host_addrs: &'a [iroh::EndpointAddr],
     owner_device_cert: &'a DeviceCert,
+    expiry_unix_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct InvitePayloadWithRole<'a> {
+    workspace_id: u64,
+    room_id: &'a str,
+    owner_peer_id: &'a str,
+    owner_addr: &'a iroh::EndpointAddr,
+    host_addrs: &'a [iroh::EndpointAddr],
+    owner_device_cert: Option<&'a DeviceCert>,
+    role: InviteRole,
+    expiry_unix_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct InvitePayloadWithNonce<'a> {
+    workspace_id: u64,
+    room_id: &'a str,
+    owner_peer_id: &'a str,
+    owner_addr: &'a iroh::EndpointAddr,
+    host_addrs: &'a [iroh::EndpointAddr],
+    owner_device_cert: Option<&'a DeviceCert>,
+    role: InviteRole,
+    invite_nonce: [u8; 16],
     expiry_unix_seconds: u64,
 }
 
@@ -99,10 +174,10 @@ fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
     }
     RoomId::parse(&token.room_id).filter(|room| !room.is_nil())?;
     let protobuf = B64.decode(token.owner_public_key.as_bytes()).ok()?;
-    if protobuf.len() != 36 || protobuf[..4] != [0x08, 0x01, 0x12, 0x20] {
+    if protobuf.len() != 36 || protobuf.get(..4)? != [0x08, 0x01, 0x12, 0x20] {
         return None;
     }
-    let public: [u8; 32] = protobuf[4..].try_into().ok()?;
+    let public: [u8; 32] = protobuf.get(4..)?.try_into().ok()?;
     let endpoint = crate::network::behaviour::endpoint_from_legacy_peer_id(&token.owner_peer_id)?;
     if endpoint.as_bytes() != &public {
         return None;
@@ -121,23 +196,27 @@ fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
 }
 
 fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> {
-    if let Some(cert) = &token.owner_device_cert {
-        return postcard::to_allocvec(&InvitePayloadV2 {
+    if token.invite_nonce != [0; 16] {
+        return postcard::to_allocvec(&InvitePayloadWithNonce {
             workspace_id: token.workspace_id,
             room_id: &token.room_id,
             owner_peer_id: &token.owner_peer_id,
             owner_addr: &token.owner_addr,
             host_addrs: &token.host_addrs,
-            owner_device_cert: cert,
+            owner_device_cert: token.owner_device_cert.as_ref(),
+            role: token.role,
+            invite_nonce: token.invite_nonce,
             expiry_unix_seconds: token.expiry_unix_seconds,
         });
     }
-    postcard::to_allocvec(&InvitePayload {
+    postcard::to_allocvec(&InvitePayloadWithRole {
         workspace_id: token.workspace_id,
         room_id: &token.room_id,
         owner_peer_id: &token.owner_peer_id,
         owner_addr: &token.owner_addr,
         host_addrs: &token.host_addrs,
+        owner_device_cert: token.owner_device_cert.as_ref(),
+        role: token.role,
         expiry_unix_seconds: token.expiry_unix_seconds,
     })
 }
@@ -148,6 +227,21 @@ fn now_unix_seconds() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Stable, non-secret identifier for one exact signed invite. Authorities use
+/// it to correlate a redemption with the role they minted without putting a
+/// room-wide "next arrival" grant on the wire.
+#[must_use]
+pub fn invite_id(token: &str) -> [u8; 32] {
+    *blake3::hash(token.as_bytes()).as_bytes()
+}
+
+/// Mint an invite for `workspace` with no always-on hosts and no bound
+/// signing identity.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` has no room identity, if `owner_addr`
+/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -158,6 +252,11 @@ pub fn make_invite_token(
 }
 
 /// Mint an invite carrying optional always-on workspace hosts.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` has no room identity, if `owner_addr`
+/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token_with_hosts(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -175,12 +274,50 @@ pub fn make_invite_token_with_hosts(
     )
 }
 
+/// Mint an invite, optionally binding the inviter's identity-signed device
+/// certificate so the guest can verify who is inviting them, not just which
+/// device.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` has no room identity, if `owner_addr`
+/// does not belong to `key`, if `owner_device_cert` is present but fails
+/// verification or doesn't name `key`'s device, or if encoding the signed
+/// token fails.
 pub fn make_invite_token_with_identity(
     key: &iroh::SecretKey,
     workspace: &Workspace,
     owner_addr: &iroh::EndpointAddr,
     host_addrs: &[iroh::EndpointAddr],
     owner_device_cert: Option<DeviceCert>,
+    expiry_seconds_from_now: u64,
+) -> std::io::Result<String> {
+    make_invite_token_with_identity_and_role(
+        key,
+        workspace,
+        owner_addr,
+        host_addrs,
+        owner_device_cert,
+        InviteRole::Editor,
+        expiry_seconds_from_now,
+    )
+}
+
+/// Mint an identity-bound invite whose signed payload limits the role granted
+/// on redemption.
+///
+/// # Errors
+///
+/// Returns an error when the workspace or endpoint is invalid, the optional
+/// device certificate does not match the signing key, or the token cannot be
+/// encoded.
+pub fn make_invite_token_with_identity_and_role(
+    key: &iroh::SecretKey,
+    workspace: &Workspace,
+    owner_addr: &iroh::EndpointAddr,
+    host_addrs: &[iroh::EndpointAddr],
+    owner_device_cert: Option<DeviceCert>,
+    role: InviteRole,
     expiry_seconds_from_now: u64,
 ) -> std::io::Result<String> {
     if workspace.room.is_nil() {
@@ -208,6 +345,8 @@ pub fn make_invite_token_with_identity(
         owner_addr: owner_addr.clone(),
         host_addrs: host_addrs.to_vec(),
         owner_device_cert,
+        role,
+        invite_nonce: *uuid::Uuid::new_v4().as_bytes(),
         expiry_unix_seconds: now_unix_seconds().saturating_add(expiry_seconds_from_now),
         signature: Vec::new(),
     };
@@ -219,6 +358,15 @@ pub fn make_invite_token_with_identity(
     Ok(B64.encode(json))
 }
 
+/// Decode and verify a base64 invite token: signature, expiry, room id, and
+/// (if present) the bound device certificate.
+///
+/// # Errors
+///
+/// Returns an error describing which check failed: base64/JSON decoding,
+/// expiry, an invalid or unminted room id, a device-certificate/endpoint
+/// mismatch, or a signature that verifies against neither the current nor
+/// the legacy signing payload.
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
@@ -262,7 +410,31 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     let signature = iroh_base::Signature::from_bytes(&signature);
     let current = signing_payload(&token).map_err(|e| format!("canonical encode: {e}"))?;
     if endpoint.verify(&current, &signature).is_err() {
-        if !token.host_addrs.is_empty() {
+        let previous = if let Some(cert) = &token.owner_device_cert {
+            postcard::to_allocvec(&InvitePayloadV2 {
+                workspace_id: token.workspace_id,
+                room_id: &token.room_id,
+                owner_peer_id: &token.owner_peer_id,
+                owner_addr: &token.owner_addr,
+                host_addrs: &token.host_addrs,
+                owner_device_cert: cert,
+                expiry_unix_seconds: token.expiry_unix_seconds,
+            })
+        } else {
+            postcard::to_allocvec(&InvitePayload {
+                workspace_id: token.workspace_id,
+                room_id: &token.room_id,
+                owner_peer_id: &token.owner_peer_id,
+                owner_addr: &token.owner_addr,
+                host_addrs: &token.host_addrs,
+                expiry_unix_seconds: token.expiry_unix_seconds,
+            })
+        }
+        .map_err(|e| format!("previous canonical encode: {e}"))?;
+        if endpoint.verify(&previous, &signature).is_ok() {
+            return Ok(token);
+        }
+        if !token.host_addrs.is_empty() || token.owner_device_cert.is_some() {
             return Err("signature mismatch".into());
         }
         let legacy = postcard::to_allocvec(&LegacyInvitePayload {
@@ -280,6 +452,13 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     Ok(token)
 }
 
+/// Validate `token_str` and bind `local`'s workspace to the room it names.
+///
+/// # Errors
+///
+/// Returns an error if the token fails [`validate_invite_token`], if it
+/// carries no valid room id, or if `local` names no local workspace to
+/// accept the invite into.
 pub fn accept_invite_into(
     tree: &mut WorkspaceTree,
     local: WorkspaceId,
@@ -361,6 +540,66 @@ mod tests {
     }
 
     #[test]
+    fn selected_role_is_signed_and_tamper_evident() {
+        let owner = iroh::SecretKey::from_bytes(&[31; 32]);
+        let encoded = make_invite_token_with_identity_and_role(
+            &owner,
+            &workspace(31),
+            &endpoint(&owner, 3131),
+            &[],
+            None,
+            InviteRole::Viewer,
+            3600,
+        )
+        .expect("viewer invite");
+        assert_eq!(
+            validate_invite_token(&encoded).expect("valid").role,
+            InviteRole::Viewer
+        );
+
+        let bytes = B64.decode(encoded).expect("base64");
+        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+        token.role = InviteRole::Editor;
+        let forged = B64.encode(serde_json::to_vec(&token).expect("json"));
+        assert!(
+            validate_invite_token(&forged)
+                .expect_err("role widening must invalidate the signature")
+                .contains("signature")
+        );
+    }
+
+    #[test]
+    fn invitations_minted_in_the_same_second_remain_distinct_and_valid() {
+        let owner = iroh::SecretKey::from_bytes(&[32; 32]);
+        let workspace = workspace(32);
+        let addr = endpoint(&owner, 3232);
+        let first = make_invite_token_with_identity_and_role(
+            &owner,
+            &workspace,
+            &addr,
+            &[],
+            None,
+            InviteRole::Editor,
+            3600,
+        )
+        .expect("first invite");
+        let second = make_invite_token_with_identity_and_role(
+            &owner,
+            &workspace,
+            &addr,
+            &[],
+            None,
+            InviteRole::Editor,
+            3600,
+        )
+        .expect("second invite");
+        assert_ne!(first, second, "each invitation is independently revocable");
+        assert_ne!(invite_id(&first), invite_id(&second));
+        validate_invite_token(&first).expect("first remains valid");
+        validate_invite_token(&second).expect("second remains valid");
+    }
+
+    #[test]
     fn identity_certificate_binds_inviter_person_to_device_endpoint() {
         use qos_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -393,11 +632,12 @@ mod tests {
         let local = WorkspaceId(99);
         tree.workspaces.push(workspace(99));
         accept_invite_into(&mut tree, local, &encoded).expect("accept");
-        let person = match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-        ) {
-            collab_types::caps::Principal::Person(id) => id,
-            _ => unreachable!(),
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+            )
+        else {
+            unreachable!()
         };
         assert!(
             tree.workspaces[0]
@@ -419,6 +659,8 @@ mod tests {
             owner_addr: addr,
             host_addrs: Vec::new(),
             owner_device_cert: None,
+            role: InviteRole::Editor,
+            invite_nonce: [0; 16],
             expiry_unix_seconds: now_unix_seconds() + 3600,
             signature: Vec::new(),
         };

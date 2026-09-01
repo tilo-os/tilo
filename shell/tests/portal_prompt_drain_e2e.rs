@@ -143,6 +143,11 @@ fn tick(host: &mut ShellOverlayHost) {
 }
 
 /// Wait for the prompt widget to appear, turning the pumps as the compositor would.
+#[allow(
+    clippy::future_not_send,
+    reason = "ShellOverlayHost isn't Send; every call site awaits this in place on the \
+              test's own task, never spawning it"
+)]
 async fn pump_until_prompt(host: &mut ShellOverlayHost) {
     for _ in 0..1000 {
         tick(host);
@@ -158,6 +163,11 @@ async fn pump_until_prompt(host: &mut ShellOverlayHost) {
 }
 
 /// Await the parked D-Bus call while still turning the pumps.
+#[allow(
+    clippy::future_not_send,
+    reason = "ShellOverlayHost isn't Send; every call site awaits this in place on the \
+              test's own task, never spawning it"
+)]
 async fn await_response(
     host: &mut ShellOverlayHost,
     handle: tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)>,
@@ -202,6 +212,12 @@ async fn allowing_a_prompt_releases_the_portal_call() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "caps borrows out of guard (app_capabilities returns Vec<&CapOverride>) and is \
+              used by the assert right after; ending the borrow earlier would mean cloning \
+              the capability records for no real gain"
+)]
 async fn denying_a_prompt_releases_the_portal_call_too() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let (mut host, grants, ws) = host_with_portal(prompts.clone());
@@ -244,20 +260,22 @@ async fn a_session_grant_answers_and_persists() {
     assert_eq!(code, 0);
 
     let tree = grants.tree_handle();
-    let guard = tree.read();
-    let has_camera = guard
-        .workspaces
-        .iter()
-        .find(|w| w.id == ws)
-        .expect("workspace")
-        .app_capabilities(APP)
-        .into_iter()
-        .any(|c| {
-            matches!(
-                Capability::from_capability(c),
-                Some(Capability::Camera { .. })
-            )
-        });
+    let has_camera = {
+        let guard = tree.read();
+        guard
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws)
+            .expect("workspace")
+            .app_capabilities(APP)
+            .into_iter()
+            .any(|c| {
+                matches!(
+                    Capability::from_capability(c),
+                    Some(Capability::Camera { .. })
+                )
+            })
+    };
     assert!(
         has_camera,
         "a Session answer must persist the capability on the workspace"

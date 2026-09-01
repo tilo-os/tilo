@@ -38,6 +38,8 @@ pub const DEFAULT_QUIET_MODULES: usize = 4;
 /// calls it every few seconds as the broker rotates the nonce.
 pub struct QrWidget {
     rect: Rect,
+    test_id: String,
+    alt: String,
     payload: Vec<u8>,
     /// Width × Width row-major matrix. `true` = dark module.
     matrix: Vec<bool>,
@@ -58,6 +60,8 @@ impl QrWidget {
     pub fn new(payload: impl Into<Vec<u8>>) -> Self {
         let mut w = Self {
             rect: Rect::ZERO,
+            test_id: "qr_widget".to_owned(),
+            alt: "QR code".to_owned(),
             payload: Vec::new(),
             matrix: Vec::new(),
             matrix_size: 0,
@@ -67,6 +71,29 @@ impl QrWidget {
         };
         w.set_payload(payload);
         w
+    }
+
+    /// Give the generated image a stable address for accessibility,
+    /// inspection, and headless scenarios.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = id.into();
+        self
+    }
+
+    /// Describe what scanning the code represents. A generic "QR code" name
+    /// is supplied by default; applications should provide the useful payload
+    /// meaning rather than forcing a screen-reader user to infer it visually.
+    #[must_use]
+    pub fn with_alt(mut self, alt: impl Into<String>) -> Self {
+        self.alt = alt.into();
+        self
+    }
+
+    /// The accessible description of the generated code.
+    #[must_use]
+    pub fn alt(&self) -> &str {
+        &self.alt
     }
 
     /// A failure to encode (most commonly: payload too large for the
@@ -236,11 +263,21 @@ impl Widget for QrWidget {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some("qr_widget")
+        Some(&self.test_id)
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+
+        let mut node = AccessNode::new(Role::Image).with_name(self.alt.clone());
+        if let Some(error) = &self.error {
+            node = node.with_description(format!("QR encoding failed: {error}"));
+        }
+        Some(node)
     }
 }
 
@@ -289,5 +326,35 @@ mod tests {
         let w = QrWidget::new(b"x".to_vec());
         assert!(!w.module(usize::MAX, 0));
         assert!(!w.module(0, usize::MAX));
+    }
+
+    #[test]
+    fn generated_code_has_stable_named_image_semantics() {
+        use crate::a11y::Role;
+
+        let w = QrWidget::new(b"https://example.com".to_vec())
+            .with_id("share-code")
+            .with_alt("Share link for Project Atlas");
+        assert_eq!(Widget::test_id(&w), Some("share-code"));
+        assert_eq!(w.alt(), "Share link for Project Atlas");
+        let node = Widget::accessibility(&w).expect("QR code is semantic content");
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name.as_deref(), Some("Share link for Project Atlas"));
+    }
+
+    #[test]
+    fn encoding_failure_is_exposed_without_replacing_the_image_identity() {
+        use crate::a11y::Role;
+
+        let w = QrWidget::new(vec![b'x'; 10_000]).with_id("oversized-code");
+        assert!(w.error().is_some());
+        let node = Widget::accessibility(&w).expect("failed output remains inspectable");
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name.as_deref(), Some("QR code"));
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|description| description.starts_with("QR encoding failed:"))
+        );
     }
 }

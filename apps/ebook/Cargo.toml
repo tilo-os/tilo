@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "ebook"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # `portal` pulls in the host XDG file-chooser so "Open a book…" goes through the
 # desktop's own picker (the HIG's file-access boundary) instead of a magic folder.
 ui = { path = "../../ui", features = ["portal"] }
@@ -28,7 +32,6 @@ qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

@@ -35,8 +35,6 @@
 
 pub mod app;
 pub mod collab;
-pub mod portal;
-
 pub use app::{PlayerApp, source_for_path};
 
 use std::path::PathBuf;
@@ -46,7 +44,7 @@ use ui::widget::Widget;
 /// the same workspace can join and follow). Opens `open` immediately when given.
 pub fn app_root(open: Option<PathBuf>) -> Box<dyn Widget> {
     let app = match open {
-        Some(path) => PlayerApp::new().with_open_path(path),
+        Some(path) => PlayerApp::new().with_open_path(&path),
         None => PlayerApp::new(),
     };
     Box::new(app.with_collab())

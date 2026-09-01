@@ -93,7 +93,10 @@ enum ParseError {
 /// Parse `argv` (without the program name) into an [`Invocation`]. Accepts
 /// `--socket PATH` anywhere before the subcommand; subcommand arguments are
 /// positional and required, with optional trailing args matched per-subcommand.
-fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
+/// Scan `argv` for `--help`/`-h` and `--socket PATH`, which may appear
+/// anywhere before the subcommand; everything else is returned as
+/// positional args. Split out of [`parse_args`] to keep it short.
+fn parse_global_flags(argv: &[String]) -> Result<(PathBuf, Vec<String>), ParseError> {
     let mut socket: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::with_capacity(argv.len());
     let mut iter = argv.iter();
@@ -109,11 +112,14 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             other => positional.push(other.to_string()),
         }
     }
-
     let socket = socket
         .or_else(|| std::env::var_os("QOS_TEST_CONTROL").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
+    Ok((socket, positional))
+}
 
+fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
+    let (socket, positional) = parse_global_flags(argv)?;
     let mut iter = positional.iter();
     let op = iter
         .next()
@@ -193,50 +199,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             }
             Command::StateDump { pretty }
         }
-        "actions" => {
-            let verb = iter.next().map(String::as_str).ok_or_else(|| {
-                ParseError::Usage("actions requires `list` or `invoke` (try --help)".to_string())
-            })?;
-            match verb {
-                "list" => {
-                    // Everything after `list` that isn't a flag joins the
-                    // query, so `actions list open settings` works without
-                    // the caller having to quote it.
-                    let mut json = false;
-                    let mut words: Vec<String> = Vec::new();
-                    for rest in iter.by_ref() {
-                        if rest == "--json" {
-                            json = true;
-                        } else {
-                            words.push(rest.clone());
-                        }
-                    }
-                    Command::ActionsList {
-                        query: words.join(" "),
-                        json,
-                    }
-                }
-                "invoke" => {
-                    let provider = iter.next().ok_or_else(|| {
-                        ParseError::Usage(
-                            "actions invoke PROVIDER ID requires a provider".to_string(),
-                        )
-                    })?;
-                    let id = iter.next().ok_or_else(|| {
-                        ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
-                    })?;
-                    Command::ActionsInvoke {
-                        provider: provider.clone(),
-                        id: id.clone(),
-                    }
-                }
-                other => {
-                    return Err(ParseError::Usage(format!(
-                        "actions: unknown verb `{other}` (expected `list` or `invoke`)"
-                    )));
-                }
-            }
-        }
+        "actions" => parse_actions_command(&mut iter)?,
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -251,6 +214,51 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     };
 
     Ok(Invocation { socket, command })
+}
+
+/// Parse the `actions list|invoke ...` subcommand. Split out of
+/// [`parse_args`] to keep it short.
+fn parse_actions_command<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let verb = iter.next().map(String::as_str).ok_or_else(|| {
+        ParseError::Usage("actions requires `list` or `invoke` (try --help)".to_string())
+    })?;
+    match verb {
+        "list" => {
+            // Everything after `list` that isn't a flag joins the
+            // query, so `actions list open settings` works without
+            // the caller having to quote it.
+            let mut json = false;
+            let mut words: Vec<String> = Vec::new();
+            for rest in iter.by_ref() {
+                if rest == "--json" {
+                    json = true;
+                } else {
+                    words.push(rest.clone());
+                }
+            }
+            Ok(Command::ActionsList {
+                query: words.join(" "),
+                json,
+            })
+        }
+        "invoke" => {
+            let provider = iter.next().ok_or_else(|| {
+                ParseError::Usage("actions invoke PROVIDER ID requires a provider".to_string())
+            })?;
+            let id = iter.next().ok_or_else(|| {
+                ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
+            })?;
+            Ok(Command::ActionsInvoke {
+                provider: provider.clone(),
+                id: id.clone(),
+            })
+        }
+        other => Err(ParseError::Usage(format!(
+            "actions: unknown verb `{other}` (expected `list` or `invoke`)"
+        ))),
+    }
 }
 
 /// Pull the next argv slot and parse it as `f64`. Helper for the
@@ -317,8 +325,10 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
                 "x_to": x2,
                 "y_to": y2,
             });
-            if let Some(s) = steps {
-                v["steps"] = json!(s);
+            if let Some(s) = steps
+                && let Some(obj) = v.as_object_mut()
+            {
+                obj.insert("steps".to_string(), json!(s));
             }
             v
         }
@@ -380,6 +390,84 @@ fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> std::io::Result<serde_
 /// Print the compositor's response in the format each subcommand
 /// expects. Returns the process exit code (0 on `ok`/`targets`/`state`,
 /// 1 on `err`).
+/// `Response::Targets(Vec<TargetEntry>)` serialises as `{"targets": [...]}`.
+/// Print one per line as `NAME  (X, Y, W, H)`. Split out of
+/// [`print_response`] to keep it short.
+fn print_list_targets(response: &serde_json::Value) {
+    let targets = response
+        .get("targets")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for entry in targets {
+        let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let rect = entry
+            .get("rect")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(serde_json::Value::as_f64)
+                    .map(|f| format!("{f:.0}"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let r = if let [r0, r1, r2, r3] = rect.as_slice() {
+            format!("({r0}, {r1}, {r2}, {r3})")
+        } else {
+            "(?)".to_string()
+        };
+        println!("{name}  {r}");
+    }
+}
+
+/// `Response::Answer(v)` serialises as `{"answer": v}`. Split out of
+/// [`print_response`] to keep it short.
+fn print_actions_list(response: &serde_json::Value, json: bool) -> u8 {
+    let answer = response
+        .get("answer")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if json {
+        println!("{answer}");
+        return 0;
+    }
+    let actions = answer
+        .get("actions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if actions.is_empty() {
+        // An empty surface is a real answer, not a failure — say
+        // so plainly rather than printing nothing and leaving the
+        // caller unsure whether the command ran.
+        println!("no actions exported for this query");
+        return 0;
+    }
+    // Address first: the `(provider, id)` pair is the thing a
+    // caller passes back to `actions invoke`, so it leads.
+    let width = actions
+        .iter()
+        .filter_map(|a| {
+            let p = a.get("provider").and_then(|v| v.as_str())?;
+            let i = a.get("id").and_then(|v| v.as_str())?;
+            Some(p.len().saturating_add(i.len()).saturating_add(1))
+        })
+        .max()
+        .unwrap_or(0);
+    for entry in &actions {
+        let provider = entry
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let address = format!("{provider}:{id}");
+        println!("{address:<width$}  {kind:<12}  {title}");
+    }
+    0
+}
+
 fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     if let Some(err) = response.get("err") {
         let code = err
@@ -391,34 +479,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         return 1;
     }
     match cmd {
-        Command::ListTargets => {
-            // `Response::Targets(Vec<TargetEntry>)` serialises as
-            // `{"targets": [...]}`. Print one per line as `NAME  (X, Y, W, H)`.
-            let targets = response
-                .get("targets")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            for entry in targets {
-                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let rect = entry
-                    .get("rect")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(serde_json::Value::as_f64)
-                            .map(|f| format!("{f:.0}"))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let r = if rect.len() == 4 {
-                    format!("({}, {}, {}, {})", rect[0], rect[1], rect[2], rect[3])
-                } else {
-                    "(?)".to_string()
-                };
-                println!("{name}  {r}");
-            }
-        }
+        Command::ListTargets => print_list_targets(response),
         Command::StateDump { pretty } => {
             // `Response::State` serialises as `{"state": {...}}`; print the
             // inner object so consumers can pipe to `jq .workspace_tree`
@@ -439,51 +500,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // it here to make `snapshot /tmp/x.png | xclip` work.
             println!("{path}");
         }
-        Command::ActionsList { json, .. } => {
-            // `Response::Answer(v)` serialises as `{"answer": v}`.
-            let answer = response
-                .get("answer")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            if *json {
-                println!("{answer}");
-                return 0;
-            }
-            let actions = answer
-                .get("actions")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if actions.is_empty() {
-                // An empty surface is a real answer, not a failure — say
-                // so plainly rather than printing nothing and leaving the
-                // caller unsure whether the command ran.
-                println!("no actions exported for this query");
-                return 0;
-            }
-            // Address first: the `(provider, id)` pair is the thing a
-            // caller passes back to `actions invoke`, so it leads.
-            let width = actions
-                .iter()
-                .filter_map(|a| {
-                    let p = a.get("provider").and_then(|v| v.as_str())?;
-                    let i = a.get("id").and_then(|v| v.as_str())?;
-                    Some(p.len() + i.len() + 1)
-                })
-                .max()
-                .unwrap_or(0);
-            for entry in &actions {
-                let provider = entry
-                    .get("provider")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                let address = format!("{provider}:{id}");
-                println!("{address:<width$}  {kind:<12}  {title}");
-            }
-        }
+        Command::ActionsList { json, .. } => return print_actions_list(response, *json),
         Command::ActionsInvoke { .. } => {
             // Echo what the address resolved to, so an operator can see
             // *which* action ran rather than a bare "ok".
@@ -577,7 +594,12 @@ fn main() -> ExitCode {
 
     let cmd_json = match command_to_wire(&invocation.command) {
         Ok(j) => j,
-        Err(ParseError::Help) => unreachable!(),
+        // `command_to_wire` never produces `Help` — degrade like a usage
+        // error rather than assert a state that would need main to panic.
+        Err(ParseError::Help) => {
+            eprintln!("qos-control: internal error: unexpected help state");
+            return ExitCode::from(2);
+        }
         Err(ParseError::Usage(msg)) => {
             eprintln!("qos-control: {msg}");
             return ExitCode::from(2);
@@ -587,7 +609,7 @@ fn main() -> ExitCode {
     let mut stream = match connect(&invocation.socket) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("qos-control: connect {:?}: {e}", invocation.socket);
+            eprintln!("qos-control: connect {}: {e}", invocation.socket.display());
             return ExitCode::from(2);
         }
     };
@@ -617,8 +639,8 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
-        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
-        parse_args(&argv)
+        let owned: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
+        parse_args(&owned)
     }
 
     #[test]

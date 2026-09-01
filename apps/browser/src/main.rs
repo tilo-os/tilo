@@ -40,10 +40,14 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use std::collections::HashMap;
 
 use browser::BrowserWidget;
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -61,9 +65,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 ///
 /// Returns an error if a `--shots*` render mode fails to produce its PNG
 /// (missing/unreadable target path, offscreen render failure).
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
+pub fn main() {
     // The SHM engine path reads WebKit's frames back on the CPU, yet with a
     // real display WebKit still tries hardware GL for its compositor. On a
     // machine whose GPU EGL is unreliable (e.g. a nested NVIDIA node
@@ -81,91 +83,45 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
     }
 
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_arg_value(&args, "--shots-live") {
-        let url =
-            parse_arg_value(&args, "--url").unwrap_or_else(|| "https://example.org".to_string());
-        // `--size WxH` renders at an arbitrary viewport — used to inspect
-        // narrow / mobile widths headlessly.
-        let size = parse_arg_value(&args, "--size")
-            .and_then(|s| {
-                let (w, h) = s.split_once('x')?;
-                Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-            })
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        render_live_shot_to_png(
-            &url,
-            size,
-            std::path::Path::new(&out),
-            args.iter().any(|arg| arg == "--probe-pip"),
-        )?;
-        return Ok(());
-    }
-    if let Some(out) = parse_arg_value(&args, "--shots-suggestions") {
-        render_suggestions_shot(std::path::Path::new(&out));
-        return Ok(());
-    }
-    if let Some(out) = parse_arg_value(&args, "--shots-overlay") {
-        // Full chrome + the address suggestion overlay pinned into view,
-        // to inspect its live position (under the bar) + frosted look.
-        use browser::history::HistoryEntry;
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_force_suggestions(vec![
-            HistoryEntry {
-                url: "https://github.com/qos/qos".into(),
-                title: "qOS on code.podesta.ai".into(),
-                last_visit: 3,
-                visit_count: 12,
-            },
-            HistoryEntry {
-                url: "https://en.wikipedia.org/wiki/Git".into(),
-                title: "Git - Wikipedia".into(),
-                last_visit: 2,
-                visit_count: 4,
-            },
-            HistoryEntry {
-                url: "https://gitlab.com".into(),
-                title: "GitLab".into(),
-                last_visit: 1,
-                visit_count: 2,
-            },
-        ]);
-        render_shot_to_png(Box::new(widget), (1000, 650), std::path::Path::new(&out))?;
-        return Ok(());
-    }
-    if let Some(out) = parse_arg_value(&args, "--shots-pip-empty") {
-        let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_empty_pip_feedback();
-        let size = parse_arg_value(&args, "--size")
-            .and_then(|s| {
-                let (w, h) = s.split_once('x')?;
-                Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-            })
-            .unwrap_or((1000, 650));
-        render_shot_to_png(Box::new(widget), size, std::path::Path::new(&out))?;
-        return Ok(());
-    }
-    if let Some(out) = parse_arg_value(&args, "--shots-settings") {
-        // Render the settings pane standalone, to inspect its layout.
-        render_shot_to_png(
-            Box::new(browser::settings::SettingsPane::new()),
-            (900, 700),
-            std::path::Path::new(&out),
-        )?;
-        return Ok(());
-    }
-    if let Some(out) = parse_shots_arg(&args) {
-        let mut widget = BrowserWidget::new_headless();
-        if args.iter().any(|arg| arg == "--pip-active") {
-            widget.debug_show_active_pip();
-        }
-        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
-        return Ok(());
-    }
+    ui::launch::run_or_exit(
+        &LaunchSpec::new_with_args("dev.qos.browser", browser_root)
+            .shot_handler(render_shot)
+            .allowed_live_options(&[
+                "--shots-live",
+                "--shots-suggestions",
+                "--shots-overlay",
+                "--shots-pip-empty",
+                "--shots-settings",
+                "--url",
+                "--size",
+            ])
+            .allowed_flags(&["--probe-pip", "--pip-active"])
+            .max_positionals(1)
+            .command_handler(command)
+            .live_handler(run_live),
+    );
+}
 
-    let widget = launch_target(&args).map_or_else(BrowserWidget::new, |uri| {
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by LaunchSpec's argument-aware root factory"
+)]
+fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(Box::new(browser_widget(args)))
+}
+
+fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
+    launch_target(args.positionals()).map_or_else(BrowserWidget::new, |uri| {
         BrowserWidget::new().with_initial_uri(uri)
-    });
+    })
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by LaunchSpec::live_handler"
+)]
+fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let widget = browser_widget(args);
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
@@ -181,17 +137,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            Box::new(widget),
-            "dev.qos.browser",
-        ));
-    }
-
     let (state, autosave) = ui::persist::open("dev.qos.browser");
     let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     // Wake the (otherwise event-driven) winit loop whenever the engine
@@ -203,6 +148,99 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     });
     Ok(())
+}
+
+fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
+    if let Some(out) = args.value("--shots-live") {
+        let url = args.value("--url").unwrap_or("https://example.org");
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_live_shot_to_png(
+            url,
+            size,
+            std::path::Path::new(out),
+            args.has("--probe-pip"),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-suggestions") {
+        render_suggestions_shot(std::path::Path::new(out));
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-overlay") {
+        render_overlay_shot(std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-pip-empty") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_empty_pip_feedback();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((1000, 650));
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-settings") {
+        render_shot_to_png(
+            Box::new(browser::settings::SettingsPane::new()),
+            (900, 700),
+            std::path::Path::new(out),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    let mut widget = BrowserWidget::new_headless();
+    if args.has("--pip-active") {
+        widget.debug_show_active_pip();
+    }
+    render_shot_to_png(
+        Box::new(widget),
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn parse_size(value: &str) -> Option<(u32, u32)> {
+    let (width, height) = value.split_once(['x', 'X'])?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
+fn render_overlay_shot(out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use browser::history::HistoryEntry;
+    let mut widget = BrowserWidget::new_headless();
+    widget.debug_force_suggestions(vec![
+        HistoryEntry {
+            url: "https://github.com/qos/qos".into(),
+            title: "qOS on code.podesta.ai".into(),
+            last_visit: 3,
+            visit_count: 12,
+        },
+        HistoryEntry {
+            url: "https://en.wikipedia.org/wiki/Git".into(),
+            title: "Git - Wikipedia".into(),
+            last_visit: 2,
+            visit_count: 4,
+        },
+        HistoryEntry {
+            url: "https://gitlab.com".into(),
+            title: "GitLab".into(),
+            last_visit: 1,
+            visit_count: 2,
+        },
+    ]);
+    render_shot_to_png(Box::new(widget), (1000, 650), out)
 }
 
 /// Render the address-suggestion overlay with sample entries, to inspect
@@ -257,12 +295,6 @@ fn render_suggestions_shot(out: &std::path::Path) {
     println!("browser: wrote suggestions shot to {}", out.display());
 }
 
-/// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
-/// in `args`, otherwise `None`.
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    parse_arg_value(args, "--shots").map(std::path::PathBuf::from)
-}
-
 /// `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
 /// theme-driven chrome can be proven across palettes; defaults to dark.
 fn shot_theme() -> Theme {
@@ -273,27 +305,11 @@ fn shot_theme() -> Theme {
     }
 }
 
-/// Returns the value of `<flag> <value>` or `<flag>=<value>` in `args`.
-fn parse_arg_value(args: &[String], flag: &str) -> Option<String> {
-    let eq_prefix = format!("{flag}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&eq_prefix) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
 /// The resource dispatcher forwards a claimed URI as one opaque positional
 /// argument. Browser deliberately accepts only the schemes it declares.
 fn launch_target(args: &[String]) -> Option<String> {
     if let Some(uri) = args
         .iter()
-        .skip(1)
         .find(|arg| {
             arg.split_once(':').is_some_and(|(scheme, rest)| {
                 (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http"))
@@ -309,7 +325,7 @@ fn launch_target(args: &[String]) -> Option<String> {
     // Convert only an absolute path; relative names and flag values never turn
     // into a WebView navigation by accident.
     let path = args
-        .get(1)
+        .first()
         .map(std::path::Path::new)
         .filter(|path| path.is_absolute())?;
     url::Url::from_file_path(path).ok().map(Into::into)
@@ -577,12 +593,9 @@ mod resource_claim_tests {
     #[test]
     fn startup_accepts_only_declared_web_schemes_as_one_value() {
         let uri = "HTTPS://example.test/a --still-data";
-        assert_eq!(
-            launch_target(&["browser".into(), uri.into()]).as_deref(),
-            Some(uri)
-        );
+        assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
         for value in ["javascript:alert(1)", "data:text/plain,x", "mailto:a@b"] {
-            assert_eq!(launch_target(&["browser".into(), value.into()]), None);
+            assert_eq!(launch_target(&[value.into()]), None);
         }
     }
 }

@@ -37,7 +37,62 @@ pub mod time_date;
 pub mod updates;
 pub mod users;
 
+/// Semantic provenance for a pane whose bound controls exclusively edit
+/// durable preferences. Callers pass a latch set only while that pane handles
+/// an input event, so initial seeding, status refreshes, and passive
+/// synchronisation remain unstamped.
+///
+/// Mixed command/status panes deliberately do not use this helper: accounts,
+/// users, network, Bluetooth, audio, displays, printers, storage, and updates
+/// combine durable operations with transient form, progress, refresh, or
+/// confirmation keys. Notifications already dispatches durable mutations via
+/// `SettingsAction`. About and Permissions have no preference mutations.
+pub(crate) fn preference_commit_context(
+    pending: bool,
+    slug: &str,
+    label: &str,
+    action_label: &str,
+) -> Option<ui::qos_actions::ActionContext> {
+    pending.then(|| {
+        ui::qos_actions::ActionContext::for_resource(
+            action_label,
+            format!("settings.preference:{slug}"),
+            "settings.preference-pane",
+            label,
+        )
+        .with_app("org.qos.Settings", "Settings")
+    })
+}
+
 /// The "Sound" category renders the audio pane.
 pub mod sound {
     pub use super::audio::build;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preference_context_exists_only_for_a_pending_user_edit() {
+        assert!(
+            preference_commit_context(false, "power", "Power", "Change power preferences")
+                .is_none(),
+            "seeding and passive refreshes stay out of semantic history"
+        );
+        let context = preference_commit_context(true, "power", "Power", "Change power preferences")
+            .expect("pending preference context");
+        assert_eq!(context.action_label, "Change power preferences");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("settings.preference:power")
+        );
+        assert_eq!(
+            context.app.as_ref().map(|app| app.id.as_str()),
+            Some("org.qos.Settings")
+        );
+    }
 }

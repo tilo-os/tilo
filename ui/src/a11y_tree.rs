@@ -36,6 +36,9 @@ use vello::kurbo::Rect;
 
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::widget::Widget;
+
+type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
+type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, Resource};
 
 /// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
@@ -129,15 +132,17 @@ pub struct SemanticNode {
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
     pub state: AccessState,
-    /// `None` for the root, synthetic a11y children, and resource nodes
-    /// (none of which are laid out).
+    /// `None` for the root and resource nodes. Virtual rows and cells publish
+    /// their viewport geometry even though they have no retained widget.
     pub bounds: Option<Rect>,
     pub actions: Vec<SemanticAction>,
     /// In reading order.
     pub children: Vec<SemanticId>,
     /// So the host can route a [`Verb`](SemanticActionKind::Verb) back to
-    /// the widget. `None` for root / synthetic / resource nodes.
+    /// the retained widget that owns this node.
     pub widget_taffy_id: Option<u64>,
+    /// Opaque widget-local target for a synthetic child action.
+    pub semantic_target: Option<String>,
 }
 
 impl SemanticNode {
@@ -206,6 +211,7 @@ impl SemanticTree {
                 actions: Vec::new(),
                 children: Vec::new(),
                 widget_taffy_id: None,
+                semantic_target: None,
             },
         );
         Self {
@@ -277,6 +283,7 @@ impl SemanticTree {
                 actions: Vec::new(),
                 children: root_children,
                 widget_taffy_id: None,
+                semantic_target: None,
             },
         );
 
@@ -433,22 +440,36 @@ impl Build<'_> {
             .copied();
         match w.accessibility() {
             Some(access) => {
-                let id = match taffy_id {
-                    Some(t) => SemanticId::widget(t),
+                let id = if let Some(t) = taffy_id {
+                    SemanticId::widget(t)
+                } else {
                     // Rare (never laid out); key under the parent so it
                     // still gets a stable id.
-                    None => SemanticId::synthetic(
-                        parent_children.last().unwrap_or(&SemanticId::root()),
-                        parent_children.len(),
-                    ),
+                    let root = SemanticId::root();
+                    let parent = parent_children.last().unwrap_or(&root);
+                    SemanticId::synthetic(parent, parent_children.len())
                 };
 
                 let mut children: Vec<SemanticId> = Vec::new();
-                for child in w.children() {
-                    self.visit_widget(child, &mut children);
+                let mut hosted = HostedByIndex::new();
+                for (child_index, child) in w.children().into_iter().enumerate() {
+                    if let Some(mut path) = w.accessibility_child_path(child_index)
+                        && !path.is_empty()
+                    {
+                        let parent_index = path.remove(0);
+                        hosted.entry(parent_index).or_default().push((path, child));
+                    } else {
+                        self.visit_widget(child, &mut children);
+                    }
                 }
                 for (i, synth) in access.children.iter().enumerate() {
-                    let child = self.visit_synthetic(&id, i, synth);
+                    let child = self.visit_synthetic(
+                        &id,
+                        i,
+                        synth,
+                        taffy_id,
+                        hosted.remove(&i).unwrap_or_default(),
+                    );
                     children.push(child);
                 }
 
@@ -480,6 +501,7 @@ impl Build<'_> {
                     actions,
                     children,
                     widget_taffy_id: taffy_id.map(u64::from),
+                    semantic_target: None,
                 };
                 self.order.push(id.clone());
                 self.nodes.insert(id.clone(), node);
@@ -493,18 +515,43 @@ impl Build<'_> {
         }
     }
 
-    /// A table row/cell — has no backing widget.
+    /// A virtual row/cell — has no backing widget, but may carry geometry.
     fn visit_synthetic(
         &mut self,
         parent: &SemanticId,
         index: usize,
         access: &AccessNode,
+        owner: Option<TaffyNodeId>,
+        hosted: Vec<HostedWidget<'_>>,
     ) -> SemanticId {
         let id = SemanticId::synthetic(parent, index);
+        let semantic_target = access.action_target.as_deref();
         let mut children: Vec<SemanticId> = Vec::new();
-        for (i, child) in access.children.iter().enumerate() {
-            let c = self.visit_synthetic(&id, i, child);
-            children.push(c);
+        let direct = hosted
+            .iter()
+            .filter(|(path, _)| path.is_empty())
+            .map(|(_, child)| *child)
+            .collect::<Vec<_>>();
+        if direct.is_empty() {
+            let mut nested = HostedByIndex::new();
+            for (mut path, child) in hosted {
+                let child_index = path.remove(0);
+                nested.entry(child_index).or_default().push((path, child));
+            }
+            for (i, child) in access.children.iter().enumerate() {
+                let c = self.visit_synthetic(
+                    &id,
+                    i,
+                    child,
+                    owner,
+                    nested.remove(&i).unwrap_or_default(),
+                );
+                children.push(c);
+            }
+        } else {
+            for child in direct {
+                self.visit_widget(child, &mut children);
+            }
         }
         let node = SemanticNode {
             id: id.clone(),
@@ -516,10 +563,15 @@ impl Build<'_> {
                 access.value.clone()
             },
             state: access.state,
-            bounds: None,
-            actions: verbs_for(access),
+            bounds: access.bounds.map(crate::a11y::AccessBounds::to_rect),
+            actions: if semantic_target.is_some() {
+                verbs_for(access)
+            } else {
+                Vec::new()
+            },
             children,
-            widget_taffy_id: None,
+            widget_taffy_id: semantic_target.and(owner).map(u64::from),
+            semantic_target: semantic_target.map(str::to_owned),
         };
         self.order.push(id.clone());
         self.nodes.insert(id.clone(), node);
@@ -549,6 +601,7 @@ impl Build<'_> {
             actions,
             children,
             widget_taffy_id: None,
+            semantic_target: None,
         };
         self.order.push(id.clone());
         self.nodes.insert(id.clone(), node);
@@ -585,6 +638,7 @@ impl Build<'_> {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
     use crate::widget::{Button, Column, Widget};
     use std::collections::HashMap;
     use taffy::TaffyTree;
@@ -661,9 +715,7 @@ mod tests {
         let first_button_taffy = node_map
             .iter()
             .find_map(|(t, &w)| {
-                let focusable = unsafe { (*w).accessibility() }
-                    .map(|a| a.state.focusable)
-                    .unwrap_or(false);
+                let focusable = unsafe { (*w).accessibility() }.is_some_and(|a| a.state.focusable);
                 focusable.then_some(*t)
             })
             .expect("a focusable button exists");
@@ -739,5 +791,48 @@ mod tests {
             node.action("activate").unwrap().kind,
             SemanticActionKind::Verb(Action::Activate)
         ));
+    }
+
+    #[test]
+    fn retained_table_control_is_nested_under_its_synthetic_cell() {
+        struct RowData {
+            id: u64,
+        }
+        let columns = vec![
+            ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0)).with_widget(
+                |row: &RowData, _| {
+                    let id = format!("edit-{}", row.id);
+                    Box::new(Button::new(&id, "Edit", None))
+                },
+            ),
+        ];
+        let mut table = DataTable::new(columns).with_row_key(|row: &RowData| row.id);
+        table.set_rows(vec![RowData { id: 7 }]);
+        let node_map = layout(&mut table);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&table, &node_map, None, &[]);
+
+        let table = tree
+            .iter()
+            .find(|node| node.role == Role::Table)
+            .expect("table node");
+        let row = tree
+            .node(table.children.first().expect("table row id"))
+            .expect("synthetic row");
+        assert_eq!(row.role, Role::Row);
+        let cell = tree
+            .node(row.children.first().expect("row cell id"))
+            .expect("synthetic cell");
+        assert_eq!(cell.role, Role::Cell);
+        let button = tree
+            .node(cell.children.first().expect("cell control id"))
+            .expect("retained button");
+        assert_eq!(button.role, Role::Button);
+        assert_eq!(button.name.as_deref(), Some("Edit"));
+        assert_eq!(
+            tree.iter().filter(|node| node.role == Role::Button).count(),
+            1,
+            "the retained control replaces, rather than duplicates, cell semantics"
+        );
     }
 }
