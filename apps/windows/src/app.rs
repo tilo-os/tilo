@@ -1,7 +1,7 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
 use crate::model::{Catalogue, Route};
-use crate::provider::{CompatibilityProvider, SampleProvider};
+use crate::provider::{CompatibilityProvider, EmptyProvider, SampleProvider};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -37,7 +37,7 @@ pub struct WindowsApp {
 
 impl WindowsApp {
     pub fn new_live() -> Self {
-        Self::with_provider(Box::new(SampleProvider::new()))
+        Self::with_provider(Box::new(EmptyProvider))
     }
     pub fn new_offline() -> Self {
         Self::with_provider(Box::new(SampleProvider::new()))
@@ -192,6 +192,10 @@ impl Widget for WindowsApp {
             origin.y + f64::from(layout.location.y + layout.size.height),
         );
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single canvas widget keeps paint order and hit geometry together"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -286,6 +290,36 @@ impl Widget for WindowsApp {
             self.area.y1 - PAD,
         );
         let Some(app) = self.selected_app().cloned() else {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(detail.x0, detail.y0 + 8.0),
+                "No Windows apps yet",
+                28.0,
+                theme.text_primary,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(detail.x0, detail.y0 + 44.0),
+                &self.catalogue.vm.detail,
+                13.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(detail.x0, detail.y0 + 92.0),
+                "Installed Windows software and catalogue recommendations will appear here.",
+                13.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
             return;
         };
         Self::text(
@@ -556,5 +590,10 @@ mod tests {
         app.hit(Hit::Route(Route::Vm));
         assert_eq!(app.catalogue.apps[0].route, Route::Vm);
         assert_eq!(app.catalogue.apps[0].capsule, capsule);
+    }
+
+    #[test]
+    fn live_manager_does_not_claim_fixture_apps_are_installed() {
+        assert!(WindowsApp::new_live().catalogue.apps.is_empty());
     }
 }
