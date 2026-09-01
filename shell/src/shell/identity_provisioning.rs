@@ -74,10 +74,70 @@ pub fn configure_host_identity_root() -> io::Result<PathBuf> {
             "QOS_IDENTITY_ROOT must be absolute",
         ));
     }
+    prepare_private_host_identity_tree(&root)?;
     // SAFETY: `main` calls this before it starts the warm-up thread or any
     // compositor/runtime worker. No other thread can read the environment.
     unsafe { std::env::set_var("QOS_IDENTITY_ROOT", &root) };
     Ok(root)
+}
+
+/// Create the host-session identity tree as a user-private trust boundary.
+/// The full qOS image intentionally shares its device key with a dedicated
+/// system group; a distro session has no such group and must not inherit a
+/// host's broad primary-group membership instead.
+#[cfg(unix)]
+fn prepare_private_host_identity_tree(root: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    let parent = root.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "identity root has no parent")
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let parent_meta = std::fs::metadata(parent)?;
+    if !parent_meta.is_dir()
+        || parent_meta.uid() != unsafe { libc::geteuid() }
+        || parent_meta.mode() & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "host-session identity parent must be user-owned and not group/world writable",
+        ));
+    }
+
+    for directory in [
+        root.to_path_buf(),
+        root.join("user-identity"),
+        root.join("device"),
+    ] {
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "host-session identity directory is not a user-owned real directory: {}",
+                            directory.display()
+                        ),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700).create(&directory)?;
+            }
+            Err(error) => return Err(error),
+        }
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn prepare_private_host_identity_tree(_root: &std::path::Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "host desktop sessions require Unix filesystem permissions",
+    ))
 }
 
 /// Writes public metadata to `$XDG_CONFIG_HOME/qos/identity/primary.json`
@@ -355,6 +415,28 @@ mod tests {
         assert!(host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err());
         assert!(host_identity_root(None, Some("relative".into())).is_err());
         assert!(host_identity_root(None, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_identity_tree_is_private_and_refuses_a_symlink_root() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let tmp = TmpDir::new("host-private-root");
+        let root = tmp.0.join("data/qos");
+        prepare_private_host_identity_tree(&root).unwrap();
+        for directory in [&root, &root.join("user-identity"), &root.join("device")] {
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        let target = tmp.0.join("target");
+        fs::create_dir(&target).unwrap();
+        let linked = tmp.0.join("linked");
+        symlink(&target, &linked).unwrap();
+        assert!(prepare_private_host_identity_tree(&linked).is_err());
     }
 
     #[test]
