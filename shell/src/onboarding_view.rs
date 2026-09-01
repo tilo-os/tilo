@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
@@ -18,8 +19,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Card, Checkbox, Column, ProgressBar, Row, Scrollable, Spacer, Text, TextInput,
-    Widget,
+    Banner, Button, Card, Checkbox, Column, FilePicker, FilePickerMode, ProgressBar, Row,
+    Scrollable, Spacer, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -39,21 +40,33 @@ pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_CONNECT: &str = "onboarding.connect";
 pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
+pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
+pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
 pub const KEY_FINISH: &str = "onboarding.finish";
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
-type Importer = Box<dyn Fn(&PathBuf) -> Result<MintedIdentity, String> + Send>;
+type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
+type Exporter = Box<dyn Fn(&PathBuf, &PathBuf, &[u8]) -> Result<(), String> + Send>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickerPurpose {
+    ImportIdentity,
+    BackupIdentity,
+}
 
 pub struct OnboardingView {
     flow: Onboarding,
     minter: Minter,
     importer: Importer,
+    exporter: Exporter,
     /// Set when minting failed, shown in place of the success screen — loud,
     /// since booting on into a desktop that silently has no identity is what this flow replaces.
     error: Option<String>,
+    backup_error: Option<String>,
+    backup_saved: Option<PathBuf>,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
     structure_dirty: bool,
@@ -61,6 +74,10 @@ pub struct OnboardingView {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     transition_started: Instant,
+    picker: Option<(PickerPurpose, FilePicker)>,
+    connect_passphrase: Arc<Mutex<String>>,
+    backup_passphrase: Arc<Mutex<String>>,
+    backup_confirmation: Arc<Mutex<String>>,
 }
 
 impl OnboardingView {
@@ -68,11 +85,20 @@ impl OnboardingView {
     pub fn new(identity_dir: PathBuf) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir;
-        Self::with_handlers(
+        Self::with_all_handlers(
             Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string())),
-            Box::new(move |source| {
+            Box::new(move |source, passphrase| {
                 let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
-                let profile = store.import(source).map_err(|error| error.to_string())?;
+                let profile = if passphrase.is_empty() {
+                    // Explicit compatibility path for schema-1 exports from
+                    // older qOS builds. New backups always require a
+                    // passphrase and never expose plaintext JSON.
+                    store.import(source).map_err(|error| error.to_string())?
+                } else {
+                    store
+                        .import_portable(source, passphrase)
+                        .map_err(|error| error.to_string())?
+                };
                 let runtime_id = profile
                     .record_path
                     .file_stem()
@@ -96,6 +122,11 @@ impl OnboardingView {
                     path: profile.record_path,
                 })
             }),
+            Box::new(move |identity, destination, passphrase| {
+                runtime_identity::export_portable_backup(identity, destination, passphrase)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }),
         )
     }
 
@@ -103,22 +134,37 @@ impl OnboardingView {
     pub fn with_minter(minter: Minter) -> Self {
         Self::with_handlers(
             minter,
-            Box::new(|_| Err("identity import is unavailable in this test".to_string())),
+            Box::new(|_, _| Err("identity import is unavailable in this test".to_string())),
         )
     }
 
     fn with_handlers(minter: Minter, importer: Importer) -> Self {
+        Self::with_all_handlers(
+            minter,
+            importer,
+            Box::new(|_, _, _| Err("identity backup is unavailable in this test".to_string())),
+        )
+    }
+
+    fn with_all_handlers(minter: Minter, importer: Importer, exporter: Exporter) -> Self {
         Self {
             flow: Onboarding::new(),
             minter,
             importer,
+            exporter,
             error: None,
+            backup_error: None,
+            backup_saved: None,
             finished: false,
             structure_dirty: false,
             focus_reset: true,
             composed: None,
             rect: Rect::ZERO,
             transition_started: Instant::now(),
+            picker: None,
+            connect_passphrase: Arc::new(Mutex::new(String::new())),
+            backup_passphrase: Arc::new(Mutex::new(String::new())),
+            backup_confirmation: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -230,7 +276,19 @@ impl OnboardingView {
         let path = TextInput::new(Vec::new())
             .with_id("onboarding.connect.path.field")
             .with_on_change_path(KEY_CONNECT_PATH)
-            .with_placeholder("/path/to/qos-identity.json")
+            .with_placeholder("Choose an encrypted backup or legacy identity JSON")
+            .with_font_size(theme.tokens.typography.scale.base);
+        let passphrase_value = self
+            .connect_passphrase
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let passphrase = TextInput::local()
+            .with_id("onboarding.connect.passphrase.field")
+            .with_external_buffer(Arc::clone(&self.connect_passphrase))
+            .with_initial_value(&passphrase_value)
+            .with_placeholder("Passphrase for encrypted backups")
+            .with_secret(true)
             .with_font_size(theme.tokens.typography.scale.base);
         let spacing = &theme.tokens.spacing;
         let mut body = Column::new()
@@ -239,7 +297,7 @@ impl OnboardingView {
                 .with_gap(spacing.s6)
                 .push(heading("Connect an existing identity", theme))
                 .push(paragraph(
-                    "Bring the identity file you exported from another qOS device. It is validated locally before this machine is certified.",
+                    "Bring an encrypted backup from another qOS device. It is authenticated and validated locally before this machine is certified. For a legacy unencrypted JSON export, leave the passphrase empty.",
                     theme,
                 ));
         if let Some(error) = &self.error {
@@ -247,8 +305,20 @@ impl OnboardingView {
                 Banner::error("That identity could not be connected").with_message(error.clone()),
             ));
         }
+        let file_row = Row::new().push(Box::new(path)).push(Box::new(
+            Button::new(
+                "onboarding.connect.browse.button",
+                "Browse…",
+                Some(KEY_CONNECT_BROWSE),
+            )
+            .with_icon(ui::icons::Icon::Folder),
+        ));
         Box::new(
-            body.push(Box::new(Card::titled("Identity file", Box::new(path))))
+            body.push(Box::new(Card::titled("Identity file", Box::new(file_row))))
+                .push(Box::new(Card::titled(
+                    "Backup passphrase",
+                    Box::new(passphrase),
+                )))
                 .push(actions(vec![
                     back_button(),
                     Box::new(
@@ -341,6 +411,83 @@ impl OnboardingView {
                     .with_role(ui::tokens::typography::TextRole::Caption, theme)
                     .with_color(theme.text_dim),
             ));
+        let backup_passphrase = self
+            .backup_passphrase
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let backup_confirmation = self
+            .backup_confirmation
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let backup_fields = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s3)
+            .push(Box::new(
+                TextInput::local()
+                    .with_id("onboarding.backup.passphrase")
+                    .with_external_buffer(Arc::clone(&self.backup_passphrase))
+                    .with_initial_value(&backup_passphrase)
+                    .with_placeholder("Passphrase — at least 12 characters")
+                    .with_secret(true),
+            ))
+            .push(Box::new(
+                TextInput::local()
+                    .with_id("onboarding.backup.confirmation")
+                    .with_external_buffer(Arc::clone(&self.backup_confirmation))
+                    .with_initial_value(&backup_confirmation)
+                    .with_placeholder("Confirm passphrase")
+                    .with_secret(true),
+            ));
+        let mut backup = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s3)
+            .push(paragraph(
+                "Save an encrypted copy to another drive. qOS verifies the finished file before calling it a backup; keep its passphrase somewhere separate.",
+                theme,
+            ))
+            .push(Box::new(backup_fields));
+        if let Some(error) = &self.backup_error {
+            backup = backup.push(Box::new(
+                Banner::error("The backup was not saved").with_message(error.clone()),
+            ));
+        }
+        if let Some(path) = &self.backup_saved {
+            backup = backup.push(Box::new(
+                Banner::success("Encrypted backup verified")
+                    .with_message(path.display().to_string())
+                    .with_icon(ui::icons::Icon::Check),
+            ));
+        }
+        let mut backup_button = Button::new(
+            "onboarding.backup.button",
+            if self.backup_saved.is_some() {
+                "Save another copy"
+            } else {
+                "Save backup…"
+            },
+            Some(KEY_BACKUP_BROWSE),
+        );
+        if self.backup_saved.is_none() {
+            backup_button = backup_button.with_style(ui::widget::ButtonStyle::Primary);
+        }
+        backup = backup.push(actions(vec![Box::new(backup_button)]));
+        let mut finish = Button::new(
+            "onboarding.finish.button",
+            if self.backup_saved.is_some() {
+                "Enter qOS"
+            } else {
+                "Skip for now"
+            },
+            Some(KEY_FINISH),
+        )
+        .with_icon(ui::icons::Icon::ArrowRight);
+        if self.backup_saved.is_some() {
+            finish = finish.with_style(ui::widget::ButtonStyle::Primary);
+        }
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -353,18 +500,18 @@ impl OnboardingView {
                 ))
                 .push(paragraph(DONE_BODY, theme))
                 .push(Box::new(Card::titled("Your fingerprint", Box::new(detail))))
+                .push(Box::new(Card::titled(
+                    "Make a portable backup",
+                    Box::new(backup),
+                )))
                 // Repeated deliberately: the last moment the user is looking at the
                 // subject is the one fact they need to carry away from the whole ceremony.
                 .push(paragraph(
-                    "There is still no way to recover this key. If this device goes, so does \
-                     this identity.",
+                    "There is no recovery service. If this device goes and you have no \
+                     encrypted portable backup, this identity goes with it.",
                     theme,
                 ))
-                .push(actions(vec![Box::new(
-                    Button::new("onboarding.finish.button", "Enter qOS", Some(KEY_FINISH))
-                        .with_icon(ui::icons::Icon::ArrowRight)
-                        .with_style(ui::widget::ButtonStyle::Primary),
-                )])),
+                .push(actions(vec![Box::new(finish)])),
         )
     }
 }
@@ -426,9 +573,73 @@ fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
     }
 }
 
+fn clear_secret(buffer: &Arc<Mutex<String>>) {
+    if let Ok(mut value) = buffer.lock() {
+        // Best-effort overwrite before dropping the long-lived OOBE copy.
+        // The cryptographic layer also keeps derived and plaintext buffers in
+        // zeroizing containers.
+        let zeros = "\0".repeat(value.len());
+        value.replace_range(.., &zeros);
+        value.clear();
+    }
+}
+
 impl Widget for OnboardingView {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
+
+        // Pull widget-local edits (notably passphrases) into their process-local
+        // buffers before interpreting action keys from the same input frame.
+        if let Some(c) = &mut self.composed {
+            c.sync(state, root);
+        }
+
+        let picker_outcome = self
+            .picker
+            .as_mut()
+            .and_then(|(purpose, picker)| picker.take_outcome().map(|outcome| (*purpose, outcome)));
+        if let Some((purpose, outcome)) = picker_outcome {
+            if let ui::widget::FilePickerOutcome::Selected(paths) = outcome
+                && let Some(path) = paths.into_iter().next()
+            {
+                match purpose {
+                    PickerPurpose::ImportIdentity => {
+                        let _ = state.put(
+                            root,
+                            KEY_CONNECT_PATH,
+                            ScalarValue::Str(path.to_string_lossy().into_owned().into()),
+                        );
+                        self.error = None;
+                    }
+                    PickerPurpose::BackupIdentity => {
+                        let mut passphrase = self
+                            .backup_passphrase
+                            .lock()
+                            .map(|value| value.as_bytes().to_vec())
+                            .unwrap_or_default();
+                        let export = self.flow.minted().map_or_else(
+                            || Err("the identity is not ready to back up".to_string()),
+                            |identity| (self.exporter)(&identity.path, &path, &passphrase),
+                        );
+                        passphrase.fill(0);
+                        match export {
+                            Ok(()) => {
+                                self.backup_saved = Some(path);
+                                self.backup_error = None;
+                                clear_secret(&self.backup_passphrase);
+                                clear_secret(&self.backup_confirmation);
+                            }
+                            Err(error) => {
+                                self.backup_error = Some(error);
+                            }
+                        }
+                    }
+                }
+            }
+            self.picker = None;
+            self.structure_dirty = true;
+            self.focus_reset = true;
+        }
 
         if read_bool(state, root, KEY_BEGIN) {
             let _ = state.put(root, KEY_BEGIN, ScalarValue::Boolean(false));
@@ -440,9 +651,67 @@ impl Widget for OnboardingView {
             self.flow.begin_connect();
         }
 
+        if read_bool(state, root, KEY_CONNECT_BROWSE) {
+            let _ = state.put(root, KEY_CONNECT_BROWSE, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Connect && self.picker.is_none() {
+                let (initial, roots) = onboarding_picker_scope();
+                self.picker = Some((
+                    PickerPurpose::ImportIdentity,
+                    FilePicker::new("Choose a qOS identity", initial, roots).with_filters(vec![
+                        ui::widget::file_picker::FileFilter::new(
+                            "qOS identity",
+                            &["qos-identity", "qos-identity-backup", "json"],
+                        ),
+                        ui::widget::file_picker::FileFilter::all(),
+                    ]),
+                ));
+                self.focus_reset = true;
+            }
+        }
+
+        if read_bool(state, root, KEY_BACKUP_BROWSE) {
+            let _ = state.put(root, KEY_BACKUP_BROWSE, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Done && self.picker.is_none() {
+                let passphrase = self
+                    .backup_passphrase
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                let confirmation = self
+                    .backup_confirmation
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                self.backup_error = if passphrase.chars().count() < 12 {
+                    Some("Use at least 12 characters so an offline attacker cannot cheaply guess the passphrase.".to_string())
+                } else if passphrase != confirmation {
+                    Some("The two passphrases do not match.".to_string())
+                } else {
+                    None
+                };
+                if self.backup_error.is_none() {
+                    let (initial, roots) = onboarding_picker_scope();
+                    self.picker = Some((
+                        PickerPurpose::BackupIdentity,
+                        FilePicker::new("Save encrypted identity backup", initial, roots)
+                            .with_mode(FilePickerMode::Save)
+                            .with_filters(vec![ui::widget::file_picker::FileFilter::new(
+                                "Encrypted qOS identity",
+                                &["qos-identity"],
+                            )])
+                            .with_filename("qos-identity-backup.qos-identity"),
+                    ));
+                    self.focus_reset = true;
+                } else {
+                    self.structure_dirty = true;
+                }
+            }
+        }
+
         if read_bool(state, root, KEY_BACK) {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
+            clear_secret(&self.connect_passphrase);
             self.flow.back();
         }
 
@@ -450,10 +719,20 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
             if self.flow.screen() == Screen::Connect {
-                match (self.importer)(&source) {
+                let mut passphrase = self
+                    .connect_passphrase
+                    .lock()
+                    .map(|value| value.as_bytes().to_vec())
+                    .unwrap_or_default();
+                let import = (self.importer)(&source, &passphrase);
+                passphrase.fill(0);
+                match import {
                     Ok(identity) => {
                         self.error = None;
                         self.flow.complete_connected(identity);
+                        if let Ok(mut value) = self.connect_passphrase.lock() {
+                            value.clear();
+                        }
                     }
                     Err(error) => {
                         tracing::error!(target: "qos::onboarding", %error, "identity import failed");
@@ -494,16 +773,17 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             self.finished = self.flow.is_done();
+            if self.finished {
+                clear_secret(&self.connect_passphrase);
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+            }
         }
 
         if self.flow.screen() != before {
             self.structure_dirty = true;
             self.focus_reset = true;
             self.transition_started = Instant::now();
-        }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
         }
     }
 
@@ -656,6 +936,18 @@ impl Widget for OnboardingView {
             );
             scene.pop_layer();
         }
+
+        if let Some((_, picker)) = self.picker.as_mut() {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.56),
+                None,
+                &self.rect,
+            );
+            picker.set_rect(onboarding_picker_rect(self.rect));
+            picker.draw(scene, transform, text_renderer, theme, presence);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -671,6 +963,25 @@ impl Widget for OnboardingView {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if let Some((_, picker)) = self.picker.as_mut() {
+            picker.set_rect(onboarding_picker_rect(self.rect));
+            let mut picker_taffy = TaffyTree::<()>::new();
+            if let Ok(picker_node) = picker_taffy.new_leaf(taffy::Style::default()) {
+                picker.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    picker_node,
+                    &picker_taffy,
+                );
+            }
+            *handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -733,10 +1044,74 @@ impl Widget for OnboardingView {
     fn needs_animation_frame(&self) -> bool {
         self.transition_started.elapsed() < ui::tokens::motion::Motion::default().durations.slow()
             || self
+                .picker
+                .as_ref()
+                .is_some_and(|(_, picker)| picker.needs_animation_frame())
+            || self
                 .composed
                 .as_ref()
                 .is_some_and(|child| child.needs_animation_frame())
     }
+}
+
+/// OOBE is trusted compositor chrome, so its chooser follows the user rather
+/// than an application's capability scope. Keep roots narrow: the home tree
+/// plus conventional removable-media mount roots, never the whole filesystem.
+fn onboarding_picker_scope() -> (PathBuf, Vec<PathBuf>) {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_dir());
+    let mut roots = Vec::new();
+    if let Some(home) = home.as_ref() {
+        roots.push(home.clone());
+    }
+    let user = std::env::var_os("USER").filter(|value| !value.is_empty());
+    let mut media_roots = Vec::new();
+    if let Some(user) = user {
+        for base in [PathBuf::from("/run/media"), PathBuf::from("/media")] {
+            let candidate = base.join(&user);
+            if candidate.is_dir() {
+                media_roots.push(candidate);
+            }
+        }
+    }
+    if media_roots.is_empty() && PathBuf::from("/media").is_dir() {
+        media_roots.push(PathBuf::from("/media"));
+    }
+    let mounted = media_roots
+        .iter()
+        .find(|root| directory_has_subdirectory(root))
+        .cloned();
+    roots.extend(media_roots);
+    let initial = mounted
+        .or_else(|| home.clone())
+        .unwrap_or_else(std::env::temp_dir);
+    if roots.is_empty() {
+        roots.push(initial.clone());
+    }
+    (initial, roots)
+}
+
+fn directory_has_subdirectory(path: &std::path::Path) -> bool {
+    std::fs::read_dir(path).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+        })
+    })
+}
+
+fn onboarding_picker_rect(viewport: Rect) -> Rect {
+    let width = (viewport.width() * 0.78)
+        .clamp(420.0, 900.0)
+        .min(viewport.width());
+    let height = (viewport.height() * 0.78)
+        .clamp(320.0, 640.0)
+        .min(viewport.height());
+    let x0 = viewport.x0 + (viewport.width() - width) / 2.0;
+    let y0 = viewport.y0 + (viewport.height() - height) / 2.0;
+    Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 #[cfg(test)]
@@ -860,7 +1235,7 @@ mod tests {
         let imported_for_handler = imported.clone();
         let mut view = OnboardingView::with_handlers(
             Box::new(|| Err("create should not run".to_string())),
-            Box::new(move |path| {
+            Box::new(move |path, _| {
                 imported_for_handler.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(path, &PathBuf::from("/media/backup/primary.json"));
                 Ok(MintedIdentity {
@@ -889,7 +1264,7 @@ mod tests {
     fn failed_connect_stays_on_connect_screen_and_shows_error() {
         let mut view = OnboardingView::with_handlers(
             Box::new(|| Err("create should not run".to_string())),
-            Box::new(|_| Err("not a qOS identity".to_string())),
+            Box::new(|_, _| Err("not a qOS identity".to_string())),
         );
         let mut doc = AutoCommit::new();
         press(&mut doc, KEY_CONNECT);
@@ -898,6 +1273,72 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(view.flow().screen(), Screen::Connect);
         assert_eq!(view.error(), Some("not a qOS identity"));
+    }
+
+    #[test]
+    fn connect_browse_opens_a_shell_owned_modal_picker() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_CONNECT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_CONNECT_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_some());
+
+        view.picker.as_mut().expect("picker").1.click_cancel();
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_none());
+        assert_eq!(view.flow().screen(), Screen::Connect);
+    }
+
+    #[test]
+    fn portable_backup_requires_matching_strong_passphrases_and_reports_success() {
+        let exports = Arc::new(AtomicUsize::new(0));
+        let exports_for_handler = Arc::clone(&exports);
+        let mut view = OnboardingView::with_all_handlers(
+            Box::new(|| Err("unused".to_string())),
+            Box::new(|_, _| Err("unused".to_string())),
+            Box::new(move |identity, destination, passphrase| {
+                assert_eq!(identity, &PathBuf::from("/identity/primary.json"));
+                assert_eq!(
+                    destination.file_name().and_then(|name| name.to_str()),
+                    Some("qos-identity-backup.qos-identity")
+                );
+                assert_eq!(passphrase, b"correct horse battery staple");
+                exports_for_handler.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        view.flow.begin();
+        view.flow.set_acknowledged(true);
+        assert!(view.flow.complete(MintedIdentity {
+            fingerprint: "ef".repeat(32),
+            path: PathBuf::from("/identity/primary.json"),
+        }));
+        let mut doc = AutoCommit::new();
+
+        *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
+        *view.backup_confirmation.lock().unwrap() = "does not match".into();
+        press(&mut doc, KEY_BACKUP_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_none());
+        assert!(
+            view.backup_error
+                .as_deref()
+                .unwrap()
+                .contains("do not match")
+        );
+
+        *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        press(&mut doc, KEY_BACKUP_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
+        view.picker.as_mut().expect("save picker").1.click_open();
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(exports.load(Ordering::SeqCst), 1);
+        assert!(view.backup_saved.is_some());
+        assert!(view.backup_error.is_none());
+        assert!(view.backup_passphrase.lock().unwrap().is_empty());
+        assert!(view.backup_confirmation.lock().unwrap().is_empty());
     }
 
     /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
