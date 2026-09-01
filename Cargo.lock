@@ -6667,6 +6667,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "vello",
@@ -6814,8 +6815,10 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
+ "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tracing-subscriber",
  "ui",
  "vello",

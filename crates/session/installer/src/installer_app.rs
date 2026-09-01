@@ -679,6 +679,7 @@ pub struct InstallerApp {
     /// Cached account/system fields (mirror their CRDT Text objects) for
     /// the Review display + backend argv.
     username: String,
+    full_name: String,
     // Secrets deliberately bypass Automerge: deleting CRDT text leaves the
     // old characters in document history. These buffers are local to the
     // privileged installer process and are zeroized when consumed.
@@ -686,6 +687,7 @@ pub struct InstallerApp {
     password_confirmation: Arc<Mutex<String>>,
     wifi_password: Arc<Mutex<String>>,
     hostname: String,
+    locale: String,
     timezone: String,
     /// Selected keyboard-layout *display name* (mirrors the
     /// `installer.keymap` CRDT Text). Resolved to xkb layout/variant via
@@ -709,6 +711,8 @@ pub struct InstallerApp {
     /// Set once the install worker thread has been spawned, so a stray
     /// extra `begin` can't launch a second install.
     install_launched: bool,
+    /// A validated qOS Imager profile supplied the non-secret setup choices.
+    preconfigured: bool,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
 }
@@ -725,6 +729,17 @@ impl InstallerApp {
     pub fn new() -> Self {
         let mut s = Self::with_disks(read_disks());
         s.timezones = crate::timezones::list_timezones();
+        match crate::media_profile::load() {
+            Ok(Some(profile)) => s.apply_media_profile(profile),
+            Ok(None) => {
+                if let Ok(message) =
+                    std::fs::read_to_string(crate::media_profile::PROFILE_ERROR_PATH)
+                {
+                    s.status = message.trim().to_string();
+                }
+            }
+            Err(message) => s.status = message,
+        }
         s
     }
 
@@ -748,10 +763,12 @@ impl InstallerApp {
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
             username: String::new(),
+            full_name: String::new(),
             password: Arc::new(Mutex::new(String::new())),
             password_confirmation: Arc::new(Mutex::new(String::new())),
             wifi_password: Arc::new(Mutex::new(String::new())),
             hostname: DEFAULT_HOSTNAME.to_string(),
+            locale: "en_US.UTF-8".to_string(),
             timezone: DEFAULT_TIMEZONE.to_string(),
             keymap: DEFAULT_KEYMAP_NAME.to_string(),
             timezones: default_timezones(),
@@ -763,8 +780,25 @@ impl InstallerApp {
             rect: Rect::ZERO,
             composed: None,
             install_launched: false,
+            preconfigured: false,
             proxy_slot: None,
         }
+    }
+
+    fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
+        self.hostname = profile.hostname;
+        self.username = profile.username;
+        self.full_name = profile.full_name;
+        self.locale = profile.locale;
+        self.keymap = profile.keyboard_display_name().to_string();
+        self.timezone = profile.timezone;
+        self.selected_fs = FILESYSTEMS
+            .iter()
+            .position(|filesystem| *filesystem == profile.filesystem)
+            .unwrap_or(0);
+        self.step = Step::Disk;
+        self.preconfigured = true;
+        self.status = "Your setup choices are ready. Choose where to install qOS.".to_string();
     }
 
     /// Wire the shared event-loop-proxy slot used to stream install
@@ -785,6 +819,7 @@ impl InstallerApp {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
         app.username = "quinten".to_string();
+        app.full_name = "Quinten Example".to_string();
         app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.password_confirmation =
             Arc::new(Mutex::new("correct horse battery staple".to_string()));
@@ -935,6 +970,8 @@ impl InstallerApp {
             alongside_efi,
             filesystem: self.filesystem().to_string(),
             hostname: self.hostname.trim().to_string(),
+            full_name: self.full_name.trim().to_string(),
+            locale: self.locale.trim().to_string(),
             timezone: self.timezone.trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
@@ -951,8 +988,11 @@ impl InstallerApp {
     }
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
-        if state.get(root, USERNAME_PATH).ok().flatten().is_none() {
-            let _ = state.put_object(root, USERNAME_PATH, ObjType::Text);
+        if state.get(root, USERNAME_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, USERNAME_PATH, ObjType::Text)
+            && !self.username.is_empty()
+        {
+            let _ = state.splice_text(&obj, 0, 0, &self.username);
         }
         // Hostname / timezone seed with sensible defaults so the fields
         // aren't blank (and validation passes out of the box).
@@ -1075,7 +1115,12 @@ impl InstallerApp {
                     self.set_status(message);
                     return;
                 }
-                if let Some(n) = next_step(self.step) {
+                let destination = if self.preconfigured && self.step == Step::Account {
+                    Some(Step::Review)
+                } else {
+                    next_step(self.step)
+                };
+                if let Some(n) = destination {
                     // Never auto-advance into Install via Next; the Begin
                     // button (begin flag) is the only entry into install.
                     if n != Step::Install {
@@ -1105,7 +1150,12 @@ impl InstallerApp {
             }
             return;
         }
-        if let Some(p) = prev_step(self.step) {
+        let destination = if self.preconfigured && self.step == Step::Review {
+            Some(Step::Account)
+        } else {
+            prev_step(self.step)
+        };
+        if let Some(p) = destination {
             self.step = p;
             self.status.clear();
             self.dirty_structure = true;
@@ -1671,6 +1721,9 @@ impl InstallerApp {
         children.push(summary_row(theme, "Time zone", self.timezone.trim()));
         children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
         children.push(summary_row(theme, "Username", self.username.trim()));
+        if !self.full_name.trim().is_empty() {
+            children.push(summary_row(theme, "Name", self.full_name.trim()));
+        }
         children.push(summary_row(
             theme,
             "Network",

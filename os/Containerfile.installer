@@ -33,6 +33,8 @@ RUN chmod 755 /usr/libexec/qos-install \
 # live-medium sudoers setup (runs only when qos.installer is on the cmdline).
 COPY usr/lib/systemd/system/qos-firstboot-user.service /usr/lib/systemd/system/qos-firstboot-user.service
 COPY usr/lib/systemd/system/qos-installer-setup.service /usr/lib/systemd/system/qos-installer-setup.service
+COPY usr/libexec/qos-installer-profile-extract /usr/libexec/qos-installer-profile-extract
+RUN chmod 0755 /usr/libexec/qos-installer-profile-extract
 
 # Inactive-until-runtime sudoers rule (qos-installer-setup.service installs it).
 COPY usr/share/qos/installer-sudoers /usr/share/qos/installer-sudoers
