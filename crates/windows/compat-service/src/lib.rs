@@ -64,7 +64,8 @@ pub use service::{
     LaunchInput, LaunchReceipt, MatchReason, RouteKind, ServiceError, UnavailableVmDelegate,
     VmAvailability, VmCandidatePublication, VmDelegate, VmInstallCandidate, VmInstallConfirmation,
     VmInstallation, VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory,
-    VmPublishedApplication, VmRouteRequest, VmUninstallation,
+    VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,
+    VmSharedSessionLeaseSummary, VmUninstallation,
 };
 pub use session::{
     CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
@@ -75,6 +76,7 @@ pub use store::{
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
 pub use vm_adapter::{
-    AudioIsolatedSpiceLauncher, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority,
-    LiveVmDelegate, VmPortalAuthority,
+    AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, CanonicalRailCapabilityBroker,
+    CanonicalRailPortalAuthority, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority,
+    LiveVmDelegate, SharedSessionCapabilityBroker, VmPortalAuthority, VmSharedSessionTracker,
 };
