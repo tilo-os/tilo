@@ -102,7 +102,10 @@ impl MapInfoSheet {
     }
 
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.dialog.accessibility()
+        self.current
+            .is_some()
+            .then(|| self.dialog.accessibility())
+            .flatten()
     }
 
     #[cfg(test)]

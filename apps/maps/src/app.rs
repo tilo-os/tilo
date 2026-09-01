@@ -2853,14 +2853,14 @@ impl MapsApp {
             let card_h = 132.0;
             let cr = Rect::new(x, y, right, y + card_h);
             draw::fill_rrect(scene, t, cr, 12.0, c.surfaces.base);
-            // Category swatch.
-            let cat_col = canvas::category_color(theme, sel.category);
+            // Accent identifies the current selection. Category is written
+            // directly below, so it does not need a competing colour stripe.
             draw::fill_rrect(
                 scene,
                 t,
                 Rect::new(cr.x0, cr.y0, cr.x0 + 5.0, cr.y1),
                 12.0,
-                cat_col,
+                theme.accent_primary,
             );
             draw::text_w(
                 scene,
@@ -3081,20 +3081,18 @@ impl MapsApp {
         if selected {
             draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
         }
-        let cat_col = canvas::category_color(theme, p.category);
-        draw::fill_circle(
-            scene,
-            t,
-            Point::new(r.x0 + 18.0, r.center().y),
-            9.0,
-            cat_col,
-        );
+        // Lists use one quiet marker treatment; the category label carries the
+        // information without turning saved places into a rainbow of competing
+        // priorities. Saturated category colours stay on actual map markers,
+        // where they help scan spatially distinct places.
+        let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
+        draw::fill_circle(scene, t, Point::new(r.x0 + 18.0, r.center().y), 9.0, marker);
         draw::fill_circle(
             scene,
             t,
             Point::new(r.x0 + 18.0, r.center().y),
             3.2,
-            draw::mix(c.surfaces.base, Color::WHITE, 0.7),
+            theme.accent_primary,
         );
         let tx = r.x0 + 36.0;
         draw::text_clip(
@@ -3158,11 +3156,13 @@ impl MapsApp {
         if selected {
             draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
         }
-        let cat_col = canvas::category_color(theme, poi.category);
-        let ring = draw::mix(c.surfaces.base, Color::WHITE, 0.85);
+        // The pictogram, category label and map marker already identify this
+        // POI. Keeping list decoration neutral makes distance and selection
+        // easier to scan across mixed categories.
+        let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
         let cc = Point::new(r.x0 + 18.0, r.center().y);
-        draw::fill_circle(scene, t, cc, 11.0, cat_col);
-        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, ring, cat_col);
+        draw::fill_circle(scene, t, cc, 11.0, marker);
+        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, theme.text_primary, marker);
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
         let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
@@ -3557,7 +3557,9 @@ impl MapsApp {
         let row_h = 36.0;
         let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
 
-        // Leave / Arrive segmented toggle.
+        // Travel mode above is the person's first decision. Timing is a
+        // refinement, so its selector is deliberately quieter: a soft active
+        // state with a focused edge rather than a second full-accent control.
         let seg_rect = Rect::new(x, y, x + toggle_w, y + row_h);
         draw::fill_rrect(scene, t, seg_rect, 9.0, c.surfaces.base);
         let modes = [
@@ -3570,9 +3572,21 @@ impl MapsApp {
             let seg = Rect::new(sx, seg_rect.y0, sx + seg_w, seg_rect.y1);
             let active = tt.mode == *m;
             if active {
-                draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
+                let active_rect = seg.inflate(-3.0, -3.0);
+                draw::fill_rrect(
+                    scene,
+                    t,
+                    active_rect,
+                    7.0,
+                    draw::alpha(theme.accent_primary, 0.14),
+                );
+                draw::stroke_rrect(scene, t, active_rect, 7.0, 1.0, theme.accent_primary);
             }
-            let fg = if active { Color::WHITE } else { theme.text_dim };
+            let fg = if active {
+                theme.accent_primary
+            } else {
+                theme.text_dim
+            };
             draw::text_center(
                 scene,
                 tr,
@@ -3958,6 +3972,63 @@ impl MapsApp {
         y += 18.0;
         y
     }
+
+    /// Immediate-mode controls exported as one semantic list. Keeping this
+    /// derived from the same hit targets used by pointer routing prevents the
+    /// accessibility tree from advertising controls that are not on screen.
+    fn accessibility_targets(&self) -> Vec<(Rect, String)> {
+        use crate::map_controls::MapControlAction;
+
+        let mut targets = vec![
+            (
+                self.map_controls.rect(MapControlAction::ZoomIn),
+                "Zoom in".to_string(),
+            ),
+            (
+                self.map_controls.rect(MapControlAction::ZoomOut),
+                "Zoom out".to_string(),
+            ),
+            (
+                self.map_controls.rect(MapControlAction::Locate),
+                "Use my location".to_string(),
+            ),
+            (
+                self.map_controls.rect(MapControlAction::ToggleTraffic),
+                "Toggle traffic".to_string(),
+            ),
+        ];
+        targets.retain(|(rect, _)| rect.area() > 0.0);
+        targets.extend(self.click_targets.iter().filter_map(|(rect, hit)| {
+            let label = match hit {
+                Hit::Consume | Hit::Search(SearchHit::Consume) | Hit::CloseNav => return None,
+                Hit::Search(SearchHit::Field) => "Search places".to_string(),
+                Hit::Search(SearchHit::Clear) => "Clear search".to_string(),
+                Hit::Search(SearchHit::Result(index)) => format!("Search result {}", index + 1),
+                Hit::ToggleCollapse => "Collapse or expand panel".to_string(),
+                Hit::PanelBack => "Back to places".to_string(),
+                Hit::Mode(mode) => format!("Travel by {}", mode.label()),
+                Hit::SelectPlace(name) | Hit::Recent(name) => format!("Open {name}"),
+                Hit::SelectPoi(id) => format!("Open nearby place {id}"),
+                Hit::ClosePoi => "Close place details".to_string(),
+                Hit::PoiDirections => "Directions to this place".to_string(),
+                Hit::ToggleNav => "Open map navigation".to_string(),
+                Hit::Directions => "Directions".to_string(),
+                Hit::Transit => "Transit".to_string(),
+                Hit::ToggleSave => "Save or unsave place".to_string(),
+                Hit::ClearRoute => "Clear route".to_string(),
+                Hit::UseMyLocation => "Use my location".to_string(),
+                Hit::TransitTimeMode(TransitTimeMode::Depart) => "Leave at".to_string(),
+                Hit::TransitTimeMode(TransitTimeMode::Arrive) => "Arrive by".to_string(),
+                Hit::TransitTimeDelta(minutes) if *minutes < 0 => "Earlier".to_string(),
+                Hit::TransitTimeDelta(_) => "Later".to_string(),
+                Hit::TransitTimeNow => "Leave now".to_string(),
+                Hit::Journey(index) => format!("Journey option {}", index + 1),
+                Hit::ToggleOverflow => "More map options".to_string(),
+            };
+            (rect.area() > 0.0).then_some((*rect, label))
+        }));
+        targets
+    }
 }
 
 // ===========================================================================
@@ -4210,7 +4281,7 @@ impl Widget for MapsApp {
                         self.endpoints
                             .pointer_press(p, event, scale_factor, *modifiers)
                 {
-                    self.search.set_focused(false);
+                    self.search.dismiss();
                     self.apply_endpoint_effect(effect);
                     *handled = true;
                     return;
@@ -4224,9 +4295,10 @@ impl Widget for MapsApp {
                     .find(|(r, _)| r.contains(p))
                     .map(|(_, h)| h.clone())
                 {
-                    // Clicking outside the search bar unfocuses it.
-                    if !matches!(hit, Hit::Search(SearchHit::Field)) {
-                        self.search.set_focused(false);
+                    // A result popover is transient. Keep it open for its own
+                    // field/padding, but dismiss it before any other action.
+                    if !matches!(hit, Hit::Search(SearchHit::Field | SearchHit::Consume)) {
+                        self.search.dismiss();
                     }
                     self.endpoints.dismiss();
                     self.dispatch(&hit, state);
@@ -4240,7 +4312,7 @@ impl Widget for MapsApp {
                     *handled = true;
                 }
                 if !consumed {
-                    self.search.set_focused(false);
+                    self.search.dismiss();
                     self.endpoints.dismiss();
                     // The standalone control stack is below modal/panel targets
                     // above, but above the actual map surface.
@@ -4372,7 +4444,39 @@ impl Widget for MapsApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.info_sheet.accessibility()
+        if let Some(dialog) = self.info_sheet.accessibility() {
+            return Some(dialog);
+        }
+        let children = self
+            .accessibility_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (rect, label))| {
+                ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                    .with_name(label)
+                    .with_state(ui::a11y::AccessState::new().focusable(true))
+                    .with_key(index as u64)
+                    // A synthetic node is only operable when it carries its
+                    // own target. Activation falls back to this exact rect,
+                    // exercising the same click routing as pointer input.
+                    .with_action_target(format!("maps-target:{index}"))
+                    .with_bounds(rect)
+            })
+            .collect();
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Maps")
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, _)| *rect)
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -5170,9 +5274,11 @@ mod tests {
             "the panel list behind the results is suppressed"
         );
 
-        // Dismiss the results → the panel list returns.
-        a.search.set_focused(false);
+        // Dismiss the transient results → the panel list returns, without
+        // retaining stale suggestions for the next focus.
+        a.search.dismiss();
         assert!(!a.search_overlay_active());
+        assert!(a.search.results().is_empty());
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
         let panel_rows_back = a
@@ -6699,8 +6805,20 @@ mod tests {
         );
         key_named(&mut a, NamedKey::Backspace);
         assert_eq!(a.model.query, "h", "Backspace deletes a char");
+        a.search.replace_results(vec![crate::model::Place::new(
+            "suggestion",
+            "Helpful suggestion",
+            Category::Museum,
+            "Example address",
+            LatLon::new(48.14, 11.57),
+        )]);
         key_named(&mut a, NamedKey::Escape);
         assert!(!a.search.is_focused(), "Escape unfocuses search");
+        assert_eq!(a.model.query, "h", "Escape preserves the query");
+        assert!(
+            a.search.results().is_empty(),
+            "Escape drops transient suggestions"
+        );
     }
 
     /// `+`/`-` zoom the map through the key path.
@@ -7132,5 +7250,24 @@ mod tests {
                 .any(|r| r.id == "r1"),
             "the document reflects the removal"
         );
+    }
+
+    #[test]
+    fn map_controls_are_operable_semantic_children_with_matching_geometry() {
+        let a = app_at(1_280.0, 800.0);
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        assert_eq!(node.children.len(), 4, "only drawn controls are exposed");
+        for (index, child) in node.children.iter().enumerate() {
+            let expected_target = format!("maps-target:{index}");
+            assert_eq!(
+                child.action_target.as_deref(),
+                Some(expected_target.as_str())
+            );
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&a, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "control {index} must activate at its visible bounds"
+            );
+        }
     }
 }

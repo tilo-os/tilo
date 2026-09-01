@@ -245,6 +245,11 @@ pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError>
 ///
 /// This is the only path that associates a fresh identity with the current
 /// Unix account's passwd display name.
+///
+/// # Errors
+///
+/// Returns an error if the compatibility identity ceremony cannot create or
+/// read back the collaboration identity.
 pub fn mint_into_for_legacy_linux_host(
     identity_dir: &Path,
 ) -> Result<MintedIdentity, OnboardingError> {
