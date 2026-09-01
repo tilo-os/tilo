@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
@@ -50,13 +51,12 @@ pub enum CollabRequest {
         #[serde(default)]
         handle: Option<String>,
     },
-    /// Legacy: unsigned full-document state. Apps using this path do not
-    /// get role enforcement and surface a "legacy / unsigned" badge in
-    /// chrome.
-    SyncCRDT { data: Vec<u8> },
-    /// Legacy: unsigned incremental Automerge change blob. New code
-    /// should prefer [`CollabRequest::SignedSyncIncremental`].
-    SyncIncremental { data: Vec<u8> },
+    /// Complete document state. The SDK wraps this mutation in a signed
+    /// envelope from the certified launcher identity before transmission.
+    DocumentSnapshot { data: Vec<u8> },
+    /// Incremental document changes. The SDK wraps this mutation in a signed
+    /// envelope from the certified launcher identity before transmission.
+    DocumentIncremental { data: Vec<u8> },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -70,7 +70,7 @@ pub enum CollabRequest {
     ///
     /// `Box`ed to keep the discriminant thin on the stack — `SignedOp` is
     /// large (32-byte pubkey + 64-byte sig + payload + UUIDs).
-    SignedSyncIncremental { envelope: Box<SignedOp> },
+    SignedOperation { envelope: Box<SignedOp> },
     /// Late-join scrollback fetch: up to `max` ops with `seq < before_seq`,
     /// answered with one [`CollabEvent::ScrollbackBatch`].
     ///
@@ -144,16 +144,6 @@ pub enum CollabEvent {
         x: f32,
         y: f32,
     },
-    /// Legacy: full unsigned document state, merged into the local
-    /// Automerge doc.
-    CRDTUpdate {
-        data: Vec<u8>,
-    },
-    /// Legacy: unsigned incremental change blob. See
-    /// [`CollabRequest::SyncIncremental`].
-    CRDTIncremental {
-        data: Vec<u8>,
-    },
     RemotePresenceUpdate {
         user_id: String,
         key: PresenceKey,
@@ -171,13 +161,10 @@ pub enum CollabEvent {
         payload: Vec<u8>,
         from_user_id: String,
     },
-    /// A validated signed envelope from another peer (validation ran on the
-    /// broker). Receivers extract `envelope.payload` into the same
-    /// `automerge::apply_changes` path [`CollabEvent::CRDTIncremental`] uses.
-    ///
-    /// `from_user_id` mirrors the broker's synthetic id
-    /// (`"peer-<src_id>"`) so attribution code uses one id shape.
-    SignedCRDTIncremental {
+    /// A validated signed document envelope from another peer. The mutation
+    /// kind is inside the signed payload, so a peer cannot relabel an
+    /// incremental as a snapshot or vice versa.
+    Document {
         envelope: Box<SignedOp>,
         from_user_id: String,
     },
@@ -195,6 +182,19 @@ pub enum CollabEvent {
         ops: Vec<Box<SignedOp>>,
         exhausted: bool,
     },
+}
+
+impl CollabEvent {
+    /// Decode the typed payload of a validated document event. Returns `None`
+    /// for presence, context, action, and scrollback events.
+    pub fn document_mutation(
+        &self,
+    ) -> Option<Result<DocumentMutation, collab_types::DocumentMutationError>> {
+        let Self::Document { envelope, .. } = self else {
+            return None;
+        };
+        Some(DocumentMutation::decode(&envelope.payload))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -244,7 +244,7 @@ pub struct Collaborator {
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
 /// `NoIdentity` is the common case — call before the shell provisions an
-/// identity — and callers can fall back to plain `SyncIncremental`.
+/// identity — and callers can fall back to plain `DocumentIncremental`.
 #[derive(Debug)]
 pub enum SignedSendError {
     /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
@@ -344,11 +344,6 @@ enum Backend {
     /// the SDK client + subscriptions; winit-side send / poll bridge
     /// through unbounded mpsc pairs.
     Sdk(SdkChannel),
-    /// Routes co-edit deltas + presence through the workspace host via a
-    /// [`qos_relay::RelayCoeditSession`], bridged like [`Backend::Sdk`].
-    /// Deltas inherit the host's on-disk store-and-forward, so an offline
-    /// peer still converges.
-    Relay(RelayChannel),
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions
@@ -369,28 +364,6 @@ enum SdkCommand {
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
-}
-
-/// Owned mpsc pair + bridge-task handle for Relay mode. Unlike
-/// [`SdkChannel`] there's no dedicated OS thread — the session runs on
-/// the caller's tokio runtime, so the bridge task is `spawn`ed there.
-/// Dropping the manager closes `outbound_tx`, which the bridge's
-/// `select!` observes; [`AbortOnDrop`] is the backstop.
-struct RelayChannel {
-    outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
-    inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
-    _task: AbortOnDrop,
-}
-
-/// Aborts the wrapped tokio task when dropped, so a dropped manager
-/// never leaves its relay bridge task running against a session whose
-/// far end is gone.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
@@ -418,11 +391,94 @@ impl SdkConnectSource {
     }
 }
 
+/// Build the identity presentation for a launcher-bound collaboration join.
+///
+/// Build the certified device presentation used for a launcher-bound join.
+/// A launcher identity without a device certificate cannot enter the
+/// collaboration session.
+struct SdkJoinIdentity {
+    presentation: Vec<u8>,
+    /// Retained on the shovel thread so document signing stays off the UI
+    /// thread and the workspace broker connection is not consumed at join.
+    signer: SdkDocumentSigner,
+}
+
+/// Certified identity for a client connecting to an explicit collaboration
+/// endpoint rather than through a launcher-inherited identity service.
+#[derive(Clone)]
+pub struct CertifiedEndpointIdentity {
+    presentation: Vec<u8>,
+    device_key: ed25519_dalek::SigningKey,
+}
+
+impl CertifiedEndpointIdentity {
+    pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
+        Self {
+            presentation,
+            device_key,
+        }
+    }
+}
+
+impl std::fmt::Debug for CertifiedEndpointIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CertifiedEndpointIdentity")
+            .field(
+                "presentation",
+                &format_args!("{} bytes", self.presentation.len()),
+            )
+            .field("device_key", &"<redacted>")
+            .finish()
+    }
+}
+
+enum SdkDocumentSigner {
+    Certified(runtime_identity::SigningIdentity),
+    /// Explicit-FD harnesses have no launcher identity service. Their
+    /// in-process broker accepts this ephemeral signer; a production broker
+    /// still rejects the uncertified join before any op reaches policy.
+    Harness(ed25519_dalek::SigningKey),
+}
+
+fn harness_document_signer() -> SdkDocumentSigner {
+    SdkDocumentSigner::Harness(ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng))
+}
+
+fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    let identity = runtime_identity::load()?;
+    let device_certificate = identity.device_certificate().ok_or_else(|| {
+        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "workspace identity has no certified device",
+        ))
+    })?;
+
+    let workspace_id = cluster_id.to_string();
+    let proof = identity.sign_collaboration_join(&workspace_id)?;
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id,
+        device_certificate: device_certificate.to_vec(),
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .map_err(|error| {
+        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("encoding certified collaboration join failed: {error}"),
+        ))
+    })?;
+    Ok(SdkJoinIdentity {
+        presentation,
+        signer: SdkDocumentSigner::Certified(identity),
+    })
+}
+
 pub struct CollaborationManager {
     backend: Backend,
     /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
-    /// dispatches [`CollabRequest::SignedSyncIncremental`]. `None` is the
-    /// legacy path: unsigned frames, fanned out unvalidated.
+    /// dispatches [`CollabRequest::SignedOperation`]. This explicit
+    /// policy-envelope API is separate from document mutations, which the SDK
+    /// signs with the certified launcher identity.
     identity: Option<SigningIdentity>,
 }
 
@@ -447,11 +503,14 @@ impl CollaborationManager {
             cluster_id,
             record,
             handle,
+            None,
         )
     }
 
-    /// Explicit typed endpoint for diagnostics and headless harnesses that
-    /// are not launched through the app launcher. Takes ownership of `fd`.
+    /// Explicit typed endpoint for in-process and headless transport
+    /// harnesses. Takes ownership of `fd`. It uses an ephemeral signer; a
+    /// production broker rejects the uncertified join, so this cannot bypass
+    /// workspace admission.
     ///
     /// # Errors
     ///
@@ -470,6 +529,35 @@ impl CollaborationManager {
             cluster_id,
             record,
             handle,
+            None,
+        )
+    }
+
+    /// Connect to an explicit endpoint with a certified device presentation.
+    /// This is the headless equivalent of the launcher-provided identity path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when `fd` cannot bootstrap a
+    /// collaboration service connection.
+    pub fn for_route_fd_with_identity(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            handle,
+            Some(SdkJoinIdentity {
+                presentation: identity.presentation,
+                signer: SdkDocumentSigner::Harness(identity.device_key),
+            }),
         )
     }
 
@@ -479,8 +567,17 @@ impl CollaborationManager {
         cluster_id: Uuid,
         record: Option<String>,
         handle: Option<String>,
+        endpoint_identity: Option<SdkJoinIdentity>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let sdk = Self::spawn_sdk(source, Vec::new())?;
+        let identity = match endpoint_identity {
+            Some(identity) => identity,
+            None if matches!(&source, SdkConnectSource::Env) => sdk_join_identity(cluster_id)?,
+            None => SdkJoinIdentity {
+                presentation: Vec::new(),
+                signer: harness_document_signer(),
+            },
+        };
+        let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
             identity: None,
@@ -522,36 +619,27 @@ impl CollaborationManager {
     }
 
     fn new_scoped(record: Option<String>) -> Self {
-        // Pubkey bytes ride along on the join_channel call below, so presence
-        // is authored on connect. `ServiceFdMissing` (not a qOS session) is
-        // expected and quiet; any other failure gets a debug line so
-        // `RUST_LOG=ui=debug` can answer "why does presence look anonymous?".
-        let runtime_identity = match runtime_identity::load() {
-            Ok(id) => Some(id),
-            Err(runtime_portal::NotAvailable::ServiceFdMissing) => {
-                tracing::debug!(
-                    "runtime-identity: env var unset — collab join will use empty identity bytes"
+        let (app_id, cluster_id) = auto_hello_env();
+        let identity = match sdk_join_identity(cluster_id) {
+            Ok(identity) => identity,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "collab: workspace join identity unavailable; disabling SDK collaboration"
                 );
-                None
-            }
-            Err(e) => {
-                tracing::debug!(
-                    "runtime-identity: load failed ({e:?}); collab join will use empty identity bytes"
-                );
-                None
+                return Self {
+                    backend: Backend::Disabled,
+                    identity: None,
+                };
             }
         };
-        let identity_bytes = runtime_identity
-            .map(|id| id.group_public_key().to_vec())
-            .unwrap_or_default();
 
-        match Self::spawn_sdk(SdkConnectSource::Env, identity_bytes) {
+        match Self::spawn_sdk(SdkConnectSource::Env, identity) {
             Ok(sdk) => {
                 let mut manager = Self {
                     backend: Backend::Sdk(sdk),
                     identity: None,
                 };
-                let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello {
                     app_id,
                     cluster_id,
@@ -564,33 +652,6 @@ impl CollaborationManager {
                 backend: Backend::Disabled,
                 identity: None,
             },
-        }
-    }
-
-    /// Route this manager's co-edit + presence through an already-joined
-    /// [`qos_relay::RelayCoeditSession`], behind the same `send`/`poll`
-    /// surface. Deltas travel through the host's fan-out **and** on-disk
-    /// store-and-forward, so an offline peer still receives them on
-    /// reconnect.
-    ///
-    /// The manager owns no signing identity in this mode — ops must be
-    /// signed by the app before `send`; presence attribution comes from the
-    /// session's own device key. `handle` is the runtime the bridge task
-    /// spawns onto.
-    pub fn from_relay_session(
-        session: qos_relay::RelayCoeditSession,
-        handle: &tokio::runtime::Handle,
-    ) -> Self {
-        let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<CollabRequest>();
-        let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
-        let task = handle.spawn(drive_relay(session, outbound_rx, inbound_tx));
-        Self {
-            backend: Backend::Relay(RelayChannel {
-                outbound_tx,
-                inbound_rx,
-                _task: AbortOnDrop(task),
-            }),
-            identity: None,
         }
     }
 
@@ -611,8 +672,14 @@ impl CollaborationManager {
         cluster_id: Uuid,
         identity_bytes: Vec<u8>,
     ) -> Self {
-        let sdk = Self::spawn_sdk(SdkConnectSource::Fd(fd), identity_bytes)
-            .expect("spawn_sdk from Fd source must succeed in tests");
+        let sdk = Self::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            SdkJoinIdentity {
+                presentation: identity_bytes,
+                signer: harness_document_signer(),
+            },
+        )
+        .expect("spawn_sdk from Fd source must succeed in tests");
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
             identity: None,
@@ -634,7 +701,7 @@ impl CollaborationManager {
     /// that only ever `poll`s silently running against a dead broker.
     fn spawn_sdk(
         source: SdkConnectSource,
-        identity_bytes: Vec<u8>,
+        identity: SdkJoinIdentity,
     ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
         let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<SdkCommand>();
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
@@ -644,7 +711,7 @@ impl CollaborationManager {
         // NotAvailable rather than panicking; an app must open even without collab.
         let handle = match thread::Builder::new()
             .name("ui-collab-shovel".into())
-            .spawn(move || run_shovel(source, identity_bytes, outbound_rx, inbound_tx, init_tx))
+            .spawn(move || run_shovel(source, identity, outbound_rx, inbound_tx, init_tx))
         {
             Ok(handle) => handle,
             Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
@@ -738,7 +805,7 @@ impl CollaborationManager {
         let envelope = identity
             .sign_op(payload, artifact, op_class)
             .map_err(SignedSendError::Canonical)?;
-        self.send(CollabRequest::SignedSyncIncremental {
+        self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
         Ok(())
@@ -753,9 +820,6 @@ impl CollaborationManager {
                 // Only errors when the shovel thread has exited; the
                 // next poll observes the same shutdown.
                 let _ = ch.outbound_tx.send(SdkCommand::Primary(req));
-            }
-            Backend::Relay(ch) => {
-                let _ = ch.outbound_tx.send(req);
             }
         }
     }
@@ -786,13 +850,6 @@ impl CollaborationManager {
         match &mut self.backend {
             Backend::Disabled => Vec::new(),
             Backend::Sdk(ch) => {
-                let mut events = Vec::new();
-                while let Ok(evt) = ch.inbound_rx.try_recv() {
-                    events.push(evt);
-                }
-                events
-            }
-            Backend::Relay(ch) => {
                 let mut events = Vec::new();
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
                     events.push(evt);
@@ -990,22 +1047,22 @@ fn config_identity_path() -> Option<std::path::PathBuf> {
 /// A public key rendered as a person, in the one canonical form — so this
 /// string and the compositor's string for the same key are the same string.
 fn person_id_from_key(key: [u8; 32]) -> String {
-    match crate::permissions::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(key),
-    ) {
-        crate::permissions::Principal::Person(id) => id,
-        // `person_from_key` constructs `Person` unconditionally; this arm
-        // exists only because the return type is the whole enum. Recompute
-        // the same canonical lowercase-hex form directly rather than panic
-        // on a branch that should never run.
-        _ => {
-            let mut s = String::with_capacity(64);
-            for b in &key {
-                use std::fmt::Write as _;
-                let _ = write!(s, "{b:02x}");
-            }
-            s
+    // `person_from_key` constructs `Person` unconditionally, so the else
+    // branch cannot run. It recomputes the same canonical lowercase-hex form
+    // directly rather than panic on a branch that should never be reached.
+    if let crate::permissions::Principal::Person(id) =
+        crate::permissions::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+        )
+    {
+        id
+    } else {
+        use std::fmt::Write as _;
+        let mut s = String::with_capacity(64);
+        for b in &key {
+            let _ = write!(s, "{b:02x}");
         }
+        s
     }
 }
 
@@ -1080,7 +1137,7 @@ enum InitStatus {
 /// `outbound_rx.recv()` returns `None` (manager dropped).
 fn run_shovel(
     source: SdkConnectSource,
-    identity_bytes: Vec<u8>,
+    identity: SdkJoinIdentity,
     outbound_rx: tokio_mpsc::UnboundedReceiver<SdkCommand>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
     init_tx: mpsc::SyncSender<InitStatus>,
@@ -1112,7 +1169,7 @@ fn run_shovel(
         // Ready. Manager may now hand out `send` / `poll`.
         let _ = init_tx.send(InitStatus::Ready);
 
-        drive_shovel(client, identity_bytes, outbound_rx, inbound_tx).await;
+        drive_shovel(client, identity, outbound_rx, inbound_tx).await;
     });
 }
 
@@ -1126,10 +1183,14 @@ fn run_shovel(
 )]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
-    identity_bytes: Vec<u8>,
+    identity: SdkJoinIdentity,
     mut outbound_rx: tokio_mpsc::UnboundedReceiver<SdkCommand>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
 ) {
+    let SdkJoinIdentity {
+        presentation,
+        signer,
+    } = identity;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -1151,7 +1212,7 @@ async fn drive_shovel(
                 let key = spec.channel_id();
                 ensure_sdk_route(
                     &client,
-                    &identity_bytes,
+                    &presentation,
                     participant_handle.as_deref(),
                     &inbound_tx,
                     &mut routes,
@@ -1166,13 +1227,13 @@ async fn drive_shovel(
                     continue;
                 };
                 if let Some(route) = routes.get(key) {
-                    dispatch_sdk_request(route, request, &inbound_tx).await;
+                    dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
             }
             SdkCommand::Join(spec) => {
                 ensure_sdk_route(
                     &client,
-                    &identity_bytes,
+                    &presentation,
                     participant_handle.as_deref(),
                     &inbound_tx,
                     &mut routes,
@@ -1184,7 +1245,7 @@ async fn drive_shovel(
                 let key = spec.channel_id();
                 ensure_sdk_route(
                     &client,
-                    &identity_bytes,
+                    &presentation,
                     participant_handle.as_deref(),
                     &inbound_tx,
                     &mut routes,
@@ -1192,7 +1253,7 @@ async fn drive_shovel(
                 )
                 .await;
                 if let Some(route) = routes.get(&key) {
-                    dispatch_sdk_request(route, request, &inbound_tx).await;
+                    dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
             }
         }
@@ -1200,6 +1261,7 @@ async fn drive_shovel(
 }
 
 struct SdkRoute {
+    spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
 }
@@ -1246,7 +1308,14 @@ async fn ensure_sdk_route(
     spawn_action_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
 
-    routes.insert(channel_id, SdkRoute { channel, presence });
+    routes.insert(
+        channel_id,
+        SdkRoute {
+            spec: spec.clone(),
+            channel,
+            presence,
+        },
+    );
 }
 
 /// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
@@ -1264,26 +1333,22 @@ async fn spawn_op_stream(
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(event) = stream.read().await {
-                let translated = match event.kind {
-                    runtime_collab::OpKind::Signed => {
-                        match postcard::from_bytes::<SignedOp>(&event.op) {
-                            Ok(envelope) => CollabEvent::SignedCRDTIncremental {
-                                envelope: Box::new(envelope),
-                                from_user_id: event.from_user_id,
-                            },
-                            Err(error) => {
-                                tracing::warn!(
-                                    "collab: signed op is not postcard SignedOp ({error}); dropping"
-                                );
-                                continue;
-                            }
+                let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
+                    Ok(envelope) => match signed_document_event(envelope, event.from_user_id) {
+                        Ok(event) => event,
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                "collab: signed op has no typed document payload; dropping"
+                            );
+                            continue;
                         }
-                    }
-                    runtime_collab::OpKind::UnsignedIncremental => {
-                        CollabEvent::CRDTIncremental { data: event.op }
-                    }
-                    runtime_collab::OpKind::UnsignedSnapshot => {
-                        CollabEvent::CRDTUpdate { data: event.op }
+                    },
+                    Err(error) => {
+                        tracing::warn!(
+                            "collab: signed op is not postcard SignedOp ({error}); dropping"
+                        );
+                        continue;
                     }
                 };
                 if tx.send(translated).is_err() {
@@ -1392,6 +1457,113 @@ async fn spawn_presence_stream(
     }
 }
 
+static LAST_CERTIFIED_DOCUMENT_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn next_certified_document_seq(now: std::time::SystemTime) -> u64 {
+    use std::sync::atomic::Ordering;
+
+    let wall = now
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+        });
+    let mut observed = LAST_CERTIFIED_DOCUMENT_SEQ.load(Ordering::Relaxed);
+    loop {
+        let candidate = wall.max(observed.saturating_add(1));
+        match LAST_CERTIFIED_DOCUMENT_SEQ.compare_exchange_weak(
+            observed,
+            candidate,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return candidate,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+
+/// Sign on the shovel thread through the workspace identity service, then use
+/// the one signed Cap'n Proto verb. Missing or denied certification never
+/// downgrades the document to unsigned traffic.
+#[allow(
+    clippy::future_not_send,
+    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+)]
+async fn send_document_mutation(
+    route: &SdkRoute,
+    signer: &SdkDocumentSigner,
+    mutation: collab_types::DocumentMutation,
+) {
+    let workspace_id = route.spec.cluster_id.to_string();
+    let record_id = route.spec.record.as_deref().unwrap_or("");
+    let payload = match mutation.encode() {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(%error, "collab: typed document mutation would not encode; dropping");
+            return;
+        }
+    };
+    let now = std::time::SystemTime::now();
+    let author = match signer {
+        SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
+        SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
+    };
+    let mut op = SignedOp::new_unsigned(
+        payload,
+        collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id),
+        collab_types::Ed25519PublicKey::from_bytes(author),
+        collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id),
+        collab_types::OpClass::Splice,
+        now,
+        next_certified_document_seq(now),
+    );
+    let unsigned_op = match postcard::to_stdvec(&op) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
+            return;
+        }
+    };
+    let signature = match signer {
+        SdkDocumentSigner::Certified(identity) => match identity.sign_collaboration_op(
+            &workspace_id,
+            &route.spec.app_id,
+            record_id,
+            &unsigned_op,
+        ) {
+            Ok(signature) => signature,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "collab: identity service denied document operation; dropping"
+                );
+                return;
+            }
+        },
+        SdkDocumentSigner::Harness(key) => {
+            use ed25519_dalek::Signer as _;
+            let signing_bytes = match op.signing_bytes() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
+                    return;
+                }
+            };
+            key.sign(&signing_bytes).to_bytes()
+        }
+    };
+    op.signature = collab_types::Signature::from_bytes(signature);
+    match postcard::to_stdvec(&op) {
+        Ok(bytes) => {
+            let _ = route.channel.send(&bytes).await;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
+        }
+    }
+}
+
 // Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
 // `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
 #[allow(
@@ -1401,20 +1573,31 @@ async fn spawn_presence_stream(
 async fn dispatch_sdk_request(
     route: &SdkRoute,
     request: CollabRequest,
+    signer: &SdkDocumentSigner,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
 ) {
     match request {
         CollabRequest::Hello { .. } => {}
-        CollabRequest::SignedSyncIncremental { envelope } => {
+        CollabRequest::SignedOperation { envelope } => {
             if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
                 let _ = route.channel.send(&bytes).await;
             }
         }
-        CollabRequest::SyncCRDT { data } => {
-            let _ = route.channel.send_unsigned_snapshot(&data).await;
+        CollabRequest::DocumentSnapshot { data } => {
+            send_document_mutation(
+                route,
+                signer,
+                collab_types::DocumentMutation::Snapshot(data),
+            )
+            .await;
         }
-        CollabRequest::SyncIncremental { data } => {
-            let _ = route.channel.send_unsigned_incremental(&data).await;
+        CollabRequest::DocumentIncremental { data } => {
+            send_document_mutation(
+                route,
+                signer,
+                collab_types::DocumentMutation::Incremental(data),
+            )
+            .await;
         }
         CollabRequest::Presence { key, payload } => {
             let Some(presence) = route.presence.as_ref() else {
@@ -1471,133 +1654,15 @@ async fn dispatch_sdk_request(
         }
     }
 }
-/// Bridge task for [`Backend::Relay`]: shuttles between the toolkit's
-/// synchronous `send`/`poll` and the session's async publish/recv —
-/// outbound [`CollabRequest`]s map onto `publish_*`, inbound
-/// [`qos_relay::Inbound`] map onto [`CollabEvent`].
-///
-/// The two directions share a `select!` since both borrow the session
-/// immutably. Returns on manager drop or host-closed session.
-async fn drive_relay(
-    session: qos_relay::RelayCoeditSession,
-    mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
-    inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
-) {
-    loop {
-        tokio::select! {
-            biased;
-            outbound = outbound_rx.recv() => {
-                let Some(req) = outbound else {
-                    break; // manager dropped — outbound channel closed.
-                };
-                match req {
-                    // The relay session is joined at construction, so
-                    // auto-Hello has no work to do here.
-                    CollabRequest::Hello { .. } => {}
-                    // Both ride the unsigned co-edit path — the host forwards opaque
-                    // delta bytes, the receiver applies them with `load_incremental`.
-                    CollabRequest::SyncCRDT { data }
-                    | CollabRequest::SyncIncremental { data } => {
-                        let _ = session.publish_delta(data);
-                    }
-                    CollabRequest::SignedSyncIncremental { envelope } => {
-                        if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
-                            let _ = session.publish_signed(bytes);
-                        }
-                    }
-                    CollabRequest::Presence { key, payload } => {
-                        // The session stamps the author; we only carry
-                        // the (key, payload) body.
-                        let _ = session.publish_presence(encode_relay_presence(&key, &payload));
-                    }
-                    CollabRequest::FetchScrollback { artifact, .. } => {
-                        // The host queues deltas per-peer; it doesn't answer seq-range
-                        // queries. Reply empty + exhausted so a paging caller unsticks.
-                        if inbound_tx
-                            .send(CollabEvent::ScrollbackBatch {
-                                artifact,
-                                ops: Vec::new(),
-                                exhausted: true,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-            inbound = session.recv() => {
-                let Some(inbound) = inbound else {
-                    break; // host closed the session.
-                };
-                if let Some(evt) = translate_relay_inbound(inbound)
-                    && inbound_tx.send(evt).is_err()
-                {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// Encode `(PresenceKey, PresencePayload)` as the opaque body of a
-/// relay presence frame; the session adds author attribution on send.
-fn encode_relay_presence(key: &PresenceKey, payload: &PresencePayload) -> Vec<u8> {
-    postcard::to_stdvec(&(key, payload)).unwrap_or_default()
-}
-
-/// Inverse of [`encode_relay_presence`]; `None` for a non-toolkit body
-/// so the caller skips it instead of surfacing a bogus event.
-fn decode_relay_presence(bytes: &[u8]) -> Option<(PresenceKey, PresencePayload)> {
-    postcard::from_bytes(bytes).ok()
-}
-
-/// Render a device pubkey as `peer-<hex>` — the same shape the broker
-/// mints, keeping downstream attribution on one id format.
-fn user_id_from_author(author: [u8; 32]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(5 + 64);
-    s.push_str("peer-");
-    for b in author {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-/// Translate a host-side [`qos_relay::Inbound`] into a [`CollabEvent`];
-/// `None` for the `Ready` ack or a frame that fails to decode.
-fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
-    match inbound {
-        // Unsigned document delta; carries no author, matching the
-        // unsigned broker path.
-        qos_relay::Inbound::Delta { data, .. } => Some(CollabEvent::CRDTIncremental { data }),
-        // Signed document op, attributed to the publishing device key.
-        qos_relay::Inbound::SignedDelta { author, op_bytes } => {
-            let envelope = postcard::from_bytes::<SignedOp>(&op_bytes).ok()?;
-            Some(CollabEvent::SignedCRDTIncremental {
-                envelope: Box::new(envelope),
-                from_user_id: user_id_from_author(author),
-            })
-        }
-        // The author rode inside the co-edit payload, since the host
-        // envelope carries none.
-        qos_relay::Inbound::Presence { author, payload } => {
-            let (key, payload) = decode_relay_presence(&payload)?;
-            let user_id = user_id_from_author(author);
-            Some(match payload {
-                PresencePayload::Pointer { x, y } => {
-                    CollabEvent::RemoteCursorMoved { user_id, x, y }
-                }
-                other => CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload: other,
-                },
-            })
-        }
-        // The subscribe ack has no toolkit-visible equivalent.
-        qos_relay::Inbound::Ready { .. } => None,
-    }
+fn signed_document_event(
+    envelope: SignedOp,
+    from_user_id: String,
+) -> Result<CollabEvent, collab_types::DocumentMutationError> {
+    let _mutation = collab_types::DocumentMutation::decode(&envelope.payload)?;
+    Ok(CollabEvent::Document {
+        envelope: Box::new(envelope),
+        from_user_id,
+    })
 }
 
 /// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
@@ -1701,8 +1766,6 @@ mod tests {
     struct Captures {
         joined: Vec<(String, Vec<u8>)>,
         signed_ops: Vec<Vec<u8>>,
-        unsigned_snapshots: Vec<Vec<u8>>,
-        unsigned_incrementals: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
         pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
         caret_publishes: Vec<(Vec<u8>, u64)>,
@@ -2025,41 +2088,19 @@ mod tests {
             Promise::ok(())
         }
 
-        fn send_unsigned_snapshot(
+        fn retired_unsigned_snapshot(
             self: Rc<Self>,
-            params: channel_handle::SendUnsignedSnapshotParams,
-            _results: channel_handle::SendUnsignedSnapshotResults,
+            _params: channel_handle::RetiredUnsignedSnapshotParams,
+            _results: channel_handle::RetiredUnsignedSnapshotResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(d) = params
-                .get()
-                .and_then(channel_handle::send_unsigned_snapshot_params::Reader::get_data)
-            else {
-                return Promise::ok(());
-            };
-            self.captures
-                .lock()
-                .unwrap()
-                .unsigned_snapshots
-                .push(d.to_vec());
             Promise::ok(())
         }
 
-        fn send_unsigned_incremental(
+        fn retired_unsigned_incremental(
             self: Rc<Self>,
-            params: channel_handle::SendUnsignedIncrementalParams,
-            _results: channel_handle::SendUnsignedIncrementalResults,
+            _params: channel_handle::RetiredUnsignedIncrementalParams,
+            _results: channel_handle::RetiredUnsignedIncrementalResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(d) = params
-                .get()
-                .and_then(channel_handle::send_unsigned_incremental_params::Reader::get_data)
-            else {
-                return Promise::ok(());
-            };
-            self.captures
-                .lock()
-                .unwrap()
-                .unsigned_incrementals
-                .push(d.to_vec());
             Promise::ok(())
         }
 
@@ -2254,7 +2295,7 @@ mod tests {
         );
         // Whichever backend it settled on, the app goes on calling these
         // every frame. Neither may panic.
-        mgr.send(CollabRequest::SyncCRDT {
+        mgr.send(CollabRequest::DocumentSnapshot {
             data: b"after the broker died".to_vec(),
         });
         let _ = mgr.poll();
@@ -2270,17 +2311,14 @@ mod tests {
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
-        mgr.send(CollabRequest::SyncCRDT {
+        mgr.send(CollabRequest::DocumentSnapshot {
             data: b"nope".to_vec(),
         });
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
     }
 
     #[test]
-    #[serial_test::serial(qos_user_identity)]
-    fn join_channel_uses_empty_identity_when_env_var_unset() {
-        // With `QOS_USER_IDENTITY` unset, `load()` returns `ServiceFdMissing`
-        // and the manager falls back to the empty-identity path.
+    fn explicit_test_join_forwards_its_identity_presentation() {
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
             op_backlog: vec![],
@@ -2289,16 +2327,13 @@ mod tests {
             scrollback_response: None,
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
-
-        // SAFETY: every test that mutates this variable is serialised on
-        // the `qos_user_identity` key, so nothing reads it concurrently.
-        unsafe { std::env::remove_var(runtime_identity::IDENTITY_ENV_VAR) };
         let cluster = Uuid::new_v4();
+        let presentation = b"certified-test-presentation".to_vec();
         let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
             fd,
             "alice",
             cluster,
-            Vec::new(),
+            presentation.clone(),
         );
 
         assert!(
@@ -2310,86 +2345,7 @@ mod tests {
         );
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
-        // The channel id carries the whole address, app id included.
-        assert_eq!(
-            joined[0].0,
-            channel_key::format("alice", &cluster.to_string(), ""),
-        );
-        assert!(
-            joined[0].1.is_empty(),
-            "identity blob must be empty when env unset"
-        );
-    }
-
-    #[test]
-    fn join_channel_carries_pubkey_bytes_when_identity_loads() {
-        // A fresh single-device identity on disk must ride the join_channel
-        // call as its pubkey bytes.
-        use std::io::Write;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("primary.json");
-        let secret = [42u8; 32];
-        let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
-        let vk = sk.verifying_key();
-        let record = serde_json::json!({
-            "display_name": "test-user",
-            "avatar_color": [1, 2, 3],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vk.to_bytes(),
-                "threshold": 1_u16,
-                "total_shares": 1_u16,
-                "share_index": 1_u16,
-                "secret_bytes": secret.to_vec(),
-            },
-            "created_at": "2026-07-04T00:00:00Z",
-            "schema_version": 1,
-        });
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
-        drop(f);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        }
-
-        // `new()` also reaches for `QOS_SVC_COLLAB_FD` and would race other
-        // tests; use the identity-aware test constructor instead.
-        let loaded = runtime_identity::load_from_path(path).expect("load identity");
-        let identity_bytes = loaded.group_public_key().to_vec();
-
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let cluster = Uuid::new_v4();
-        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
-            fd,
-            "alice",
-            cluster,
-            identity_bytes.clone(),
-        );
-
-        assert!(
-            wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                Duration::from_secs(2),
-            ),
-            "join_channel must be observed"
-        );
-        let joined = captures.lock().unwrap().joined.clone();
-        assert_eq!(joined.len(), 1);
-        assert_eq!(
-            joined[0].1, identity_bytes,
-            "identity blob must equal the loaded pubkey bytes"
-        );
-        assert_eq!(joined[0].1.len(), 32, "Ed25519 pubkey is 32 bytes");
+        assert_eq!(joined[0].1, presentation);
     }
 
     #[test]
@@ -2431,7 +2387,7 @@ mod tests {
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
         let expected_bytes = postcard::to_stdvec(&op).unwrap();
-        mgr.send(CollabRequest::SignedSyncIncremental {
+        mgr.send(CollabRequest::SignedOperation {
             envelope: Box::new(op),
         });
 
@@ -2444,54 +2400,6 @@ mod tests {
         );
         let seen = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(seen, vec![expected_bytes]);
-    }
-
-    #[test]
-    fn sync_crdt_and_sync_incremental_hit_legacy_sdk_calls() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-
-        assert!(
-            wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                Duration::from_secs(2)
-            ),
-            "join_channel must be observed",
-        );
-
-        mgr.send(CollabRequest::SyncCRDT {
-            data: b"snap".to_vec(),
-        });
-        mgr.send(CollabRequest::SyncIncremental {
-            data: b"delta".to_vec(),
-        });
-
-        assert!(
-            wait_until(
-                || {
-                    let c = captures.lock().unwrap();
-                    !c.unsigned_snapshots.is_empty() && !c.unsigned_incrementals.is_empty()
-                },
-                Duration::from_secs(2),
-            ),
-            "both legacy sends must reach the SDK",
-        );
-        let (snapshots, incrementals) = {
-            let c = captures.lock().unwrap();
-            (
-                c.unsigned_snapshots.clone(),
-                c.unsigned_incrementals.clone(),
-            )
-        };
-        assert_eq!(snapshots, vec![b"snap".to_vec()]);
-        assert_eq!(incrementals, vec![b"delta".to_vec()]);
     }
 
     /// Every presence variant reaches the SDK method that keeps its key —
@@ -2597,7 +2505,9 @@ mod tests {
     #[test]
     fn signed_op_stream_translates_to_signed_crdt_incremental() {
         let mut op = SignedOp::new_unsigned(
-            b"remote-payload".to_vec(),
+            collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
+                .encode()
+                .unwrap(),
             collab_types::ArtifactId::new(),
             collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
             collab_types::AttestationId::new(),
@@ -2622,17 +2532,44 @@ mod tests {
         let signed: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {
-                CollabEvent::SignedCRDTIncremental {
+                CollabEvent::Document {
                     envelope,
                     from_user_id,
                 } => Some((envelope, from_user_id)),
                 _ => None,
             })
             .collect();
-        assert_eq!(signed.len(), 1, "one SignedCRDTIncremental expected");
+        assert_eq!(signed.len(), 1, "one document event expected");
         assert_eq!(signed[0].1, "peer-bob");
-        assert_eq!(signed[0].0.payload, b"remote-payload");
+        assert_eq!(
+            collab_types::DocumentMutation::decode(&signed[0].0.payload).unwrap(),
+            collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
+        );
         assert_eq!(signed[0].0.seq, 42);
+    }
+
+    #[test]
+    fn signed_document_event_preserves_snapshot_kind() {
+        let op = SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(b"whole document".to_vec())
+                .encode()
+                .unwrap(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            43,
+        );
+        let event = signed_document_event(op, "peer-alice".into()).unwrap();
+        assert!(matches!(
+            &event,
+            CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
+        ));
+        assert!(matches!(
+            event.document_mutation(),
+            Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
+        ));
     }
 
     #[test]

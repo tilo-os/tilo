@@ -1016,10 +1016,10 @@ mod tests {
     #[test]
     fn ptrect_from_corners_normalises() {
         let r = PtRect::from_corners(100.0, 80.0, 40.0, 200.0);
-        assert_eq!(r.x, 40.0);
-        assert_eq!(r.y, 80.0);
-        assert_eq!(r.w, 60.0);
-        assert_eq!(r.h, 120.0);
+        assert!((r.x - 40.0).abs() < f64::EPSILON);
+        assert!((r.y - 80.0).abs() < f64::EPSILON);
+        assert!((r.w - 60.0).abs() < f64::EPSILON);
+        assert!((r.h - 120.0).abs() < f64::EPSILON);
         assert!(r.contains(50.0, 100.0));
         assert!(!r.contains(10.0, 10.0));
     }

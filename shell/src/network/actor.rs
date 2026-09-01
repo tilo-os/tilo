@@ -685,23 +685,19 @@ fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Re
                 Retention::Delta
             },
         ),
-        NeighbourMsg::AppCrdtSnapshot {
-            app_id, record_id, ..
+        NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
         } => {
             let route = format!("app\0{app_id}\0{record_id}");
-            return Some((
-                *blake3::hash(route.as_bytes()).as_bytes(),
-                Retention::Checkpoint,
-            ));
-        }
-        NeighbourMsg::AppCrdtIncremental {
-            app_id, record_id, ..
-        }
-        | NeighbourMsg::AppCrdtIncrementalSigned {
-            app_id, record_id, ..
-        } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), Retention::Delta));
+            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
+            let retention = match mutation {
+                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
+                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
+            };
+            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
         }
         _ => return None,
     };
@@ -800,10 +796,6 @@ fn spawn_host_pump(
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
                 HostInbound::Delta { author, data }
-                | HostInbound::SignedDelta {
-                    author,
-                    op_bytes: data,
-                }
                 | HostInbound::Presence {
                     author,
                     payload: data,
@@ -858,6 +850,25 @@ mod tests {
     use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
+    fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
+        let envelope = collab_types::SignedOp::new_unsigned(
+            mutation.encode().expect("typed mutation"),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        NeighbourMsg::AppDocument {
+            peer: 1,
+            app_id: "app".into(),
+            cluster_id: "room".into(),
+            record_id: "doc".into(),
+            envelope: Box::new(envelope),
+        }
+    }
+
     #[test]
     fn host_persists_state_but_never_late_session_actions() {
         assert!(matches!(
@@ -882,16 +893,17 @@ mod tests {
         ));
         assert!(matches!(
             retention(
-                &NeighbourMsg::AppCrdtSnapshot {
-                    peer: 1,
-                    app_id: "app".into(),
-                    cluster_id: "room".into(),
-                    record_id: "doc".into(),
-                    data: vec![2],
-                },
+                &document(&collab_types::DocumentMutation::Snapshot(vec![2])),
                 false,
             ),
             Some((_, Retention::Checkpoint))
+        ));
+        assert!(matches!(
+            retention(
+                &document(&collab_types::DocumentMutation::Incremental(vec![2])),
+                false,
+            ),
+            Some((_, Retention::Delta))
         ));
         for live in [
             NeighbourMsg::RemoteInput {

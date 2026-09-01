@@ -5367,7 +5367,9 @@ mod tests {
             .with_initial_value("wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now() - SPELL_EDIT_SETTLE - Duration::from_millis(1));
+        ti.last_edit_time = Instant::now()
+            .checked_sub(SPELL_EDIT_SETTLE)
+            .and_then(|t| t.checked_sub(Duration::from_millis(1)));
 
         ti.refresh_spelling();
 

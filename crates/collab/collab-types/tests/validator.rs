@@ -22,7 +22,8 @@ use std::time::{Duration, SystemTime};
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
-    ValidationError, generate_keypair, sign_event, sign_op, validate_inbound_op,
+    ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
+    validate_inbound_op,
 };
 use ed25519_dalek::SigningKey;
 
@@ -140,6 +141,93 @@ fn happy_path_all_eight_pass() {
         f.state.last_seq_per_author.get(&f.author_pub).copied(),
         Some(1)
     );
+}
+
+#[test]
+fn certified_roster_admission_reuses_policy_without_role_attestation() {
+    let mut f = fixture();
+    f.state.attestations.clear();
+    f.state.authorised_signers.clear();
+    let op = build_op(&f, OpClass::Splice, t(10), 1);
+
+    assert!(
+        validate_admitted_inbound_op(
+            &op,
+            Role::Editor,
+            &mut f.state,
+            t(10),
+            Duration::from_secs(5),
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        f.state.last_seq_per_author.get(&f.author_pub).copied(),
+        Some(1)
+    );
+}
+
+#[test]
+fn certified_roster_admission_still_rejects_forgery_role_time_and_replay() {
+    let f = fixture();
+    let valid = build_op(&f, OpClass::Splice, t(10), 7);
+
+    let mut forged = valid.clone();
+    forged.payload.push(0xff);
+    assert!(matches!(
+        validate_admitted_inbound_op(
+            &forged,
+            Role::Editor,
+            &mut f.state.clone(),
+            t(10),
+            Duration::from_secs(5),
+        ),
+        Err(ValidationError::BadOpSignature(_))
+    ));
+    assert_eq!(
+        validate_admitted_inbound_op(
+            &valid,
+            Role::Viewer,
+            &mut f.state.clone(),
+            t(10),
+            Duration::from_secs(5),
+        ),
+        Err(ValidationError::RoleForbidsOpClass)
+    );
+    assert_eq!(
+        validate_admitted_inbound_op(
+            &valid,
+            Role::Editor,
+            &mut f.state.clone(),
+            t(20),
+            Duration::from_secs(5),
+        ),
+        Err(ValidationError::OutsideValidityWindow)
+    );
+
+    let mut state = f.state;
+    assert!(
+        validate_admitted_inbound_op(
+            &valid,
+            Role::Editor,
+            &mut state,
+            t(10),
+            Duration::from_secs(5),
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        validate_admitted_inbound_op(
+            &valid,
+            Role::Editor,
+            &mut state,
+            t(10),
+            Duration::from_secs(5),
+        ),
+        Err(ValidationError::ReplaySeq {
+            seen: 7,
+            incoming: 7
+        })
+    ));
 }
 
 #[test]

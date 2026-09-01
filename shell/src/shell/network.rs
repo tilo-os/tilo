@@ -36,17 +36,6 @@ pub fn room_topic_id(room: RoomId) -> u64 {
     qos_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
-/// Largest app-document snapshot this shell will put on the gossip
-/// topic, in bytes.
-///
-/// `serde_json` writes a `Vec<u8>` as decimal numbers, so the 14 KiB
-/// document cap can expand to roughly 56 KiB before postcard framing.
-/// The Iroh actor accepts much larger messages, but this application-level
-/// bound limits memory amplification and keeps snapshots interactive.
-/// Past this size the carrier is a direct peer-to-peer stream via
-/// [`crate::network::surface_stream`].
-pub const MAX_APP_SNAPSHOT_BYTES: usize = 14 * 1024;
-
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
@@ -156,52 +145,17 @@ pub struct ShellNetwork {
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
-    /// Inbound app-CRDT increments pushed by [`Self::tick`], fanned by
-    /// the `collab_broker` drainer to every locally-connected app.
-    inbound_app_crdt: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    /// Inbound *signed* app-CRDT envelopes pushed by [`Self::tick`].
-    /// The `collab_broker` drainer runs each through `validate_inbound_op`
-    /// before fanning the payload out.
-    inbound_app_crdt_signed: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    /// Inbound signed document envelopes pushed by [`Self::tick`]. The
+    /// broker validates and decodes each before local fan-out.
+    inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
-    /// Received app-CRDT *snapshots* awaiting fan-out to local apps.
-    /// Separate from [`Self::inbound_app_crdt`]: an increment is applied
-    /// to a document that already holds its history, a snapshot *is*
-    /// that history, and the receiving app folds them in differently.
-    inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
-    /// Rooms with an outstanding request for somebody's whole document,
-    /// keyed by cluster id. Entered when a peer announces arrival,
-    /// removed when a snapshot is published for it.
-    snapshot_requests: Arc<Mutex<std::collections::HashMap<String, SnapshotWindow>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     /// Inbound cooperative-scrollback *responses*, forwarded by the
     /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
-}
-
-/// One received app-CRDT incremental update, queued by
-/// [`ShellNetwork::tick`] for the `collab_broker` drainer to fan out
-/// to every locally-connected app.
-#[derive(Debug, Clone)]
-pub struct InboundAppCrdt {
-    /// Hashed Iroh peer id of the publisher; the broker's fan-out
-    /// routes on `app_id` + `cluster_id` rather than on this.
-    pub peer: u64,
-    /// Originating app id (e.g. `"terminal"`); first half of the
-    /// broker's delivery filter.
-    pub app_id: String,
-    /// Originating cluster id (uuid as string); second half of the
-    /// delivery filter.
-    pub cluster_id: String,
-    /// Originating record id — which document these changes belong to.
-    /// Empty for a sender with one document per `(app, cluster)`.
-    pub record_id: String,
-    /// Opaque Automerge incremental change blob, passed through as a
-    /// `CollabEvent::CRDTIncremental`.
-    pub data: Vec<u8>,
 }
 
 /// One received app-presence frame, fanned to local apps by the
@@ -218,16 +172,17 @@ pub struct InboundAppPresence {
     pub presence: collab_types::PeerPresence,
 }
 
-/// One received *signed* app-CRDT envelope. Distinct from
-/// [`InboundAppCrdt`] so a malformed envelope can never poison the
-/// unsigned fan-out path, and vice versa.
+/// One received signed, typed document envelope.
 #[derive(Debug, Clone)]
-pub struct InboundAppCrdtSigned {
+pub struct InboundDocument {
     pub peer: u64,
     /// Empty (a peer too old to stamp one) addresses nobody.
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
+    /// Live workspace role established from the authenticated peer's user
+    /// certificate before this entry was queued.
+    pub role: collab_types::Role,
     /// Boxed to mirror the wire shape and bound the queue entry size —
     /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
@@ -269,14 +224,6 @@ pub struct InboundPresence {
     pub point: (f64, f64),
     /// Wall-clock millisecond timestamp from the publisher.
     pub ts: u64,
-}
-
-/// Short window opened by one peer arrival. Every distinct document in the
-/// room may publish one baseline; repeat snapshots from the same document are
-/// suppressed so ordinary commits cannot turn into whole-state broadcasts.
-struct SnapshotWindow {
-    opened: std::time::Instant,
-    released: std::collections::HashSet<(String, String)>,
 }
 
 /// Start mDNS LAN peer discovery when `QOS_COLLAB_LAN_DISCOVERY` requests
@@ -423,11 +370,8 @@ impl ShellNetwork {
             pending_invitees: Mutex::new(std::collections::HashMap::new()),
             pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
-            inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
-            inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+            inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
-            inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-            snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -479,10 +423,8 @@ impl ShellNetwork {
             NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
                 Some(room.as_str())
             }
-            NeighbourMsg::AppCrdtIncremental { cluster_id, .. }
-            | NeighbourMsg::AppCrdtIncrementalSigned { cluster_id, .. }
-            | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
-            | NeighbourMsg::AppCrdtSnapshot { cluster_id, .. } => Some(cluster_id.as_str()),
+            NeighbourMsg::AppDocument { cluster_id, .. }
+            | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
         };
         room.and_then(RoomId::parse)
@@ -580,32 +522,6 @@ impl ShellNetwork {
         }
     }
 
-    /// Shared handle to the inbound-app-CRDT buffer, fanned to every
-    /// locally-connected app by the `collab_broker` drainer.
-    pub fn inbound_app_crdt_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdt>>> {
-        Arc::clone(&self.inbound_app_crdt)
-    }
-
-    /// Publish a `NeighbourMsg::AppCrdtIncremental` to the default
-    /// workspace topic. `try_send` failures are swallowed — CRDT
-    /// updates are idempotent and the next `SyncIncremental` republishes.
-    pub fn publish_app_crdt_incremental(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        let msg = NeighbourMsg::AppCrdtIncremental {
-            peer: self.local_peer_id_hash(),
-            app_id,
-            cluster_id,
-            record_id,
-            data,
-        };
-        let _ = self.publish_message(msg);
-    }
-
     /// Is `cluster_id` a room this machine is in? An app's cluster is
     /// the room's uuid, so this is the same question `apply_room_changes`
     /// asks before storing anything. A `cluster_id` that fails to parse
@@ -643,44 +559,20 @@ impl ShellNetwork {
         in_room
     }
 
-    /// Queue a received `AppCrdtIncremental` for the broker's drainer.
-    pub fn handle_app_crdt_message(
-        &self,
-        peer: u64,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        if let Ok(mut buf) = self.inbound_app_crdt.lock() {
-            buf.push(InboundAppCrdt {
-                peer,
-                app_id,
-                cluster_id,
-                record_id,
-                data,
-            });
-        }
+    /// Shared handle to inbound signed document envelopes.
+    pub fn inbound_documents_handle(&self) -> Arc<Mutex<Vec<InboundDocument>>> {
+        Arc::clone(&self.inbound_documents)
     }
 
-    /// Shared handle to the inbound-signed-app-CRDT buffer. The broker
-    /// drainer validates each envelope and fans it out as
-    /// `CollabEvent::SignedCRDTIncremental`.
-    pub fn inbound_app_crdt_signed_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdtSigned>>> {
-        Arc::clone(&self.inbound_app_crdt_signed)
-    }
-
-    /// Publish a `NeighbourMsg::AppCrdtIncrementalSigned` to the
-    /// default workspace topic. Called by the broker for every
-    /// validated `CollabRequest::SignedSyncIncremental`.
-    pub fn publish_app_crdt_signed(
+    /// Publish one validated signed document mutation.
+    pub fn publish_document(
         &self,
         app_id: String,
         cluster_id: String,
         record_id: String,
         envelope: collab_types::SignedOp,
     ) {
-        let msg = NeighbourMsg::AppCrdtIncrementalSigned {
+        let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
             app_id,
             cluster_id,
@@ -690,21 +582,23 @@ impl ShellNetwork {
         let _ = self.publish_message(msg);
     }
 
-    /// Queue a received `AppCrdtIncrementalSigned` for the broker's drainer.
-    pub fn handle_app_crdt_signed_message(
+    /// Queue a received signed document for the broker's drainer.
+    pub fn handle_document_message(
         &self,
         peer: u64,
         app_id: String,
         cluster_id: String,
         record_id: String,
+        role: collab_types::Role,
         envelope: collab_types::SignedOp,
     ) {
-        if let Ok(mut buf) = self.inbound_app_crdt_signed.lock() {
-            buf.push(InboundAppCrdtSigned {
+        if let Ok(mut buf) = self.inbound_documents.lock() {
+            buf.push(InboundDocument {
                 peer,
                 app_id,
                 cluster_id,
                 record_id,
+                role,
                 envelope: Box::new(envelope),
             });
         }
@@ -747,112 +641,6 @@ impl ShellNetwork {
                 app_id,
                 cluster_id,
                 presence,
-            });
-        }
-    }
-
-    /// Publish one document's whole state so a peer that has just joined
-    /// can adopt a document it holds no history for. Refuses above
-    /// [`MAX_APP_SNAPSHOT_BYTES`] to bound serialization and fan-out memory —
-    /// snapshots reach the wire through here, so the cap is enforced once.
-    /// Refusal logs at `warn`: the consequence
-    /// (this document does not converge) has no other symptom.
-    pub fn publish_app_crdt_snapshot(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        if !self.take_snapshot_request(&cluster_id, &app_id, &record_id) {
-            tracing::trace!(
-                app = %app_id,
-                room = %cluster_id,
-                "shell_network: nobody is waiting for a whole document; the delta carries this edit",
-            );
-            return;
-        }
-        if data.len() > MAX_APP_SNAPSHOT_BYTES {
-            tracing::warn!(
-                bytes = data.len(),
-                cap = MAX_APP_SNAPSHOT_BYTES,
-                app = %app_id,
-                room = %cluster_id,
-                record = %record_id,
-                "shell_network: refusing to publish an app snapshot over the application cap; this document will not converge for peers that lack its history",
-            );
-            return;
-        }
-        let msg = NeighbourMsg::AppCrdtSnapshot {
-            peer: self.local_peer_id_hash(),
-            app_id,
-            cluster_id,
-            record_id,
-            data,
-        };
-        let _ = self.publish_message(msg);
-    }
-
-    /// Record that somebody in `cluster_id` needs a whole document —
-    /// called on arrival, the only thing that makes a snapshot worth its
-    /// size on a broadcast topic. `CollabRequest::SyncCRDT` is not
-    /// reliably a join reply (same-host fan-out and undo send it too),
-    /// so arming on `Arrived` and firing on the next whole document
-    /// keeps the rate bounded whichever source supplies it.
-    pub fn note_snapshot_request(&self, cluster_id: &str) {
-        if cluster_id.is_empty() {
-            return;
-        }
-        if let Ok(mut pending) = self.snapshot_requests.lock() {
-            pending.insert(
-                cluster_id.to_string(),
-                SnapshotWindow {
-                    opened: std::time::Instant::now(),
-                    released: std::collections::HashSet::new(),
-                },
-            );
-        }
-    }
-
-    /// Take the outstanding snapshot request for `cluster_id`, if any.
-    fn take_snapshot_request(&self, cluster_id: &str, app_id: &str, record_id: &str) -> bool {
-        let Ok(mut pending) = self.snapshot_requests.lock() else {
-            return false;
-        };
-        let Some(window) = pending.get_mut(cluster_id) else {
-            return false;
-        };
-        if window.opened.elapsed() > std::time::Duration::from_secs(5) {
-            pending.remove(cluster_id);
-            return false;
-        }
-        window
-            .released
-            .insert((app_id.to_string(), record_id.to_string()))
-    }
-
-    /// Shared handle to the inbound app-snapshot buffer, drained by the
-    /// broker and fanned to local apps as `CollabEvent::CRDTUpdate`.
-    pub fn inbound_app_crdt_snapshot_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdt>>> {
-        Arc::clone(&self.inbound_app_crdt_snapshot)
-    }
-
-    /// Queue a received `AppCrdtSnapshot` for the broker's drainer.
-    pub fn handle_app_crdt_snapshot_message(
-        &self,
-        peer: u64,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        if let Ok(mut buf) = self.inbound_app_crdt_snapshot.lock() {
-            buf.push(InboundAppCrdt {
-                peer,
-                app_id,
-                cluster_id,
-                record_id,
-                data,
             });
         }
     }
@@ -1335,39 +1123,24 @@ impl ShellNetwork {
             } => {
                 self.handle_presence_message(peer_hash, user, key, point, ts);
             }
-            NeighbourMsg::AppCrdtIncremental {
-                peer: peer_hash,
-                app_id,
-                cluster_id,
-                record_id,
-                data,
-            } => {
-                self.dispatch_app_crdt_incremental(
-                    &origin, peer_hash, app_id, cluster_id, record_id, data,
-                );
-            }
-            NeighbourMsg::AppCrdtSnapshot {
-                peer: peer_hash,
-                app_id,
-                cluster_id,
-                record_id,
-                data,
-            } => {
-                self.dispatch_app_crdt_snapshot(
-                    &origin, peer_hash, app_id, cluster_id, record_id, data,
-                );
-            }
-            // Signed path, same routing as the plain increment.
-            NeighbourMsg::AppCrdtIncrementalSigned {
+            NeighbourMsg::AppDocument {
                 peer: peer_hash,
                 app_id,
                 cluster_id,
                 record_id,
                 envelope,
             } => {
-                if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
-                    self.handle_app_crdt_signed_message(
-                        peer_hash, app_id, cluster_id, record_id, *envelope,
+                let role = if self.require_peer_identity {
+                    self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
+                } else {
+                    Some(collab_types::Role::Editor)
+                };
+                if peer_hash != self.local_peer_hash
+                    && self.is_in_room(&cluster_id)
+                    && let Some(role) = role
+                {
+                    self.handle_document_message(
+                        peer_hash, app_id, cluster_id, record_id, role, *envelope,
                     );
                 }
             }
@@ -1437,71 +1210,6 @@ impl ShellNetwork {
     ) {
         if responder != self.local_peer_hash {
             self.handle_scrollback_response_message(responder, artifact, ops);
-        }
-    }
-
-    /// `AppCrdtIncremental`: opaque app-level Automerge blobs, not
-    /// shell-tree changes; self-publishes are filtered so a local edit
-    /// doesn't loop back as a "remote" event. Split out of
-    /// [`Self::dispatch_neighbour_msg`].
-    fn dispatch_app_crdt_incremental(
-        &self,
-        origin: &crate::shell::state::PeerOrigin,
-        peer_hash: u64,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        tracing::info!(
-            target: "qos_collab_probe",
-            from = peer_hash,
-            me = self.local_peer_hash,
-            app = %app_id,
-            cluster = %cluster_id,
-            record = %record_id,
-            bytes = data.len(),
-            "PROBE gossip recv AppCrdtIncremental",
-        );
-        if peer_hash != self.local_peer_hash
-            && self.is_in_room(&cluster_id)
-            && (!self.require_peer_identity
-                || self.peer_may_write_app(origin, &cluster_id, &app_id))
-        {
-            self.handle_app_crdt_message(peer_hash, app_id, cluster_id, record_id, data);
-        }
-    }
-
-    /// `AppCrdtSnapshot`: a whole document for a peer with no history to
-    /// apply deltas against. Same two gates as the increment, and they
-    /// matter more here: a whole document merged into the wrong one
-    /// cannot be taken back out. Split out of
-    /// [`Self::dispatch_neighbour_msg`].
-    fn dispatch_app_crdt_snapshot(
-        &self,
-        origin: &crate::shell::state::PeerOrigin,
-        peer_hash: u64,
-        app_id: String,
-        cluster_id: String,
-        record_id: String,
-        data: Vec<u8>,
-    ) {
-        tracing::info!(
-            target: "qos_collab_probe",
-            from = peer_hash,
-            me = self.local_peer_hash,
-            app = %app_id,
-            cluster = %cluster_id,
-            record = %record_id,
-            bytes = data.len(),
-            "PROBE gossip recv AppCrdtSnapshot",
-        );
-        if peer_hash != self.local_peer_hash
-            && self.is_in_room(&cluster_id)
-            && (!self.require_peer_identity
-                || self.peer_may_write_app(origin, &cluster_id, &app_id))
-        {
-            self.handle_app_crdt_snapshot_message(peer_hash, app_id, cluster_id, record_id, data);
         }
     }
 
@@ -1652,49 +1360,58 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "replica and tree (read from replica) are both read from through the \
-                  function's last statement (workspace/actor/allows); nothing to drop earlier"
-    )]
-    fn peer_may_write_app(
+    /// Authenticate a signed document envelope against the transport device,
+    /// exact document route, and current workspace policy. Replay and
+    /// signature-state checks remain in the broker drainer, which owns the
+    /// channel log.
+    fn peer_document_role(
         &self,
         origin: &crate::shell::state::PeerOrigin,
         cluster_id: &str,
         app_id: &str,
-    ) -> bool {
-        let Some(identity) = self.peer_identities.get(origin) else {
-            return false;
-        };
-        let collab_types::caps::Principal::Person(person) =
-            collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
-            )
-        else {
-            return false;
-        };
-        let Some(room) = RoomId::parse(cluster_id) else {
-            return false;
-        };
-        let Ok(replica) = self.replica.lock() else {
-            return false;
-        };
+        record_id: &str,
+        envelope: &collab_types::SignedOp,
+    ) -> Option<collab_types::Role> {
+        let identity = self.peer_identities.get(origin)?;
+        if *envelope.author.as_bytes() != identity.device_pubkey {
+            return None;
+        }
+        let person = collab_types::caps::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        )
+        .id()
+        .to_string();
+        let room = RoomId::parse(cluster_id)?;
+        let replica = self.replica.lock().ok()?;
         let tree_handle = replica.tree.clone();
         drop(replica);
         let tree = tree_handle.read();
-        let Some(workspace) = tree
+        let workspace = tree
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == room)
-        else {
-            return false;
+            .find(|workspace| workspace.room == room)?;
+        let role = workspace.role_of(&person)?;
+        let artifact = collab_types::document_artifact_id(app_id, cluster_id, record_id);
+        if envelope.artifact != artifact
+            || envelope.attestation_id
+                != collab_types::document_attestation_id(app_id, cluster_id, record_id)
+            || envelope.op_class != collab_types::OpClass::Splice
+            || envelope.encryption.is_some()
+            || collab_types::DocumentMutation::decode(&envelope.payload).is_err()
+        {
+            return None;
+        }
+        let actor = collab_types::Actor::person(Some(role), person)
+            .with_principal(collab_types::Principal::App(app_id.to_string()))
+            .in_room(cluster_id.to_string());
+        let resource = collab_types::ResourceRef::Artifact {
+            app: Some(app_id.to_string()),
+            kind: collab_types::ArtifactKind::Note,
+            instance: artifact,
         };
-        let actor = workspace.actor_for_person(&person);
-        workspace.allows(
-            &actor,
-            &crate::shell::state::ResourceRef::App(app_id.to_string()),
-            crate::shell::state::Verb::Write,
-        )
+        let allowed = workspace.allows(&actor, &resource, collab_types::Verb::Write);
+        drop(tree);
+        allowed.then_some(role)
     }
 }
 
@@ -1828,11 +1545,8 @@ pub(crate) fn shell_network_for_test(
         pending_invitees: Mutex::new(std::collections::HashMap::new()),
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
-        inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
-        inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+        inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
-        inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-        snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -1901,7 +1615,38 @@ mod tests {
         );
         drop(tree);
         drop(replica);
-        assert!(net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+        let route = crate::shell::collab_broker::CrdtRoute::record(
+            "dev.qos.notes",
+            room.to_string(),
+            "meeting-notes",
+        );
+        let signing = ed25519_dalek::SigningKey::from_bytes(&device.to_bytes());
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(b"change".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::Ed25519PublicKey::from_bytes(signing.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, &signing).expect("signed mutation");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),
+            Some(collab_types::Role::Editor),
+        );
 
         let mut revoked = RevocationEntry {
             user_public_key: cert.user_public_key,
@@ -1919,7 +1664,17 @@ mod tests {
             &[revoked],
         );
         assert!(net.peer_identities.get(&origin).is_none());
-        assert!(!net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),
+            None,
+            "revocation removes document authority as well as app access",
+        );
     }
 
     #[test]
@@ -2113,19 +1868,38 @@ mod tests {
         ));
     }
 
-    /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
-    fn app_crdt_event(cluster_id: &str, from_peer_hash: u64, peer: iroh::PublicKey) -> NetEvent {
+    /// Build the inbound event a LAN peer's signed document publish arrives as.
+    fn app_document_event(
+        cluster_id: &str,
+        from_peer_hash: u64,
+        peer: iroh::PublicKey,
+        device: &ed25519_dalek::SigningKey,
+    ) -> NetEvent {
+        let app_id = "dev.qos.notes";
+        let record_id = "note-1";
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id(app_id, cluster_id, record_id),
+            collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(app_id, cluster_id, record_id),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, device).expect("device signs document");
         NetEvent::Msg {
             ws: RoomId::parse(cluster_id)
                 .filter(|room| !room.is_nil())
                 .map_or(DEFAULT_WS_TOPIC, room_topic_id),
             peer,
-            msg: NeighbourMsg::AppCrdtIncremental {
+            msg: NeighbourMsg::AppDocument {
                 peer: from_peer_hash,
-                app_id: "dev.qos.notes".to_string(),
+                app_id: app_id.to_string(),
                 cluster_id: cluster_id.to_string(),
-                record_id: "note-1".to_string(),
-                data: vec![1, 2, 3, 4],
+                record_id: record_id.to_string(),
+                envelope: Box::new(envelope),
             },
         }
     }
@@ -2135,7 +1909,7 @@ mod tests {
     /// not the helper directly, with a positive control so the two
     /// refusals prove something rather than just "nothing arrives".
     #[test]
-    fn app_crdt_from_a_room_we_are_not_in_never_reaches_the_broker() {
+    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
@@ -2147,11 +1921,11 @@ mod tests {
         let handle = tree.shared();
         let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
 
-        // Plain legacy app deltas are accepted only after the sender has
-        // proven an identity->device chain and received membership. Keep the
-        // routing assertion's positive control authenticated like production.
+        // Documents are accepted only after the sender has proven an
+        // identity-to-device chain and received membership.
         let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
         let device = iroh::SecretKey::from_bytes(&[72; 32]);
+        let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
         let mut cert = qos_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
@@ -2182,36 +1956,43 @@ mod tests {
         assert_ne!(stranger_room, our_room);
 
         net.event_tx
-            .try_send(app_crdt_event(
+            .try_send(app_document_event(
                 &stranger_room.to_string(),
                 0xBBBBu64,
                 device.public(),
+                &device_signing,
             ))
             .expect("queue the stranger's publish");
         net.tick();
         assert!(
-            net.inbound_app_crdt_handle().lock().unwrap().is_empty(),
+            net.inbound_documents_handle().lock().unwrap().is_empty(),
             "a delta for a room this machine is not in must not reach the broker queue",
         );
 
         net.event_tx
-            .try_send(app_crdt_event("not-a-room", 0xBBBBu64, device.public()))
+            .try_send(app_document_event(
+                "not-a-room",
+                0xBBBBu64,
+                device.public(),
+                &device_signing,
+            ))
             .expect("queue the malformed publish");
         net.tick();
         assert!(
-            net.inbound_app_crdt_handle().lock().unwrap().is_empty(),
+            net.inbound_documents_handle().lock().unwrap().is_empty(),
             "a cluster id that is not a uuid names no room, so it must be refused",
         );
 
         net.event_tx
-            .try_send(app_crdt_event(
+            .try_send(app_document_event(
                 &our_room.to_string(),
                 0xBBBBu64,
                 device.public(),
+                &device_signing,
             ))
             .expect("queue the member's publish");
         net.tick();
-        let delivered = net.inbound_app_crdt_handle().lock().unwrap().len();
+        let delivered = net.inbound_documents_handle().lock().unwrap().len();
         assert_eq!(
             delivered, 1,
             "a delta for a room this machine is in must still reach the broker queue",
@@ -2352,176 +2133,6 @@ mod tests {
     }
 
     #[test]
-    fn publish_app_crdt_snapshot_wraps_the_whole_document() {
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
-        let expected_topic = net.active_ws_for_publish();
-
-        net.publish_app_crdt_snapshot(
-            "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
-            "file:/work/report.odt".into(),
-            vec![0xAA, 0xBB, 0xCC],
-        );
-        assert!(
-            cmd_rx.try_recv().is_err(),
-            "a snapshot nobody asked for must not be published",
-        );
-
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
-        net.publish_app_crdt_snapshot(
-            "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
-            "file:/work/report.odt".into(),
-            vec![0xAA, 0xBB, 0xCC],
-        );
-        let cmd = cmd_rx
-            .try_recv()
-            .expect("publish_app_crdt_snapshot must enqueue a NetCmd");
-        match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, expected_topic);
-                match msg {
-                    NeighbourMsg::AppCrdtSnapshot {
-                        peer,
-                        app_id,
-                        cluster_id,
-                        record_id,
-                        data,
-                    } => {
-                        assert_eq!(peer, 0xCAFEu64);
-                        assert_eq!(app_id, "dev.qos.word-processor");
-                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
-                        assert_eq!(record_id, "file:/work/report.odt");
-                        assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
-                    }
-                    other => panic!("expected AppCrdtSnapshot, got {other:?}"),
-                }
-            }
-            other => panic!("expected NetCmd::Publish, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossip() {
-        // Refusing here turns "this document silently never converges"
-        // into a log line naming the size, rather than a transport-level failure.
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
-        net.publish_app_crdt_snapshot(
-            "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
-            String::new(),
-            vec![0u8; MAX_APP_SNAPSHOT_BYTES + 1],
-        );
-        assert!(
-            cmd_rx.try_recv().is_err(),
-            "a snapshot past the cap must not be queued for publish",
-        );
-
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
-        net.publish_app_crdt_snapshot(
-            "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
-            String::new(),
-            vec![0u8; MAX_APP_SNAPSHOT_BYTES],
-        );
-        assert!(
-            cmd_rx.try_recv().is_ok(),
-            "a snapshot exactly at the cap must still publish",
-        );
-    }
-
-    #[test]
-    fn one_arrival_releases_each_document_once() {
-        // One arrival may need baselines for several records/apps. Repeated
-        // snapshots for one record still stay local until another arrival.
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
-        let room = "00000000-0000-0000-0000-000000000000";
-
-        net.note_snapshot_request(room);
-        for _ in 0..4 {
-            net.publish_app_crdt_snapshot(
-                "dev.qos.word-processor".into(),
-                room.into(),
-                String::new(),
-                vec![0xAA],
-            );
-        }
-        assert!(
-            cmd_rx.try_recv().is_ok(),
-            "the arrival releases one document"
-        );
-        assert!(
-            cmd_rx.try_recv().is_err(),
-            "the commits after it must not each broadcast the document again",
-        );
-
-        net.publish_app_crdt_snapshot(
-            "dev.qos.word-processor".into(),
-            room.into(),
-            "a-second-record".into(),
-            vec![0xBB],
-        );
-        assert!(
-            cmd_rx.try_recv().is_ok(),
-            "the same arrival releases a baseline for each distinct document",
-        );
-
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000001");
-        net.publish_app_crdt_snapshot(
-            "dev.qos.word-processor".into(),
-            room.into(),
-            String::new(),
-            vec![0xAA],
-        );
-        assert!(
-            cmd_rx.try_recv().is_err(),
-            "an arrival in another room must not release this room's document",
-        );
-    }
-
-    #[test]
-    fn snapshot_at_the_cap_fits_the_iroh_frame_budget() {
-        let msg = NeighbourMsg::AppCrdtSnapshot {
-            peer: u64::MAX,
-            app_id: "dev.qos.word-processor".into(),
-            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
-            record_id: "file:".to_string() + &"a".repeat(4096),
-            data: vec![0xFFu8; MAX_APP_SNAPSHOT_BYTES],
-        };
-        let encoded = postcard::to_allocvec(&msg).expect("encode");
-        assert!(
-            encoded.len() < 64 * 1024 * 1024,
-            "a snapshot at the cap must fit the Iroh frame budget; got {} bytes",
-            encoded.len(),
-        );
-    }
-
-    #[test]
-    fn handle_app_crdt_snapshot_message_buffers_for_drain() {
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
-        let buf_handle = net.inbound_app_crdt_snapshot_handle();
-        net.handle_app_crdt_snapshot_message(
-            7u64,
-            "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
-            "file:/work/report.odt".into(),
-            vec![0x01, 0x02],
-        );
-        let buf = buf_handle.lock().unwrap().clone();
-        assert_eq!(buf.len(), 1);
-        assert_eq!(buf[0].peer, 7u64);
-        assert_eq!(buf[0].app_id, "dev.qos.word-processor");
-        assert_eq!(buf[0].cluster_id, "00000000-0000-0000-0000-000000000000");
-        assert_eq!(buf[0].record_id, "file:/work/report.odt");
-        assert_eq!(buf[0].data, vec![0x01, 0x02]);
-    }
-
-    #[test]
     fn handle_presence_message_buffers_for_drain() {
         // Folded into `PresenceCtx` by the shell's frame drainer; every
         // field must round-trip so the overlay attributes the cursor
@@ -2577,70 +2188,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn publish_app_crdt_incremental_emits_a_publish_command() {
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
-        let expected_topic = net.active_ws_for_publish();
-        net.publish_app_crdt_incremental(
-            "terminal".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
-            "file:/work/notes.md".into(),
-            vec![0xAA, 0xBB, 0xCC],
-        );
-        let cmd = cmd_rx
-            .try_recv()
-            .expect("publish_app_crdt_incremental must enqueue a NetCmd");
-        match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, expected_topic);
-                match msg {
-                    NeighbourMsg::AppCrdtIncremental {
-                        peer,
-                        app_id,
-                        cluster_id,
-                        record_id,
-                        data,
-                    } => {
-                        assert_eq!(peer, 0xCAFEu64);
-                        assert_eq!(app_id, "terminal");
-                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
-                        assert_eq!(record_id, "file:/work/notes.md");
-                        assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
-                    }
-                    other => panic!("expected AppCrdtIncremental, got {other:?}"),
-                }
-            }
-            other => panic!("expected NetCmd::Publish, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn handle_app_crdt_message_buffers_for_drain() {
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
-        let buf_handle = net.inbound_app_crdt_handle();
-        net.handle_app_crdt_message(
-            7u64,
-            "terminal".into(),
-            "cluster-uuid".into(),
-            "file:/work/notes.md".into(),
-            vec![0x01, 0x02],
-        );
-        let buf = buf_handle.lock().unwrap().clone();
-        assert_eq!(buf.len(), 1);
-        assert_eq!(buf[0].peer, 7u64);
-        assert_eq!(buf[0].app_id, "terminal");
-        assert_eq!(buf[0].cluster_id, "cluster-uuid");
-        assert_eq!(buf[0].record_id, "file:/work/notes.md");
-        assert_eq!(buf[0].data, vec![0x01, 0x02]);
-    }
-
     fn make_envelope(seq: u64) -> collab_types::SignedOp {
         use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
         use std::time::SystemTime;
         SignedOp::new_unsigned(
-            vec![0xAA, 0xBB],
+            collab_types::DocumentMutation::Incremental(vec![0xAA, 0xBB])
+                .encode()
+                .expect("typed mutation"),
             ArtifactId::new(),
             Ed25519PublicKey::from_bytes([1u8; 32]),
             AttestationId::new(),
@@ -2651,12 +2205,12 @@ mod tests {
     }
 
     #[test]
-    fn publish_app_crdt_signed_emits_a_publish_command() {
+    fn publish_document_emits_a_publish_command() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
         let expected_topic = net.active_ws_for_publish();
         let envelope = make_envelope(7);
-        net.publish_app_crdt_signed(
+        net.publish_document(
             "notes".to_string(),
             "cluster-7".to_string(),
             "uuid:9f".to_string(),
@@ -2664,12 +2218,12 @@ mod tests {
         );
         let cmd = cmd_rx
             .try_recv()
-            .expect("publish_app_crdt_signed must enqueue a NetCmd");
+            .expect("publish_document must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
                 assert_eq!(ws, expected_topic);
                 match msg {
-                    NeighbourMsg::AppCrdtIncrementalSigned {
+                    NeighbourMsg::AppDocument {
                         peer,
                         app_id,
                         cluster_id,
@@ -2682,7 +2236,7 @@ mod tests {
                         assert_eq!(record_id, "uuid:9f");
                         assert_eq!(*got, envelope);
                     }
-                    other => panic!("expected AppCrdtIncrementalSigned, got {other:?}"),
+                    other => panic!("expected AppDocument, got {other:?}"),
                 }
             }
             other => panic!("expected NetCmd::Publish, got {other:?}"),
@@ -2690,16 +2244,17 @@ mod tests {
     }
 
     #[test]
-    fn handle_app_crdt_signed_message_buffers_for_drain() {
+    fn handle_document_message_buffers_for_drain() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
-        let buf_handle = net.inbound_app_crdt_signed_handle();
+        let buf_handle = net.inbound_documents_handle();
         let envelope = make_envelope(13);
-        net.handle_app_crdt_signed_message(
+        net.handle_document_message(
             99u64,
             "notes".to_string(),
             "cluster-7".to_string(),
             "uuid:9f".to_string(),
+            collab_types::Role::Editor,
             envelope.clone(),
         );
         let buf = buf_handle.lock().unwrap().clone();
@@ -2708,6 +2263,7 @@ mod tests {
         assert_eq!(buf[0].app_id, "notes");
         assert_eq!(buf[0].cluster_id, "cluster-7");
         assert_eq!(buf[0].record_id, "uuid:9f");
+        assert_eq!(buf[0].role, collab_types::Role::Editor);
         assert_eq!(*buf[0].envelope, envelope);
     }
 
