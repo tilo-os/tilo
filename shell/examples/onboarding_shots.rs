@@ -35,13 +35,7 @@ const HEIGHT: u32 = 720;
     clippy::cast_precision_loss,
     reason = "snapshot dimensions are small renderer sizes and exactly representable"
 )]
-fn shoot(
-    theme: &Theme,
-    out: &Path,
-    steps: &[&str],
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
+fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> Result<(), String> {
     let mut state = State::new();
     let mut view = OnboardingView::with_minter(Box::new(|| {
         Ok(MintedIdentity {

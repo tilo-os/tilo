@@ -74,6 +74,9 @@ const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 900);
 /// Returns an error when a `--shots`/`--shots-narrow` pass fails to lay out
 /// or render the offscreen frame (a taffy layout error, or an I/O failure
 /// writing the PNG).
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

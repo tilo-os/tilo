@@ -72,6 +72,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 ///
 /// Returns `Err` if a `--shots`/`--probe*` mode fails to construct its
 /// backend, fetch data, or write its output file.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

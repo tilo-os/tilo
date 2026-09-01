@@ -52,6 +52,9 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("dev.qos.photos", photos::app_root)

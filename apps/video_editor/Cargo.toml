@@ -21,6 +21,7 @@ path = "src/main.rs"
 # is a file-pick plus metadata probe; it needs no GStreamer, so it must never be
 # gated behind the decode/export features.
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
@@ -39,6 +40,7 @@ media = { path = "../../crates/media" }
 gstreamer-app = { version = "0.24", optional = true }
 
 [features]
+thin = ["dep:runtime-dylib"]
 # The preview canvas decoding real frames is the editor's core, so `decode`
 # ships on by default: the preview decodes the real frame of the clip under the
 # playhead through the shared `media::MediaEngine` (GStreamer `playbin`). The
