@@ -2,9 +2,11 @@
 //!
 //! The adapter owns no Windows policy.  In particular it cannot turn a host
 //! path, a catalogue recipe, or a manager request into an RDP drive.  The
-//! existing privileged portal/capability service supplies an already-resolved
-//! [`windows_vm::VmLaunchGrants`] projection; `windows-vm` then materialises
-//! and revokes the corresponding lease around the `RemoteApp` process.
+//! A future, canonical qOS portal/capability broker may supply an
+//! already-resolved [`windows_vm::VmLaunchGrants`] projection, but only after
+//! qOS has probed a local RAIL surface that can carry its redirects.
+//! `windows-vm` then materialises and revokes the corresponding lease around
+//! the `RemoteApp` process. The live app-focused SPICE path remains deny-all.
 
 use launcher::capabilities::CapabilityPlan;
 use sha2::{Digest, Sha256};
@@ -21,10 +23,11 @@ use crate::{
     VmRouteRequest,
 };
 
-/// Privileged qOS authority for the capability projection used by the Windows
-/// appliance.  It is intentionally an injected adapter rather than a second
-/// permission database: implementations use the ordinary portal document
-/// handles and workspace decision records already owned by qOS.
+/// Privileged qOS authority for a future RAIL capability projection used by
+/// the Windows appliance. It is intentionally an injected adapter rather than
+/// a second permission database: an implementation must use the ordinary
+/// portal document handles and workspace decision records already owned by
+/// qOS, after a local RAIL surface has been probed.
 ///
 /// A portal implementation may return opaque `portal_documents`, clipboard,
 /// or a network lease only when it has materialised and can later revoke that
@@ -38,9 +41,10 @@ pub trait VmPortalAuthority: Send + Sync {
     ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError>;
 }
 
-/// Safe bootstrap authority for deployments where the privileged qOS portal
-/// bridge has not been installed yet.  `RemoteApp` itself still works, but it
-/// receives no files, clipboard, microphone, or egress.
+/// Safe authority for the live app-focused SPICE presentation. `RemoteApp`
+/// still works with playback, but receives no files, clipboard, microphone,
+/// or egress. It remains the required authority until a probed local RAIL
+/// surface and canonical broker can carry and revoke those redirects.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DenyAllVmPortalAuthority;
 
@@ -55,9 +59,10 @@ impl VmPortalAuthority for DenyAllVmPortalAuthority {
     }
 }
 
-/// Lease broker for the app-focused SPICE fallback. That presentation cannot
-/// safely carry RDP redirectors, so it materializes an explicit empty lease
-/// instead of pretending requested host resources reached Windows.
+/// Lease broker for the live app-focused SPICE fallback. That presentation
+/// cannot carry RDP redirectors, so it materializes an explicit empty lease
+/// instead of pretending requested host resources reached Windows. A future
+/// RAIL-only broker must materialise and revoke canonical qOS grants.
 #[derive(Debug, Default)]
 pub struct DenyAllVmCapabilityBroker {
     next: AtomicU64,
@@ -79,9 +84,9 @@ impl windows_vm::CapabilityBroker for DenyAllVmCapabilityBroker {
 }
 
 /// App-focused SPICE presentation constrained to a per-launch private audio
-/// graph. This SPICE fallback exposes playback only; microphone capture remains
-/// unavailable until its brokered grant can be carried without weakening the
-/// generic viewer's conservative redirect policy.
+/// graph. This live fallback exposes playback only; microphone capture,
+/// clipboard, file shares, and egress remain unavailable until a probed local
+/// RAIL surface can carry grants from a canonical qOS broker.
 pub struct AudioIsolatedSpiceLauncher<R> {
     runner: R,
     root: PathBuf,
