@@ -18,6 +18,15 @@
 
 /// Generated Cap'n Proto bindings for `format-router.capnp`. Lives at the
 /// crate root because the capnpc output references `crate::format_router_capnp::*`.
+#[allow(
+    clippy::all,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    reason = "generated Cap'n Proto bindings do not follow repository lint policy"
+)]
+#[allow(unused)]
+#[allow(dead_code)]
 pub mod format_router_capnp {
     include!(concat!(env!("OUT_DIR"), "/format_router_capnp.rs"));
 }

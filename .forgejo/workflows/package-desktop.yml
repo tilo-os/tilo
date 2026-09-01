@@ -38,12 +38,8 @@ env:
 jobs:
   validate:
     runs-on: runner
-    outputs:
-      diagnostic: ${{ steps.preflight.outputs.diagnostic }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Validate packaging inputs before allocating native builders
         id: preflight
         shell: bash
@@ -66,19 +62,6 @@ jobs:
             diagnostic=portal-contract
           fi
           echo "diagnostic=$diagnostic" >> "$GITHUB_OUTPUT"
-      - name: Record the branch preflight diagnostic
-        if: github.ref == 'refs/heads/codex/package-desktop-release'
-        shell: bash
-        env:
-          PREFLIGHT_DIAGNOSTIC: ${{ steps.preflight.outputs.diagnostic }}
-        run: |
-          git config user.name 'qOS Forgejo CI'
-          git config user.email 'qos@noreply.code.podesta.ai'
-          git fetch origin refs/notes/qos-package-preflight:refs/notes/qos-package-preflight || true
-          git notes --ref=qos-package-preflight add -f \
-            -m "diagnostic=$PREFLIGHT_DIAGNOSTIC run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
-            "$GITHUB_SHA"
-          git push origin refs/notes/qos-package-preflight
       - name: Enforce packaging preflight result
         shell: bash
         env:
@@ -153,21 +136,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
-      - name: Record when this branch target starts on a runner
-        if: github.ref == 'refs/heads/codex/package-desktop-release'
-        run: |
-          git config user.name 'qOS Forgejo CI'
-          git config user.email 'qos@noreply.code.podesta.ai'
-          note_ref="refs/notes/qos-package-${{ matrix.id }}-${{ matrix.arch }}"
-          git fetch origin "$note_ref:$note_ref" || true
-          git notes --ref="${note_ref#refs/notes/}" add -f \
-            -m "state=started at=$(date -u +%FT%TZ) run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
-            "$GITHUB_SHA"
-          git push origin "$note_ref"
       - name: Build and install-test in the target userspace
-        id: package-build
         env:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
@@ -177,62 +147,14 @@ jobs:
           "${{ matrix.image }}"
           "${{ matrix.arch }}"
           "${{ matrix.revision }}"
-      - uses: actions/upload-artifact@v4
-        id: artifact-upload
+      # Forgejo's native artifact service implements the v3 protocol. Upstream
+      # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
+      - uses: actions/upload-artifact@v3
         if: always()
         with:
           name: ${{ matrix.id }}-${{ matrix.arch }}
           path: dist/ci-output/${{ matrix.id }}-${{ matrix.arch }}/*
           if-no-files-found: error
-      - name: Record this matrix target's terminal result
-        if: always() && github.ref == 'refs/heads/codex/package-desktop-release'
-        env:
-          BUILD_OUTCOME: ${{ steps.package-build.outcome }}
-          UPLOAD_OUTCOME: ${{ steps.artifact-upload.outcome }}
-        run: |
-          git config user.name 'qOS Forgejo CI'
-          git config user.email 'qos@noreply.code.podesta.ai'
-          detail=none
-          failure_file="dist/ci-output/${{ matrix.id }}-${{ matrix.arch }}/CI_FAILURE"
-          if [[ -f $failure_file ]]; then
-            detail=$({
-              head -n 1 "$failure_file"
-              grep -Ei 'error:|failed|not found|conflict|cannot ' "$failure_file" | tail -n 6 || true
-              tail -n 6 "$failure_file"
-            } | tr '\n' ' ' | cut -c1-1500)
-          fi
-          note_ref="refs/notes/qos-package-${{ matrix.id }}-${{ matrix.arch }}"
-          git fetch origin "$note_ref:$note_ref" || true
-          git notes --ref="${note_ref#refs/notes/}" add -f \
-            -m "state=terminal at=$(date -u +%FT%TZ) build=$BUILD_OUTCOME upload=$UPLOAD_OUTCOME detail=$detail run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
-            "$GITHUB_SHA"
-          git push origin "$note_ref"
-
-  report-branch-result:
-    if: always() && github.ref == 'refs/heads/codex/package-desktop-release'
-    needs: [validate, package]
-    runs-on: runner
-    permissions:
-      contents: write
-    env:
-      VALIDATE_RESULT: ${{ needs.validate.result }}
-      VALIDATE_DIAGNOSTIC: ${{ needs.validate.outputs.diagnostic }}
-      PACKAGE_RESULT: ${{ needs.package.result }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-      - name: Record an observable CI receipt without touching a branch
-        run: |
-          git config user.name 'qOS Forgejo CI'
-          git config user.email 'qos@noreply.code.podesta.ai'
-          git fetch origin refs/notes/qos-package-ci:refs/notes/qos-package-ci || true
-          git notes --ref=qos-package-ci add -f \
-            -m "validate=$VALIDATE_RESULT diagnostic=$VALIDATE_DIAGNOSTIC package=$PACKAGE_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
-            "$GITHUB_SHA"
-          git push origin refs/notes/qos-package-ci
-
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: package
@@ -243,10 +165,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v3
         with:
           path: release
-          merge-multiple: true
+      - name: Flatten per-target artifact directories
+        run: |
+          find release -mindepth 2 -type f -print0 | while IFS= read -r -d '' artifact; do
+            target="release/${artifact##*/}"
+            test ! -e "$target"
+            mv "$artifact" "$target"
+          done
+          find release -mindepth 1 -type d -empty -delete
       - name: Check release version and create checksums
         run: |
           version="${GITHUB_REF_NAME#v}"
