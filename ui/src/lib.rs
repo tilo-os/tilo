@@ -142,7 +142,7 @@ pub use collection_transition::{
 };
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
-pub use i18n::{ArgValue, I18nError, I18nManager};
+pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, ImageStore};
 pub use interaction::{InputModality, InteractionEnvironment, PointerPrecision};
 pub use local_state::{

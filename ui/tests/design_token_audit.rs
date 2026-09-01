@@ -384,3 +384,44 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
         stale.join("\n"),
     );
 }
+
+/// Product apps share one viewport/large-type/pseudo-locale audit path. A new
+/// bespoke launcher silently loses that acceptance matrix, so keep the fleet on
+/// `LaunchSpec` unless the binary is itself an automation agent rather than a
+/// user-facing app window.
+#[test]
+fn product_apps_use_the_shared_responsive_launcher() {
+    let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let apps = ui_root
+        .parent()
+        .expect("ui crate lives in the repository")
+        .join("apps");
+    let mut missing = Vec::new();
+    for entry in fs::read_dir(&apps)
+        .expect("apps directory exists")
+        .flatten()
+    {
+        let app = entry.path();
+        if !app.join("qos-app.toml").is_file() {
+            continue;
+        }
+        let main = app.join("src/main.rs");
+        if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
+            continue;
+        }
+        let source = fs::read_to_string(&main).expect("app main is readable");
+        if !source.contains("LaunchSpec") {
+            missing.push(
+                app.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "product apps missing the shared responsive launcher: {}",
+        missing.join(", ")
+    );
+}
